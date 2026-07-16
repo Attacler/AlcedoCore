@@ -1,0 +1,11 @@
+{
+  "plugins": [
+    {
+      "slug": "admin",
+      "image": "ghcr.io/alcedo/admin@sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
+      "version": "1.0.0",
+      "min_core_version": "0.1.0",
+      "env": {}
+    }
+  ]
+}

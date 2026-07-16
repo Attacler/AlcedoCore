@@ -1,0 +1,22 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app \
+    && mkdir -p /app /plugins /var/lib/plugin-public \
+    && chown -R app:app /app /plugins /var/lib/plugin-public
+
+COPY plugin-core/target/release/k8s /usr/local/bin/
+COPY plugin-core/core-migrations /app/core-migrations/
+COPY .docker-plugins /plugins/
+
+ENV RUST_LOG=info
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+USER app
+CMD ["k8s"]

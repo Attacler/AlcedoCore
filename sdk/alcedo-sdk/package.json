@@ -1,0 +1,28 @@
+{
+  "name": "alcedo-sdk",
+  "version": "0.2.0",
+  "type": "module",
+  "files": ["dist"],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "ky": "^2.0.2",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "typescript": "^5.3.0",
+    "vitest": "^3.1.0"
+  }
+}

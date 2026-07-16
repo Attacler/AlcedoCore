@@ -1,0 +1,17 @@
+{
+  "name": "hello-world-nuxt",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "nuxt build",
+    "start": "node .output/server/index.mjs"
+  },
+  "dependencies": {
+    "nuxt": "^3.15.0",
+    "vue": "latest",
+    "alcedo-sdk": "file:../alcedo-sdk",
+    "tailwindcss": "^4.1.4",
+    "@tailwindcss/vite": "^4.1.4"
+  }
+}

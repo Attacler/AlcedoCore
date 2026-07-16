@@ -1,0 +1,1 @@
+ALTER TABLE execution_logs ADD COLUMN IF NOT EXISTS logs JSONB;

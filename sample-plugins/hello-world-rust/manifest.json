@@ -1,0 +1,118 @@
+{
+  "name": "hello-world-rust",
+  "version": "1.0.0",
+  "plugin_type": "docker",
+  "system_plugin": false,
+  "image": "local/hello-world-rust",
+  "env": {},
+  "resources": {},
+  "pages": [
+    { "label": "Hello", "path": "/", "sidebar": true },
+    { "label": "KV Demo", "path": "/kv-demo", "sidebar": true },
+    { "label": "Settings", "path": "/settings", "sidebar": true },
+    { "label": "DB Items", "path": "/items", "sidebar": true }
+  ],
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/health",
+      "description": "Health check endpoint",
+      "group": "system"
+    },
+    {
+      "method": "GET",
+      "path": "/api/hello",
+      "description": "Returns greeting message",
+      "group": "api"
+    },
+    {
+      "method": "GET",
+      "path": "/api/kv/:key",
+      "description": "Read a KV entry",
+      "group": "api"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/kv/:key",
+      "description": "Write a KV entry",
+      "group": "api"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/kv/:key",
+      "description": "Delete a KV entry",
+      "group": "api"
+    },
+    {
+      "method": "GET",
+      "path": "/api/kv/:key/ttl",
+      "description": "Get TTL for a KV entry",
+      "group": "api"
+    },
+    {
+      "method": "GET",
+      "path": "/api/kv/list",
+      "description": "List KV entries by prefix",
+      "group": "api"
+    },
+    {
+      "method": "POST",
+      "path": "/api/kv/batch-get",
+      "description": "Batch get KV entries",
+      "group": "api"
+    },
+    {
+      "method": "POST",
+      "path": "/api/kv/batch-set",
+      "description": "Batch set KV entries",
+      "group": "api"
+    },
+    {
+      "method": "POST",
+      "path": "/api/kv/batch-delete",
+      "description": "Batch delete KV entries",
+      "group": "api"
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings",
+      "description": "Access plugin settings",
+      "group": "api"
+    },
+    {
+      "method": "POST",
+      "path": "/api/migrate",
+      "description": "Run database migrations",
+      "group": "api"
+    },
+    {
+      "method": "GET",
+      "path": "/api/db/items",
+      "description": "List items via DB query proxy",
+      "group": "api"
+    }
+  ],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "title": "Greeting Message",
+        "default": "Hello from Rust plugin!",
+        "description": "Custom greeting message displayed on the hello page"
+      },
+      "refresh_interval": {
+        "type": "integer",
+        "title": "Refresh Interval",
+        "default": 30,
+        "description": "Auto-refresh interval in seconds"
+      },
+      "theme_color": {
+        "type": "string",
+        "title": "Theme Color",
+        "default": "rust",
+        "description": "UI theme color (rust, blue, green, purple)"
+      }
+    }
+  }
+}

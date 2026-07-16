@@ -1,0 +1,14 @@
+FROM node:20-slim
+
+WORKDIR /app
+
+COPY server.js .
+COPY endpoints/ ./endpoints/
+COPY public/ ./public/
+COPY migrations/ ./migrations/
+COPY pages/dist/ ./pages/dist/
+COPY manifest.json .
+
+EXPOSE 8080
+
+CMD ["node", "server.js"]

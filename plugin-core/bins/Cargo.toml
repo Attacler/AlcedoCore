@@ -1,0 +1,30 @@
+[package]
+name = "bins"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+pcl = { package = "plugin-core-lib", path = "../core", features = ["docker"] }
+platform-docker = { path = "../platform-docker" }
+platform-k8s = { path = "../platform-k8s" }
+file-storage = { path = "../file-storage" }
+file-storage-s3 = { path = "../file-storage-s3" }
+file-storage-local = { path = "../file-storage-local" }
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+config = "0.14"
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid", "migrate"] }
+reqwest = { version = "0.12", features = ["json"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+deadpool = { version = "0.12", features = ["managed"] }
+once_cell = "1"
+bollard = "0.20"
+bollard-stubs = "=1.52.1-rc.29.1.3"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-sessions = { version = "0.13", features = ["axum-core"] }
+time = { version = "0.3", features = ["serde"] }

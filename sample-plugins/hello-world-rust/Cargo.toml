@@ -1,0 +1,15 @@
+[package]
+name = "hello-world-rust"
+version = "1.0.0"
+edition = "2021"
+description = "AlcedoCore Rust sample plugin — demonstrates all alcedo-sdk capabilities"
+
+[dependencies]
+alcedo-sdk = { path = "../../sdk/alcedo-sdk-rust" }
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

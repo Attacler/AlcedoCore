@@ -1,0 +1,12 @@
+{
+  "name": "hello-world",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build:pages": "node ../../cli/page-compiler/dist/input.js --plugin=./pages --output=./pages/dist",
+    "build:pages-docker": "npm run build:pages && cp -r pages/* ../../.docker-plugins/hello-world/pages"
+  },
+  "dependencies": {
+    "vue": "^3.5.34"
+  }
+}

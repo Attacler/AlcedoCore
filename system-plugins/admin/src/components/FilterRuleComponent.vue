@@ -1,0 +1,237 @@
+<script setup lang="ts">
+import { computed, ref, watch, onErrorCaptured } from 'vue'
+import type { FieldDefinition } from '@/stores/collections'
+import type { FilterRule, OperatorMeta } from '@/types/filters'
+import { OPERATORS_BY_TYPE } from '@/types/filters'
+import FilterValueInput from './FilterValueInput.vue'
+import Select from 'primevue/select'
+import TreeSelect from 'primevue/treeselect'
+import Button from 'primevue/button'
+
+const props = defineProps<{
+  condition: FilterRule
+  fields: FieldDefinition[]
+  collectionName: string
+}>()
+
+onErrorCaptured((err: any) => {
+  console.error('[FilterRuleComponent] Error:', err?.message, err?.stack)
+  return false
+})
+
+const emit = defineEmits<{
+  'update:condition': [value: FilterRule]
+  'remove': []
+}>()
+
+// ---------------------------------------------------------------------------
+// Field tree — fully built after pre-fetching all related collections
+// ---------------------------------------------------------------------------
+
+interface FieldTreeNode {
+  key: string
+  label: string
+  type?: string
+  leaf?: boolean
+  children?: FieldTreeNode[]
+}
+
+/** Map from full dot-notation key to field type */
+const keyTypeMap = new Map<string, string>()
+
+/** Root tree nodes */
+const fieldTree = ref<FieldTreeNode[]>([])
+
+/** Whether the complete tree (with relationship children) is ready */
+const treeReady = ref(false)
+
+/** Two-way binding for TreeSelect — stores { key: true } */
+const selectedKeys = ref<Record<string, boolean> | null>(null)
+
+/** Recursively find a tree node by key */
+function findNodeByKey(nodes: FieldTreeNode[], key: string): FieldTreeNode | undefined {
+  for (const n of nodes) {
+    if (n.key === key) return n
+    if (n.children) {
+      const found = findNodeByKey(n.children, key)
+      if (found) return found
+    }
+  }
+}
+
+/** Display label for the selected field — walks fieldTree */
+const selectedLabel = computed(() => {
+  if (!selectedKeys.value) return ''
+  const key = Object.keys(selectedKeys.value)[0]
+  if (!key) return ''
+  const node = findNodeByKey(fieldTree.value, key)
+  return node ? node.label : key
+})
+
+/** Watch parent field reset via condition prop */
+watch(() => props.condition.field, (val) => {
+  selectedKeys.value = val ? { [val]: true } : null
+})
+
+// Also emit up when user selects in the tree
+watch(selectedKeys, (keys) => {
+  if (!keys) return
+  const field = Object.keys(keys)[0]
+  if (!field || field === props.condition.field) return
+  const clone = getClone()
+  clone.field = field
+  clone.operator = 'eq'
+  clone.value = ''
+  emitUpdate(clone)
+}, { deep: true })
+
+async function buildFullTree(): Promise<void> {
+  const tree: FieldTreeNode[] = []
+
+  // Pre-fetch all related collection schemas
+  const relFields = props.fields.filter(f => f.type === 'relationship' && f.related_collection)
+  const cache = new Map<string, FieldDefinition[]>()
+  if (relFields.length > 0) {
+    await Promise.all(
+      relFields.map(f =>
+        fetch(`/api/collections/${encodeURIComponent(f.related_collection!)}`)
+          .then(r => r.json())
+          .then((response: any) => {
+            const data = response.data || response
+            if (data?.fields) cache.set(f.related_collection!, data.fields)
+          })
+          .catch(() => {})
+      )
+    )
+  }
+
+  for (const f of props.fields) {
+    if (f.type !== 'relationship') {
+      keyTypeMap.set(f.name, f.type)
+      tree.push({ key: f.name, label: f.display_name || f.name, type: f.type, leaf: true })
+    } else if (f.related_collection) {
+      const childFields = cache.get(f.related_collection) || []
+      const children: FieldTreeNode[] = childFields
+        .filter(cf => cf.type !== 'relationship')
+        .map(cf => {
+          const key = `${f.name}.${cf.name}`
+          keyTypeMap.set(key, cf.type)
+          return { key, label: `${f.display_name || f.name}.${cf.display_name || cf.name}`, type: cf.type, leaf: true }
+        })
+      tree.push({
+        key: f.name,
+        label: `${f.display_name || f.name} (${f.related_collection})`,
+        leaf: false,
+        children
+      })
+    }
+  }
+
+  fieldTree.value = tree
+  treeReady.value = true
+}
+
+if (props.fields.length > 0) buildFullTree()
+
+// ---------------------------------------------------------------------------
+// Operator handling
+// ---------------------------------------------------------------------------
+
+const selectedFieldType = computed<string>(() => {
+  const fieldName = props.condition.field
+  if (!fieldName) return 'string'
+  return keyTypeMap.get(fieldName) || 'string'
+})
+
+const availableOperators = computed<OperatorMeta[]>(() => {
+  const type = selectedFieldType.value
+  return OPERATORS_BY_TYPE[type] || OPERATORS_BY_TYPE.string
+})
+
+const requiresValue = computed(() => {
+  const op = availableOperators.value.find(o => o.operator === props.condition.operator)
+  return op ? op.requiresValue : true
+})
+
+function getClone(): FilterRule {
+  return { ...props.condition }
+}
+
+function emitUpdate(clone: FilterRule) {
+  emit('update:condition', clone)
+}
+
+function onOperatorChange(event: any) {
+  const val = event?.value ?? event
+  const clone = getClone()
+  clone.operator = val
+  const op = availableOperators.value.find(o => o.operator === val)
+  clone.value = op?.requiresValue ? '' : null
+  emitUpdate(clone)
+}
+
+function onValueChange(newValue: unknown) {
+  const clone = getClone()
+  clone.value = newValue
+  emitUpdate(clone)
+}
+</script>
+
+<template>
+  <div class="filter-rule flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-2 p-2 bg-white border border-gray-200 rounded-md">
+    <div class="filter-field w-full sm:flex-1 min-w-0">
+      <label class="block text-xs text-gray-500 mb-0.5 sm:mb-1 font-medium">Field</label>
+      <TreeSelect
+        v-if="treeReady"
+        v-model="selectedKeys"
+        :options="fieldTree"
+        selectionMode="single"
+        placeholder="Select field..."
+        class="w-full"
+        scrollHeight="300px"
+        filter
+        size="small"
+      >
+        <template #value="slotProps">
+          <span v-if="selectedLabel" class="p-treeselect-label">{{ selectedLabel }}</span>
+          <span v-else class="p-treeselect-label p-placeholder">{{ slotProps.placeholder }}</span>
+        </template>
+      </TreeSelect>
+    </div>
+
+    <div class="filter-operator w-full sm:flex-1 min-w-0">
+      <label class="block text-xs text-gray-500 mb-0.5 sm:mb-1 font-medium">Operator</label>
+      <Select
+        :modelValue="condition.operator"
+        :options="availableOperators"
+        optionLabel="label"
+        optionValue="operator"
+        placeholder="Select operator..."
+        class="w-full"
+        size="small"
+        @change="onOperatorChange"
+      />
+    </div>
+
+    <div v-if="requiresValue" class="filter-value w-full sm:flex-[2] min-w-0">
+      <label class="block text-xs text-gray-500 mb-0.5 sm:mb-1 font-medium">Value</label>
+      <FilterValueInput
+        :modelValue="condition.value"
+        :fieldType="selectedFieldType"
+        @update:modelValue="onValueChange"
+        class="w-full"
+      />
+    </div>
+
+    <div class="filter-remove self-end sm:self-auto sm:pt-5 -mt-1 sm:mt-0">
+      <Button
+        icon="pi pi-times"
+        severity="danger"
+        text
+        size="small"
+        @click="emit('remove')"
+        :title="'Remove filter'"
+      />
+    </div>
+  </div>
+</template>

@@ -1,0 +1,13 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: plugin-core
+  namespace: plugin-core
+  labels:
+    app.kubernetes.io/name: plugin-core
+    app.kubernetes.io/managed-by: plugin-core
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: plugin-core

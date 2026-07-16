@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: plugin-data
+  namespace: plugin-core
+  labels:
+    app.kubernetes.io/name: plugin-core
+    app.kubernetes.io/managed-by: plugin-core
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

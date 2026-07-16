@@ -1,0 +1,39 @@
+{
+  "name": "automation",
+  "version": "0.1.0",
+  "display_name": "Automation",
+  "description": "JavaScript automation engine triggered by item CRUD events",
+  "plugin_type": "dynamic",
+  "system_plugin": true,
+  "scopes": [
+    {"name": "kv.all", "description": "Read/write KV store entries for dedup and state"},
+    {"name": "db.query", "description": "Execute SELECT queries on plugin schema"},
+    {"name": "db.execute", "description": "Execute INSERT/UPDATE/DELETE on plugin schema"},
+    {"name": "items.read", "description": "Read collection items via JS SDK"},
+    {"name": "items.write", "description": "Write collection items via JS SDK"}
+  ],
+  "events": ["ItemCreated", "ItemUpdated", "ItemDeleted"],
+  "endpoints": [
+    { "method": "GET", "path": "/health", "description": "Health check", "group": "system" },
+    { "method": "GET", "path": "/api/automation/functions", "description": "List functions", "group": "api" },
+    { "method": "POST", "path": "/api/automation/functions", "description": "Create function", "group": "api" },
+    { "method": "GET", "path": "/api/automation/functions/{id}", "description": "Get function", "group": "api" },
+    { "method": "PUT", "path": "/api/automation/functions/{id}", "description": "Update function", "group": "api" },
+    { "method": "DELETE", "path": "/api/automation/functions/{id}", "description": "Delete function", "group": "api" },
+    { "method": "POST", "path": "/api/automation/functions/{id}/test", "description": "Test function", "group": "api" },
+    { "method": "GET", "path": "/api/automation/triggers", "description": "List triggers", "group": "api" },
+    { "method": "POST", "path": "/api/automation/triggers", "description": "Create trigger", "group": "api" },
+    { "method": "PUT", "path": "/api/automation/triggers/{id}", "description": "Update trigger", "group": "api" },
+    { "method": "DELETE", "path": "/api/automation/triggers/{id}", "description": "Delete trigger", "group": "api" },
+    { "method": "POST", "path": "/api/automation/triggers/{id}/toggle", "description": "Toggle trigger", "group": "api" },
+    { "method": "GET", "path": "/api/automation/execution-logs", "description": "List execution logs", "group": "api" },
+    { "method": "POST", "path": "/__events__", "description": "Receive events from core", "group": "system" }
+  ],
+  "pages": [
+    { "path": "/functions", "label": "Functions", "icon": "code", "sidebar": true },
+    { "path": "/triggers", "label": "Triggers", "icon": "sync", "sidebar": true },
+    { "path": "/triggers/new", "label": "New Trigger", "icon": "add", "sidebar": false },
+    { "path": "/triggers/edit", "label": "Edit Trigger", "icon": "edit", "sidebar": false },
+    { "path": "/execution-logs", "label": "Execution Logs", "icon": "history", "sidebar": true }
+  ]
+}

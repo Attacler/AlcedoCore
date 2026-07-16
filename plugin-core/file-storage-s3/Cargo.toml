@@ -1,0 +1,20 @@
+[package]
+name = "file-storage-s3"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "file_storage_s3"
+path = "src/lib.rs"
+
+[dependencies]
+pcl = { package = "file-storage", path = "../file-storage" }
+async-trait = "0.1"
+bytes = "1"
+aws-sdk-s3 = "1"
+aws-config = "1"
+thiserror = "1"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }

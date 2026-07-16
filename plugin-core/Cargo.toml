@@ -1,0 +1,3 @@
+[workspace]
+members = ["core", "platform-docker", "platform-k8s", "bins", "file-storage", "file-storage-s3", "file-storage-local"]
+resolver = "2"

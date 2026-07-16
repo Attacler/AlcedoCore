@@ -1,0 +1,66 @@
+# GSD planning directory
+.planning/
+dist
+
+# Build artifacts
+plugin-core/target/
+target/
+nohup.out
+plugin-core/nohup.out
+node_modules
+
+# Local plugins (admin UI)
+.docker-plugins
+
+# Dependencies
+node_modules/
+.yarn/
+
+# Build outputs
+dist/
+build/
+.hmr-output/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+
+# Docker
+.docker/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Plugin build outputs (keep source, ignore built)
+plugins/*/pages/dist/
+plugins/*/public/assets/
+!plugins/*/pages/dist/.gitkeep
+!plugins/*/public/assets/.gitkeep
+*.tar.gz
+sample-plugins/hello-world-nuxt/.nuxt/
+sample-plugins/hello-world-nuxt/.output/
+sample-plugins/hello-world-nuxt/package-lock.json
+system-plugins/admin/check_ky.cjs
+
+# Superpowers plans
+docs/superpowers/plans/*.md

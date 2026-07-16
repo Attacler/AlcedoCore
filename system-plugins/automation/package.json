@@ -1,0 +1,13 @@
+{
+  "name": "automation-pages",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:pages": "node ../../cli/page-compiler/dist/input.js --plugin=./pages --output=./pages/dist"
+  },
+  "dependencies": {
+    "@primevue/themes": "^4.5.4",
+    "primeicons": "^7.0.0",
+    "primevue": "^4.5.5"
+  }
+}

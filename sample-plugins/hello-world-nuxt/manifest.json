@@ -1,0 +1,34 @@
+{
+  "name": "hello-world-nuxt",
+  "version": "1.0.0",
+  "plugin_type": "docker",
+  "system_plugin": false,
+  "image": "localhost:5000/hello-world-nuxt:1.0.0",
+  "env": {},
+  "resources": {},
+  "scopes": [
+    { "name": "kv.all", "description": "Read/write KV store" },
+    { "name": "settings.read.all", "description": "Read plugin settings" },
+    { "name": "plugins.read", "description": "Read plugin metadata" }
+  ],
+  "endpoints": [
+    { "method": "GET", "path": "/health", "description": "Health check", "group": "system" },
+    { "method": "GET", "path": "/api/kv/:key", "description": "Get KV entry", "group": "api" },
+    { "method": "PUT", "path": "/api/kv/:key", "description": "Set KV entry", "group": "api" },
+    { "method": "DELETE", "path": "/api/kv/:key", "description": "Delete KV entry", "group": "api" },
+    { "method": "GET", "path": "/api/kv/:key/ttl", "description": "Get KV TTL", "group": "api" },
+    { "method": "GET", "path": "/api/kv/list", "description": "List KV keys by prefix", "group": "api" },
+    { "method": "GET", "path": "/api/settings", "description": "Get plugin settings", "group": "api" }
+  ],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "title": "Greeting Message",
+        "default": "Hello from Nuxt plugin!",
+        "description": "Custom greeting message displayed on the hello page"
+      }
+    }
+  }
+}

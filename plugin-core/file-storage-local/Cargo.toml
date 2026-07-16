@@ -1,0 +1,18 @@
+[package]
+name = "file-storage-local"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "file_storage_local"
+path = "src/lib.rs"
+
+[dependencies]
+pcl = { package = "file-storage", path = "../file-storage" }
+async-trait = "0.1"
+bytes = "1"
+thiserror = "1"
+tracing = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
+mime_guess = "2"
+tokio = { version = "1", features = ["fs"] }

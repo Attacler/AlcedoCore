@@ -1,0 +1,14 @@
+{
+  "name": "hello-world-node",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "build:pages": "node ../../cli/page-compiler/dist/input.js --plugin=./pages --output=./pages/dist"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "alcedo-sdk": "file:../../sdk/alcedo-sdk"
+  }
+}

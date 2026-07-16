@@ -1,0 +1,11 @@
+-- Migration: <%- name %>
+-- Generated: <%- timestamp %>
+-- Up Migration
+-- Write your migration SQL here.
+
+CREATE TABLE IF NOT EXISTS <%- tableName %> (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

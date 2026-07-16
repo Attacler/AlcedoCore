@@ -1,0 +1,31 @@
+[package]
+name = "platform-k8s"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "platform_k8s"
+path = "src/lib.rs"
+
+[dependencies]
+pcl = { package = "plugin-core-lib", path = "../core" }
+async-trait = "0.1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "1"
+kube = { version = "0.98", features = ["derive", "runtime", "client", "ws"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+schemars = "0.8"
+futures-util = "0.3"
+base64 = "0.22"
+tar = "0.4"
+http = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+serde_json = "1"

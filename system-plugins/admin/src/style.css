@@ -1,0 +1,233 @@
+@import "@fontsource/inter/index.css";
+@import "@fontsource/material-symbols-outlined/index.css";
+
+@layer tailwind-base, primevue, tailwind-utilities;
+
+@layer tailwind-base {
+  @import "tailwindcss";
+}
+
+html, body {
+  background-color: #f3f4f6;
+}
+
+
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined', 'material-symbols-outlined', sans-serif;
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+}
+
+@theme {
+  --font-family-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-material-symbols: "Material Symbols Outlined", "material-symbols-outlined";
+}
+
+/* ============================================================
+   SPACING SCALE
+   Based on Tailwind's 1-96 scale (4px base unit).
+   Used for margin, padding, and gap throughout the UI.
+
+   Semantic aliases (for reference — no new CSS vars needed):
+   - xs:  4px  (space-1)   — tight inline spacing
+   - sm:  8px  (space-2)   — compact element spacing
+   - md:  16px (space-4)   — default element spacing
+   - lg:  24px (space-6)   — section gutters
+   - xl:  32px (space-8)   — major section spacing
+   - 2xl: 48px (space-12)  — page-level spacing
+
+   Usage patterns in codebase:
+   - Card padding:        p-4 / p-6        (16px / 24px)
+   - List item gap:       gap-2 / gap-3    (8px / 12px)
+   - Page margin/padding: p-4 / p-6        (16px / 24px on mobile, lg:p-6 on desktop)
+   - Form field gap:      space-y-3       (12px between fields)
+   - Button group gap:     gap-2            (8px)
+
+   Avoid: arbitrary values like p-[14px] or mb-[18px].
+   Use the nearest Tailwind step instead.
+   ============================================================ */
+
+/* Ensure native select text stays visible with bg-white even in dark mode.
+   Without color-scheme: light, browsers may render native option dropdown
+   with dark mode colors (white text) against the white bg set by Tailwind. */
+select {
+  color: #1f2937;
+  color-scheme: light;
+}
+
+/* Safe area for mobile bottom nav */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Docs Content Styling */
+.docs-viewer .prose {
+  color: var(--p-surface-700);
+  line-height: 1.7;
+  max-width: none;
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+
+.docs-viewer .prose h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--p-surface-900);
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--p-surface-border);
+}
+
+.docs-viewer .prose h2 {
+  font-size: 1.375rem;
+  font-weight: 600;
+  color: var(--p-surface-800);
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+}
+
+.docs-viewer .prose h3 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--p-surface-800);
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.docs-viewer .prose h4,
+.docs-viewer .prose h5,
+.docs-viewer .prose h6 {
+  font-weight: 600;
+  color: var(--p-surface-800);
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.docs-viewer .prose p {
+  margin-bottom: 1rem;
+}
+
+.docs-viewer .prose a {
+  color: var(--p-primary-color);
+  text-decoration: none;
+}
+
+.docs-viewer .prose a:hover {
+  text-decoration: underline;
+}
+
+/* Code Blocks */
+.docs-viewer .hljs {
+  background: var(--p-surface-900);
+  color: #e5e7eb;
+  border-radius: 0.5rem;
+  padding: 1.25rem;
+  overflow-x: auto;
+  margin: 1.25rem 0;
+}
+
+.docs-viewer .hljs code {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.docs-viewer pre {
+  margin: 1.25rem 0;
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+
+.docs-viewer pre code {
+  display: block;
+}
+
+/* Inline Code */
+.docs-viewer code:not(pre code) {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  font-size: 0.875em;
+  background: var(--p-primary-50);
+  color: var(--p-primary-700);
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+}
+
+/* Blockquotes */
+.docs-viewer blockquote {
+  border-left: 4px solid var(--p-primary-400);
+  background: var(--p-primary-50);
+  padding: 0.75rem 1rem;
+  margin: 1.25rem 0;
+  border-radius: 0 0.5rem 0.5rem 0;
+}
+
+.docs-viewer blockquote p {
+  margin: 0;
+  color: var(--p-surface-600);
+}
+
+/* Lists */
+.docs-viewer ul,
+.docs-viewer ol {
+  padding-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.docs-viewer li {
+  margin-bottom: 0.375rem;
+}
+
+.docs-viewer ul {
+  list-style-type: disc;
+}
+
+.docs-viewer ol {
+  list-style-type: decimal;
+}
+
+/* Tables */
+.docs-viewer table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.25rem 0;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--p-surface-border);
+}
+
+.docs-viewer th,
+.docs-viewer td {
+  border: none;
+  border-bottom: 1px solid var(--p-surface-border);
+  padding: 0.625rem 0.875rem;
+  text-align: left;
+}
+
+.docs-viewer th {
+  background: var(--p-surface-50);
+  font-weight: 600;
+  color: var(--p-surface-700);
+}
+
+.docs-viewer tr:last-child td {
+  border-bottom: none;
+}
+
+.docs-viewer tr:hover td {
+  background: var(--p-surface-50);
+}
+
+/* Horizontal Rule */
+.docs-viewer hr {
+  border: none;
+  border-top: 1px solid var(--p-surface-border);
+  margin: 2rem 0;
+}
+
+/* Images */
+.docs-viewer img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  margin: 1rem 0;
+}
