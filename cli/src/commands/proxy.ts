@@ -16,61 +16,6 @@ interface ProxyOptions {
     apiKey?: string;
 }
 
-async function coreFetch(
-    coreUrl: string,
-    apiKey: string | undefined,
-    endpoint: string,
-    body: Record<string, unknown>,
-): Promise<Response | null> {
-    try {
-        const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-        };
-        if (apiKey) {
-            headers["Authorization"] = `Bearer ${apiKey}`;
-        }
-        return await fetch(`${coreUrl.replace(/\/$/, "")}${endpoint}`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-        });
-    } catch {
-        return null;
-    }
-}
-
-async function registerRequest(
-    coreUrl: string,
-    apiKey: string | undefined,
-    slug: string,
-): Promise<string | null> {
-    const res = await coreFetch(coreUrl, apiKey, "/api/dev/request-id", {
-        slug,
-    });
-    if (!res || !res.ok) return null;
-    try {
-        const data = (await res.json()) as { request_id: string };
-        return data.request_id;
-    } catch {
-        return null;
-    }
-}
-
-async function completeRequest(
-    coreUrl: string,
-    apiKey: string | undefined,
-    payload: Record<string, unknown>,
-): Promise<void> {
-    await coreFetch(coreUrl, apiKey, "/api/dev/complete-request", payload);
-}
-
-function parseTarget(target: string): { hostname: string; port: number } {
-    let cleaned = target.replace(/^https?:\/\//, "");
-    const [hostname, portStr] = cleaned.split(":");
-    const port = portStr ? parseInt(portStr, 10) : 3000;
-    return { hostname, port };
-}
-
 export const proxyCommand = new Command("proxy")
     .description(
         "Start a dev proxy that forwards requests to a local dev server",
@@ -219,3 +164,58 @@ export const proxyCommand = new Command("proxy")
             info("Press Ctrl+C to stop");
         });
     });
+
+async function coreFetch(
+    coreUrl: string,
+    apiKey: string | undefined,
+    endpoint: string,
+    body: Record<string, unknown>,
+): Promise<Response | null> {
+    try {
+        const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+        };
+        if (apiKey) {
+            headers["Authorization"] = `Bearer ${apiKey}`;
+        }
+        return await fetch(`${coreUrl.replace(/\/$/, "")}${endpoint}`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+        });
+    } catch {
+        return null;
+    }
+}
+
+async function registerRequest(
+    coreUrl: string,
+    apiKey: string | undefined,
+    slug: string,
+): Promise<string | null> {
+    const res = await coreFetch(coreUrl, apiKey, "/api/dev/request-id", {
+        slug,
+    });
+    if (!res || !res.ok) return null;
+    try {
+        const data = (await res.json()) as { request_id: string };
+        return data.request_id;
+    } catch {
+        return null;
+    }
+}
+
+async function completeRequest(
+    coreUrl: string,
+    apiKey: string | undefined,
+    payload: Record<string, unknown>,
+): Promise<void> {
+    await coreFetch(coreUrl, apiKey, "/api/dev/complete-request", payload);
+}
+
+function parseTarget(target: string): { hostname: string; port: number } {
+    let cleaned = target.replace(/^https?:\/\//, "");
+    const [hostname, portStr] = cleaned.split(":");
+    const port = portStr ? parseInt(portStr, 10) : 3000;
+    return { hostname, port };
+}

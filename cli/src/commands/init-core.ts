@@ -14,7 +14,7 @@ import {
 } from "../utils/logger.js";
 
 interface CoreConfig {
-    platform: 'docker' | 'k8s';
+    platform: "docker" | "k8s";
     adminEmail: string;
     adminPassword: string;
     dbPassword: string;
@@ -36,6 +36,94 @@ interface CoreConfig {
     pluginNetwork: string;
     registryEncryptionKey: string;
 }
+
+export const initCoreCommand = new Command("init-core")
+    .description(
+        "Generate configuration for running Alcedo Core (Docker Compose or Kubernetes)",
+    )
+    .option("-o, --output-dir <path>", "Output directory (default: ./alcedo)")
+    .option(
+        "-P, --platform <type>",
+        "Platform: docker or k8s (default: docker, prompts if interactive)",
+    )
+    .option(
+        "-e, --admin-email <email>",
+        "Admin email (skips prompt if provided)",
+    )
+    .option(
+        "-p, --admin-password <password>",
+        "Admin password (skips prompt if provided)",
+    )
+    .option("--port <port>", "Core HTTP port", parseInt)
+    .option("--non-interactive", "Skip prompts, use defaults", false)
+    .action(
+        async (options: {
+            outputDir?: string;
+            platform?: string;
+            adminEmail?: string;
+            adminPassword?: string;
+            port?: number;
+            nonInteractive: boolean;
+        }) => {
+            const targetDir = path.resolve(options.outputDir || "./alcedo");
+
+            if (
+                fs.existsSync(targetDir) &&
+                fs.readdirSync(targetDir).length > 0
+            ) {
+                logError(
+                    `Directory already exists and is not empty: ${targetDir}`,
+                );
+                process.exit(1);
+            }
+
+            const defaults: CoreConfig = {
+                platform: (options.platform as "docker" | "k8s") || "docker",
+                adminEmail: options.adminEmail || "admin@alcedo.dev",
+                adminPassword: options.adminPassword || generatePassword(),
+                dbPassword: generatePassword(),
+                corePort: options.port || 8080,
+                swarmEnabled: false,
+                coreImageTag: "alcedocore/core:0.1.0",
+                postgresVersion: "16",
+                redisPassword: "",
+                sessionTtl: 86400,
+                rateLimitRequests: 200,
+                rateLimitWindow: 60,
+                corsOrigins: "*",
+                enableCors: true,
+                enableRateLimit: true,
+                corePublicUrl: "",
+                registryPort: 5000,
+                systemPluginsUrl: "https://cspm.alcedocore.nl",
+                localRegistryUrl: "localhost:5000",
+                pluginNetwork: "alcedo_plugins",
+                registryEncryptionKey: generateRegistryKey(),
+            };
+
+            // Pre-flight checks (Docker only)
+            if (
+                defaults.platform === "docker" &&
+                !(await preflightCheck(defaults))
+            ) {
+                logError(
+                    "Pre-flight checks failed. Please fix the issues above and try again.",
+                );
+                process.exit(1);
+            }
+
+            try {
+                const config = options.nonInteractive
+                    ? defaults
+                    : await prompt(defaults);
+
+                await writeFiles(targetDir, config);
+            } catch (err: any) {
+                logError(`Failed to generate configuration: ${err.message}`);
+                process.exit(1);
+            }
+        },
+    );
 
 function generatePassword(length = 24): string {
     return crypto.randomBytes(length).toString("base64url").slice(0, length);
@@ -134,52 +222,56 @@ async function prompt(config: CoreConfig): Promise<CoreConfig> {
             name: "platform",
             message: "Which platform?",
             choices: [
-                { name: "Docker Compose (local dev / single host)", value: "docker" },
+                {
+                    name: "Docker Compose (local dev / single host)",
+                    value: "docker",
+                },
                 { name: "Kubernetes (K8s cluster)", value: "k8s" },
             ],
             default: config.platform,
         },
     ]);
-    config.platform = platformAnswer.platform as 'docker' | 'k8s';
+    config.platform = platformAnswer.platform as "docker" | "k8s";
 
     if (config.platform === "docker") {
         // Detect Swarm state automatically
         const swarmState = detectSwarmState();
-    if (swarmState === "active") {
-        config.swarmEnabled = true;
-        info("Docker Swarm is active — Swarm support enabled.");
-    } else if (swarmState === "inactive") {
-        const initSwarm = await inquirer.prompt<{ confirm: boolean }>([
-            {
-                type: "confirm",
-                name: "confirm",
-                message: "Docker Swarm is not initialized. Initialize it now?",
-                default: false,
-            },
-        ]);
-        if (initSwarm.confirm) {
-            try {
-                execSync("docker swarm init", {
-                    stdio: "ignore",
-                    timeout: 10000,
-                });
-                config.swarmEnabled = true;
-                info("Docker Swarm initialized.");
-            } catch {
-                info(
-                    "Failed to initialize Swarm — proceeding without Swarm support.",
-                );
+        if (swarmState === "active") {
+            config.swarmEnabled = true;
+            info("Docker Swarm is active — Swarm support enabled.");
+        } else if (swarmState === "inactive") {
+            const initSwarm = await inquirer.prompt<{ confirm: boolean }>([
+                {
+                    type: "confirm",
+                    name: "confirm",
+                    message:
+                        "Docker Swarm is not initialized. Initialize it now?",
+                    default: false,
+                },
+            ]);
+            if (initSwarm.confirm) {
+                try {
+                    execSync("docker swarm init", {
+                        stdio: "ignore",
+                        timeout: 10000,
+                    });
+                    config.swarmEnabled = true;
+                    info("Docker Swarm initialized.");
+                } catch {
+                    info(
+                        "Failed to initialize Swarm — proceeding without Swarm support.",
+                    );
+                    config.swarmEnabled = false;
+                }
+            } else {
                 config.swarmEnabled = false;
             }
         } else {
+            info(
+                "Docker Swarm is not available on this host — Swarm support disabled.",
+            );
             config.swarmEnabled = false;
         }
-    } else {
-        info(
-            "Docker Swarm is not available on this host — Swarm support disabled.",
-        );
-        config.swarmEnabled = false;
-    }
     }
 
     const basic = await inquirer.prompt<{
@@ -847,8 +939,12 @@ async function writeFiles(
             info("  kubectl apply -f k8s/");
             info("");
             info("The admin UI will be available after port-forwarding:");
-            info("  kubectl port-forward -n plugin-core svc/plugin-core 8080:8080");
-            info(`  ${config.corePublicUrl || `http://localhost:${config.corePort}`}/admin`);
+            info(
+                "  kubectl port-forward -n plugin-core svc/plugin-core 8080:8080",
+            );
+            info(
+                `  ${config.corePublicUrl || `http://localhost:${config.corePort}`}/admin`,
+            );
             info(`  Email: ${config.adminEmail}`);
             info("");
             info("Static plugins directory:");
@@ -868,7 +964,11 @@ async function writeFiles(
             fs.writeFileSync(path.join(targetDir, ".env"), env, "utf-8");
 
             const nginx = generateNginxConf(config);
-            fs.writeFileSync(path.join(targetDir, "nginx.conf"), nginx, "utf-8");
+            fs.writeFileSync(
+                path.join(targetDir, "nginx.conf"),
+                nginx,
+                "utf-8",
+            );
 
             // Create plugins directory for static system plugins (e.g. admin UI)
             const pluginsDir = path.join(targetDir, "plugins");
@@ -917,88 +1017,3 @@ async function writeFiles(
         throw err;
     }
 }
-
-export const initCoreCommand = new Command("init-core")
-    .description(
-        "Generate configuration for running Alcedo Core (Docker Compose or Kubernetes)",
-    )
-    .option("-o, --output-dir <path>", "Output directory (default: ./alcedo)")
-    .option(
-        "-P, --platform <type>",
-        "Platform: docker or k8s (default: docker, prompts if interactive)",
-    )
-    .option(
-        "-e, --admin-email <email>",
-        "Admin email (skips prompt if provided)",
-    )
-    .option(
-        "-p, --admin-password <password>",
-        "Admin password (skips prompt if provided)",
-    )
-    .option("--port <port>", "Core HTTP port", parseInt)
-    .option("--non-interactive", "Skip prompts, use defaults", false)
-    .action(
-        async (options: {
-            outputDir?: string;
-            platform?: string;
-            adminEmail?: string;
-            adminPassword?: string;
-            port?: number;
-            nonInteractive: boolean;
-        }) => {
-            const targetDir = path.resolve(options.outputDir || "./alcedo");
-
-            if (
-                fs.existsSync(targetDir) &&
-                fs.readdirSync(targetDir).length > 0
-            ) {
-                logError(
-                    `Directory already exists and is not empty: ${targetDir}`,
-                );
-                process.exit(1);
-            }
-
-            const defaults: CoreConfig = {
-                platform: (options.platform as 'docker' | 'k8s') || 'docker',
-                adminEmail: options.adminEmail || "admin@alcedo.dev",
-                adminPassword: options.adminPassword || generatePassword(),
-                dbPassword: generatePassword(),
-                corePort: options.port || 8080,
-                swarmEnabled: false,
-                coreImageTag: "alcedocore/core:0.1.0",
-                postgresVersion: "16",
-                redisPassword: "",
-                sessionTtl: 86400,
-                rateLimitRequests: 200,
-                rateLimitWindow: 60,
-                corsOrigins: "*",
-                enableCors: true,
-                enableRateLimit: true,
-                corePublicUrl: "",
-                registryPort: 5000,
-                systemPluginsUrl: "https://cspm.alcedocore.nl",
-                localRegistryUrl: "localhost:5000",
-                pluginNetwork: "alcedo_plugins",
-                registryEncryptionKey: generateRegistryKey(),
-            };
-
-            // Pre-flight checks (Docker only)
-            if (defaults.platform === "docker" && !(await preflightCheck(defaults))) {
-                logError(
-                    "Pre-flight checks failed. Please fix the issues above and try again.",
-                );
-                process.exit(1);
-            }
-
-            try {
-                const config = options.nonInteractive
-                    ? defaults
-                    : await prompt(defaults);
-
-                await writeFiles(targetDir, config);
-            } catch (err: any) {
-                logError(`Failed to generate configuration: ${err.message}`);
-                process.exit(1);
-            }
-        },
-    );
