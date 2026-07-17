@@ -1,86 +1,91 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: plugin-core
-  namespace: plugin-core
-  labels:
-    app.kubernetes.io/name: plugin-core
-    app.kubernetes.io/managed-by: plugin-core
+    name: alcedocore
+    namespace: alcedocore
+    labels:
+        app.kubernetes.io/name: alcedocore
+        app.kubernetes.io/managed-by: alcedocore
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: plugin-core
-  template:
-    metadata:
-      labels:
-        app: plugin-core
-        app.kubernetes.io/name: plugin-core
-        app.kubernetes.io/managed-by: plugin-core
-    spec:
-      serviceAccountName: plugin-core
-      securityContext:
-        fsGroup: 1001
-      initContainers:
-        - name: seed-plugins
-          image: k3d-k3d-k8s-e2e-registry:5000/alcedocore/core:k8s
-          imagePullPolicy: Always
-          command: ["sh", "-c", "cp -r /plugins/* /data/ 2>/dev/null; chmod -R 755 /data/"]
-          securityContext:
-            runAsUser: 0
-          volumeMounts:
-            - name: plugins
-              mountPath: /data
-            - name: plugin-data
-              mountPath: /var/lib/plugin-public
-      containers:
-        - name: core
-          image: k3d-k3d-k8s-e2e-registry:5000/alcedocore/core:k8s
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 8080
-              name: http
-          envFrom:
-            - configMapRef:
-                name: core-config
-            - secretRef:
-                name: core-secrets
-          env:
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-          volumeMounts:
-            - name: plugins
-              mountPath: /plugins
-            - name: plugin-data
-              mountPath: /var/lib/plugin-public
-          readinessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 8080
-            initialDelaySeconds: 15
-            periodSeconds: 20
-          resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: 500m
-              memory: 512Mi
-      volumes:
-        - name: plugins
-          emptyDir: {}
-        - name: plugin-data
-          persistentVolumeClaim:
-            claimName: plugin-data
+    replicas: 1
+    selector:
+        matchLabels:
+            app: alcedocore
+    template:
+        metadata:
+            labels:
+                app: alcedocore
+                app.kubernetes.io/name: alcedocore
+                app.kubernetes.io/managed-by: alcedocore
+        spec:
+            serviceAccountName: alcedocore
+            securityContext:
+                fsGroup: 1001
+            initContainers:
+                - name: seed-plugins
+                  image: k3d-k3d-k8s-e2e-registry:5000/alcedocore/core:k8s
+                  imagePullPolicy: Always
+                  command:
+                      [
+                          "sh",
+                          "-c",
+                          "cp -r /plugins/* /data/ 2>/dev/null; chmod -R 755 /data/",
+                      ]
+                  securityContext:
+                      runAsUser: 0
+                  volumeMounts:
+                      - name: plugins
+                        mountPath: /data
+                      - name: plugin-data
+                        mountPath: /var/lib/plugin-public
+            containers:
+                - name: core
+                  image: k3d-k3d-k8s-e2e-registry:5000/alcedocore/core:k8s
+                  imagePullPolicy: Always
+                  ports:
+                      - containerPort: 8080
+                        name: http
+                  envFrom:
+                      - configMapRef:
+                            name: core-config
+                      - secretRef:
+                            name: core-secrets
+                  env:
+                      - name: POD_NAMESPACE
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: metadata.namespace
+                      - name: POD_NAME
+                        valueFrom:
+                            fieldRef:
+                                fieldPath: metadata.name
+                  volumeMounts:
+                      - name: plugins
+                        mountPath: /plugins
+                      - name: plugin-data
+                        mountPath: /var/lib/plugin-public
+                  readinessProbe:
+                      httpGet:
+                          path: /health
+                          port: 8080
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                  livenessProbe:
+                      httpGet:
+                          path: /health
+                          port: 8080
+                      initialDelaySeconds: 15
+                      periodSeconds: 20
+                  resources:
+                      requests:
+                          cpu: 100m
+                          memory: 256Mi
+                      limits:
+                          cpu: 500m
+                          memory: 512Mi
+            volumes:
+                - name: plugins
+                  emptyDir: {}
+                - name: plugin-data
+                  persistentVolumeClaim:
+                      claimName: plugin-data

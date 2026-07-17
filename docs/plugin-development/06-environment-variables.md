@@ -1,17 +1,17 @@
 # Environment Variables Reference
 
-## Plugin-Core Environment Variables
+## alcedocore Environment Variables
 
-These variables configure the plugin-core server at runtime.
+These variables configure the alcedocore server at runtime.
 
-| Variable           | Default                | Description                                   |
-| ------------------ | ---------------------- | --------------------------------------------- |
-| `CORE_PORT`        | `8080`                 | Port for plugin-core HTTP server              |
-| `DATABASE_URL`     | (required)             | PostgreSQL connection string                  |
-| `LOCAL_REGISTRY_URL` | `localhost:5000`     | Docker registry URL for plugin images         |
-| `DOCKER_SOCKET`    | `/var/run/docker.sock` | Docker socket path                            |
-| `PLUGIN_NETWORK`   | `alcedocore_plugins`   | Docker network name for plugin isolation      |
-| `DEV_MODE`         | —                      | Enable dev mode (required for SDK dev sessions) |
+| Variable             | Default                | Description                                     |
+| -------------------- | ---------------------- | ----------------------------------------------- |
+| `CORE_PORT`          | `8080`                 | Port for alcedocore HTTP server                 |
+| `DATABASE_URL`       | (required)             | PostgreSQL connection string                    |
+| `LOCAL_REGISTRY_URL` | `localhost:5000`       | Docker registry URL for plugin images           |
+| `DOCKER_SOCKET`      | `/var/run/docker.sock` | Docker socket path                              |
+| `PLUGIN_NETWORK`     | `alcedocore_plugins`   | Docker network name for plugin isolation        |
+| `DEV_MODE`           | —                      | Enable dev mode (required for SDK dev sessions) |
 
 ### `DATABASE_URL`
 
@@ -21,37 +21,38 @@ PostgreSQL connection string in standard URI format:
 postgresql://user:password@host:5432/plugin_core
 ```
 
-This is **required** — plugin-core will not start without a database connection.
+This is **required** — alcedocore will not start without a database connection.
 
 ### `CORE_PORT`
 
-The HTTP port plugin-core listens on. In **debug builds**, the port auto-detects (tries 8081+ if 8080 is in use). In **release builds**, it uses exactly 8080.
+The HTTP port alcedocore listens on. In **debug builds**, the port auto-detects (tries 8081+ if 8080 is in use). In **release builds**, it uses exactly 8080.
 
 ### `PLUGIN_NETWORK`
 
-The Docker network plugin-core uses to connect to plugin containers. In **release builds**, plugins are isolated on this network and accessed via container IPs. In **debug builds**, plugins use host networking (`network=host`) and this variable is not used.
+The Docker network alcedocore uses to connect to plugin containers. In **release builds**, plugins are isolated on this network and accessed via container IPs. In **debug builds**, plugins use host networking (`network=host`) and this variable is not used.
 
 ### `DEV_MODE`
 
-When set to a truthy value, plugin-core accepts dev session registrations from the SDK and `alcedo dev` CLI. Required for local plugin development workflows.
+When set to a truthy value, alcedocore accepts dev session registrations from the SDK and `alcedo dev` CLI. Required for local plugin development workflows.
 
 ---
 
 ## Plugin Container Environment Variables
 
-These variables are injected by plugin-core into every plugin container at runtime.
+These variables are injected by alcedocore into every plugin container at runtime.
 
-| Variable          | Description                                         |
-| ----------------- | --------------------------------------------------- |
-| `CORE_URL`        | Plugin-core base URL (for SDK client connections)   |
-| `PORT`            | Port the plugin's HTTP server should listen on      |
-| `PLUGIN_SLUG`     | Plugin slug (matches the `name` in manifest.json)   |
+| Variable      | Description                                       |
+| ------------- | ------------------------------------------------- |
+| `CORE_URL`    | alcedocore base URL (for SDK client connections)  |
+| `PORT`        | Port the plugin's HTTP server should listen on    |
+| `PLUGIN_SLUG` | Plugin slug (matches the `name` in manifest.json) |
 
 ### `CORE_URL`
 
-The URL plugins should use to connect back to plugin-core for SDK operations (KV, DB, settings, etc.). In development mode, this is typically `http://localhost:8080`. In production, it points to the plugin-core container.
+The URL plugins should use to connect back to alcedocore for SDK operations (KV, DB, settings, etc.). In development mode, this is typically `http://localhost:8080`. In production, it points to the alcedocore container.
 
 **Python SDK:**
+
 ```python
 import os
 from alcedo_sdk import AlcedoClient
@@ -62,7 +63,7 @@ client = AlcedoClient(base_url=core_url, plugin_slug="my-plugin")
 
 ### `PORT`
 
-The port plugin-core expects the plugin's HTTP server to listen on. Always `8080` inside the container. Plugins should bind to `0.0.0.0:8080`:
+The port alcedocore expects the plugin's HTTP server to listen on. Always `8080` inside the container. Plugins should bind to `0.0.0.0:8080`:
 
 ```python
 # Python
@@ -90,11 +91,11 @@ logger.info(f"Starting plugin: {slug}")
 
 The `alcedo` CLI reads configuration from multiple sources. Environment variables with the `ALCEDO_` prefix override `.alcedorc` file settings but are overridden by CLI flags.
 
-| Variable               | Config Key      | Default                  | Description                           |
-| ---------------------- | --------------- | ------------------------ | ------------------------------------- |
-| `ALCEDO_REGISTRY_URL`  | `registryUrl`   | `localhost:5000`         | Docker registry URL                   |
-| `ALCEDO_CORE_URL`      | `coreUrl`       | `http://localhost:8080`  | Plugin-core API URL                   |
-| `ALCEDO_PLUGIN_DIR`    | `pluginDir`     | current directory        | Plugin project directory              |
+| Variable              | Config Key    | Default                 | Description              |
+| --------------------- | ------------- | ----------------------- | ------------------------ |
+| `ALCEDO_REGISTRY_URL` | `registryUrl` | `localhost:5000`        | Docker registry URL      |
+| `ALCEDO_CORE_URL`     | `coreUrl`     | `http://localhost:8080` | alcedocore API URL       |
+| `ALCEDO_PLUGIN_DIR`   | `pluginDir`   | current directory       | Plugin project directory |
 
 ### Priority (highest to lowest)
 
@@ -107,13 +108,13 @@ The `alcedo` CLI reads configuration from multiple sources. Environment variable
 
 ## SDK Client Environment Variables
 
-The SDKs respect environment variables for plugin-core connection configuration.
+The SDKs respect environment variables for alcedocore connection configuration.
 
 ### Python SDK
 
-| Variable    | Default                    | Description              |
-| ----------- | -------------------------- | ------------------------ |
-| `CORE_URL`  | `http://localhost:8080`    | Plugin-core base URL (used if `base_url` not passed to constructor) |
+| Variable   | Default                 | Description                                                        |
+| ---------- | ----------------------- | ------------------------------------------------------------------ |
+| `CORE_URL` | `http://localhost:8080` | alcedocore base URL (used if `base_url` not passed to constructor) |
 
 ```python
 # CORE_URL env var sets the default
@@ -145,8 +146,8 @@ let client = AlcedoClientBuilder::new()
 
 When building plugin containers, these variables are commonly used:
 
-| Variable         | Description                                |
-| ---------------- | ------------------------------------------ |
+| Variable            | Description                            |
+| ------------------- | -------------------------------------- |
 | `BUILDKIT_PROGRESS` | Docker BuildKit progress output format |
 
 Example Dockerfile for a Python plugin:

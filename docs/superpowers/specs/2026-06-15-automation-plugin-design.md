@@ -8,13 +8,13 @@ A dynamic system plugin that lets users write JavaScript functions (via Monaco e
 
 Three components:
 
-1. **Event Delivery Infrastructure** (plugin-core) — general mechanism for delivering events to any plugin
+1. **Event Delivery Infrastructure** (alcedocore) — general mechanism for delivering events to any plugin
 2. **Automation Plugin Backend** (new Rust service) — function/trigger management, rquickjs execution, event matching
 3. **Frontend** (plugin pages, Vue + Monaco) — code editor, trigger config, test runner
 
 ---
 
-## 1. Event Delivery Infrastructure (plugin-core)
+## 1. Event Delivery Infrastructure (alcedocore)
 
 ### manifest.json Contract
 
@@ -51,8 +51,8 @@ In the deploy handler (`api/admin.rs`), after reading the manifest:
 
 1. If manifest contains `events` array, iterate event types
 2. Resolve plugin's callback URL:
-   - Swarm mode: `http://plugin_<slug>:8080/__events__`
-   - Dev mode: `http://localhost:8080/__events__` (or bridge IP)
+    - Swarm mode: `http://plugin_<slug>:8080/__events__`
+    - Dev mode: `http://localhost:8080/__events__` (or bridge IP)
 3. Upsert into `event_subscriptions` table
 
 On plugin uninstall/delete, remove all subscriptions for that slug.
@@ -68,6 +68,7 @@ EventBus emit → forwarder task → query event_subscriptions WHERE event_type 
 ```
 
 The forwarder:
+
 - Subscribes to EventBus on startup
 - For each `SystemEvent`, serializes to JSON, looks up matching subscriptions
 - Spawns async HTTP POST to each callback (tokio::spawn per delivery)
@@ -83,9 +84,9 @@ The forwarder:
 
 ### API Endpoints
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `GET` | `/admin/plugins/:slug/events` | List subscriptions for a plugin (debugging) |
+| Method | Path                          | Purpose                                     |
+| ------ | ----------------------------- | ------------------------------------------- |
+| `GET`  | `/admin/plugins/:slug/events` | List subscriptions for a plugin (debugging) |
 
 ---
 
@@ -97,12 +98,12 @@ The forwarder:
 
 ### Dependencies
 
-- `actix-web` (HTTP framework, same as plugin-core)
+- `actix-web` (HTTP framework, same as alcedocore)
 - `rquickjs` (QuickJS bindings for Rust)
 - `reqwest` (HTTP client for alcedocore SDK)
 - `serde` / `serde_json`
 - `tokio`
-- `sqlx` (async Postgres, **not direct** — the plugin uses plugin-core's DB via the query proxy)
+- `sqlx` (async Postgres, **not direct** — the plugin uses alcedocore's DB via the query proxy)
 - `uuid`
 - `tracing`
 
@@ -156,23 +157,23 @@ CREATE TABLE execution_logs (
 
 ### API Endpoints
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/__events__` | Receive events from plugin-core |
-| `GET` | `/api/automation/functions` | List all functions |
-| `POST` | `/api/automation/functions` | Create a function |
-| `GET` | `/api/automation/functions/:id` | Get function details |
-| `PUT` | `/api/automation/functions/:id` | Update function code/name |
-| `DELETE` | `/api/automation/functions/:id` | Delete a function (cascades triggers) |
-| `POST` | `/api/automation/functions/:id/test` | Execute function with mock event data |
-| `GET` | `/api/automation/triggers` | List all triggers |
-| `POST` | `/api/automation/triggers` | Create a trigger |
-| `PUT` | `/api/automation/triggers/:id` | Update a trigger |
-| `DELETE` | `/api/automation/triggers/:id` | Delete a trigger |
-| `POST` | `/api/automation/triggers/:id/toggle` | Enable/disable a trigger |
-| `GET` | `/api/automation/execution-logs` | List execution logs (paginated) |
+| Method   | Path                                  | Purpose                               |
+| -------- | ------------------------------------- | ------------------------------------- |
+| `POST`   | `/__events__`                         | Receive events from alcedocore        |
+| `GET`    | `/api/automation/functions`           | List all functions                    |
+| `POST`   | `/api/automation/functions`           | Create a function                     |
+| `GET`    | `/api/automation/functions/:id`       | Get function details                  |
+| `PUT`    | `/api/automation/functions/:id`       | Update function code/name             |
+| `DELETE` | `/api/automation/functions/:id`       | Delete a function (cascades triggers) |
+| `POST`   | `/api/automation/functions/:id/test`  | Execute function with mock event data |
+| `GET`    | `/api/automation/triggers`            | List all triggers                     |
+| `POST`   | `/api/automation/triggers`            | Create a trigger                      |
+| `PUT`    | `/api/automation/triggers/:id`        | Update a trigger                      |
+| `DELETE` | `/api/automation/triggers/:id`        | Delete a trigger                      |
+| `POST`   | `/api/automation/triggers/:id/toggle` | Enable/disable a trigger              |
+| `GET`    | `/api/automation/execution-logs`      | List execution logs (paginated)       |
 
-### Event Flow (POST /__events__)
+### Event Flow (POST /**events**)
 
 ```
 Incoming SystemEvent JSON
@@ -232,42 +233,46 @@ Each method returns a Promise. Implementation: Rust-side async function that use
 `POST /api/automation/functions/:id/test`
 
 Request body:
+
 ```json
 {
-  "event": {
-    "type": "ItemUpdated",
-    "data": {
-      "collection_name": "posts",
-      "item_id": "123",
-      "old_values": { "author": "john", "title": "Hello" },
-      "new_values": { "author": "jane", "title": "Hello" },
-      "diff": { "author": { "old": "john", "new": "jane" } }
+    "event": {
+        "type": "ItemUpdated",
+        "data": {
+            "collection_name": "posts",
+            "item_id": "123",
+            "old_values": { "author": "john", "title": "Hello" },
+            "new_values": { "author": "jane", "title": "Hello" },
+            "diff": { "author": { "old": "john", "new": "jane" } }
+        }
     }
-  }
 }
 ```
 
 Response:
+
 ```json
 {
-  "success": true,
-  "output": "Function executed successfully",
-  "duration_ms": 12
+    "success": true,
+    "output": "Function executed successfully",
+    "duration_ms": 12
 }
 ```
 
 Or on error:
+
 ```json
 {
-  "success": false,
-  "error": "ReferenceError: x is not defined",
-  "duration_ms": 3
+    "success": false,
+    "error": "ReferenceError: x is not defined",
+    "duration_ms": 3
 }
 ```
 
 ### Dockerfile
 
 Standard two-stage Rust build:
+
 ```dockerfile
 FROM rust:1.85 AS builder
 WORKDIR /app
@@ -303,15 +308,39 @@ system-plugins/automation/
 
 ```typescript
 export default {
-  manifestVersion: 1,
-  pluginSlug: 'automation',
-  pages: [
-    { path: '/', label: 'Functions', icon: 'code', sidebar: true, component: AutomationDashboard },
-    { path: '/functions/new', label: 'New Function', icon: 'add', sidebar: false, component: FunctionEditor },
-    { path: '/functions/:id/edit', label: 'Edit Function', icon: 'edit', sidebar: false, component: FunctionEditor },
-    { path: '/execution-logs', label: 'Execution Logs', icon: 'history', sidebar: true, component: ExecutionLogs },
-  ],
-}
+    manifestVersion: 1,
+    pluginSlug: "automation",
+    pages: [
+        {
+            path: "/",
+            label: "Functions",
+            icon: "code",
+            sidebar: true,
+            component: AutomationDashboard,
+        },
+        {
+            path: "/functions/new",
+            label: "New Function",
+            icon: "add",
+            sidebar: false,
+            component: FunctionEditor,
+        },
+        {
+            path: "/functions/:id/edit",
+            label: "Edit Function",
+            icon: "edit",
+            sidebar: false,
+            component: FunctionEditor,
+        },
+        {
+            path: "/execution-logs",
+            label: "Execution Logs",
+            icon: "history",
+            sidebar: true,
+            component: ExecutionLogs,
+        },
+    ],
+};
 ```
 
 ### FunctionEditor Page Layout
@@ -345,6 +374,7 @@ export default {
 ### Monaco Integration
 
 Monaco editor is loaded from CDN and wrapped in a Vue component. The editor:
+
 - Reads/writes the function `code` field
 - Shows JavaScript syntax highlighting + autocomplete
 - Has a read-only header showing `async function handler(alcedocore, event) {`
@@ -354,9 +384,9 @@ Monaco editor is loaded from CDN and wrapped in a Vue component. The editor:
 
 ```json
 {
-  "scripts": {
-    "build:pages": "node ../../cli/page-compiler/dist/input.js --plugin=./pages --output=./pages/dist"
-  }
+    "scripts": {
+        "build:pages": "node ../../cli/page-compiler/dist/input.js --plugin=./pages --output=./pages/dist"
+    }
 }
 ```
 
@@ -364,19 +394,27 @@ Monaco editor is loaded from CDN and wrapped in a Vue component. The editor:
 
 ```json
 {
-  "name": "automation",
-  "version": "0.1.0",
-  "display_name": "Automation",
-  "plugin_type": "dynamic",
-  "system_plugin": true,
-  "public_folder": "public",
-  "events": ["ItemCreated", "ItemUpdated", "ItemDeleted"],
-  "pages": [
-    { "path": "/", "label": "Functions", "sidebar": true },
-    { "path": "/functions/new", "label": "New Function", "sidebar": false },
-    { "path": "/functions/:id/edit", "label": "Edit Function", "sidebar": false },
-    { "path": "/execution-logs", "label": "Execution Logs", "sidebar": true }
-  ]
+    "name": "automation",
+    "version": "0.1.0",
+    "display_name": "Automation",
+    "plugin_type": "dynamic",
+    "system_plugin": true,
+    "public_folder": "public",
+    "events": ["ItemCreated", "ItemUpdated", "ItemDeleted"],
+    "pages": [
+        { "path": "/", "label": "Functions", "sidebar": true },
+        { "path": "/functions/new", "label": "New Function", "sidebar": false },
+        {
+            "path": "/functions/:id/edit",
+            "label": "Edit Function",
+            "sidebar": false
+        },
+        {
+            "path": "/execution-logs",
+            "label": "Execution Logs",
+            "sidebar": true
+        }
+    ]
 }
 ```
 
@@ -384,7 +422,8 @@ Monaco editor is loaded from CDN and wrapped in a Vue component. The editor:
 
 ## Implementation Order
 
-### Phase 1: Event Delivery Infrastructure (plugin-core)
+### Phase 1: Event Delivery Infrastructure (alcedocore)
+
 1. Add `event_subscriptions` DB table (new migration)
 2. Add `EventForwarder` module in `events/forwarder.rs`
 3. Wire forwarder into `main.rs` (subscribe to EventBus)
@@ -393,6 +432,7 @@ Monaco editor is loaded from CDN and wrapped in a Vue component. The editor:
 6. Add `GET /admin/plugins/:slug/events` endpoint
 
 ### Phase 2: Automation Plugin Skeleton
+
 1. Scaffold Rust project at `system-plugins/automation/`
 2. Actix-web server with health endpoint
 3. Plugin migrations (3 migration files)
@@ -401,16 +441,19 @@ Monaco editor is loaded from CDN and wrapped in a Vue component. The editor:
 6. Deploy to compose setup, verify `/p/automation` proxy works
 
 ### Phase 3: Functions + Triggers CRUD
+
 1. Functions API (list, create, get, update, delete)
 2. Triggers API (list, create, update, delete, toggle)
 3. Execution logs API (list with pagination)
 
 ### Phase 4: Event Receiver + Matching
+
 1. POST `/__events__` endpoint
 2. Trigger matching logic (event type, collection, field, conditions)
 3. Spawn async function execution per match
 
 ### Phase 5: rquickjs Execution Engine
+
 1. QuickJS runtime pool
 2. Sandbox setup (timeout, globals)
 3. `alcedocore` SDK object with HTTP-backed methods
@@ -418,11 +461,13 @@ Monaco editor is loaded from CDN and wrapped in a Vue component. The editor:
 5. Execution log persistence
 
 ### Phase 6: Test Endpoint
+
 1. `POST /api/automation/functions/:id/test`
 2. Mock event execution
 3. Return output/errors synchronously
 
 ### Phase 7: Frontend (Plugin Pages)
+
 1. Scaffold pages directory
 2. Monaco editor wrapper component
 3. Function editor page with save + test

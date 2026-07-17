@@ -1,139 +1,128 @@
 services:
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    command: ["nginx", "-g", "daemon off;"]
-    depends_on:
-      - core
+    # nginx:
+    #     image: nginx:alpine
+    #     ports:
+    #         - "8080:8080"
+    #     volumes:
+    #         - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    #     command: ["nginx", "-g", "daemon off;"]
+    #     depends_on:
+    #         - core
 
-  core:
-    build:
-      context: ./plugin-core
-      dockerfile: Dockerfile
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      system-plugin-api:
-        condition: service_started
-    environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/plugin_core
-      REDIS_URL: redis://redis:6379
-      CORE_PORT: 8080
-      CORE_INSTANCE_ID: "core-{{.Task.Slot}}"
-      DEV_MODE: "false"
-      RUST_LOG: info
-      LOCAL_REGISTRY_URL: http://host.docker.internal:5000
-      ADMIN_EMAIL: admin@alcedo.dev
-      ADMIN_PASSWORD: admin123!
-      PLUGIN_NETWORK: happy-falcon_default
-      PLUGIN_PUBLIC_MOUNTS: /var/lib/plugin-public
-      PLUGINS_DIR: /plugins
-      COLLECTION_LOG_FLUSH_MS: "100"
-      SECURITY_COOKIE_SECURE: "false"
-      SECURITY_COOKIE_SAMESITE: "lax"
-      SECURITY_COOKIE_HTTP_ONLY: "true"
-      SECURITY_CORS_ENABLED: "true"
-      SECURITY_CORS_ORIGINS: "*"
-      CORS_ORIGINS: "http://localhost:8080,http://194.163.173.149:8080"
-      SECURITY_RATE_LIMIT_ENABLED: "true"
-      SECURITY_RATE_LIMIT_REQUESTS: "200"
-      SECURITY_RATE_LIMIT_WINDOW: "60"
-      RATE_LIMIT_AUTH_REQUESTS: "100"
-      RATE_LIMIT_AUTH_WINDOW: "60"
-      RATE_LIMIT_API_REQUESTS: "1000"
-      RATE_LIMIT_API_WINDOW: "60"
-      SECURITY_PASSWORD_MIN_LENGTH: "8"
-      SECURITY_SESSION_FIXATION: "true"
-      SYSTEM_PLUGINS_URL: http://system-plugin-api:9090
-      REGISTRY_ENCRYPTION_KEY: "UuG5d1HEJuBH0tElr6R4I3deq/BabTiHhfByFS9xom4="
-      FILES_DIR: /plugins/files
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /var/lib/plugin-public:/var/lib/plugin-public
-      - ./.docker-plugins:/plugins
-      - ./.docker-plugins:/app/plugins
-    deploy:
-      replicas: 1
+    # core:
+    #   build:
+    #     context: ./core
+    #     dockerfile: Dockerfile
+    #   depends_on:
+    #     postgres:
+    #       condition: service_healthy
+    #     redis:
+    #       condition: service_healthy
+    #     system-plugin-api:
+    #       condition: service_started
+    #   environment:
+    #     DATABASE_URL: postgres://postgres:postgres@postgres:5432/plugin_core
+    #     REDIS_URL: redis://redis:6379
+    #     CORE_PORT: 8080
+    #     CORE_INSTANCE_ID: "core-{{.Task.Slot}}"
+    #     DEV_MODE: "false"
+    #     RUST_LOG: info
+    #     LOCAL_REGISTRY_URL: http://host.docker.internal:5000
+    #     ADMIN_EMAIL: admin@alcedo.dev
+    #     ADMIN_PASSWORD: admin123!
+    #     PLUGIN_NETWORK: happy-falcon_default
+    #     PLUGIN_PUBLIC_MOUNTS: /var/lib/plugin-public
+    #     PLUGINS_DIR: /plugins
+    #     COLLECTION_LOG_FLUSH_MS: "100"
+    #     SECURITY_COOKIE_SECURE: "false"
+    #     SECURITY_COOKIE_SAMESITE: "lax"
+    #     SECURITY_COOKIE_HTTP_ONLY: "true"
+    #     SECURITY_CORS_ENABLED: "true"
+    #     SECURITY_CORS_ORIGINS: "*"
+    #     CORS_ORIGINS: "http://localhost:8080,http://194.163.173.149:8080"
+    #     SECURITY_RATE_LIMIT_ENABLED: "true"
+    #     SECURITY_RATE_LIMIT_REQUESTS: "200"
+    #     SECURITY_RATE_LIMIT_WINDOW: "60"
+    #     RATE_LIMIT_AUTH_REQUESTS: "100"
+    #     RATE_LIMIT_AUTH_WINDOW: "60"
+    #     RATE_LIMIT_API_REQUESTS: "1000"
+    #     RATE_LIMIT_API_WINDOW: "60"
+    #     SECURITY_PASSWORD_MIN_LENGTH: "8"
+    #     SECURITY_SESSION_FIXATION: "true"
+    #     SYSTEM_PLUGINS_URL: http://system-plugin-api:9090
+    #     REGISTRY_ENCRYPTION_KEY: "UuG5d1HEJuBH0tElr6R4I3deq/BabTiHhfByFS9xom4="
+    #     FILES_DIR: /plugins/files
+    #   extra_hosts:
+    #     - "host.docker.internal:host-gateway"
+    #   volumes:
+    #     - /var/run/docker.sock:/var/run/docker.sock
+    #     - /var/lib/plugin-public:/var/lib/plugin-public
+    #     - ./.docker-plugins:/plugins
+    #     - ./.docker-plugins:/app/plugins
+    #   deploy:
+    #     replicas: 1
 
-  postgres:
-    image: postgres:16
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: plugin_core
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+    postgres:
+        image: postgres:16
+        ports:
+            - "5432:5432"
+        environment:
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+            POSTGRES_DB: plugin_core
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres"]
+            interval: 5s
+            timeout: 5s
+            retries: 5
 
-  system-plugin-api:
-    build: ./system-plugin-api
-    ports:
-      - "9090:9090"
-    environment:
-      PLUGINS_DIR: /app
-      PORT: "9090"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/?core_version=0.1.0"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+    system-plugin-api:
+        build: ./system-plugin-api
+        ports:
+            - "9090:9090"
+        environment:
+            PLUGINS_DIR: /app
+            PORT: "9090"
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "wget",
+                    "-qO-",
+                    "http://localhost:8080/?core_version=0.1.0",
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 3
 
-  automation:
-    build:
-      context: ./system-plugins/automation
-      dockerfile: Dockerfile
-    container_name: automation
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/plugin_core
-      REDIS_URL: redis://redis:6379
-      CORE_URL: http://core:8080
-      RUST_LOG: info
+    redis:
+        image: redis:7-alpine
+        container_name: redis
+        restart: unless-stopped
+        ports:
+            - "6379:6379"
+        volumes:
+            - redis-data:/data
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 5s
+            timeout: 3s
+            retries: 5
 
-  redis:
-    image: redis:7-alpine
-    container_name: redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: pgadmin
-    restart: unless-stopped
-    depends_on:
-      - postgres
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@alcedo.dev
-      PGADMIN_DEFAULT_PASSWORD: admin123!
-    ports:
-      - "5050:80"
-    volumes:
-      - pgadmin-data:/var/lib/pgadmin
+    pgadmin:
+        image: dpage/pgadmin4:latest
+        container_name: pgadmin
+        restart: unless-stopped
+        depends_on:
+            - postgres
+        environment:
+            PGADMIN_DEFAULT_EMAIL: admin@alcedo.dev
+            PGADMIN_DEFAULT_PASSWORD: admin123!
+        ports:
+            - "5050:80"
+        volumes:
+            - pgadmin-data:/var/lib/pgadmin
 
 volumes:
-  redis-data:
-  pgadmin-data:
+    redis-data:
+    pgadmin-data:

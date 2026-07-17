@@ -1,33 +1,33 @@
 apiVersion: k3d.io/v1alpha5
 kind: Simple
 metadata:
-  name: plugin-core-test
+    name: alcedocore-test
 servers: 1
 agents: 0
 ports:
-  - port: 8080:80
-    nodeFilters:
-      - loadbalancer
-  - port: 5000:5000
-    nodeFilters:
-      - loadbalancer
+    - port: 8080:80
+      nodeFilters:
+          - loadbalancer
+    - port: 5000:5000
+      nodeFilters:
+          - loadbalancer
 options:
-  k3s:
-    extraArgs:
-      - arg: --disable-traefik
-        nodeFilters:
-          - server:*
+    k3s:
+        extraArgs:
+            - arg: --disable-traefik
+              nodeFilters:
+                  - server:*
 volumes:
-  - volume: /var/run/docker.sock:/var/run/docker.sock
-    nodeFilters:
-      - all
+    - volume: /var/run/docker.sock:/var/run/docker.sock
+      nodeFilters:
+          - all
 registries:
-  create:
-    name: k3d-plugin-core-test
-    host: "0.0.0.0"
-    hostPort: "5000"
-  use:
-    - k3d-plugin-core-test:5000
-  config: |
-    [host."http://host.k3d.internal:5000"]
-      capabilities = ["pull", "resolve"]
+    create:
+        name: k3d-alcedocore-test
+        host: "0.0.0.0"
+        hostPort: "5000"
+    use:
+        - k3d-alcedocore-test:5000
+    config: |
+        [host."http://host.k3d.internal:5000"]
+          capabilities = ["pull", "resolve"]

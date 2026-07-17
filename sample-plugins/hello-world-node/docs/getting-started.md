@@ -5,7 +5,7 @@ The Hello-World-Node plugin demonstrates all alcedo-sdk capabilities from a Node
 ## Prerequisites
 
 - Node.js 18+
-- A running plugin-core instance (or the dev proxy for local dev)
+- A running alcedocore instance (or the dev proxy for local dev)
 
 ## Quick Start
 
@@ -21,21 +21,21 @@ node ../../tools/dev-proxy/proxy.mjs
 
 ## Endpoints
 
-| Method | Path                | Description               |
-|--------|---------------------|---------------------------|
-| GET    | `/health`           | Health check              |
-| GET    | `/api/hello`        | Greeting message          |
-| GET    | `/api/kv/:key`      | Read KV entry             |
-| PUT    | `/api/kv/:key`      | Write KV entry            |
-| DELETE | `/api/kv/:key`      | Delete KV entry           |
-| GET    | `/api/kv/:key/ttl`  | Get KV entry TTL          |
-| GET    | `/api/kv/list`      | List KV entries by prefix |
-| POST   | `/api/kv/batch-get` | Batch read KV entries     |
-| POST   | `/api/kv/batch-set` | Batch write KV entries    |
-| POST   | `/api/kv/batch-delete` | Batch delete KV entries |
-| GET    | `/api/settings`     | Plugin settings           |
-| POST   | `/api/migrate`      | Run DB migrations         |
-| GET    | `/api/db/items`     | Query demo items          |
+| Method | Path                   | Description               |
+| ------ | ---------------------- | ------------------------- |
+| GET    | `/health`              | Health check              |
+| GET    | `/api/hello`           | Greeting message          |
+| GET    | `/api/kv/:key`         | Read KV entry             |
+| PUT    | `/api/kv/:key`         | Write KV entry            |
+| DELETE | `/api/kv/:key`         | Delete KV entry           |
+| GET    | `/api/kv/:key/ttl`     | Get KV entry TTL          |
+| GET    | `/api/kv/list`         | List KV entries by prefix |
+| POST   | `/api/kv/batch-get`    | Batch read KV entries     |
+| POST   | `/api/kv/batch-set`    | Batch write KV entries    |
+| POST   | `/api/kv/batch-delete` | Batch delete KV entries   |
+| GET    | `/api/settings`        | Plugin settings           |
+| POST   | `/api/migrate`         | Run DB migrations         |
+| GET    | `/api/db/items`        | Query demo items          |
 
 ## Admin UI Pages
 
@@ -48,8 +48,8 @@ The plugin ships 4 Vue pages served through the admin UI:
 
 ## Configuration
 
-| Env Variable   | Description                     | Default                  |
-|----------------|---------------------------------|--------------------------|
-| `CORE_URL`     | plugin-core URL (auto-injected) | `http://localhost:8080`  |
-| `PLUGIN_SLUG`  | Plugin slug (auto-injected)     | `hello-world-node`       |
-| `PORT`         | HTTP server port                | `8080`                   |
+| Env Variable  | Description                    | Default                 |
+| ------------- | ------------------------------ | ----------------------- |
+| `CORE_URL`    | alcedocore URL (auto-injected) | `http://localhost:8080` |
+| `PLUGIN_SLUG` | Plugin slug (auto-injected)    | `hello-world-node`      |
+| `PORT`        | HTTP server port               | `8080`                  |

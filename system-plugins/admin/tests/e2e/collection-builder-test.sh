@@ -421,7 +421,7 @@ if [ "$FAIL_COUNT" -gt 0 ]; then
     echo "⚠  Some tests failed. Review screenshots in: ${SCREENSHOT_DIR}/"
     echo "   Common fixes:"
     echo "   - Rebuild admin UI: cd system-plugins/admin && npm run build && cp -r public/* ../../.docker-plugins/admin/public/"
-    echo "   - Rebuild core: cd plugin-core && cargo build && cd .. && docker compose build core && docker compose up -d core"
+    echo "   - Rebuild core: cd alcedocore && cargo build && cd .. && docker compose build core && docker compose up -d core"
     echo "   - Reset agent-browser: agent-browser close"
     exit 1
 else

@@ -14,8 +14,8 @@ if [[ "$1" == "compose" && "$2" == "exec" ]]; then
     if [[ "$1" == "-T" ]]; then shift 1; fi
     CONTAINER="$1"; shift 1
     case "$CONTAINER" in
-        postgres) exec kubectl exec -i -n plugin-core postgres-0 -- "$@" ;;
-        redis) exec kubectl exec -i -n plugin-core deploy/redis -- "$@" ;;
+        postgres) exec kubectl exec -i -n alcedocore postgres-0 -- "$@" ;;
+        redis) exec kubectl exec -i -n alcedocore deploy/redis -- "$@" ;;
         *) echo "Unknown container: $CONTAINER" >&2; exit 1 ;;
     esac
 fi

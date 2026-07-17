@@ -91,7 +91,7 @@ async fn start_handler(
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let registry = state.dev_registry.as_ref()
         .ok_or_else(|| AppError::BadRequest(
-            "Dev session registry not available. Enable DEV_MODE on plugin-core.".to_string()
+            "Dev session registry not available. Enable DEV_MODE on the core.".to_string()
         ))?;
 
     let ttl = payload.ttl_secs.unwrap_or(3600);
@@ -131,7 +131,7 @@ async fn stop_handler(
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let registry = state.dev_registry.as_ref()
         .ok_or_else(|| AppError::BadRequest(
-            "Dev session registry not available. Enable DEV_MODE on plugin-core.".to_string()
+            "Dev session registry not available. Enable DEV_MODE on the core.".to_string()
         ))?;
 
     let existed = registry.unregister(&payload.slug).await;

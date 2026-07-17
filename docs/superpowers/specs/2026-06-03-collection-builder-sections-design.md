@@ -15,12 +15,13 @@ The current collection builder shows all fields in a flat 2-column grid with no 
 The `collection_sections` table is extended:
 
 ```sql
-ALTER TABLE collection_sections 
+ALTER TABLE collection_sections
   ADD COLUMN section_type TEXT NOT NULL DEFAULT 'relational',
   ALTER COLUMN relation_field DROP NOT NULL;
 ```
 
 Two section types:
+
 - **`field_group`** — groups fields together in a named section. `name` is the section label; `display_fields` (TEXT[]) stores the ordered field names belonging to this section.
 - **`relational`** — existing behavior: renders related records via `relation_field`. `relation_field` becomes nullable and only required for this type.
 
@@ -37,6 +38,7 @@ When GET `/collections/:name/sections` returns zero sections, the backend auto-c
 ### Backend API
 
 No new endpoints. Existing section CRUD extended:
+
 - `POST /collections/:name/sections` accepts `section_type` and nullable `relation_field`
 - `PUT /collections/:name/sections/:id` same
 - `GET /collections/:name/sections` returns `section_type` in payload
@@ -74,15 +76,15 @@ No new endpoints. Existing section CRUD extended:
 
 ```typescript
 interface CollectionSection {
-  id?: string
-  name: string
-  section_type: 'field_group' | 'relational'
-  relation_field?: string | null
-  view_type?: string
-  default_filter?: any
-  display_fields?: string[] | null
-  item_limit?: number
-  ordinal_position: number
+    id?: string;
+    name: string;
+    section_type: "field_group" | "relational";
+    relation_field?: string | null;
+    view_type?: string;
+    default_filter?: any;
+    display_fields?: string[] | null;
+    item_limit?: number;
+    ordinal_position: number;
 }
 ```
 
@@ -92,17 +94,18 @@ If sections exist, fields render in their section groups with section headers. R
 
 ## Files Changed
 
-| File | Change |
-|------|--------|
-| `plugin-core/db-init/013-collection-field-sections.sql` | New migration |
-| `plugin-core/src/api/collections.rs` | Section handlers: add section_type, nullable relation_field, auto-migration |
-| `plugin-core/src/db/collections.rs` | Section types, auto-create default section |
-| `system-plugins/admin/src/stores/collections.ts` | Update interfaces, API helpers |
-| `system-plugins/admin/src/views/CollectionBuilder.vue` | Section-organized form preview, unified section list, types |
-| `system-plugins/admin/src/views/RecordDetail.vue` | Section-aware field rendering |
+| File                                                   | Change                                                                      |
+| ------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `alcedocore/db-init/013-collection-field-sections.sql` | New migration                                                               |
+| `alcedocore/src/api/collections.rs`                    | Section handlers: add section_type, nullable relation_field, auto-migration |
+| `alcedocore/src/db/collections.rs`                     | Section types, auto-create default section                                  |
+| `system-plugins/admin/src/stores/collections.ts`       | Update interfaces, API helpers                                              |
+| `system-plugins/admin/src/views/CollectionBuilder.vue` | Section-organized form preview, unified section list, types                 |
+| `system-plugins/admin/src/views/RecordDetail.vue`      | Section-aware field rendering                                               |
 
 ## Open Questions
 
 Resolved during brainstorming:
+
 - All fields must belong to a section
 - Existing collections auto-migrate to a single default section on first load

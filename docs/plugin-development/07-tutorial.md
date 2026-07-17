@@ -15,7 +15,7 @@ This tutorial builds a **Task Manager** plugin with persistent storage, database
 
 - Alcedo CLI installed (see [01-getting-started.md](./01-getting-started.md))
 - Docker installed
-- plugin-core running on `http://localhost:8080`
+- alcedocore running on `http://localhost:8080`
 
 ---
 
@@ -208,31 +208,51 @@ Edit `manifest.json` to ensure endpoints are declared:
 
 ```json
 {
-  "name": "task-manager",
-  "version": "1.0.0",
-  "plugin_type": "docker",
-  "image": "localhost:5000/task-manager:1.0.0",
-  "env": {},
-  "endpoints": [
-    { "method": "GET", "path": "/api/tasks", "description": "List all tasks", "group": "api" },
-    { "method": "POST", "path": "/api/tasks", "description": "Create a task", "group": "api" },
-    { "method": "DELETE", "path": "/api/tasks/:id", "description": "Delete a task", "group": "api" }
-  ],
-  "pages": [
-    { "label": "Tasks", "path": "/tasks", "sidebar": true, "icon": "list" },
-    { "label": "Settings", "path": "/settings", "sidebar": true, "icon": "settings" }
-  ],
-  "settings_schema": {
-    "type": "object",
-    "properties": {
-      "page_size": {
-        "type": "integer",
-        "title": "Page Size",
-        "default": 20,
-        "description": "Number of tasks per page"
-      }
+    "name": "task-manager",
+    "version": "1.0.0",
+    "plugin_type": "docker",
+    "image": "localhost:5000/task-manager:1.0.0",
+    "env": {},
+    "endpoints": [
+        {
+            "method": "GET",
+            "path": "/api/tasks",
+            "description": "List all tasks",
+            "group": "api"
+        },
+        {
+            "method": "POST",
+            "path": "/api/tasks",
+            "description": "Create a task",
+            "group": "api"
+        },
+        {
+            "method": "DELETE",
+            "path": "/api/tasks/:id",
+            "description": "Delete a task",
+            "group": "api"
+        }
+    ],
+    "pages": [
+        { "label": "Tasks", "path": "/tasks", "sidebar": true, "icon": "list" },
+        {
+            "label": "Settings",
+            "path": "/settings",
+            "sidebar": true,
+            "icon": "settings"
+        }
+    ],
+    "settings_schema": {
+        "type": "object",
+        "properties": {
+            "page_size": {
+                "type": "integer",
+                "title": "Page Size",
+                "default": 20,
+                "description": "Number of tasks per page"
+            }
+        }
     }
-  }
 }
 ```
 
@@ -283,7 +303,7 @@ Run migrations using the `alcedo migrate` CLI:
 # Navigate to the plugin directory
 cd task-manager
 
-# Upload migration files to plugin-core
+# Upload migration files to alcedocore
 alcedo migrate run
 ```
 
@@ -340,21 +360,27 @@ Edit `pages/tasks.vue`:
 
 ```vue
 <template>
-  <div class="tasks-page">
-    <h1>Tasks</h1>
+    <div class="tasks-page">
+        <h1>Tasks</h1>
 
-    <div class="create-form">
-      <input v-model="newTask" placeholder="New task title" @keyup.enter="createTask" />
-      <button @click="createTask">Add</button>
+        <div class="create-form">
+            <input
+                v-model="newTask"
+                placeholder="New task title"
+                @keyup.enter="createTask"
+            />
+            <button @click="createTask">Add</button>
+        </div>
+
+        <ul class="task-list">
+            <li v-for="task in tasks" :key="task.id">
+                <span :class="{ done: task.status === 'done' }">{{
+                    task.title
+                }}</span>
+                <button @click="deleteTask(task.id)">✕</button>
+            </li>
+        </ul>
     </div>
-
-    <ul class="task-list">
-      <li v-for="task in tasks" :key="task.id">
-        <span :class="{ done: task.status === 'done' }">{{ task.title }}</span>
-        <button @click="deleteTask(task.id)">✕</button>
-      </li>
-    </ul>
-  </div>
 </template>
 
 <script setup>
@@ -364,25 +390,25 @@ const tasks = ref([]);
 const newTask = ref("");
 
 async function fetchTasks() {
-  const res = await fetch("/api/tasks");
-  const data = await res.json();
-  tasks.value = data.tasks || [];
+    const res = await fetch("/api/tasks");
+    const data = await res.json();
+    tasks.value = data.tasks || [];
 }
 
 async function createTask() {
-  if (!newTask.value.trim()) return;
-  await fetch("/api/tasks", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title: newTask.value }),
-  });
-  newTask.value = "";
-  await fetchTasks();
+    if (!newTask.value.trim()) return;
+    await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTask.value }),
+    });
+    newTask.value = "";
+    await fetchTasks();
 }
 
 async function deleteTask(id) {
-  await fetch(`/api/tasks/${id}`, { method: "DELETE" });
-  await fetchTasks();
+    await fetch(`/api/tasks/${id}`, { method: "DELETE" });
+    await fetchTasks();
 }
 
 onMounted(fetchTasks);
@@ -406,7 +432,7 @@ alcedo dev --port 3000
 
 This:
 
-1. Registers a dev session with plugin-core (routes `/p/task-manager/*` to `http://localhost:3000`)
+1. Registers a dev session with alcedocore (routes `/p/task-manager/*` to `http://localhost:3000`)
 2. Starts your `server.py` or `server.js` locally
 3. Watches for file changes and auto-restarts the server
 4. Cleans up the dev session on exit
@@ -422,16 +448,16 @@ curl http://localhost:8080/p/task-manager/api/tasks
 
 You've built a complete plugin with:
 
-| Feature                  | How                        |
-| ------------------------ | -------------------------- |
-| Scaffolding              | `alcedo init`              |
-| Database migrations      | `alcedo add migration` + `alcedo migrate run` |
-| API endpoints            | Manual in `server.py`      |
-| SDK usage                | `AlcedoClient.db.query()`  |
-| UI pages                 | Vue 3 SFC in `pages/`      |
-| Containerization         | `Dockerfile`               |
-| Local development        | `alcedo dev`               |
-| Deployment               | Admin API deploy endpoint  |
+| Feature             | How                                           |
+| ------------------- | --------------------------------------------- |
+| Scaffolding         | `alcedo init`                                 |
+| Database migrations | `alcedo add migration` + `alcedo migrate run` |
+| API endpoints       | Manual in `server.py`                         |
+| SDK usage           | `AlcedoClient.db.query()`                     |
+| UI pages            | Vue 3 SFC in `pages/`                         |
+| Containerization    | `Dockerfile`                                  |
+| Local development   | `alcedo dev`                                  |
+| Deployment          | Admin API deploy endpoint                     |
 
 ### Next Steps
 

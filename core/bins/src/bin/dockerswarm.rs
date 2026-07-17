@@ -40,7 +40,7 @@ async fn main() -> Result<(), AppError> {
 
     let config = AppConfig::from_env()?;
 
-    tracing::info!("Starting plugin-core on port {} (DEV_MODE={}, PLUGIN_NETWORK={})", config.core_port, config.dev_mode, config.plugin_network);
+    tracing::info!("Starting AlcedoCore on port {} (DEV_MODE={}, PLUGIN_NETWORK={})", config.core_port, config.dev_mode, config.plugin_network);
 
     // Initialize global Docker client (fails at startup if daemon unreachable)
     init_docker(&config.docker_socket)?;
@@ -193,7 +193,7 @@ async fn main() -> Result<(), AppError> {
     let static_registry = pcl::plugins::StaticPluginRegistry::new();
     let static_reg = Arc::new(static_registry);
     let plugins_dir = std::env::var("PLUGINS_DIR")
-        .unwrap_or_else(|_| "/root/poc-pli/plugin-core/plugins".to_string());
+        .unwrap_or_else(|_| "/root/alcedocore/plugins".to_string());
     match static_reg.load_system_plugins(db_pool.as_ref(), Path::new(&plugins_dir)).await {
         Ok(plugins) => {
             tracing::info!("[STATIC] Loaded {} system plugins: {:?}", plugins.len(), plugins);

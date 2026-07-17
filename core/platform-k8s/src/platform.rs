@@ -23,7 +23,7 @@ use pcl::container::{
 use pcl::AppError;
 
 const MANAGED_BY_LABEL: &str = "app.kubernetes.io/managed-by";
-const MANAGED_BY_VALUE: &str = "plugin-core";
+const MANAGED_BY_VALUE: &str = "alcedo-core";
 const PART_OF_LABEL: &str = "app.kubernetes.io/part-of";
 
 fn plugin_labels(slug: &str) -> BTreeMap<String, String> {
@@ -589,7 +589,7 @@ impl PluginPlatform for K8sPlatform {
     }
 
     fn core_url(&self) -> String {
-        format!("http://plugin-core.{}:8080", self.namespace)
+        format!("http://alcedo-core.{}:8080", self.namespace)
     }
 }
 

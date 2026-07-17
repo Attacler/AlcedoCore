@@ -10,7 +10,7 @@ pub struct HealthResource {
 impl_new!(HealthResource);
 
 impl HealthResource {
-    /// Get the health status of plugin-core.
+    /// Get the health status of AlcedoCore
     pub async fn check(&self) -> Result<HealthResponse, AlcedoError> {
         // Health is global — doesn't use plugin_slug
         let builder = self.client.request(Method::GET, "/health");

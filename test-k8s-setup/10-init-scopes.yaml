@@ -1,24 +1,24 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: init-scopes
-  namespace: plugin-core
-  labels:
-    app.kubernetes.io/managed-by: plugin-core
+    name: init-scopes
+    namespace: alcedocore
+    labels:
+        app.kubernetes.io/managed-by: alcedocore
 spec:
-  template:
-    spec:
-      containers:
-        - name: init
-          image: bitnami/postgresql:16
-          command:
-            - sh
-            - -c
-            - |
-              PGPASSWORD=postgres psql -U postgres -d plugin_core -h postgres <<SQL
-              INSERT INTO role_scopes (role_id, scope)
-              SELECT id, 'collections.all' FROM roles WHERE name = 'admin'
-              ON CONFLICT DO NOTHING;
-              SQL
-      restartPolicy: Never
-  backoffLimit: 3
+    template:
+        spec:
+            containers:
+                - name: init
+                  image: bitnami/postgresql:16
+                  command:
+                      - sh
+                      - -c
+                      - |
+                          PGPASSWORD=postgres psql -U postgres -d plugin_core -h postgres <<SQL
+                          INSERT INTO role_scopes (role_id, scope)
+                          SELECT id, 'collections.all' FROM roles WHERE name = 'admin'
+                          ON CONFLICT DO NOTHING;
+                          SQL
+            restartPolicy: Never
+    backoffLimit: 3

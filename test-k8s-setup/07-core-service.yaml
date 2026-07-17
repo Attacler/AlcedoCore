@@ -1,15 +1,15 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: plugin-core
-  namespace: plugin-core
-  labels:
-    app.kubernetes.io/name: plugin-core
+    name: alcedocore
+    namespace: alcedocore
+    labels:
+        app.kubernetes.io/name: alcedocore
 spec:
-  selector:
-    app: plugin-core
-  ports:
-    - port: 8080
-      targetPort: 8080
-      name: http
-  type: ClusterIP
+    selector:
+        app: alcedocore
+    ports:
+        - port: 8080
+          targetPort: 8080
+          name: http
+    type: ClusterIP

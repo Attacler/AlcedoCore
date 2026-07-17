@@ -1,48 +1,48 @@
 # Plugin Manifest Schema Reference
 
-Every Alcedo plugin must have a `manifest.json` file at its root. This document declares the plugin's metadata, endpoints, UI pages, settings, and resource requirements to plugin-core.
+Every Alcedo plugin must have a `manifest.json` file at its root. This document declares the plugin's metadata, endpoints, UI pages, settings, and resource requirements to alcedocore.
 
 ## Example (hello-world plugin)
 
 ```json
 {
-  "name": "hello-world",
-  "version": "2.2.1",
-  "plugin_type": "docker",
-  "system_plugin": true,
-  "image": "local/static",
-  "env": {},
-  "resources": {},
-  "pages": [
-    { "label": "Hello", "path": "/", "sidebar": true },
-    { "label": "Counter", "path": "/counter", "sidebar": true },
-    { "label": "DB Items", "path": "/items", "sidebar": true }
-  ],
-  "endpoints": [
-    {
-      "method": "GET",
-      "path": "/api/hello",
-      "description": "Returns greeting message",
-      "group": "api"
-    },
-    {
-      "method": "GET",
-      "path": "/api/counter",
-      "description": "Persistent counter via AlcedoKV SDK",
-      "group": "api"
+    "name": "hello-world",
+    "version": "2.2.1",
+    "plugin_type": "docker",
+    "system_plugin": true,
+    "image": "local/static",
+    "env": {},
+    "resources": {},
+    "pages": [
+        { "label": "Hello", "path": "/", "sidebar": true },
+        { "label": "Counter", "path": "/counter", "sidebar": true },
+        { "label": "DB Items", "path": "/items", "sidebar": true }
+    ],
+    "endpoints": [
+        {
+            "method": "GET",
+            "path": "/api/hello",
+            "description": "Returns greeting message",
+            "group": "api"
+        },
+        {
+            "method": "GET",
+            "path": "/api/counter",
+            "description": "Persistent counter via AlcedoKV SDK",
+            "group": "api"
+        }
+    ],
+    "settings_schema": {
+        "type": "object",
+        "properties": {
+            "greeting": {
+                "type": "string",
+                "title": "Greeting Message",
+                "default": "Hello!",
+                "description": "Custom greeting message"
+            }
+        }
     }
-  ],
-  "settings_schema": {
-    "type": "object",
-    "properties": {
-      "greeting": {
-        "type": "string",
-        "title": "Greeting Message",
-        "default": "Hello!",
-        "description": "Custom greeting message"
-      }
-    }
-  }
 }
 ```
 
@@ -50,24 +50,24 @@ Every Alcedo plugin must have a `manifest.json` file at its root. This document 
 
 ## Top-Level Fields
 
-| Field             | Type     | Required | Description                                            |
-| ----------------- | -------- | -------- | ------------------------------------------------------ |
-| `name`            | string   | ✅       | Plugin name/slug (used for routing, e.g., `my-plugin`) |
-| `version`         | string   | ✅       | Semantic version string (e.g., `1.0.0`)                |
-| `plugin_type`     | string   | ✅       | Type of plugin — currently only `"docker"`             |
-| `system_plugin`   | boolean  | —        | Whether this is a system-level plugin. Default: `false` |
-| `image`           | string   | ✅       | Docker image reference (e.g., `localhost:5000/my-plugin:1.0.0`) |
-| `env`             | object   | —        | Environment variables to inject into the container     |
-| `resources`       | object   | —        | Resource quotas/limits                                 |
-| `endpoints`       | array    | —        | API endpoint declarations                              |
-| `pages`           | array    | —        | Vue 3 UI page declarations (displayed in admin UI)     |
-| `settings_schema` | object   | —        | JSON Schema for plugin settings UI                     |
+| Field             | Type    | Required | Description                                                     |
+| ----------------- | ------- | -------- | --------------------------------------------------------------- |
+| `name`            | string  | ✅       | Plugin name/slug (used for routing, e.g., `my-plugin`)          |
+| `version`         | string  | ✅       | Semantic version string (e.g., `1.0.0`)                         |
+| `plugin_type`     | string  | ✅       | Type of plugin — currently only `"docker"`                      |
+| `system_plugin`   | boolean | —        | Whether this is a system-level plugin. Default: `false`         |
+| `image`           | string  | ✅       | Docker image reference (e.g., `localhost:5000/my-plugin:1.0.0`) |
+| `env`             | object  | —        | Environment variables to inject into the container              |
+| `resources`       | object  | —        | Resource quotas/limits                                          |
+| `endpoints`       | array   | —        | API endpoint declarations                                       |
+| `pages`           | array   | —        | Vue 3 UI page declarations (displayed in admin UI)              |
+| `settings_schema` | object  | —        | JSON Schema for plugin settings UI                              |
 
 ---
 
 ## `name`
 
-The plugin slug. Must be unique across all plugins registered with a plugin-core instance. Used in:
+The plugin slug. Must be unique across all plugins registered with a alcedocore instance. Used in:
 
 - Proxy routing: `http://localhost:8080/p/{name}/...`
 - API endpoints: `/api/plugins/{name}/...`
@@ -80,11 +80,11 @@ Semantic version string. Follows `MAJOR.MINOR.PATCH` conventions. Used for plugi
 
 ## `plugin_type`
 
-Currently only `"docker"` is supported. This tells plugin-core to run the plugin as a Docker container using the specified `image`.
+Currently only `"docker"` is supported. This tells alcedocore to run the plugin as a Docker container using the specified `image`.
 
 ## `system_plugin`
 
-If `true`, the plugin is considered a system-level plugin and is managed differently by plugin-core (e.g., auto-started, not user-removable).
+If `true`, the plugin is considered a system-level plugin and is managed differently by alcedocore (e.g., auto-started, not user-removable).
 
 ## `image`
 
@@ -100,14 +100,14 @@ Key-value map of environment variables injected into the plugin container at run
 
 ```json
 {
-  "env": {
-    "LOG_LEVEL": "debug",
-    "MAX_CONNECTIONS": "100"
-  }
+    "env": {
+        "LOG_LEVEL": "debug",
+        "MAX_CONNECTIONS": "100"
+    }
 }
 ```
 
-Note: `CORE_URL` and `PORT` are injected automatically by plugin-core — do not set them manually.
+Note: `CORE_URL` and `PORT` are injected automatically by alcedocore — do not set them manually.
 
 ---
 
@@ -117,23 +117,23 @@ Declares the HTTP endpoints the plugin serves. Each endpoint:
 
 ```json
 {
-  "method": "GET",
-  "path": "/api/items",
-  "description": "List all items",
-  "group": "api"
+    "method": "GET",
+    "path": "/api/items",
+    "description": "List all items",
+    "group": "api"
 }
 ```
 
 ### Endpoint Fields
 
-| Field         | Type   | Required | Description                                      |
-| ------------- | ------ | -------- | ------------------------------------------------ |
+| Field         | Type   | Required | Description                                                             |
+| ------------- | ------ | -------- | ----------------------------------------------------------------------- |
 | `method`      | string | ✅       | HTTP method: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD`, `OPTIONS` |
-| `path`        | string | ✅       | URL path served by the plugin (e.g., `/api/hello`) |
-| `description` | string | —        | Human-readable description of the endpoint       |
-| `group`       | string | —        | Logical grouping (e.g., `"api"`, `"system"`, `"admin"`) |
+| `path`        | string | ✅       | URL path served by the plugin (e.g., `/api/hello`)                      |
+| `description` | string | —        | Human-readable description of the endpoint                              |
+| `group`       | string | —        | Logical grouping (e.g., `"api"`, `"system"`, `"admin"`)                 |
 
-Plugin-core uses these declarations for:
+alcedocore uses these declarations for:
 
 - Proxy routing setup
 - Permission/access control
@@ -148,23 +148,23 @@ Declares Vue 3 UI pages for the plugin. These appear in the admin UI sidebar.
 
 ```json
 {
-  "label": "Dashboard",
-  "path": "/dashboard",
-  "icon": "dashboard",
-  "sidebar": true
+    "label": "Dashboard",
+    "path": "/dashboard",
+    "icon": "dashboard",
+    "sidebar": true
 }
 ```
 
 ### Page Fields
 
-| Field     | Type    | Required | Description                                               |
-| --------- | ------- | -------- | --------------------------------------------------------- |
-| `label`   | string  | ✅       | Display name shown in sidebar and page header             |
-| `path`    | string  | ✅       | Client-side route path (e.g., `"/counter"`)               |
+| Field     | Type    | Required | Description                                                    |
+| --------- | ------- | -------- | -------------------------------------------------------------- |
+| `label`   | string  | ✅       | Display name shown in sidebar and page header                  |
+| `path`    | string  | ✅       | Client-side route path (e.g., `"/counter"`)                    |
 | `icon`    | string  | —        | Material Symbols icon name (e.g., `"dashboard"`, `"settings"`) |
-| `sidebar` | boolean | —        | Whether to show in sidebar navigation. Default: `false`    |
-| `parent`  | string  | —        | Parent nav-item path for nesting (creates submenus)       |
-| `badge`   | string  | —        | Badge text displayed next to the nav item                  |
+| `sidebar` | boolean | —        | Whether to show in sidebar navigation. Default: `false`        |
+| `parent`  | string  | —        | Parent nav-item path for nesting (creates submenus)            |
+| `badge`   | string  | —        | Badge text displayed next to the nav item                      |
 
 ### Page Path Conventions
 
@@ -178,53 +178,53 @@ The `icon` field accepts any [Material Symbols icon name](https://fonts.google.c
 
 ## `settings_schema`
 
-JSON Schema (draft-07) for the plugin's settings. plugin-core uses this to auto-generate a settings UI in the admin interface.
+JSON Schema (draft-07) for the plugin's settings. alcedocore uses this to auto-generate a settings UI in the admin interface.
 
 ```json
 {
-  "settings_schema": {
-    "type": "object",
-    "properties": {
-      "greeting": {
-        "type": "string",
-        "title": "Greeting Message",
-        "default": "Hello!",
-        "description": "Custom greeting message displayed on the plugin page"
-      },
-      "refresh_interval": {
-        "type": "integer",
-        "title": "Refresh Interval",
-        "default": 30,
-        "description": "Auto-refresh interval in seconds"
-      },
-      "debug_mode": {
-        "type": "boolean",
-        "title": "Debug Mode",
-        "default": false,
-        "description": "Enable verbose debug logging"
-      },
-      "max_items": {
-        "type": "integer",
-        "title": "Max Items",
-        "minimum": 1,
-        "maximum": 1000,
-        "default": 100
-      }
-    },
-    "required": []
-  }
+    "settings_schema": {
+        "type": "object",
+        "properties": {
+            "greeting": {
+                "type": "string",
+                "title": "Greeting Message",
+                "default": "Hello!",
+                "description": "Custom greeting message displayed on the plugin page"
+            },
+            "refresh_interval": {
+                "type": "integer",
+                "title": "Refresh Interval",
+                "default": 30,
+                "description": "Auto-refresh interval in seconds"
+            },
+            "debug_mode": {
+                "type": "boolean",
+                "title": "Debug Mode",
+                "default": false,
+                "description": "Enable verbose debug logging"
+            },
+            "max_items": {
+                "type": "integer",
+                "title": "Max Items",
+                "minimum": 1,
+                "maximum": 1000,
+                "default": 100
+            }
+        },
+        "required": []
+    }
 }
 ```
 
 ### Supported Types
 
-| JSON Schema Type | UI Control     |
-| ---------------- | -------------- |
-| `string`         | Text input     |
-| `integer`        | Number input   |
-| `number`         | Number input   |
-| `boolean`        | Toggle/switch  |
-| `array`          | Multi-select   |
+| JSON Schema Type | UI Control    |
+| ---------------- | ------------- |
+| `string`         | Text input    |
+| `integer`        | Number input  |
+| `number`         | Number input  |
+| `boolean`        | Toggle/switch |
+| `array`          | Multi-select  |
 
 ### Settings Access
 

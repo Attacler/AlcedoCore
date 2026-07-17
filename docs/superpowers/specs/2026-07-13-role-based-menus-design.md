@@ -57,32 +57,32 @@ The API returns and accepts a nested tree:
 
 ```typescript
 interface Menu {
-  id: string
-  name: string
-  icon: string
-  sections: MenuSection[]
+    id: string;
+    name: string;
+    icon: string;
+    sections: MenuSection[];
 }
 
 interface MenuSection {
-  id: string
-  label: string
-  icon: string
-  visible: boolean
-  sort_order: number
-  items: MenuItem[]
+    id: string;
+    label: string;
+    icon: string;
+    visible: boolean;
+    sort_order: number;
+    items: MenuItem[];
 }
 
 interface MenuItem {
-  id: string
-  label: string
-  icon: string
-  visible: boolean
-  route?: string
-  url?: string
-  external?: boolean
-  link_type?: 'custom' | 'default' | 'plugin' | 'collection' | 'external'
-  sort_order: number
-  children?: MenuItem[]
+    id: string;
+    label: string;
+    icon: string;
+    visible: boolean;
+    route?: string;
+    url?: string;
+    external?: boolean;
+    link_type?: "custom" | "default" | "plugin" | "collection" | "external";
+    sort_order: number;
+    children?: MenuItem[];
 }
 ```
 
@@ -92,17 +92,17 @@ A join table `menu_roles` links menus to roles. A role can have multiple menus. 
 
 ## API Endpoints
 
-| Method | Path | Scope Required | Purpose |
-|--------|------|----------------|---------|
-| `GET` | `/api/menus` | `settings.read.all` | List all menus (name, icon, role count, item count) |
-| `POST` | `/api/menus` | `settings.write.all` | Create menu (name + icon only, empty sections) |
-| `GET` | `/api/menus/:id` | `settings.read.all` | Get full menu tree (sections + items + roles) |
-| `PUT` | `/api/menus/:id` | `settings.write.all` | Full tree replace — replaces all sections/items inside the menu |
-| `DELETE` | `/api/menus/:id` | `settings.write.all` | Delete menu and cascade sections/items |
-| `GET` | `/api/menus/:id/roles` | `settings.read.all` | Get role IDs assigned to this menu |
-| `PUT` | `/api/menus/:id/roles` | `settings.write.all` | Set role IDs assigned to this menu |
-| `POST` | `/api/menus/:id/copy` | `settings.write.all` | Clone sections/items from another menu by ID into this one |
-| `GET` | `/api/menus/my` | auth (any) | Get all menus available to the current user (based on their roles) |
+| Method   | Path                   | Scope Required       | Purpose                                                            |
+| -------- | ---------------------- | -------------------- | ------------------------------------------------------------------ |
+| `GET`    | `/api/menus`           | `settings.read.all`  | List all menus (name, icon, role count, item count)                |
+| `POST`   | `/api/menus`           | `settings.write.all` | Create menu (name + icon only, empty sections)                     |
+| `GET`    | `/api/menus/:id`       | `settings.read.all`  | Get full menu tree (sections + items + roles)                      |
+| `PUT`    | `/api/menus/:id`       | `settings.write.all` | Full tree replace — replaces all sections/items inside the menu    |
+| `DELETE` | `/api/menus/:id`       | `settings.write.all` | Delete menu and cascade sections/items                             |
+| `GET`    | `/api/menus/:id/roles` | `settings.read.all`  | Get role IDs assigned to this menu                                 |
+| `PUT`    | `/api/menus/:id/roles` | `settings.write.all` | Set role IDs assigned to this menu                                 |
+| `POST`   | `/api/menus/:id/copy`  | `settings.write.all` | Clone sections/items from another menu by ID into this one         |
+| `GET`    | `/api/menus/my`        | auth (any)           | Get all menus available to the current user (based on their roles) |
 
 ### Key endpoint details
 
@@ -116,14 +116,14 @@ A join table `menu_roles` links menus to roles. A role can have multiple menus. 
 
 ### Rust files to create/modify
 
-| File | Action |
-|------|--------|
-| `plugin-core/src/db/menu.rs` | New — DB query functions for menus, sections, items |
-| `plugin-core/src/routes/admin/menus.rs` | New — API route handlers |
-| `plugin-core/src/routes/admin/mod.rs` | Modify — register menu routes |
-| `plugin-core/src/db/mod.rs` | Modify — export new module |
-| `plugin-core/src/models/menu.rs` | New — Rust structs matching DB schema |
-| `plugin-core/migrations/` | New — SQL migration file |
+| File                                   | Action                                              |
+| -------------------------------------- | --------------------------------------------------- |
+| `alcedocore/src/db/menu.rs`            | New — DB query functions for menus, sections, items |
+| `alcedocore/src/routes/admin/menus.rs` | New — API route handlers                            |
+| `alcedocore/src/routes/admin/mod.rs`   | Modify — register menu routes                       |
+| `alcedocore/src/db/mod.rs`             | Modify — export new module                          |
+| `alcedocore/src/models/menu.rs`        | New — Rust structs matching DB schema               |
+| `alcedocore/migrations/`               | New — SQL migration file                            |
 
 ### Scope checking
 
@@ -132,6 +132,7 @@ All menu management endpoints require `settings.read.all` or `settings.write.all
 ### Migration from old settings
 
 On first request to `GET /api/menus` after deployment, check if the old `menu_sections` app setting exists. If it does:
+
 1. Parse the JSON
 2. Create a new menu named "Default" with icon "menu"
 3. Convert sections/items into the new DB schema
@@ -144,16 +145,16 @@ This migration runs once. Future menu data comes from the new tables.
 
 ### Files to create/modify
 
-| File | Action |
-|------|--------|
-| `system-plugins/admin/src/types/menu.ts` | **Modify** — add `Menu` type (name, icon, sections, id), add `roleIds` to Menu |
-| `system-plugins/admin/src/stores/menuStore.ts` | **Rewrite** — load from `/api/menus/my` instead of app settings, track `menus[]` + `activeMenuId`, add menu switcher logic, keep dynamic item merging |
-| `system-plugins/admin/src/stores/authStore.ts` | **Modify** — after login, trigger menu loading |
-| `system-plugins/admin/src/components/AppLayout.vue` | **Modify** — add menu switcher dropdown in sidebar header, keep Settings mode toggle at bottom |
-| `system-plugins/admin/src/views/MenuBuilder.vue` | **Overhaul** — add menu selector, name/icon editing, role assignment, copy, delete |
-| `system-plugins/admin/src/views/SettingsCategory.vue` | **Modify** — update reference to MenuBuilder |
-| `system-plugins/admin/src/views/MenusIndex.vue` | **New** — dedicated Menus overview page in Settings |
-| `system-plugins/admin/src/router/index.ts` | **Modify** — add `/settings/menus` route |
+| File                                                  | Action                                                                                                                                                |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `system-plugins/admin/src/types/menu.ts`              | **Modify** — add `Menu` type (name, icon, sections, id), add `roleIds` to Menu                                                                        |
+| `system-plugins/admin/src/stores/menuStore.ts`        | **Rewrite** — load from `/api/menus/my` instead of app settings, track `menus[]` + `activeMenuId`, add menu switcher logic, keep dynamic item merging |
+| `system-plugins/admin/src/stores/authStore.ts`        | **Modify** — after login, trigger menu loading                                                                                                        |
+| `system-plugins/admin/src/components/AppLayout.vue`   | **Modify** — add menu switcher dropdown in sidebar header, keep Settings mode toggle at bottom                                                        |
+| `system-plugins/admin/src/views/MenuBuilder.vue`      | **Overhaul** — add menu selector, name/icon editing, role assignment, copy, delete                                                                    |
+| `system-plugins/admin/src/views/SettingsCategory.vue` | **Modify** — update reference to MenuBuilder                                                                                                          |
+| `system-plugins/admin/src/views/MenusIndex.vue`       | **New** — dedicated Menus overview page in Settings                                                                                                   |
+| `system-plugins/admin/src/router/index.ts`            | **Modify** — add `/settings/menus` route                                                                                                              |
 
 ### Menu loading flow
 
@@ -173,6 +174,7 @@ The Settings mode toggle at the bottom remains exactly as-is — scope-gated, sw
 ### Dynamic items merging
 
 At render time, the active menu's sections/items are the base. Then:
+
 1. Plugin extension registry items (`registerNavItem()`) are inserted into matching sections by `sectionId`
 2. Dynamic items (collections, plugin pages with `sidebar: true`) are inserted into matching sections
 
@@ -205,6 +207,7 @@ This logic stays in `menuStore.mergedSections` computed property, adapted to wor
 ```
 
 **New features in MenuBuilder:**
+
 - **Menu selector dropdown** at top — switch between menus while editing
 - **Name + icon editing** inline at the top
 - **Role assignment** — autocomplete chip input that searches roles from the roles store. Adding/removing roles here auto-saves role assignments when the menu is saved
@@ -243,23 +246,27 @@ Shows:
 Kept exactly as-is in `AppLayout.vue`:
 
 ```vue
-<button v-if="authStore.scopes.some(s => s === 'users.all' || s === 'settings.all' || ...)"
-  @click="activeSection = activeSection === 'content' ? 'settings' : 'content'">
+<button
+    v-if="authStore.scopes.some(s => s === 'users.all' || s === 'settings.all' || ...)"
+    @click="
+        activeSection = activeSection === 'content' ? 'settings' : 'content'
+    "
+>
   {{ activeSection === 'content' ? '⚙ Settings' : '← Browse' }}
 </button>
 ```
 
 ## Edge Cases
 
-| Case | Behavior |
-|------|----------|
-| User has no roles | Menu list is empty. Sidebar shows only the Settings button (if authorized) or an empty state. |
-| User has 1 role with 0 menus | Same as above. |
-| Admin creates 5 menus | Admin has `users.all` scope but that doesn't grant menu access. They need a role assigned to a menu, OR the admin role should be auto-assigned to the Default menu during migration. |
-| Menu is deleted while users are viewing it | Frontend refreshes menu list on next navigation. Switcher shows remaining menus. |
-| Role is deleted | `ON DELETE CASCADE` cleans up `menu_roles` entries. |
-| Browser tab with old menu data stale | No caching issue — every login fetches fresh menus. |
-| Dynamic items (collections) for menus | Dynamic items merge into the active menu at render time. They apply to all menus equally. |
+| Case                                       | Behavior                                                                                                                                                                             |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| User has no roles                          | Menu list is empty. Sidebar shows only the Settings button (if authorized) or an empty state.                                                                                        |
+| User has 1 role with 0 menus               | Same as above.                                                                                                                                                                       |
+| Admin creates 5 menus                      | Admin has `users.all` scope but that doesn't grant menu access. They need a role assigned to a menu, OR the admin role should be auto-assigned to the Default menu during migration. |
+| Menu is deleted while users are viewing it | Frontend refreshes menu list on next navigation. Switcher shows remaining menus.                                                                                                     |
+| Role is deleted                            | `ON DELETE CASCADE` cleans up `menu_roles` entries.                                                                                                                                  |
+| Browser tab with old menu data stale       | No caching issue — every login fetches fresh menus.                                                                                                                                  |
+| Dynamic items (collections) for menus      | Dynamic items merge into the active menu at render time. They apply to all menus equally.                                                                                            |
 
 ## Future Considerations (out of scope)
 

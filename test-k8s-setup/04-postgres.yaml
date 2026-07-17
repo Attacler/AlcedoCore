@@ -1,70 +1,70 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: postgres-init
-  namespace: plugin-core
+    name: postgres-init
+    namespace: alcedocore
 data:
-  init.sql: |
-    CREATE DATABASE plugin_core;
+    init.sql: |
+        CREATE DATABASE plugin_core;
 ---
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
-  name: postgres
-  namespace: plugin-core
+    name: postgres
+    namespace: alcedocore
 spec:
-  serviceName: postgres
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgres
-  volumeClaimTemplates:
-    - metadata:
-        name: postgres-data
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 10Gi
-        storageClassName: local-path
-  template:
-    metadata:
-      labels:
-        app: postgres
-    spec:
-      containers:
-        - name: postgres
-          image: postgres:16
-          env:
-            - name: POSTGRES_USER
-              value: postgres
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: core-secrets
-                  key: POSTGRES_PASSWORD
-            - name: POSTGRES_DB
-              value: plugin_core
-          ports:
-            - containerPort: 5432
-          volumeMounts:
-            - name: postgres-data
-              mountPath: /var/lib/postgresql/data
-              subPath: postgres
-          readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "postgres"]
-            initialDelaySeconds: 5
-            periodSeconds: 5
+    serviceName: postgres
+    replicas: 1
+    selector:
+        matchLabels:
+            app: postgres
+    volumeClaimTemplates:
+        - metadata:
+              name: postgres-data
+          spec:
+              accessModes: ["ReadWriteOnce"]
+              resources:
+                  requests:
+                      storage: 10Gi
+              storageClassName: local-path
+    template:
+        metadata:
+            labels:
+                app: postgres
+        spec:
+            containers:
+                - name: postgres
+                  image: postgres:16
+                  env:
+                      - name: POSTGRES_USER
+                        value: postgres
+                      - name: POSTGRES_PASSWORD
+                        valueFrom:
+                            secretKeyRef:
+                                name: core-secrets
+                                key: POSTGRES_PASSWORD
+                      - name: POSTGRES_DB
+                        value: plugin_core
+                  ports:
+                      - containerPort: 5432
+                  volumeMounts:
+                      - name: postgres-data
+                        mountPath: /var/lib/postgresql/data
+                        subPath: postgres
+                  readinessProbe:
+                      exec:
+                          command: ["pg_isready", "-U", "postgres"]
+                      initialDelaySeconds: 5
+                      periodSeconds: 5
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: postgres
-  namespace: plugin-core
+    name: postgres
+    namespace: alcedocore
 spec:
-  selector:
-    app: postgres
-  ports:
-    - port: 5432
-      targetPort: 5432
+    selector:
+        app: postgres
+    ports:
+        - port: 5432
+          targetPort: 5432

@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y \
     && mkdir -p /app /plugins /var/lib/plugin-public \
     && chown -R app:app /app /plugins /var/lib/plugin-public
 
-COPY plugin-core/target/release/k8s /usr/local/bin/
-COPY plugin-core/core-migrations /app/core-migrations/
+COPY core/target/release/k8s /usr/local/bin/
+COPY core/core-migrations /app/core-migrations/
 COPY .docker-plugins /plugins/
 
 ENV RUST_LOG=info

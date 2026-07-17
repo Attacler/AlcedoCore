@@ -48,19 +48,19 @@ use alcedo_sdk::AlcedoClientBuilder;
 use std::time::Duration;
 
 let client = AlcedoClientBuilder::new()
-    .base_url("http://localhost:8080")      // Plugin-core URL
+    .base_url("http://localhost:8080")      // alcedocore URL
     .plugin_slug("my-plugin")                // Your plugin's slug
     .timeout(Duration::from_secs(30))        // Request timeout
     .build()?;
 ```
 
-| Method        | Default                    | Description              |
-| ------------- | -------------------------- | ------------------------ |
-| `new()`       | —                          | Creates builder with defaults |
-| `base_url()`  | `http://localhost:8080`    | Plugin-core base URL     |
-| `plugin_slug()` | `"system"`              | Plugin identifier        |
-| `timeout()`   | `30` seconds               | HTTP request timeout     |
-| `build()`     | —                          | Constructs the `AlcedoClient` |
+| Method          | Default                 | Description                   |
+| --------------- | ----------------------- | ----------------------------- |
+| `new()`         | —                       | Creates builder with defaults |
+| `base_url()`    | `http://localhost:8080` | alcedocore base URL           |
+| `plugin_slug()` | `"system"`              | Plugin identifier             |
+| `timeout()`     | `30` seconds            | HTTP request timeout          |
+| `build()`       | —                       | Constructs the `AlcedoClient` |
 
 ## AlcedoClient
 
@@ -86,6 +86,7 @@ Each resource module shares a single `reqwest::Client` with rustls-tls, connecti
 ## KVResource (`client.kv`)
 
 ### `get(key: &str) -> Result<Option<Value>>`
+
 Get a value by key. Returns `None` if key doesn't exist.
 
 ```rust
@@ -96,6 +97,7 @@ if let Some(v) = value {
 ```
 
 ### `set(key: &str, value: Value, ttl: Option<u32>) -> Result<Value>`
+
 Set a key-value pair with optional TTL in seconds.
 
 ```rust
@@ -104,6 +106,7 @@ client.kv.set("config", serde_json::json!({"theme": "dark"}), None).await?;
 ```
 
 ### `delete(key: &str) -> Result<bool>`
+
 Delete a key. Returns `true` if deleted, `false` if key didn't exist.
 
 ```rust
@@ -111,6 +114,7 @@ let deleted = client.kv.delete("temp-key").await?;
 ```
 
 ### `exists(key: &str) -> Result<bool>`
+
 Check if a key exists.
 
 ```rust
@@ -120,6 +124,7 @@ if client.kv.exists("my-key").await? {
 ```
 
 ### `ttl(key: &str) -> Result<Option<i64>>`
+
 Get remaining TTL in seconds.
 
 ```rust
@@ -129,6 +134,7 @@ if let Some(ttl) = client.kv.ttl("my-key").await? {
 ```
 
 ### `list_keys(prefix: Option<&str>) -> Result<Vec<String>>`
+
 List keys, optionally filtered by prefix.
 
 ```rust
@@ -137,6 +143,7 @@ let all = client.kv.list_keys(None).await?;
 ```
 
 ### `batch_get(keys: &[String]) -> Result<HashMap<String, Option<Value>>>`
+
 Get multiple keys at once.
 
 ```rust
@@ -145,6 +152,7 @@ let values = client.kv.batch_get(&keys).await?;
 ```
 
 ### `batch_set(pairs: &[KvPair]) -> Result<()>`
+
 Set multiple key-value pairs.
 
 ```rust
@@ -157,6 +165,7 @@ client.kv.batch_set(&[
 ```
 
 ### `batch_delete(keys: &[String]) -> Result<u32>`
+
 Delete multiple keys at once. Returns count of deleted keys.
 
 ```rust
@@ -168,6 +177,7 @@ let count = client.kv.batch_delete(&["a".into(), "b".into()]).await?;
 ## DBResource (`client.db`)
 
 ### `query(sql: &str, params: Option<Vec<Value>>, timeout_secs: Option<u32>, max_rows: Option<u32>) -> Result<QueryResult>`
+
 Execute a read-only SQL query.
 
 ```rust
@@ -205,6 +215,7 @@ pub struct QueryResult {
 ## SettingsResource (`client.settings`)
 
 ### `get() -> Result<SettingsResponse>`
+
 Get all settings.
 
 ```rust
@@ -215,6 +226,7 @@ println!("{:?}", settings.settings);
 ```
 
 ### `update(settings: Value) -> Result<Value>`
+
 Update settings (full replacement).
 
 ```rust
@@ -228,6 +240,7 @@ client.settings.update(serde_json::json!({
 ## MigrationsResource (`client.migrations`)
 
 ### `list() -> Result<Vec<MigrationStatus>>`
+
 List migrations and their status.
 
 ```rust
@@ -238,6 +251,7 @@ for m in migrations {
 ```
 
 ### `run() -> Result<Value>`
+
 Run pending migrations.
 
 ```rust
@@ -245,6 +259,7 @@ let result = client.migrations.run().await?;
 ```
 
 ### `rollback(version: &str) -> Result<Value>`
+
 Rollback a specific migration version.
 
 ```rust
@@ -256,6 +271,7 @@ client.migrations.rollback("002_add_status_column").await?;
 ## SchemaResource (`client.schema`)
 
 ### `get() -> Result<PluginSchemaResponse>`
+
 Get the database schema for this plugin.
 
 ```rust
@@ -272,6 +288,7 @@ for table in &schema.tables {
 ## LogsResource (`client.logs`)
 
 ### `list(params: LogListParams) -> Result<Vec<LogEntry>>`
+
 Get request logs with optional filters.
 
 ```rust
@@ -290,6 +307,7 @@ let logs = client.logs.list(LogListParams {
 ## DevResource (`client.dev`)
 
 ### `start(url: &str, ttl_secs: Option<u32>) -> Result<Value>`
+
 Start a dev session. Validates URL scheme (must be `http` or `https`).
 
 ```rust
@@ -297,6 +315,7 @@ let session = client.dev.start("http://localhost:3000", Some(7200)).await?;
 ```
 
 ### `stop() -> Result<Value>`
+
 Stop the active dev session.
 
 ```rust
@@ -308,7 +327,8 @@ client.dev.stop().await?;
 ## HealthResource (`client.health`)
 
 ### `check() -> Result<HealthResponse>`
-Get plugin-core health status.
+
+Get alcedocore health status.
 
 ```rust
 use alcedo_sdk::HealthResponse;
@@ -346,13 +366,13 @@ match client.kv.get("my-key").await {
 
 ### Error enum variants
 
-| Variant         | HTTP Status | Description                     |
-| --------------- | ----------- | ------------------------------- |
-| `Connection`    | —           | Network/transport failure       |
-| `NotFound`      | 404         | Resource not found              |
-| `Validation`    | 400 / 422   | Request validation failure      |
-| `Authentication`| 401 / 403   | Auth/authorization failure      |
-| `Server`        | 5xx         | Server-side error               |
+| Variant          | HTTP Status | Description                |
+| ---------------- | ----------- | -------------------------- |
+| `Connection`     | —           | Network/transport failure  |
+| `NotFound`       | 404         | Resource not found         |
+| `Validation`     | 400 / 422   | Request validation failure |
+| `Authentication` | 401 / 403   | Auth/authorization failure |
+| `Server`         | 5xx         | Server-side error          |
 
 All variants implement `std::error::Error` via `thiserror` and include an HTTP `status_code` accessible via `.status_code()`.
 

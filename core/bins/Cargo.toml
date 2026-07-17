@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-pcl = { package = "plugin-core-lib", path = "../core", features = ["docker"] }
+pcl = { package = "alcedocore-lib", path = "../core", features = ["docker"] }
 platform-docker = { path = "../platform-docker" }
 platform-k8s = { path = "../platform-k8s" }
 file-storage = { path = "../file-storage" }

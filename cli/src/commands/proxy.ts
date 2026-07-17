@@ -53,7 +53,9 @@ export const proxyCommand = new Command("proxy")
         if (!testId) {
             validateSpinner.fail();
             logError(`Failed to connect to core at ${coreUrl}`);
-            logError("Make sure plugin-core is running and API key is correct");
+            logError(
+                "Make sure the AlcedoCore instance is running and API key is correct",
+            );
             process.exit(1);
         }
         validateSpinner.succeed();

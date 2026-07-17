@@ -99,7 +99,7 @@ fn render_docs_directory_markdown(dir_path: &str, entries: &[String]) -> String 
         };
         md.push_str(&format!("- [{}](./{})\n", display_name, entry_path));
     }
-    md.push_str("\n---\n*Directory listing via plugin-core docs API*\n");
+    md.push_str("\n---\n*Directory listing via AlcedoCore docs API*\n");
     md
 }
 

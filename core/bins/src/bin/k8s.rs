@@ -34,7 +34,7 @@ async fn main() -> Result<(), AppError> {
 
     let config = AppConfig::from_env()?;
 
-    tracing::info!("Starting plugin-core on port {} (DEV_MODE={}, PLUGIN_NETWORK={})", config.core_port, config.dev_mode, config.plugin_network);
+    tracing::info!("Starting AlcedoCore on port {} (DEV_MODE={}, PLUGIN_NETWORK={})", config.core_port, config.dev_mode, config.plugin_network);
 
     // Initialize global Docker client (fails at startup if daemon unreachable)
     tracing::info!("[K8S] K8s platform initialized");

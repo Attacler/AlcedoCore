@@ -1,7 +1,7 @@
 //! Rust SDK for Alcedo Plugin Core.
 //!
 //! Provides an HTTP client, typed error handling, and serde models
-//! for interacting with the plugin-core REST API.
+//! for interacting with the AlcedoCore REST API.
 //!
 //! # Quick start
 //!
@@ -30,14 +30,14 @@ pub use error::AlcedoError;
 pub use models::*;
 
 // Re-export resources so consumers can use type annotations
-pub use resources::kv::KVResource;
 pub use resources::db::DBResource;
-pub use resources::settings::SettingsResource;
-pub use resources::migrations::MigrationsResource;
-pub use resources::schema::SchemaResource;
-pub use resources::logs::{LogsResource, LogListParams};
 pub use resources::dev::DevResource;
 pub use resources::health::HealthResource;
+pub use resources::kv::KVResource;
+pub use resources::logs::{LogListParams, LogsResource};
+pub use resources::migrations::MigrationsResource;
+pub use resources::schema::SchemaResource;
+pub use resources::settings::SettingsResource;
 
 use std::time::Duration;
 
@@ -80,7 +80,7 @@ impl AlcedoClientBuilder {
         }
     }
 
-    /// Set the base URL for the plugin-core server.
+    /// Set the base URL for the AlcedoCore server.
     /// Accepts any type that implements `Into<String>`.
     /// A trailing slash is stripped if present.
     pub fn base_url(mut self, url: impl Into<String>) -> Self {
@@ -112,7 +112,12 @@ impl AlcedoClientBuilder {
     /// Returns an `AlcedoError` if the `BaseClient` fails to construct
     /// (e.g., if reqwest TLS initialization fails).
     pub fn build(self) -> Result<AlcedoClient, AlcedoError> {
-        let base = BaseClient::new(&self.base_url, &self.plugin_slug, self.timeout, self.request_id)?;
+        let base = BaseClient::new(
+            &self.base_url,
+            &self.plugin_slug,
+            self.timeout,
+            self.request_id,
+        )?;
         Ok(AlcedoClient::from_base(base))
     }
 }

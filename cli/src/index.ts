@@ -51,7 +51,7 @@ program.option(
 );
 program.option(
     "-c, --core-url <url>",
-    "plugin-core API URL (default: http://localhost:8080)",
+    "core API URL (default: http://localhost:8080)",
 );
 program.option(
     "-d, --plugin-dir <path>",

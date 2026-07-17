@@ -1,13 +1,13 @@
 # Getting Started with Alcedo Plugin Development
 
-This guide walks you through creating your first Alcedo plugin — from scaffolding to a running plugin proxied by plugin-core.
+This guide walks you through creating your first Alcedo plugin — from scaffolding to a running plugin proxied by AlcedoCore.
 
 ## Prerequisites
 
 - **Node.js 18+** (for the `alcedo` CLI)
 - **Python 3.9+** (if developing Python plugins)
 - **Docker** (for building and running plugins)
-- A running **plugin-core** instance (see plugin-core README for setup)
+- A running **Alcedo-core** instance (see alcedocore README for setup)
 
 ## 1. Install the CLI
 
@@ -55,10 +55,10 @@ my-plugin/
 
 ### Language Templates
 
-| Language   | Server file  | SDK package            |
-| ---------- | ------------ | ---------------------- |
-| Python     | `server.py`  | `alcedo-sdk` (PyPI)   |
-| Node.js    | `server.js`  | `alcedo-sdk` (npm)    |
+| Language | Server file | SDK package         |
+| -------- | ----------- | ------------------- |
+| Python   | `server.py` | `alcedo-sdk` (PyPI) |
+| Node.js  | `server.js` | `alcedo-sdk` (npm)  |
 
 ## 3. Understand the Manifest
 
@@ -66,20 +66,20 @@ The `manifest.json` is the plugin's registration document. At minimum it declare
 
 ```json
 {
-  "name": "my-plugin",
-  "version": "1.0.0",
-  "plugin_type": "docker",
-  "image": "localhost:5000/my-plugin:1.0.0",
-  "env": {},
-  "resources": {},
-  "endpoints": [
-    {
-      "method": "GET",
-      "path": "/api/hello",
-      "description": "Greeting endpoint",
-      "group": "api"
-    }
-  ]
+    "name": "my-plugin",
+    "version": "1.0.0",
+    "plugin_type": "docker",
+    "image": "localhost:5000/my-plugin:1.0.0",
+    "env": {},
+    "resources": {},
+    "endpoints": [
+        {
+            "method": "GET",
+            "path": "/api/hello",
+            "description": "Greeting endpoint",
+            "group": "api"
+        }
+    ]
 }
 ```
 
@@ -112,10 +112,10 @@ if __name__ == "__main__":
 import http from "node:http";
 
 const server = http.createServer((req, res) => {
-  if (req.url === "/api/hello" && req.method === "GET") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ message: "Hello from my-plugin!" }));
-  }
+    if (req.url === "/api/hello" && req.method === "GET") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ message: "Hello from my-plugin!" }));
+    }
 });
 
 server.listen(8080, () => console.log("Plugin listening on :8080"));
@@ -152,8 +152,8 @@ curl http://localhost:8080/p/my-plugin/api/hello
 ## 8. Next Steps
 
 - Use the SDK to access KV storage, database, and settings — see the language-specific SDK references:
-  - [Python SDK Reference](./02-python-sdk.md)
-  - [Node.js SDK Reference](./03-nodejs-sdk.md)
-  - [Rust SDK Reference](./04-rust-sdk.md)
+    - [Python SDK Reference](./02-python-sdk.md)
+    - [Node.js SDK Reference](./03-nodejs-sdk.md)
+    - [Rust SDK Reference](./04-rust-sdk.md)
 - Add database migrations — see [07-tutorial.md](./07-tutorial.md)
 - Optimize your Dockerfile — see [08-best-practices.md](./08-best-practices.md)

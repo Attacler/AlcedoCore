@@ -3,10 +3,10 @@
 dist
 
 # Build artifacts
-plugin-core/target/
+core/target/
 target/
 nohup.out
-plugin-core/nohup.out
+core/nohup.out
 node_modules
 
 # Local plugins (admin UI)

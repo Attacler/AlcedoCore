@@ -1,13 +1,13 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: plugin-core
-  namespace: plugin-core
-  labels:
-    app.kubernetes.io/name: plugin-core
-    app.kubernetes.io/managed-by: plugin-core
+    name: alcedocore
+    namespace: alcedocore
+    labels:
+        app.kubernetes.io/name: alcedocore
+        app.kubernetes.io/managed-by: alcedocore
 spec:
-  minAvailable: 1
-  selector:
-    matchLabels:
-      app: plugin-core
+    minAvailable: 1
+    selector:
+        matchLabels:
+            app: alcedocore

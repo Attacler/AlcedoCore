@@ -56,14 +56,14 @@ Nuxt plugin's server handles the request
 
 ## Files Changed
 
-### `plugin-core/src/api/mod.rs`
+### `alcedocore/src/api/mod.rs`
 
 - Add `catch_all_handler` as Axum `fallback` route (after all existing routes)
 - Import `SystemSetting` from `crate::db::queries`
 - Handler reads `catch_all_plugin_slug` from `system_settings` table
 - Proxies to the configured plugin if set, otherwise returns 404
 
-### `plugin-core/src/api/static_files.rs`
+### `alcedocore/src/api/static_files.rs`
 
 In `serve_index_or_static`:
 
@@ -93,13 +93,13 @@ This renders as a text input in the General section of the Settings page.
 
 ## Edge Cases
 
-| Scenario | Behavior |
-|----------|----------|
-| Setting is empty | Normal 404 behavior, no regression |
-| Setting is set to non-existent slug | proxy_handler returns 404 (no active version) |
-| Catch-all plugin is the one being requested normally | Normal flow — static files/proxy works as before |
-| Setting changes between requests | Next request picks up new value from DB |
-| High traffic on unmatched paths | DB read per request is acceptable (simple key lookup, small table) |
+| Scenario                                             | Behavior                                                           |
+| ---------------------------------------------------- | ------------------------------------------------------------------ |
+| Setting is empty                                     | Normal 404 behavior, no regression                                 |
+| Setting is set to non-existent slug                  | proxy_handler returns 404 (no active version)                      |
+| Catch-all plugin is the one being requested normally | Normal flow — static files/proxy works as before                   |
+| Setting changes between requests                     | Next request picks up new value from DB                            |
+| High traffic on unmatched paths                      | DB read per request is acceptable (simple key lookup, small table) |
 
 ## Future Considerations
 

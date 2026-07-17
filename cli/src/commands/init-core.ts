@@ -630,7 +630,7 @@ REGISTRY_ENCRYPTION_KEY=${config.registryEncryptionKey}
 }
 
 function generateK8sManifests(config: CoreConfig): Record<string, string> {
-    const namespace = config.pluginNetwork || "plugin-core";
+    const namespace = config.pluginNetwork || "alcedo-core";
     const dbName = "plugin_core";
     const dbUrlBase = `postgres://postgres:${config.dbPassword}@postgres:5432/${dbName}`;
 
@@ -789,24 +789,24 @@ spec:
         "06-core-deployment.yaml": `apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: plugin-core
+  name: alcedo-core
   namespace: ${namespace}
   labels:
-    app.kubernetes.io/name: plugin-core
-    app.kubernetes.io/managed-by: plugin-core
+    app.kubernetes.io/name: alcedo-core
+    app.kubernetes.io/managed-by: alcedo-core
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: plugin-core
+      app: alcedo-core
   template:
     metadata:
       labels:
-        app: plugin-core
-        app.kubernetes.io/name: plugin-core
-        app.kubernetes.io/managed-by: plugin-core
+        app: alcedo-core
+        app.kubernetes.io/name: alcedo-core
+        app.kubernetes.io/managed-by: alcedo-core
     spec:
-      serviceAccountName: plugin-core
+      serviceAccountName: alcedo-core
       securityContext:
         fsGroup: 1001
       initContainers:
@@ -877,13 +877,13 @@ spec:
         "07-core-service.yaml": `apiVersion: v1
 kind: Service
 metadata:
-  name: plugin-core
+  name: alcedo-core
   namespace: ${namespace}
   labels:
-    app.kubernetes.io/name: plugin-core
+    app.kubernetes.io/name: alcedo-core
 spec:
   selector:
-    app: plugin-core
+    app: alcedo-core
   ports:
     - port: 8080
       targetPort: 8080
@@ -897,8 +897,8 @@ metadata:
   name: plugin-data
   namespace: ${namespace}
   labels:
-    app.kubernetes.io/name: plugin-core
-    app.kubernetes.io/managed-by: plugin-core
+    app.kubernetes.io/name: alcedo-core
+    app.kubernetes.io/managed-by: alcedo-core
 spec:
   accessModes:
     - ReadWriteOnce
@@ -940,7 +940,7 @@ async function writeFiles(
             info("");
             info("The admin UI will be available after port-forwarding:");
             info(
-                "  kubectl port-forward -n plugin-core svc/plugin-core 8080:8080",
+                "  kubectl port-forward -n alcedo-core svc/alcedo-core 8080:8080",
             );
             info(
                 `  ${config.corePublicUrl || `http://localhost:${config.corePort}`}/admin`,

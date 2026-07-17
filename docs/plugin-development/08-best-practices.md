@@ -255,24 +255,24 @@ Design your `settings_schema` to match admin user expectations:
 
 ```json
 {
-  "settings_schema": {
-    "type": "object",
-    "properties": {
-      "page_size": {
-        "type": "integer",
-        "title": "Page Size",
-        "default": 20,
-        "minimum": 5,
-        "maximum": 100,
-        "description": "Number of items per page"
-      },
-      "enable_notifications": {
-        "type": "boolean",
-        "title": "Enable Notifications",
-        "default": true
-      }
+    "settings_schema": {
+        "type": "object",
+        "properties": {
+            "page_size": {
+                "type": "integer",
+                "title": "Page Size",
+                "default": 20,
+                "minimum": 5,
+                "maximum": 100,
+                "description": "Number of items per page"
+            },
+            "enable_notifications": {
+                "type": "boolean",
+                "title": "Enable Notifications",
+                "default": true
+            }
+        }
     }
-  }
 }
 ```
 
@@ -379,7 +379,7 @@ alcedo migrate status
 When a request fails in production, replay it locally:
 
 ```bash
-# Get the request ID from plugin-core logs
+# Get the request ID from alcedocore logs
 alcedo dev replay <request-uuid>
 ```
 
@@ -395,8 +395,8 @@ Place a `.alcedorc` file in your plugin directory:
 
 ```json
 {
-  "coreUrl": "http://custom-host:8080",
-  "registryUrl": "my-registry:5000"
+    "coreUrl": "http://custom-host:8080",
+    "registryUrl": "my-registry:5000"
 }
 ```
 

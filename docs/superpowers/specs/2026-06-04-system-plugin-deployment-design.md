@@ -2,7 +2,8 @@
 
 ## Problem
 
-Plugin-core supports two plugin types:
+alcedocore supports two plugin types:
+
 - **Static system plugins** (e.g., admin) — auto-loaded at startup from the filesystem via `StaticPluginRegistry::load_system_plugins()`. These work.
 - **Docker-based plugins** (e.g., hello-world) — must be deployed manually via API (`POST /admin/plugins/deploy`). Even if `manifest.json` has `"system_plugin": true`, there is **no auto-deploy mechanism**.
 
@@ -18,8 +19,8 @@ The core version is derived at compile time from `Cargo.toml` via `env!("CARGO_P
 
 A single new environment variable:
 
-| Variable | Description | Required |
-|----------|-------------|----------|
+| Variable             | Description                                        | Required                                  |
+| -------------------- | -------------------------------------------------- | ----------------------------------------- |
 | `SYSTEM_PLUGINS_URL` | URL of the remote system plugins manifest endpoint | No (if unset, auto-deployment is skipped) |
 
 ### Remote Endpoint Contract
@@ -28,17 +29,17 @@ The core sends a `GET` request to `{SYSTEM_PLUGINS_URL}?core_version=X.Y.Z` and 
 
 ```json
 {
-  "plugins": [
-    {
-      "slug": "hello-world",
-      "image": "localhost:5000/hello-world",
-      "version": "2.1.0",
-      "min_core_version": "0.1.0",
-      "env": {
-        "FOO": "bar"
-      }
-    }
-  ]
+    "plugins": [
+        {
+            "slug": "hello-world",
+            "image": "localhost:5000/hello-world",
+            "version": "2.1.0",
+            "min_core_version": "0.1.0",
+            "env": {
+                "FOO": "bar"
+            }
+        }
+    ]
 }
 ```
 
@@ -82,7 +83,7 @@ If `SYSTEM_PLUGINS_URL` is configured but the fetch fails, the core exits with a
 
 ### Implementation
 
-#### New Module: `plugin-core/src/plugins/system_deployer.rs`
+#### New Module: `alcedocore/src/plugins/system_deployer.rs`
 
 ```rust
 pub struct SystemPluginConfig {
@@ -104,10 +105,10 @@ pub struct SystemPluginDeployer {
 
 impl SystemPluginDeployer {
     pub fn new(config_url: String) -> Self
-    
+
     /// Fetch manifest from remote endpoint
     pub async fn fetch_manifest(&self) -> Result<SystemPluginManifest, AppError>
-    
+
     /// Deploy all system plugins from manifest, remove orphaned ones
     pub async fn deploy_all(
         &self,
@@ -117,11 +118,11 @@ impl SystemPluginDeployer {
 }
 ```
 
-#### Changes to `plugin-core/src/plugins/mod.rs`
+#### Changes to `alcedocore/src/plugins/mod.rs`
 
 Add `pub mod system_deployer;`
 
-#### Changes to `plugin-core/src/main.rs`
+#### Changes to `alcedocore/src/main.rs`
 
 After static plugin loading (line ~106), add:
 
@@ -135,7 +136,7 @@ if let Some(url) = &config.system_plugins_url {
 }
 ```
 
-#### Changes to `plugin-core/src/config.rs`
+#### Changes to `alcedocore/src/config.rs`
 
 Add `system_plugins_url: Option<String>` to `AppConfig`, populated from the `SYSTEM_PLUGINS_URL` env var.
 
@@ -145,14 +146,14 @@ No new dependencies needed. Uses `reqwest` (already a dependency) for HTTP fetch
 
 ### Error Handling
 
-| Scenario | Behavior |
-|----------|----------|
-| `SYSTEM_PLUGINS_URL` not set | Warning logged, startup continues |
-| Fetch fails (network) | Startup fails with error |
-| Response is invalid JSON | Startup fails with error |
-| Response missing required fields | Plugin is skipped with warning |
-| `min_core_version` > core version | Plugin is skipped with info log |
-| Plugin deployment fails | Individual plugin is skipped with error, other plugins still deployed |
+| Scenario                          | Behavior                                                              |
+| --------------------------------- | --------------------------------------------------------------------- |
+| `SYSTEM_PLUGINS_URL` not set      | Warning logged, startup continues                                     |
+| Fetch fails (network)             | Startup fails with error                                              |
+| Response is invalid JSON          | Startup fails with error                                              |
+| Response missing required fields  | Plugin is skipped with warning                                        |
+| `min_core_version` > core version | Plugin is skipped with info log                                       |
+| Plugin deployment fails           | Individual plugin is skipped with error, other plugins still deployed |
 
 ### Future Possibilities
 
