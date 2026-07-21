@@ -19,6 +19,7 @@ struct PluginConfig {
     slug: String,
     image: String,
     version: String,
+    plugin_type: String,
     #[serde(default)]
     min_core_version: Option<String>,
     #[serde(default)]
@@ -41,12 +42,15 @@ fn parse_version(v: &str) -> Vec<u32> {
         .collect()
 }
 
-fn load_and_filter(core_version: Option<&str>, manifest_path: &str) -> Result<PluginManifest, String> {
-    let content = fs::read_to_string(manifest_path)
-        .map_err(|e| format!("Failed to read manifest: {}", e))?;
+fn load_and_filter(
+    core_version: Option<&str>,
+    manifest_path: &str,
+) -> Result<PluginManifest, String> {
+    let content =
+        fs::read_to_string(manifest_path).map_err(|e| format!("Failed to read manifest: {}", e))?;
 
-    let mut manifest: PluginManifest = serde_json::from_str(&content)
-        .map_err(|e| format!("Invalid manifest JSON: {}", e))?;
+    let mut manifest: PluginManifest =
+        serde_json::from_str(&content).map_err(|e| format!("Invalid manifest JSON: {}", e))?;
 
     if let Some(ver_str) = core_version {
         let requested = parse_version(ver_str);
@@ -84,8 +88,7 @@ async fn handle_manifest(
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -111,9 +114,7 @@ async fn main() {
         .await
         .expect("Failed to bind address");
 
-    axum::serve(listener, app)
-        .await
-        .expect("Server failed");
+    axum::serve(listener, app).await.expect("Server failed");
 }
 
 #[cfg(test)]

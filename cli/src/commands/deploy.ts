@@ -1,6 +1,6 @@
 import { Command } from "commander";
-import { createSpinner, success, error as logError, info } from "../utils/logger.js";
-import { loadConfig } from "../config.js";
+import { createSpinner, success, error as logError, info } from "../utils/logger";
+import { loadConfig } from "../config";
 
 interface DeployOptions {
   tag?: string;

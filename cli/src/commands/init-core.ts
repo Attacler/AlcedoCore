@@ -11,7 +11,7 @@ import {
     error as logError,
     info,
     warn,
-} from "../utils/logger.js";
+} from "../utils/logger";
 
 interface CoreConfig {
     platform: "docker" | "k8s";

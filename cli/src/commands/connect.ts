@@ -1,13 +1,13 @@
 import { Command } from "commander";
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig } from "../config.js";
+import { loadConfig } from "../config";
 import {
     success,
     error as logError,
     info,
     createSpinner,
-} from "../utils/logger.js";
+} from "../utils/logger";
 
 interface ConnectOptions {
     url?: string;

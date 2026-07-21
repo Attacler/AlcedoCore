@@ -89,7 +89,7 @@ services:
                     "CMD",
                     "wget",
                     "-qO-",
-                    "http://localhost:8080/?core_version=0.1.0",
+                    "http://localhost:9090/?core_version=0.1.0",
                 ]
             interval: 10s
             timeout: 5s
@@ -123,6 +123,16 @@ services:
         volumes:
             - pgadmin-data:/var/lib/pgadmin
 
+    registry:
+        image: registry:2
+        container_name: registry
+        restart: unless-stopped
+        ports:
+            - "5000:5000"
+        volumes:
+            - registry-data:/var/lib/registry
+
 volumes:
     redis-data:
     pgadmin-data:
+    registry-data:

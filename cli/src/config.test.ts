@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { loadConfig, findAlcedorc } from "./config.js";
+import { loadConfig, findAlcedorc } from "./config";
 import os from "node:os";
 
 describe("loadConfig", () => {

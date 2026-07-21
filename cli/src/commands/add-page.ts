@@ -6,11 +6,11 @@ import {
     success,
     error as logError,
     info,
-} from "../utils/logger.js";
-import { renderAndWrite } from "../utils/ejs-renderer.js";
-import { loadConfig, ConfigSchema } from "../config.js";
-import { assertSafeName } from "../utils/validation.js";
-import { toPascalCase } from "../utils/formatting.js";
+} from "../utils/logger";
+import { renderAndWrite } from "../utils/ejs-renderer";
+import { loadConfig, ConfigSchema } from "../config";
+import { assertSafeName } from "../utils/validation";
+import { toPascalCase } from "../utils/formatting";
 
 export const addPageCommand = new Command("page")
     .argument("<name>", "Page name (e.g., dashboard)")

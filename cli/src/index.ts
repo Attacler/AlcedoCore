@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { loadConfig, ConfigSchema } from "./config.js";
+import { loadConfig, ConfigSchema } from "./config";
 import { error as logError } from "./utils/logger";
 import { initCoreCommand } from "./commands/init-core";
 import { initCommand } from "./commands/init";

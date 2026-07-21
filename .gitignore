@@ -11,6 +11,7 @@ node_modules
 
 # Local plugins (admin UI)
 .docker-plugins
+.plugins
 
 # Dependencies
 node_modules/

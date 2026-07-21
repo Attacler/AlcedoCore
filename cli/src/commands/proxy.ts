@@ -1,14 +1,14 @@
 import { Command } from "commander";
 import http from "node:http";
 import path from "node:path";
-import { loadConfig } from "../config.js";
+import { loadConfig } from "../config";
 import {
     success,
     error as logError,
     info,
     warn,
     createSpinner,
-} from "../utils/logger.js";
+} from "../utils/logger";
 
 interface ProxyOptions {
     port?: string;

@@ -1,9 +1,9 @@
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use serde::Deserialize;
 
-use crate::db::Pool;
 use crate::db::queries::{Plugin, PluginVersion};
+use crate::db::Pool;
 use crate::error::AppError;
 use crate::providers::PluginContainerProvider;
 
@@ -54,8 +54,7 @@ pub struct SystemPluginDeployer {
 impl SystemPluginDeployer {
     pub fn new(config_url: String) -> Self {
         let core_version = env!("CARGO_PKG_VERSION").to_string();
-        let plugins_dir = std::env::var("PLUGINS_DIR")
-            .unwrap_or_else(|_| "/plugins".to_string());
+        let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
         Self {
             config_url,
             core_version,
@@ -65,8 +64,7 @@ impl SystemPluginDeployer {
 
     /// Override the core version (used in tests).
     pub fn with_core_version(config_url: String, core_version: String) -> Self {
-        let plugins_dir = std::env::var("PLUGINS_DIR")
-            .unwrap_or_else(|_| "/plugins".to_string());
+        let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
         Self {
             config_url,
             core_version,
@@ -77,13 +75,17 @@ impl SystemPluginDeployer {
     /// Fetch the system plugin manifest from the remote endpoint.
     pub async fn fetch_manifest(&self) -> Result<SystemPluginManifest, AppError> {
         let url = format!("{}?core_version={}", self.config_url, self.core_version);
-        tracing::info!("[SYSTEM_DEPLOYER] Fetching system plugin manifest from: {}", url);
+        tracing::info!(
+            "[SYSTEM_DEPLOYER] Fetching system plugin manifest from: {}",
+            url
+        );
 
-        let response = reqwest::get(&url)
-            .await
-            .map_err(|e| AppError::Internal(format!(
-                "Failed to fetch system plugin manifest from {}: {}", url, e
-            )))?;
+        let response = reqwest::get(&url).await.map_err(|e| {
+            AppError::Internal(format!(
+                "Failed to fetch system plugin manifest from {}: {}",
+                url, e
+            ))
+        })?;
 
         if !response.status().is_success() {
             return Err(AppError::Internal(format!(
@@ -93,12 +95,9 @@ impl SystemPluginDeployer {
             )));
         }
 
-        let manifest: SystemPluginManifest = response
-            .json()
-            .await
-            .map_err(|e| AppError::Internal(format!(
-                "Failed to parse system plugin manifest: {}", e
-            )))?;
+        let manifest: SystemPluginManifest = response.json().await.map_err(|e| {
+            AppError::Internal(format!("Failed to parse system plugin manifest: {}", e))
+        })?;
 
         tracing::info!(
             "[SYSTEM_DEPLOYER] Fetched {} system plugin(s) from manifest",
@@ -137,7 +136,9 @@ impl SystemPluginDeployer {
                 if !is_compatible_version(&self.core_version, min_version) {
                     tracing::warn!(
                         "[SYSTEM_DEPLOYER] Plugin '{}' requires core >= {} (current: {}), skipping",
-                        slug, min_version, self.core_version
+                        slug,
+                        min_version,
+                        self.core_version
                     );
                     continue;
                 }
@@ -151,7 +152,8 @@ impl SystemPluginDeployer {
                     if version_match && running {
                         tracing::info!(
                             "[SYSTEM_DEPLOYER] Plugin '{}' version {} already deployed and running",
-                            slug, plugin_cfg.version
+                            slug,
+                            plugin_cfg.version
                         );
                         false
                     } else {
@@ -164,20 +166,23 @@ impl SystemPluginDeployer {
             if needs_deploy {
                 tracing::info!(
                     "[SYSTEM_DEPLOYER] Deploying plugin '{}' version {} from {}",
-                    slug, plugin_cfg.version, plugin_cfg.image
+                    slug,
+                    plugin_cfg.version,
+                    plugin_cfg.image
                 );
 
                 let (primary_image, fallback_image) = resolve_image_names(&plugin_cfg.image);
-
+                let mut final_image = primary_image.clone();
                 // Pull image first so we can inspect the manifest
                 let pull_result = container_provider.pull_image(&primary_image).await;
                 if pull_result.is_err() {
-                    if let Some(ref fallback) = fallback_image {
+                    if let Some(fallback) = &fallback_image {
                         tracing::warn!(
                             "[SYSTEM_DEPLOYER] Failed to pull '{}' from local registry, falling back to '{}'",
                             primary_image, fallback
                         );
                         container_provider.pull_image(fallback).await?;
+                        final_image = fallback.clone();
                     } else {
                         pull_result?;
                     }
@@ -187,19 +192,22 @@ impl SystemPluginDeployer {
                 let manifest_str = container_provider
                     .get_file_from_image(&primary_image, "/app/manifest.json")
                     .await
-                    .ok();
-                let plugin_type = manifest_str.as_ref()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-                    .and_then(|v| v.get("plugin_type").and_then(|t| t.as_str()).map(|s| s.to_string()))
+                    .unwrap();
+                let plugin_type = serde_json::from_str::<serde_json::Value>(&manifest_str)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("plugin_type")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string())
+                    })
                     .unwrap_or_else(|| "dynamic".to_string());
 
                 let is_static = plugin_type == "static";
 
                 // Ensure plugin record exists
                 let existing = Plugin::find_by_slug(db, slug).await?;
-                let final_image = fallback_image.as_ref().unwrap_or(&primary_image).clone();
 
-                if let Some(ref plugin) = existing {
+                if let Some(plugin) = &existing {
                     if plugin.plugin_type == "static" && is_static {
                         tracing::info!(
                             "[SYSTEM_DEPLOYER] Plugin '{}' already registered as static, extracting files",
@@ -228,44 +236,93 @@ impl SystemPluginDeployer {
                     std::fs::create_dir_all(&slug_dir).map_err(AppError::Io)?;
 
                     // Copy manifest.json
-                    if let Some(ref content) = manifest_str {
-                        let manifest_dest = slug_dir.join("manifest.json");
-                        std::fs::write(&manifest_dest, content).map_err(AppError::Io)?;
-                        tracing::info!("[SYSTEM_DEPLOYER] Extracted manifest.json for static plugin '{}'", slug);
-                    }
+                    let manifest_dest = slug_dir.join("manifest.json");
+                    std::fs::write(&manifest_dest, &manifest_str).map_err(AppError::Io)?;
+                    tracing::info!(
+                        "[SYSTEM_DEPLOYER] Extracted manifest.json for static plugin '{}'",
+                        slug
+                    );
 
                     // Copy public/ directory from image to plugins/{slug}/public/
-                    let public_dest = slug_dir.join("public").to_string_lossy().to_string();
-                    match container_provider.copy_directory_from_image(&final_image, "/app/public", &public_dest).await {
-                        Ok(()) => tracing::info!("[SYSTEM_DEPLOYER] Extracted public/ for static plugin '{}'", slug),
-                        Err(e) => tracing::warn!("[SYSTEM_DEPLOYER] No public/ in image for '{}': {}", slug, e),
+                    let public_dest = slug_dir.to_string_lossy().to_string();
+                    match container_provider
+                        .copy_directory_from_image(&final_image, "/app/public", public_dest)
+                        .await
+                    {
+                        Ok(()) => tracing::info!(
+                            "[SYSTEM_DEPLOYER] Extracted public/ for static plugin '{}'",
+                            slug
+                        ),
+                        Err(e) => tracing::warn!(
+                            "[SYSTEM_DEPLOYER] No public/ in image for '{}': {}",
+                            slug,
+                            e
+                        ),
                     }
 
                     // Build plugin record with manifest data
-                    let manifest = manifest_str.as_ref()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok());
+                    let manifest = serde_json::from_str::<serde_json::Value>(&manifest_str).ok();
 
                     let new_plugin = Plugin {
                         slug: slug.clone(),
                         image: final_image.clone(),
                         plugin_type: "static".to_string(),
                         system_plugin: true,
-                        env: manifest.as_ref().and_then(|m| m.get("env").cloned()).unwrap_or(serde_json::json!({})),
-                        resources: manifest.as_ref().and_then(|m| m.get("resources").cloned()).unwrap_or(serde_json::json!({})),
-                        display_name: manifest.as_ref().and_then(|m| m.get("display_name").and_then(|v| v.as_str()).map(|s| s.to_string())),
-                        description: manifest.as_ref().and_then(|m| m.get("description").and_then(|v| v.as_str()).map(|s| s.to_string())),
-                        pages: manifest.as_ref().and_then(|m| m.get("pages").cloned()).unwrap_or(serde_json::json!([])),
-                        endpoints: manifest.as_ref().and_then(|m| m.get("endpoints").cloned()).unwrap_or(serde_json::json!([])),
-                        documentation: manifest.as_ref().and_then(|m| m.get("documentation").cloned()).unwrap_or(serde_json::json!([])),
-                        settings_schema: manifest.as_ref().and_then(|m| m.get("settings_schema").cloned()).unwrap_or(serde_json::json!({})),
-                        settings: manifest.as_ref().and_then(|m| m.get("settings").cloned()).unwrap_or(serde_json::json!({})),
-                        tags: manifest.as_ref().and_then(|m| m.get("tags").cloned()).unwrap_or(serde_json::json!([])),
-                        requested_scopes: manifest.as_ref().and_then(|m| m.get("scopes").cloned()).unwrap_or(serde_json::json!([])),
-                        granted_scopes: manifest.as_ref()
+                        env: manifest
+                            .as_ref()
+                            .and_then(|m| m.get("env").cloned())
+                            .unwrap_or(serde_json::json!({})),
+                        resources: manifest
+                            .as_ref()
+                            .and_then(|m| m.get("resources").cloned())
+                            .unwrap_or(serde_json::json!({})),
+                        display_name: manifest.as_ref().and_then(|m| {
+                            m.get("display_name")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        }),
+                        description: manifest.as_ref().and_then(|m| {
+                            m.get("description")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string())
+                        }),
+                        pages: manifest
+                            .as_ref()
+                            .and_then(|m| m.get("pages").cloned())
+                            .unwrap_or(serde_json::json!([])),
+                        endpoints: manifest
+                            .as_ref()
+                            .and_then(|m| m.get("endpoints").cloned())
+                            .unwrap_or(serde_json::json!([])),
+                        documentation: manifest
+                            .as_ref()
+                            .and_then(|m| m.get("documentation").cloned())
+                            .unwrap_or(serde_json::json!([])),
+                        settings_schema: manifest
+                            .as_ref()
+                            .and_then(|m| m.get("settings_schema").cloned())
+                            .unwrap_or(serde_json::json!({})),
+                        settings: manifest
+                            .as_ref()
+                            .and_then(|m| m.get("settings").cloned())
+                            .unwrap_or(serde_json::json!({})),
+                        tags: manifest
+                            .as_ref()
+                            .and_then(|m| m.get("tags").cloned())
+                            .unwrap_or(serde_json::json!([])),
+                        requested_scopes: manifest
+                            .as_ref()
+                            .and_then(|m| m.get("scopes").cloned())
+                            .unwrap_or(serde_json::json!([])),
+                        granted_scopes: manifest
+                            .as_ref()
                             .and_then(|m| m.get("scopes").and_then(|s| s.as_array()))
                             .map(|arr| {
-                                let names: Vec<String> = arr.iter()
-                                    .filter_map(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
+                                let names: Vec<String> = arr
+                                    .iter()
+                                    .filter_map(|v| {
+                                        v.get("name").and_then(|n| n.as_str()).map(String::from)
+                                    })
                                     .collect();
                                 serde_json::json!(names)
                             })
@@ -279,7 +336,9 @@ impl SystemPluginDeployer {
 
                     // Create version record with public_path to the extracted files
                     let version_path = slug_dir.join("public").to_string_lossy().to_string();
-                    let existing_version = PluginVersion::find_by_slug_and_version(db, slug, &plugin_cfg.version).await?;
+                    let existing_version =
+                        PluginVersion::find_by_slug_and_version(db, slug, &plugin_cfg.version)
+                            .await?;
                     if existing_version.is_none() {
                         sqlx::query(
                             "INSERT INTO plugin_versions (slug, version, container_id, status, is_active, public_synced, public_path)
@@ -293,7 +352,8 @@ impl SystemPluginDeployer {
                     }
                     tracing::info!(
                         "[SYSTEM_DEPLOYER] Deployed static plugin '{}' version {}",
-                        slug, plugin_cfg.version
+                        slug,
+                        plugin_cfg.version
                     );
                 } else {
                     tracing::warn!(
@@ -305,7 +365,8 @@ impl SystemPluginDeployer {
         }
 
         // Remove orphaned system plugins (docker type only)
-        let existing_system = Plugin::find_all(db).await?
+        let existing_system = Plugin::find_all(db)
+            .await?
             .into_iter()
             .filter(|p| p.system_plugin && p.plugin_type != "static")
             .collect::<Vec<_>>();

@@ -6,9 +6,9 @@ import {
     success,
     error as logError,
     info,
-} from "../utils/logger.js";
-import { renderAndWrite } from "../utils/ejs-renderer.js";
-import { loadConfig } from "../config.js";
+} from "../utils/logger";
+import { renderAndWrite } from "../utils/ejs-renderer";
+import { loadConfig } from "../config";
 import readline from "node:readline";
 
 export const initCommand = new Command("init")

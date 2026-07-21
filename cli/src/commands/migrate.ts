@@ -1,6 +1,6 @@
 import { Command } from "commander";
-import { error as logError } from "../utils/logger.js";
-import { addMigrationAction } from "./add-migration.js";
+import { error as logError } from "../utils/logger";
+import { addMigrationAction } from "./add-migration";
 
 const generateCommand = new Command("generate")
   .argument("<name>", "Migration name (e.g., create_users_table)")

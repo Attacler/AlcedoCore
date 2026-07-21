@@ -6,11 +6,11 @@ import {
     success,
     error as logError,
     info,
-} from "../utils/logger.js";
-import { renderAndWrite } from "../utils/ejs-renderer.js";
-import { loadConfig } from "../config.js";
-import { assertSafeName } from "../utils/validation.js";
-import { generateTimestamp } from "../utils/generateTimestamp.js";
+} from "../utils/logger";
+import { renderAndWrite } from "../utils/ejs-renderer";
+import { loadConfig } from "../config";
+import { assertSafeName } from "../utils/validation";
+import { generateTimestamp } from "../utils/generateTimestamp";
 
 /**
  * Derive a table name from migration name.
