@@ -1,19 +1,17 @@
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
-    Json,
     routing::{delete, post},
-    Router,
+    Json, Router,
 };
 use serde::Deserialize;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::api::permission_check::{self, require_scope};
+use crate::api::permission_check::require_scope;
+use crate::api::roles::Role;
 use crate::error::AppError;
 use crate::plugins::health::AppState;
-use crate::api::roles::Role;
-
 
 #[derive(Debug, Deserialize)]
 pub struct AssignRoleRequest {
@@ -22,7 +20,10 @@ pub struct AssignRoleRequest {
 
 pub fn user_roles_router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/users/:id/roles", post(assign_role_handler).get(list_user_roles_handler))
+        .route(
+            "/api/users/:id/roles",
+            post(assign_role_handler).get(list_user_roles_handler),
+        )
         .route("/api/users/:id/roles/:role_id", delete(remove_role_handler))
         .with_state(state)
 }
@@ -41,16 +42,22 @@ pub async fn assign_role_handler(
         .execute(pool)
         .await?;
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, pool, "user.role_assigned",
+        &state,
+        &headers,
+        pool,
+        "user.role_assigned",
         format!("{}/{}", user_id, payload.role_id),
         None,
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::UserRoleAssigned {
-        user_id,
-        role_id: payload.role_id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::UserRoleAssigned {
+            user_id,
+            role_id: payload.role_id,
+            request_id: Some(request_id),
+        });
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -66,18 +73,20 @@ pub async fn list_user_roles_handler(
            FROM roles r
            JOIN user_roles ur ON ur.role_id = r.id
            WHERE ur.user_id = $1
-           ORDER BY r.name ASC"#
+           ORDER BY r.name ASC"#,
     )
     .bind(user_id)
     .fetch_all(pool)
     .await?
     .into_iter()
-    .map(|r| serde_json::json!({
-        "id": r.id,
-        "name": r.name,
-        "description": r.description,
-        "is_system": r.is_system,
-    }))
+    .map(|r| {
+        serde_json::json!({
+            "id": r.id,
+            "name": r.name,
+            "description": r.description,
+            "is_system": r.is_system,
+        })
+    })
     .collect();
     Ok(Json(serde_json::json!({ "data": roles })))
 }
@@ -98,15 +107,21 @@ pub async fn remove_role_handler(
         return Err(AppError::NotFound("Role assignment not found".to_string()));
     }
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, pool, "user.role_removed",
+        &state,
+        &headers,
+        pool,
+        "user.role_removed",
         format!("{}/{}", user_id, role_id),
         None,
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::UserRoleRemoved {
-        user_id,
-        role_id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::UserRoleRemoved {
+            user_id,
+            role_id,
+            request_id: Some(request_id),
+        });
     Ok(Json(serde_json::json!({ "success": true })))
 }

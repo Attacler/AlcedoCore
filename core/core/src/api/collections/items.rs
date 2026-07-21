@@ -5,12 +5,12 @@ use axum::{
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-use crate::db::relational_crud;
 use crate::api::permission_check::{self, PermissionCheck};
+use crate::db::relational_crud;
 use crate::error::AppError;
+use crate::events::SystemEvent;
 use crate::middleware;
 use crate::plugins::health::AppState;
-use crate::events::SystemEvent;
 
 use super::check_relational_permissions;
 
@@ -28,12 +28,18 @@ pub(crate) async fn update_collection_item(
     }
 
     // Enforce field-level write restrictions from permissions
-    if let PermissionCheck::Granted { ref permissions, .. } = pc {
-        let update_perms: Vec<_> = permissions.iter()
+    if let PermissionCheck::Granted {
+        ref permissions, ..
+    } = pc
+    {
+        let update_perms: Vec<_> = permissions
+            .iter()
             .filter(|p| p.action == "update")
             .cloned()
             .collect();
-        if !update_perms.is_empty() && !crate::services::permissions::has_unrestricted_write_access(&update_perms) {
+        if !update_perms.is_empty()
+            && !crate::services::permissions::has_unrestricted_write_access(&update_perms)
+        {
             let allowed = crate::services::permissions::get_allowed_write_fields(&update_perms);
             if !allowed.is_empty() {
                 for key in body.keys() {
@@ -42,7 +48,8 @@ pub(crate) async fn update_collection_item(
                     }
                     if !allowed.contains(key) {
                         return Err(AppError::Forbidden(format!(
-                            "Field '{}' is not allowed for update", key
+                            "Field '{}' is not allowed for update",
+                            key
                         )));
                     }
                 }
@@ -65,7 +72,10 @@ pub(crate) async fn update_collection_item(
     // Inline parent fields use the format `__parent__{field_name}__{parent_field}`
     let mut inline_parent_updates: Vec<(String, String, String, Value)> = Vec::new();
     let mut scalar_keys: Vec<String> = Vec::new();
-    let row_version = body.get("_row_version").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let row_version = body
+        .get("_row_version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     for key in body.keys() {
         if key.starts_with("__parent__") {
@@ -88,8 +98,12 @@ pub(crate) async fn update_collection_item(
             continue;
         } else {
             let is_relational = relational_crud::detect_crud_direction(
-                key, &collection.name, &collection, &all_collections,
-            ).is_ok();
+                key,
+                &collection.name,
+                &collection,
+                &all_collections,
+            )
+            .is_ok();
             if !is_relational {
                 scalar_keys.push(key.clone());
             }
@@ -113,14 +127,17 @@ pub(crate) async fn update_collection_item(
         &id,
         &body,
         &all_collections,
-    ).await?;
+    )
+    .await?;
 
     let scalar_fields = &relational_result.scalar_fields;
     let has_scalar_updates = !scalar_fields.is_empty();
 
     // Build col_name -> field_type map for UUID cast detection on scalar fields
     let col_type_map: std::collections::HashMap<&str, &crate::db::collections::FieldType> =
-        collection.fields.iter()
+        collection
+            .fields
+            .iter()
             .map(|f| (f.name.as_str(), &f.field_type))
             .collect();
 
@@ -142,24 +159,33 @@ pub(crate) async fn update_collection_item(
     // Enforce row-level permission filter on updates — check that the item
     // matches at least one update permission's filter. Without this, users
     // could update items that their policy wouldn't normally allow them to see.
-    if let PermissionCheck::Granted { ref permissions, .. } = pc {
-        let update_perms: Vec<_> = permissions.iter()
+    if let PermissionCheck::Granted {
+        ref permissions, ..
+    } = pc
+    {
+        let update_perms: Vec<_> = permissions
+            .iter()
             .filter(|p| p.action == "update")
             .cloned()
             .collect();
         if !update_perms.is_empty() {
-            let matching = crate::services::permissions::item_matches_any_filter(&update_perms, &old_item);
+            let matching =
+                crate::services::permissions::item_matches_any_filter(&update_perms, &old_item);
             if matching.is_empty() {
                 // item_matches_any_filter fails for dot-notation filters
                 // (e.g. order_assignments.user) because the item JSON doesn't
                 // contain joined fields. Fall back to a SQL EXISTS check using
                 // build_filter_clause_with_joins which resolves dot-notation.
                 let all_cols = crate::db::collections::list_collections(db_pool).await?;
-                let mut joins: Vec<String> = Vec::new();
+
                 let (perm_where, perm_binds, join_clauses) =
                     crate::services::permissions::build_filter_clause_with_joins(
-                        &update_perms, 1, // start_idx=1 (reserve $1 for item_id)
-                        None, &name, &collection, &all_cols,
+                        &update_perms,
+                        1, // start_idx=1 (reserve $1 for item_id)
+                        None,
+                        &name,
+                        &collection,
+                        &all_cols,
                     );
                 if !perm_where.is_empty() {
                     // Build: SELECT 1 FROM orders [JOINs] WHERE filter_conditions AND orders.id = $1
@@ -177,19 +203,21 @@ pub(crate) async fn update_collection_item(
                     for val in &perm_binds {
                         query = crate::bind_json_value!(query, val);
                     }
-                    let exists = query.fetch_optional(db_pool).await
+                    let exists = query
+                        .fetch_optional(db_pool)
+                        .await
                         .map_err(|e| AppError::DatabaseError {
                             details: format!("Permission filter check failed: {}", e),
                         })?
                         .unwrap_or(false);
                     if !exists {
                         return Err(AppError::Forbidden(
-                            "You do not have permission to update this item".to_string()
+                            "You do not have permission to update this item".to_string(),
                         ));
                     }
                 } else {
                     return Err(AppError::Forbidden(
-                        "You do not have permission to update this item".to_string()
+                        "You do not have permission to update this item".to_string(),
                     ));
                 }
             }
@@ -212,7 +240,7 @@ pub(crate) async fn update_collection_item(
             let field_type = col_type_map.get(key.as_str());
             let placeholder = match field_type {
                 Some(crate::db::collections::FieldType::Uuid)
-                    | Some(crate::db::collections::FieldType::Relationship) => {
+                | Some(crate::db::collections::FieldType::Relationship) => {
                     format!("${}::uuid", idx)
                 }
                 Some(crate::db::collections::FieldType::Datetime) => {
@@ -222,7 +250,8 @@ pub(crate) async fn update_collection_item(
             };
             set_clauses.push(format!("{} = {}", q, placeholder));
             bind_values.push(
-                scalar_fields.get(key.as_str())
+                scalar_fields
+                    .get(key.as_str())
                     .cloned()
                     .unwrap_or(Value::Null),
             );
@@ -245,13 +274,15 @@ pub(crate) async fn update_collection_item(
         }
         q = q.bind(id.as_str());
 
-        let (row,): (Value,) = q.fetch_optional(&mut *tx).await.map_err(|e| {
-            AppError::DatabaseError {
+        let (row,): (Value,) = q
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| AppError::DatabaseError {
                 details: format!("Collection item update failed: {}", e),
-            }
-        })?.ok_or_else(|| {
-            AppError::NotFound(format!("Item '{}' not found in collection '{}'", id, name))
-        })?;
+            })?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Item '{}' not found in collection '{}'", id, name))
+            })?;
         row
     } else {
         old_item.clone()
@@ -264,8 +295,12 @@ pub(crate) async fn update_collection_item(
             if let Some(ref target) = rel_def.related_collection {
                 // Check cross-collection permission on the parent collection
                 if let PermissionCheck::Granted { .. } = pc {
-                    match permission_check::check_permission(&state, &headers, target, "update").await? {
-                        PermissionCheck::Denied { reason } => return Err(AppError::Forbidden(reason)),
+                    match permission_check::check_permission(&state, &headers, target, "update")
+                        .await?
+                    {
+                        PermissionCheck::Denied { reason } => {
+                            return Err(AppError::Forbidden(reason))
+                        }
                         _ => {}
                     }
                 }
@@ -285,16 +320,17 @@ pub(crate) async fn update_collection_item(
                     if let Some(ref db_version) = check {
                         if db_version != rv {
                             return Err(AppError::Conflict(
-                                "Parent record was modified by another user".to_string()
+                                "Parent record was modified by another user".to_string(),
                             ));
                         }
                     }
                 }
 
                 // Get the parent record ID
-                let parent_id: Option<String> = sqlx::query_scalar(
-                    &format!("SELECT \"{}\"::text FROM \"{}\" WHERE \"id\" = $1::uuid", rel_field, name)
-                )
+                let parent_id: Option<String> = sqlx::query_scalar(&format!(
+                    "SELECT \"{}\"::text FROM \"{}\" WHERE \"id\" = $1::uuid",
+                    rel_field, name
+                ))
                 .bind(&id)
                 .fetch_optional(&mut *tx)
                 .await
@@ -302,7 +338,8 @@ pub(crate) async fn update_collection_item(
                     details: format!("Failed to get parent ID: {}", e),
                 })?;
 
-                let parent_uuid = parent_id.ok_or_else(|| AppError::NotFound(format!("Item '{}' not found", id)))?;
+                let parent_uuid = parent_id
+                    .ok_or_else(|| AppError::NotFound(format!("Item '{}' not found", id)))?;
 
                 // Update the parent record with parameterized query
                 // Bind the value as the correct SQL type to avoid extra JSON quoting
@@ -315,7 +352,8 @@ pub(crate) async fn update_collection_item(
                 let mut query = sqlx::query(&update_sql);
                 query = crate::bind_json_value!(query, val);
                 query = query.bind(&parent_uuid);
-                query.execute(&mut *tx)
+                query
+                    .execute(&mut *tx)
                     .await
                     .map_err(|e| AppError::DatabaseError {
                         details: format!("Parent field update failed: {}", e),
@@ -343,8 +381,12 @@ pub(crate) async fn update_collection_item(
     // --- End event emission ---
 
     // Apply field-level read restrictions to the response
-    let response_item = if let PermissionCheck::Granted { ref permissions, .. } = pc {
-        let update_perms: Vec<_> = permissions.iter()
+    let response_item = if let PermissionCheck::Granted {
+        ref permissions, ..
+    } = pc
+    {
+        let update_perms: Vec<_> = permissions
+            .iter()
             .filter(|p| p.action == "update")
             .cloned()
             .collect();

@@ -27,7 +27,10 @@ const LEGACY_MIGRATIONS: &[(&str, &str)] = &[
     ("core-017", "017_plugin_scopes.up.sql"),
     ("core-018", "018_users.up.sql"),
     ("core-019", "019_roles_permissions.up.sql"),
-    ("core-020", "020_rename_role_permissions_to_role_scopes.up.sql"),
+    (
+        "core-020",
+        "020_rename_role_permissions_to_role_scopes.up.sql",
+    ),
     ("core-021", "021_role_policies.up.sql"),
     ("core-022", "022_update_scope_names.up.sql"),
     ("core-023", "023_seed_system_collections.up.sql"),
@@ -153,14 +156,15 @@ impl CoreMigrationRunner {
     ///
     /// Returns a list of versions that were applied (or `["legacy-pre-populated"]`
     /// when an existing legacy database was detected).
-    pub async fn run_pending(&self) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn run_pending(
+        &self,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
         // 1. Bootstrap the schema_migrations tracking table.
         self.ensure_schema_migrations_table().await?;
 
         // 2. Detect database state.
         let applied = self.get_applied_core_migrations().await?;
-        let applied_set: std::collections::HashSet<String> =
-            applied.into_iter().collect();
+        let applied_set: std::collections::HashSet<String> = applied.into_iter().collect();
 
         // 3. Legacy DB handling — tables exist but no core-* entries.
         if applied_set.is_empty() && self.is_legacy_database().await? {
@@ -178,7 +182,7 @@ impl CoreMigrationRunner {
                 "Core migrations directory '{}' not found. Skipping core migrations.",
                 migrations_dir
             );
-            return Ok(vec![]);
+            panic!("Could not resolve migrations");
         }
 
         // 5. Collect .up.sql files sorted by filename.
@@ -214,9 +218,7 @@ impl CoreMigrationRunner {
                 continue;
             }
 
-            let description = filename
-                .strip_suffix(".up.sql")
-                .unwrap_or(filename);
+            let description = filename.strip_suffix(".up.sql").unwrap_or(filename);
 
             tracing::info!("Applying core migration {} ({})...", version, filename);
             let content = fs::read_to_string(path)?;
