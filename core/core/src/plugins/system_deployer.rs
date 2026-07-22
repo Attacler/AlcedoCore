@@ -246,7 +246,7 @@ impl SystemPluginDeployer {
                     // Copy public/ directory from image to plugins/{slug}/public/
                     let public_dest = slug_dir.to_string_lossy().to_string();
                     match container_provider
-                        .copy_directory_from_image(&final_image, "/app/public", public_dest)
+                        .copy_directory_from_image(&final_image, "/app/public", &public_dest)
                         .await
                     {
                         Ok(()) => tracing::info!(
