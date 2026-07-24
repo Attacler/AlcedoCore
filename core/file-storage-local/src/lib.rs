@@ -26,16 +26,26 @@ impl FileStorage for LocalFileStorage {
         data: Bytes,
         mime_type: &str,
         filename: &str,
+        folder_path: Option<&str>,
     ) -> Result<String, FileStorageError> {
-        let generated = format!("{}-{}", Uuid::new_v4(), filename);
-        let full_path = self.base_path.join(&generated);
+        let storage_path = match folder_path {
+            Some(folder) => format!("{}/{}", folder, filename),
+            None => format!("{}-{}", Uuid::new_v4(), filename),
+        };
+        let full_path = self.base_path.join(&storage_path);
+
+        if let Some(parent) = full_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| FileStorageError::StorageError(e.to_string()))?;
+        }
 
         tokio::fs::write(&full_path, &data)
             .await
             .map_err(|e| FileStorageError::StorageError(e.to_string()))?;
 
-        info!(path = %generated, mime_type = %mime_type, "File uploaded to local storage");
-        Ok(generated)
+        info!(path = %storage_path, mime_type = %mime_type, "File uploaded to local storage");
+        Ok(storage_path)
     }
 
     async fn download(

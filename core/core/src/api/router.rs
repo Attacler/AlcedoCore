@@ -93,7 +93,10 @@ pub fn make_router(
         .route("/api/files/batch/delete", post(super::files::batch_delete_files).with_state(state.clone()))
         .route("/api/files", get(super::files::list_files).with_state(state.clone()))
         .route("/api/files/:id", get(super::files::get_file_metadata).patch(super::files::update_file_metadata).delete(super::files::delete_file).with_state(state.clone()))
-        .route("/api/files/:id/download", get(super::files::download_file).with_state(state.clone()));
+        .route("/api/files/:id/download", get(super::files::download_file).with_state(state.clone()))
+        // Folder management API
+        .route("/api/files/folders", post(super::files::create_folder).get(super::files::list_folders).with_state(state.clone()))
+        .route("/api/files/folders/:id", get(super::files::get_folder).patch(super::files::update_folder).delete(super::files::delete_folder).with_state(state.clone()));
 
     // Session middleware only on /api/* routes
     let api_routes = api_routes.layer(session_layer);

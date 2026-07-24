@@ -64,6 +64,7 @@ pub trait FileStorage: Send + Sync {
         data: Bytes,
         mime_type: &str,
         filename: &str,
+        folder_path: Option<&str>,
     ) -> Result<String, FileStorageError>;
 
     /// Retrieve a file by its storage path.

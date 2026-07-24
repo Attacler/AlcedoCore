@@ -30,8 +30,12 @@ impl FileStorage for S3FileStorage {
         data: Bytes,
         mime_type: &str,
         filename: &str,
+        folder_path: Option<&str>,
     ) -> Result<String, FileStorageError> {
-        let key = format!("{}/{}-{}", self.prefix, Uuid::new_v4(), filename);
+        let key = match folder_path {
+            Some(folder) => format!("{}/{}/{}", self.prefix, folder, filename),
+            None => format!("{}/{}-{}", self.prefix, Uuid::new_v4(), filename),
+        };
 
         self.client
             .put_object()

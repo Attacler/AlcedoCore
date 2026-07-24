@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useAlcedoClient } from '@/composables/useAlcedoClient'
 import { useToast } from '@/composables/useToast'
 import { formatFileSize } from '@/utils/formatters'
@@ -13,6 +13,15 @@ interface MediaFile {
   created_at: string
   updated_at: string
   download_url: string
+}
+
+interface FileFolder {
+  id: string
+  name: string
+  parent_id: string | null
+  created_by: string | null
+  created_at: string
+  updated_at: string
 }
 
 const { client } = useAlcedoClient()
@@ -39,6 +48,20 @@ const showDeleteConfirm = ref(false)
 const uploading = ref(false)
 const uploadProgress = ref(0)
 
+const folders = ref<FileFolder[]>([])
+const currentFolderId = ref<string | null>(null)
+const folderPath = ref<FileFolder[]>([])
+const showCreateFolderDialog = ref(false)
+const newFolderName = ref('')
+const creatingFolder = ref(false)
+const showDeleteFolderDialog = ref(false)
+const folderToDelete = ref<FileFolder | null>(null)
+const deletingFolder = ref(false)
+const showRenameFolderDialog = ref(false)
+const folderToRename = ref<FileFolder | null>(null)
+const renameFolderName = ref('')
+const renamingFolder = ref(false)
+
 const filterOptions = [
   { label: 'All', value: '' },
   { label: 'Images', value: 'image/' },
@@ -54,21 +77,21 @@ function onSearchInput() {
   if (searchTimeout) clearTimeout(searchTimeout)
   searchTimeout = setTimeout(() => {
     page.value = 1
-    fetchFiles()
+    fetchFiles(currentFolderId.value)
   }, 300)
 }
 
 function onFilterChange(value: string) {
   typeFilter.value = value
   page.value = 1
-  fetchFiles()
+  fetchFiles(currentFolderId.value)
 }
 
-async function fetchFiles() {
+async function fetchFiles(folderId?: string | null) {
   loading.value = true
   error.value = null
   try {
-    const params: { limit: number; offset: number; search?: string; mime_type?: string } = {
+    const params: { limit: number; offset: number; search?: string; mime_type?: string; folder_id?: string } = {
       limit,
       offset: offset.value,
     }
@@ -76,6 +99,11 @@ async function fetchFiles() {
     if (typeFilter.value) {
       const mimeType = typeFilter.value === 'other' ? '' : typeFilter.value
       if (mimeType) params.mime_type = mimeType
+    }
+    if (folderId === null) {
+      params.folder_id = ''
+    } else if (folderId !== undefined) {
+      params.folder_id = folderId
     }
     const data = await client.files.list(params) as { data: MediaFile[]; total: number }
     files.value = data.data || []
@@ -174,6 +202,9 @@ function startUpload(file: File) {
   uploadProgress.value = 0
   const formData = new FormData()
   formData.append('file', file)
+  if (currentFolderId.value) {
+    formData.append('folder_id', currentFolderId.value)
+  }
 
   const xhr = new XMLHttpRequest()
   xhr.upload.onprogress = (e) => {
@@ -184,7 +215,7 @@ function startUpload(file: File) {
     if (xhr.status >= 200 && xhr.status < 300) {
       toast.show('File uploaded successfully', 'success')
       page.value = 1
-      fetchFiles()
+      fetchFiles(currentFolderId.value)
     } else {
       toast.show('Upload failed', 'error')
     }
@@ -199,7 +230,7 @@ function startUpload(file: File) {
 
 function onPageChange(event: { page: number; rows: number }) {
   page.value = event.page + 1
-  fetchFiles()
+  fetchFiles(currentFolderId.value)
 }
 
 function isImage(mimeType: string): boolean {
@@ -221,139 +252,347 @@ function formatDate(iso?: string): string {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
+async function fetchFolders(parentId?: string) {
+  try {
+    const data = await client.files.folders.list(parentId) as { data: FileFolder[] }
+    return data.data || []
+  } catch {
+    return []
+  }
+}
+
+async function loadCurrentFolders() {
+  folders.value = await fetchFolders(currentFolderId.value || undefined)
+}
+
+async function buildFolderPath(folderId: string | null): Promise<FileFolder[]> {
+  const path: FileFolder[] = []
+  let current = folderId
+  while (current) {
+    try {
+      const folder = await client.files.folders.get(current) as FileFolder
+      path.unshift(folder)
+      current = folder.parent_id
+    } catch {
+      break
+    }
+  }
+  return path
+}
+
+function navigateToFolder(folder: FileFolder | null) {
+  currentFolderId.value = folder ? folder.id : null
+  page.value = 1
+  loadCurrentFolders()
+  fetchFiles(currentFolderId.value)
+  buildFolderPath(currentFolderId.value).then(p => folderPath.value = p)
+}
+
+function navigateToRoot() {
+  currentFolderId.value = null
+  page.value = 1
+  loadCurrentFolders()
+  fetchFiles(currentFolderId.value)
+  folderPath.value = []
+}
+
+function navigateToParent() {
+  if (folderPath.value.length > 0) {
+    const parent = folderPath.value[folderPath.value.length - 1].parent_id
+    if (parent) {
+      navigateToFolder({ id: parent } as FileFolder)
+    } else {
+      navigateToRoot()
+    }
+  }
+}
+
+async function createFolder() {
+  if (!newFolderName.value.trim()) return
+  creatingFolder.value = true
+  try {
+    await client.files.folders.create(newFolderName.value.trim(), currentFolderId.value || undefined)
+    toast.show('Folder created', 'success')
+    showCreateFolderDialog.value = false
+    newFolderName.value = ''
+    await loadCurrentFolders()
+  } catch (e) {
+    toast.show(`Failed to create folder: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error')
+  } finally {
+    creatingFolder.value = false
+  }
+}
+
+function confirmDeleteFolder(folder: FileFolder) {
+  folderToDelete.value = folder
+  showDeleteFolderDialog.value = true
+}
+
+async function handleDeleteFolder() {
+  if (!folderToDelete.value) return
+  deletingFolder.value = true
+  try {
+    await client.files.folders.delete(folderToDelete.value.id, true)
+    toast.show('Folder deleted', 'success')
+    showDeleteFolderDialog.value = false
+    folderToDelete.value = null
+    await loadCurrentFolders()
+    if (currentFolderId.value) {
+      fetchFiles(currentFolderId.value)
+    }
+  } catch (e) {
+    toast.show(`Failed to delete folder: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error')
+  } finally {
+    deletingFolder.value = false
+  }
+}
+
+function confirmRenameFolder(folder: FileFolder) {
+  folderToRename.value = folder
+  renameFolderName.value = folder.name
+  showRenameFolderDialog.value = true
+}
+
+async function handleRenameFolder() {
+  if (!folderToRename.value || !renameFolderName.value.trim()) return
+  renamingFolder.value = true
+  try {
+    await client.files.folders.update(folderToRename.value.id, { name: renameFolderName.value.trim() })
+    toast.show('Folder renamed', 'success')
+    showRenameFolderDialog.value = false
+    folderToRename.value = null
+    await loadCurrentFolders()
+    await buildFolderPath(currentFolderId.value).then(p => folderPath.value = p)
+  } catch (e) {
+    toast.show(`Failed to rename folder: ${e instanceof Error ? e.message : 'Unknown error'}`, 'error')
+  } finally {
+    renamingFolder.value = false
+  }
+}
+
 onMounted(() => {
-  fetchFiles()
+  loadCurrentFolders()
+  fetchFiles(currentFolderId.value)
 })
 </script>
 
 <template>
   <div class="p-6">
-    <!-- Header -->
-    <div class="flex items-center justify-between mb-6">
-      <h1 class="text-2xl font-bold text-gray-900">Media Library</h1>
-      <Button
-        icon="pi pi-upload"
-        label="Upload"
-        severity="primary"
-        @click="toggleUploadZone"
-      />
-    </div>
+    <div class="flex gap-6">
+      <!-- Left sidebar - Folder Tree -->
+      <div class="w-72 flex-shrink-0">
+        <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div class="p-3 border-b border-gray-100">
+            <Button
+              icon="pi pi-folder-plus"
+              label="New Folder"
+              severity="secondary"
+              outlined
+              size="small"
+              class="w-full"
+              @click="showCreateFolderDialog = true"
+            />
+          </div>
+          <div class="p-2">
+            <!-- Root (All Files) -->
+            <div
+              class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors"
+              :class="currentFolderId === null ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-gray-100 text-gray-700'"
+              @click="navigateToRoot()"
+            >
+              <i class="pi pi-inbox text-base"></i>
+              <span>All Files</span>
+            </div>
 
-    <!-- Collapsible Upload Zone -->
-    <div
-      v-if="showUploadZone"
-      class="mb-6 border-2 border-dashed border-gray-300 rounded-xl p-8 text-center transition-colors"
-      :class="{ 'border-primary bg-primary/5': uploading }"
-      @drop.prevent="onDrop"
-      @dragover.prevent
-    >
-      <div v-if="!uploading" class="space-y-3">
-        <i class="pi pi-cloud-upload text-4xl text-gray-400 block"></i>
-        <p class="text-gray-500">
-          Drag & drop files here, or
-          <label class="text-primary cursor-pointer hover:underline">
-            browse
-            <input type="file" class="hidden" @change="onFileSelected" />
-          </label>
-        </p>
+            <!-- Folder list -->
+            <div v-if="folders.length > 0" class="mt-1 space-y-0.5">
+              <div
+                v-for="folder in folders"
+                :key="folder.id"
+                class="group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors"
+                :class="currentFolderId === folder.id ? 'bg-primary/10 text-primary font-medium' : 'hover:bg-gray-100 text-gray-700'"
+                @click="navigateToFolder(folder)"
+              >
+                <i class="pi pi-folder text-base"></i>
+                <span class="flex-1 truncate">{{ folder.name }}</span>
+                <div class="hidden group-hover:flex items-center gap-1">
+                  <Button
+                    icon="pi pi-pencil"
+                    severity="secondary"
+                    text
+                    rounded
+                    size="small"
+                    @click.stop="confirmRenameFolder(folder)"
+                  />
+                  <Button
+                    icon="pi pi-trash"
+                    severity="danger"
+                    text
+                    rounded
+                    size="small"
+                    @click.stop="confirmDeleteFolder(folder)"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <!-- Empty folder state -->
+            <div v-if="folders.length === 0 && currentFolderId !== null" class="px-3 py-4 text-center text-xs text-gray-400">
+              This folder is empty
+            </div>
+          </div>
+        </div>
       </div>
-      <div v-else class="space-y-3">
-        <i class="pi pi-spin pi-spinner text-3xl text-primary block"></i>
-        <p class="text-gray-500">Uploading...</p>
-        <ProgressBar :value="uploadProgress" class="max-w-md mx-auto" />
-      </div>
-    </div>
 
-    <!-- Search & Filters -->
-    <div class="flex flex-wrap items-center gap-3 mb-6">
-      <span class="p-input-icon-left flex-1 min-w-[200px]">
-        <i class="pi pi-search" />
-        <InputText
-          v-model="search"
-          placeholder="Search files..."
-          class="w-full"
-          @input="onSearchInput"
-        />
-      </span>
-      <div class="flex gap-2">
-        <button
-          v-for="opt in filterOptions"
-          :key="opt.value"
-          class="px-3 py-1.5 text-sm rounded-full border transition-colors cursor-pointer"
-          :class="typeFilter === opt.value
-            ? 'bg-primary text-white border-primary'
-            : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'"
-          @click="onFilterChange(opt.value)"
-        >
-          {{ opt.label }}
-        </button>
-      </div>
-    </div>
-
-    <!-- Loading State -->
-    <div v-if="loading" class="text-center py-16 text-gray-400">
-      <i class="pi pi-spin pi-spinner text-3xl block mb-3"></i>
-      <p>Loading files...</p>
-    </div>
-
-    <!-- Error State -->
-    <div v-else-if="error" class="mb-6">
-      <Message severity="error" :closable="false">
-        {{ error }}
-      </Message>
-      <Button label="Retry" severity="secondary" outlined @click="fetchFiles" class="mt-2" />
-    </div>
-
-    <!-- Empty State -->
-    <div v-else-if="files.length === 0" class="text-center py-16">
-      <Message severity="info" :closable="false">
-        <template #icon>
-          <i class="pi pi-image text-2xl mr-2" />
-        </template>
-        <span v-if="search || typeFilter">No files match your search criteria.</span>
-        <span v-else>No files uploaded yet. Click "Upload" to get started.</span>
-      </Message>
-    </div>
-
-    <!-- Grid View -->
-    <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 mb-6">
-      <div
-        v-for="file in files"
-        :key="file.id"
-        class="bg-white rounded-lg border border-gray-200 overflow-hidden cursor-pointer hover:shadow-md transition-shadow"
-        @click="openFileDetail(file)"
-      >
-        <!-- Thumbnail / Icon -->
-        <div class="aspect-square flex items-center justify-center bg-gray-50 overflow-hidden">
-          <img
-            v-if="isImage(file.mime_type)"
-            :src="`/api/files/${file.id}/download`"
-            :alt="file.alt_text || file.filename"
-            class="w-full h-full object-cover"
+      <!-- Right pane - File grid -->
+      <div class="flex-1 min-w-0">
+        <!-- Breadcrumb -->
+        <div class="flex items-center gap-2 mb-4 text-sm text-gray-500">
+          <button
+            class="hover:text-primary transition-colors cursor-pointer"
+            @click="navigateToRoot()"
+          >
+            <i class="pi pi-home"></i>
+          </button>
+          <template v-for="(f, i) in folderPath" :key="f.id">
+            <i class="pi pi-chevron-right text-xs"></i>
+            <button
+              class="hover:text-primary transition-colors cursor-pointer"
+              :class="i === folderPath.length - 1 ? 'text-gray-900 font-medium' : ''"
+              @click="navigateToFolder(f)"
+            >
+              {{ f.name }}
+            </button>
+          </template>
+          <div class="flex-1"></div>
+          <!-- Upload button -->
+          <Button
+            icon="pi pi-upload"
+            label="Upload"
+            severity="primary"
+            size="small"
+            @click="toggleUploadZone"
           />
-          <i v-else :class="[getFileIcon(file.mime_type), 'text-3xl text-gray-400']" />
         </div>
-        <!-- Info -->
-        <div class="p-2 space-y-1">
-          <div class="text-xs font-medium text-gray-800 truncate" :title="file.filename">
-            {{ file.filename }}
+
+        <!-- Collapsible Upload Zone -->
+        <div
+          v-if="showUploadZone"
+          class="mb-6 border-2 border-dashed border-gray-300 rounded-xl p-8 text-center transition-colors"
+          :class="{ 'border-primary bg-primary/5': uploading }"
+          @drop.prevent="onDrop"
+          @dragover.prevent
+        >
+          <div v-if="!uploading" class="space-y-3">
+            <i class="pi pi-cloud-upload text-4xl text-gray-400 block"></i>
+            <p class="text-gray-500">
+              Drag & drop files here, or
+              <label class="text-primary cursor-pointer hover:underline">
+                browse
+                <input type="file" class="hidden" @change="onFileSelected" />
+              </label>
+            </p>
           </div>
-          <div class="flex items-center justify-between text-[10px] text-gray-500">
-            <span>{{ formatFileSize(file.size_bytes) }}</span>
-            <span>{{ formatDate(file.created_at) }}</span>
+          <div v-else class="space-y-3">
+            <i class="pi pi-spin pi-spinner text-3xl text-primary block"></i>
+            <p class="text-gray-500">Uploading...</p>
+            <ProgressBar :value="uploadProgress" class="max-w-md mx-auto" />
           </div>
+        </div>
+
+        <!-- Search & Filters -->
+        <div class="flex flex-wrap items-center gap-3 mb-6">
+          <span class="p-input-icon-left flex-1 min-w-[200px]">
+            <i class="pi pi-search" />
+            <InputText
+              v-model="search"
+              placeholder="Search files..."
+              class="w-full"
+              @input="onSearchInput"
+            />
+          </span>
+          <div class="flex gap-2">
+            <button
+              v-for="opt in filterOptions"
+              :key="opt.value"
+              class="px-3 py-1.5 text-sm rounded-full border transition-colors cursor-pointer"
+              :class="typeFilter === opt.value
+                ? 'bg-primary text-white border-primary'
+                : 'bg-white text-gray-600 border-gray-300 hover:border-gray-400'"
+              @click="onFilterChange(opt.value)"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Loading State -->
+        <div v-if="loading" class="text-center py-16 text-gray-400">
+          <i class="pi pi-spin pi-spinner text-3xl block mb-3"></i>
+          <p>Loading files...</p>
+        </div>
+
+        <!-- Error State -->
+        <div v-else-if="error" class="mb-6">
+          <Message severity="error" :closable="false">
+            {{ error }}
+          </Message>
+          <Button label="Retry" severity="secondary" outlined @click="fetchFiles(currentFolderId.value)" class="mt-2" />
+        </div>
+
+        <!-- Empty State -->
+        <div v-else-if="files.length === 0" class="text-center py-16">
+          <Message severity="info" :closable="false">
+            <template #icon>
+              <i class="pi pi-image text-2xl mr-2" />
+            </template>
+            <span v-if="search || typeFilter">No files match your search criteria.</span>
+            <span v-else-if="currentFolderId">This folder has no files. Upload one to get started.</span>
+            <span v-else>No files uploaded yet. Click "Upload" to get started.</span>
+          </Message>
+        </div>
+
+        <!-- Grid View -->
+        <div v-else class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 mb-6">
+          <div
+            v-for="file in files"
+            :key="file.id"
+            class="bg-white rounded-lg border border-gray-200 overflow-hidden cursor-pointer hover:shadow-md transition-shadow"
+            @click="openFileDetail(file)"
+          >
+            <!-- Thumbnail / Icon -->
+            <div class="aspect-square flex items-center justify-center bg-gray-50 overflow-hidden">
+              <img
+                v-if="isImage(file.mime_type)"
+                :src="`/api/files/${file.id}/download`"
+                :alt="file.alt_text || file.filename"
+                class="w-full h-full object-cover"
+              />
+              <i v-else :class="[getFileIcon(file.mime_type), 'text-3xl text-gray-400']" />
+            </div>
+            <!-- Info -->
+            <div class="p-2 space-y-1">
+              <div class="text-xs font-medium text-gray-800 truncate" :title="file.filename">
+                {{ file.filename }}
+              </div>
+              <div class="flex items-center justify-between text-[10px] text-gray-500">
+                <span>{{ formatFileSize(file.size_bytes) }}</span>
+                <span>{{ formatDate(file.created_at) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Pagination -->
+        <div v-if="total > limit" class="flex justify-center">
+          <Paginator
+            :first="(page - 1) * limit"
+            :rows="limit"
+            :totalRecords="total"
+            @page="onPageChange"
+          />
         </div>
       </div>
-    </div>
-
-    <!-- Pagination -->
-    <div v-if="total > limit" class="flex justify-center">
-      <Paginator
-        :first="(page - 1) * limit"
-        :rows="limit"
-        :totalRecords="total"
-        @page="onPageChange"
-      />
     </div>
 
     <!-- File Detail Sidebar -->
@@ -461,6 +700,88 @@ onMounted(() => {
       <template #footer>
         <Button label="Cancel" severity="secondary" outlined @click="showDeleteConfirm = false" />
         <Button label="Delete" severity="danger" :loading="deleting" @click="handleDelete" />
+      </template>
+    </Dialog>
+
+    <!-- Create Folder Dialog -->
+    <Dialog
+      v-model:visible="showCreateFolderDialog"
+      header="Create Folder"
+      :modal="true"
+      :style="{ width: '400px' }"
+      :draggable="false"
+    >
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1">Folder Name</label>
+          <InputText
+            v-model="newFolderName"
+            placeholder="Enter folder name"
+            class="w-full"
+            @keyup.enter="createFolder"
+            autofocus
+          />
+        </div>
+        <p v-if="folderPath.length > 0" class="text-xs text-gray-400">
+          Location: Root / {{ folderPath.map(f => f.name).join(' / ') }}
+        </p>
+      </div>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" outlined @click="showCreateFolderDialog = false" />
+        <Button
+          label="Create"
+          severity="primary"
+          :loading="creatingFolder"
+          :disabled="!newFolderName.trim()"
+          @click="createFolder"
+        />
+      </template>
+    </Dialog>
+
+    <!-- Delete Folder Dialog -->
+    <Dialog
+      v-model:visible="showDeleteFolderDialog"
+      header="Delete Folder"
+      :modal="true"
+      :style="{ width: '450px' }"
+      :draggable="false"
+    >
+      <p class="text-gray-600 mb-4">
+        Are you sure you want to delete "{{ folderToDelete?.name }}"? This will permanently delete the folder and all its contents.
+      </p>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" outlined @click="showDeleteFolderDialog = false" />
+        <Button label="Delete" severity="danger" :loading="deletingFolder" @click="handleDeleteFolder" />
+      </template>
+    </Dialog>
+
+    <!-- Rename Folder Dialog -->
+    <Dialog
+      v-model:visible="showRenameFolderDialog"
+      header="Rename Folder"
+      :modal="true"
+      :style="{ width: '400px' }"
+      :draggable="false"
+    >
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Folder Name</label>
+        <InputText
+          v-model="renameFolderName"
+          placeholder="Enter new name"
+          class="w-full"
+          @keyup.enter="handleRenameFolder"
+          autofocus
+        />
+      </div>
+      <template #footer>
+        <Button label="Cancel" severity="secondary" outlined @click="showRenameFolderDialog = false" />
+        <Button
+          label="Save"
+          severity="primary"
+          :loading="renamingFolder"
+          :disabled="!renameFolderName.trim() || renameFolderName === folderToRename?.name"
+          @click="handleRenameFolder"
+        />
       </template>
     </Dialog>
   </div>
