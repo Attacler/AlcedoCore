@@ -4,10 +4,10 @@ use axum::{
     routing::{delete, get, put},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use once_cell::sync::Lazy;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -112,7 +112,9 @@ pub async fn create_policy(
     permission_check::require_scope(&state, &headers, "policies.write").await?;
 
     if payload.name.is_empty() || payload.name.len() > 255 {
-        return Err(AppError::BadRequest("Policy name must be 1-255 characters".to_string()));
+        return Err(AppError::BadRequest(
+            "Policy name must be 1-255 characters".to_string(),
+        ));
     }
 
     let row = sqlx::query_as::<_, PolicyRow>(
@@ -125,16 +127,22 @@ pub async fn create_policy(
     .await?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "policy.created",
+        &state,
+        &headers,
+        db_pool,
+        "policy_created",
         row.name.clone(),
         Some(format!("Policy '{}' created", row.name)),
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::PolicyCreated {
-        policy_id: row.id,
-        name: row.name.clone(),
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::PolicyCreated {
+            policy_id: row.id,
+            name: row.name.clone(),
+            request_id: Some(request_id),
+        });
 
     Ok(Json(json!(row)))
 }
@@ -195,16 +203,22 @@ pub async fn update_policy(
     .ok_or_else(|| AppError::NotFound(format!("Policy not found: {}", id)))?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "policy.updated",
+        &state,
+        &headers,
+        db_pool,
+        "policy_updated",
         row.name.clone(),
         Some(format!("Policy '{}' updated", row.name)),
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::PolicyUpdated {
-        policy_id: row.id,
-        name: row.name.clone(),
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::PolicyUpdated {
+            policy_id: row.id,
+            name: row.name.clone(),
+            request_id: Some(request_id),
+        });
 
     Ok(Json(json!(row)))
 }
@@ -227,16 +241,22 @@ pub async fn delete_policy(
     }
 
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "policy.deleted",
+        &state,
+        &headers,
+        db_pool,
+        "policy_deleted",
         id.to_string(),
         Some(format!("Policy '{}' deleted", id)),
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::PolicyDeleted {
-        policy_id: id,
-        name: id.to_string(),
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::PolicyDeleted {
+            policy_id: id,
+            name: id.to_string(),
+            request_id: Some(request_id),
+        });
 
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
@@ -264,22 +284,25 @@ pub async fn list_permissions(
 
 /// Validate a filter field path, allowing dots for relationship traversal.
 /// Each segment must be a valid field name.
-static FIELD_PATH_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)*$").unwrap()
-});
+static FIELD_PATH_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)*$").unwrap());
 
 fn validate_filter_field_path(path: &str) -> Result<(), AppError> {
     if path.is_empty() {
-        return Err(AppError::BadRequest("Filter field path cannot be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "Filter field path cannot be empty".to_string(),
+        ));
     }
     if path.len() > 200 {
         return Err(AppError::BadRequest(format!(
-            "Filter field path too long: {} chars (max 200)", path.len()
+            "Filter field path too long: {} chars (max 200)",
+            path.len()
         )));
     }
     if !FIELD_PATH_RE.is_match(path) {
         return Err(AppError::BadRequest(format!(
-            "Invalid filter field path '{}': must be a valid field name or dot-separated path", path
+            "Invalid filter field path '{}': must be a valid field name or dot-separated path",
+            path
         )));
     }
     Ok(())
@@ -302,7 +325,10 @@ async fn validate_filter_paths_resolve(
             if let Some(field) = cond.get("field").and_then(|v| v.as_str()) {
                 if field.contains('.') {
                     crate::db::filter_compiler::resolve_field_path(
-                        field, collection_name, &all_cols, &mut joins,
+                        field,
+                        collection_name,
+                        &all_cols,
+                        &mut joins,
                     )?;
                 } else if field.starts_with('_') {
                     // Internal fields (e.g. _inner) are not schema-validated
@@ -311,7 +337,8 @@ async fn validate_filter_paths_resolve(
                     && !["id", "created_at", "updated_at"].contains(&field)
                 {
                     return Err(AppError::BadRequest(format!(
-                        "Field '{}' does not exist on collection '{}'", field, collection_name
+                        "Field '{}' does not exist on collection '{}'",
+                        field, collection_name
                     )));
                 }
             }
@@ -357,16 +384,25 @@ pub async fn create_permission(
     .await?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "permission.created",
+        &state,
+        &headers,
+        db_pool,
+        "permission_created",
         format!("{}/{}", policy_id, payload.action),
-        Some(format!("Permission '{}/{}' created", policy_id, payload.action)),
-    ).await?;
+        Some(format!(
+            "Permission '{}/{}' created",
+            policy_id, payload.action
+        )),
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::PermissionCreated {
-        policy_id,
-        permission_id: row.id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::PermissionCreated {
+            policy_id,
+            permission_id: row.id,
+            request_id: Some(request_id),
+        });
 
     Ok(Json(json!(row)))
 }
@@ -425,16 +461,25 @@ pub async fn update_permission(
     .ok_or_else(|| AppError::NotFound(format!("Permission not found: {}", permission_id)))?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "permission.updated",
+        &state,
+        &headers,
+        db_pool,
+        "permission_updated",
         format!("{}/{}", policy_id, permission_id),
-        Some(format!("Permission '{}/{}' updated", policy_id, permission_id)),
-    ).await?;
+        Some(format!(
+            "Permission '{}/{}' updated",
+            policy_id, permission_id
+        )),
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::PermissionUpdated {
-        policy_id,
-        permission_id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::PermissionUpdated {
+            policy_id,
+            permission_id,
+            request_id: Some(request_id),
+        });
 
     Ok(Json(json!(row)))
 }
@@ -454,20 +499,32 @@ pub async fn delete_permission(
         .await?;
 
     if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("Permission not found: {}", permission_id)));
+        return Err(AppError::NotFound(format!(
+            "Permission not found: {}",
+            permission_id
+        )));
     }
 
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "permission.deleted",
+        &state,
+        &headers,
+        db_pool,
+        "permission_deleted",
         format!("{}/{}", policy_id, permission_id),
-        Some(format!("Permission '{}/{}' deleted", policy_id, permission_id)),
-    ).await?;
+        Some(format!(
+            "Permission '{}/{}' deleted",
+            policy_id, permission_id
+        )),
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::PermissionDeleted {
-        policy_id,
-        permission_id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::PermissionDeleted {
+            policy_id,
+            permission_id,
+            request_id: Some(request_id),
+        });
 
     Ok(Json(json!({ "deleted": true, "id": permission_id })))
 }
@@ -480,25 +537,37 @@ pub async fn delete_collection_permissions(
     let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
 
-    let result = sqlx::query("DELETE FROM policy_permissions WHERE policy_id = $1 AND collection_name = $2")
-        .bind(policy_id)
-        .bind(&collection_name)
-        .execute(db_pool)
-        .await?;
+    let result =
+        sqlx::query("DELETE FROM policy_permissions WHERE policy_id = $1 AND collection_name = $2")
+            .bind(policy_id)
+            .bind(&collection_name)
+            .execute(db_pool)
+            .await?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "permissions.deleted.collection",
+        &state,
+        &headers,
+        db_pool,
+        "permissions_deleted_collection",
         format!("{}/{}", policy_id, collection_name),
-        Some(format!("Permissions for collection '{}' under policy '{}' deleted", collection_name, policy_id)),
-    ).await?;
+        Some(format!(
+            "Permissions for collection '{}' under policy '{}' deleted",
+            collection_name, policy_id
+        )),
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::PolicyUpdated {
-        policy_id,
-        name: String::new(),
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::PolicyUpdated {
+            policy_id,
+            name: String::new(),
+            request_id: Some(request_id),
+        });
 
-    Ok(Json(json!({ "deleted": true, "policy_id": policy_id, "collection_name": collection_name, "count": result.rows_affected() })))
+    Ok(Json(
+        json!({ "deleted": true, "policy_id": policy_id, "collection_name": collection_name, "count": result.rows_affected() }),
+    ))
 }
 
 // ---------- Plugin-Policy Assignments ----------
@@ -550,18 +619,29 @@ pub async fn assign_policy(
     .await?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "policy.assigned_to_plugin",
+        &state,
+        &headers,
+        db_pool,
+        "policy_assigned_to_plugin",
         format!("{}/{}", slug, payload.policy_id),
-        Some(format!("Policy '{}' assigned to plugin '{}'", payload.policy_id, slug)),
-    ).await?;
+        Some(format!(
+            "Policy '{}' assigned to plugin '{}'",
+            payload.policy_id, slug
+        )),
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::PolicyAssignedToPlugin {
-        plugin_slug: slug.clone(),
-        policy_id: payload.policy_id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::PolicyAssignedToPlugin {
+            plugin_slug: slug.clone(),
+            policy_id: payload.policy_id,
+            request_id: Some(request_id),
+        });
 
-    Ok(Json(json!({ "assigned": true, "plugin_slug": slug, "policy_id": payload.policy_id })))
+    Ok(Json(
+        json!({ "assigned": true, "plugin_slug": slug, "policy_id": payload.policy_id }),
+    ))
 }
 
 pub async fn unassign_policy(
@@ -572,13 +652,12 @@ pub async fn unassign_policy(
     let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
 
-    let result = sqlx::query(
-        "DELETE FROM plugin_policies WHERE plugin_slug = $1 AND policy_id = $2",
-    )
-    .bind(&slug)
-    .bind(policy_id)
-    .execute(db_pool)
-    .await?;
+    let result =
+        sqlx::query("DELETE FROM plugin_policies WHERE plugin_slug = $1 AND policy_id = $2")
+            .bind(&slug)
+            .bind(policy_id)
+            .execute(db_pool)
+            .await?;
 
     if result.rows_affected() == 0 {
         return Err(AppError::NotFound(format!(
@@ -588,18 +667,29 @@ pub async fn unassign_policy(
     }
 
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "policy.unassigned_from_plugin",
+        &state,
+        &headers,
+        db_pool,
+        "policy_unassigned_from_plugin",
         format!("{}/{}", slug, policy_id),
-        Some(format!("Policy '{}' unassigned from plugin '{}'", policy_id, slug)),
-    ).await?;
+        Some(format!(
+            "Policy '{}' unassigned from plugin '{}'",
+            policy_id, slug
+        )),
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::PolicyUnassignedFromPlugin {
-        plugin_slug: slug.clone(),
-        policy_id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::PolicyUnassignedFromPlugin {
+            plugin_slug: slug.clone(),
+            policy_id,
+            request_id: Some(request_id),
+        });
 
-    Ok(Json(json!({ "deleted": true, "plugin_slug": slug, "policy_id": policy_id })))
+    Ok(Json(
+        json!({ "deleted": true, "plugin_slug": slug, "policy_id": policy_id }),
+    ))
 }
 
 // ---------- Router ----------
@@ -607,11 +697,29 @@ pub async fn unassign_policy(
 pub fn policies_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/policies", get(list_policies).post(create_policy))
-        .route("/api/policies/:id", get(get_policy).put(update_policy).delete(delete_policy))
-        .route("/api/policies/:id/permissions", get(list_permissions).post(create_permission))
-        .route("/api/policies/:id/permissions/collection/:name", delete(delete_collection_permissions))
-        .route("/api/policies/:id/permissions/:pid", put(update_permission).delete(delete_permission))
-        .route("/api/plugins/:slug/policies", get(list_plugin_policies).post(assign_policy))
-        .route("/api/plugins/:slug/policies/:policyId", delete(unassign_policy))
+        .route(
+            "/api/policies/:id",
+            get(get_policy).put(update_policy).delete(delete_policy),
+        )
+        .route(
+            "/api/policies/:id/permissions",
+            get(list_permissions).post(create_permission),
+        )
+        .route(
+            "/api/policies/:id/permissions/collection/:name",
+            delete(delete_collection_permissions),
+        )
+        .route(
+            "/api/policies/:id/permissions/:pid",
+            put(update_permission).delete(delete_permission),
+        )
+        .route(
+            "/api/plugins/:slug/policies",
+            get(list_plugin_policies).post(assign_policy),
+        )
+        .route(
+            "/api/plugins/:slug/policies/:policyId",
+            delete(unassign_policy),
+        )
         .with_state(state)
 }

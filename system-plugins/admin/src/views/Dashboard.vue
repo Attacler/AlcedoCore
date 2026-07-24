@@ -1,37 +1,54 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { usePluginsStore } from '@/stores/plugins'
-import MetricCard from '@/components/MetricCard.vue'
+import { usePluginsStore } from "@/stores/plugins";
+import MetricCard from "@/components/MetricCard.vue";
+import { useCollectionsStore } from "@/stores/collections";
 
-const store = usePluginsStore()
-
-const statusClass = computed(() =>
-  store.disabledPlugins.length > 0 ? 'warning' : 'success'
-)
-const statusMessage = computed(() =>
-  store.disabledPlugins.length > 0
-    ? `⚠ ${store.disabledPlugins.length} plugin(s) need attention`
-    : '✓ All systems operational'
-)
+const pluginsStore = usePluginsStore();
+const collectionsStore = useCollectionsStore();
 </script>
 
 <template>
-  <div class="p-6">
-    <div
-      class="p-3 rounded-lg font-medium mb-6"
-      :class="{
-        'bg-green-100 text-green-800': statusClass === 'success',
-        'bg-yellow-100 text-yellow-800': statusClass === 'warning'
-      }"
-    >
-      {{ statusMessage }}
+    <div class="p-6">
+        <div
+            class="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4"
+        >
+            <MetricCard
+                title="Total Plugins"
+                :value="pluginsStore.totalPlugins"
+            />
+            <MetricCard
+                title="Enabled"
+                :value="pluginsStore.enabledPlugins.length"
+                variant="success"
+            />
+            <MetricCard
+                title="Disabled"
+                :value="pluginsStore.disabledPlugins.length"
+                variant="warning"
+            />
+            <MetricCard
+                title="System"
+                :value="pluginsStore.systemPlugins.length"
+                variant="info"
+            />
+            <MetricCard title="User" :value="pluginsStore.userPlugins.length" />
+        </div>
     </div>
-    <div class="grid grid-cols-2 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
-      <MetricCard title="Total Plugins" :value="store.totalPlugins" />
-      <MetricCard title="Enabled" :value="store.enabledPlugins.length" variant="success" />
-      <MetricCard title="Disabled" :value="store.disabledPlugins.length" variant="warning" />
-      <MetricCard title="System" :value="store.systemPlugins.length" variant="info" />
-      <MetricCard title="User" :value="store.userPlugins.length" />
+    <h2 class="text-lg font-bold pb-2">Collections</h2>
+    <div class="grid md:grid-cols-3 gap-5">
+        <RouterLink
+            v-for="collection of collectionsStore.collections"
+            :to="'/collections/' + collection.name + '/data'"
+        >
+            <div
+                class="bg-white p-2 rounded-md border border-gray-200 flex place-content-between items-center hover:text-gray-600 hover:border-gray-600 cursor-pointer"
+            >
+                <div>{{ collection.display_name || collection.name }}</div>
+                <span
+                    class="pi pi-external-link text-xs text-gray-400"
+                    title="Open collection"
+                ></span>
+            </div>
+        </RouterLink>
     </div>
-  </div>
 </template>

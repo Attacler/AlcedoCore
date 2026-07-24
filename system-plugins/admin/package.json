@@ -14,7 +14,7 @@
     },
     "dependencies": {
         "@primevue/themes": "^4.5.4",
-        "alcedo-sdk": "file:../../sdk/alcedo-sdk",
+        "alcedo-sdk": "file:../../sdk/alcedo-sdk/src",
         "chart.js": "^4.5.1",
         "dompurify": "^3.1.0",
         "highlight.js": "^11.10.0",

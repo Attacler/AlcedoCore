@@ -3,8 +3,8 @@ import vue from "@vitejs/plugin-vue";
 import tailwindcss from "@tailwindcss/vite";
 import Components from "unplugin-vue-components/vite";
 import { PrimeVueResolver } from "unplugin-vue-components/resolvers";
-import { resolve } from "path";
 import { fileURLToPath, URL } from "node:url";
+import { resolve } from "node:path";
 
 export default defineConfig({
     plugins: [
@@ -39,6 +39,7 @@ export default defineConfig({
     resolve: {
         alias: {
             "@": fileURLToPath(new URL("./src", import.meta.url)),
+            "alcedo-sdk": resolve(__dirname, "../../sdk/alcedo-sdk/src"),
         },
     },
 });

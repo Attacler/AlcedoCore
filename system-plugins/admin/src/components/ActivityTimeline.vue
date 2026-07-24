@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from "vue";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import LogDetailPopup from "@/components/LogDetailPopup.vue";
 import { formatLogTime } from "@/utils/formatters";
+import { useActivityLogStore } from "@/stores/activityLogStore";
 
 const props = defineProps<{
     collectionName: string;
@@ -10,6 +11,8 @@ const props = defineProps<{
 }>();
 
 const { client } = useAlcedoClient();
+
+const activityStore = useActivityLogStore();
 
 interface TimelineEntry {
     id: string;
@@ -28,48 +31,12 @@ const entries = ref<TimelineEntry[]>([]),
 
 const detailTitle = computed(() => {
     if (!selectedEntry.value) return "Log Detail";
-    return `${formatActionLabel(selectedEntry.value.action)} — ${formatTimestamp(selectedEntry.value.created_at)}`;
+    return `${activityStore.formatActionLabel(selectedEntry.value.action)} — ${formatLogTime(selectedEntry.value.created_at)}`;
 });
 
 function openDetail(entry: TimelineEntry) {
     selectedEntry.value = entry;
     showDetail.value = true;
-}
-
-const TAG_DETAILS: {
-    [key: string]: {
-        serverity: string;
-        dotColors: string;
-        label: string;
-    };
-} = {
-    item_created: {
-        serverity: "success",
-        dotColors: "bg-green-500 border-green-500",
-        label: "Created",
-    },
-    item_updated: {
-        serverity: "info",
-        dotColors: "bg-blue-500 border-blue-500",
-        label: "Updated",
-    },
-    item_deleted: {
-        serverity: "danger",
-        dotColors: "bg-red-500 border-red-500",
-        label: "Deleted",
-    },
-};
-
-function getSeverity(action: string): string {
-    return TAG_DETAILS[action]?.serverity || "contrast";
-}
-
-function dotClass(action: string): string {
-    return TAG_DETAILS[action]?.dotColors || "bg-gray-400 border-gray-400";
-}
-
-function formatActionLabel(action: string): string {
-    return TAG_DETAILS[action]?.label || action;
 }
 
 async function fetchTimeline() {
@@ -148,12 +115,12 @@ onMounted(() => {
             >
                 <div
                     class="absolute left-0 top-1 w-3 h-3 rounded-full border-2 -translate-x-[7px]"
-                    :class="dotClass(entry.action)"
+                    :class="activityStore.dotClass(entry.action)"
                 ></div>
                 <div class="flex items-center gap-2 mb-1">
                     <Tag
-                        :value="formatActionLabel(entry.action)"
-                        :severity="getSeverity(entry.action)"
+                        :value="activityStore.formatActionLabel(entry.action)"
+                        :severity="activityStore.getSeverity(entry.action)"
                         class="text-xs"
                     />
                 </div>

@@ -45,7 +45,7 @@ pub async fn assign_role_handler(
         &state,
         &headers,
         pool,
-        "user.role_assigned",
+        "user_role_assigned",
         format!("{}/{}", user_id, payload.role_id),
         None,
     )
@@ -110,7 +110,7 @@ pub async fn remove_role_handler(
         &state,
         &headers,
         pool,
-        "user.role_removed",
+        "user_role_removed",
         format!("{}/{}", user_id, role_id),
         None,
     )

@@ -58,30 +58,42 @@ pub async fn login_handler(
         Some(u) => u,
         None => {
             record_failed_login(&state, &payload.email).await;
-            let _ = SystemLogEntry::insert_batch(pool, &[SystemLogEntry {
-                actor_id: None,
-                action: "login.failed".to_string(),
-                target: payload.email.clone(),
-                description: Some("Failed login attempt: user not found".to_string()),
-                metadata: serde_json::json!({}),
-                request_id: Some(request_id.clone()),
-            }]).await;
-            return Err(AppError::Unauthorized("Invalid email or password".to_string()));
+            let _ = SystemLogEntry::insert_batch(
+                pool,
+                &[SystemLogEntry {
+                    actor_id: None,
+                    action: "login.failed".to_string(),
+                    target: payload.email.clone(),
+                    description: Some("Failed login attempt: user not found".to_string()),
+                    metadata: serde_json::json!({}),
+                    request_id: Some(request_id.clone()),
+                }],
+            )
+            .await;
+            return Err(AppError::Unauthorized(
+                "Invalid email or password".to_string(),
+            ));
         }
     };
 
     let valid = auth::verify_password(&payload.password, &user.password_hash).await?;
     if !valid {
         record_failed_login(&state, &payload.email).await;
-        let _ = SystemLogEntry::insert_batch(pool, &[SystemLogEntry {
-            actor_id: Some(user.id),
-            action: "login.failed".to_string(),
-            target: user.email.clone(),
-            description: Some("Failed login attempt: invalid password".to_string()),
-            metadata: serde_json::json!({}),
-            request_id: Some(request_id.clone()),
-        }]).await;
-        return Err(AppError::Unauthorized("Invalid email or password".to_string()));
+        let _ = SystemLogEntry::insert_batch(
+            pool,
+            &[SystemLogEntry {
+                actor_id: Some(user.id),
+                action: "login.failed".to_string(),
+                target: user.email.clone(),
+                description: Some("Failed login attempt: invalid password".to_string()),
+                metadata: serde_json::json!({}),
+                request_id: Some(request_id.clone()),
+            }],
+        )
+        .await;
+        return Err(AppError::Unauthorized(
+            "Invalid email or password".to_string(),
+        ));
     }
 
     // Clear failure counter on successful login
@@ -90,19 +102,25 @@ pub async fn login_handler(
     // Rotate session to prevent fixation
     let _ = session.delete().await;
 
-    session.insert(SESSION_USER_ID_KEY, user.id).await
+    session
+        .insert(SESSION_USER_ID_KEY, user.id)
+        .await
         .map_err(|e| AppError::Internal(format!("Session error: {}", e)))?;
 
     auth::update_last_login(pool, user.id).await?;
 
-    let _ = SystemLogEntry::insert_batch(pool, &[SystemLogEntry {
-        actor_id: Some(user.id),
-        action: "login.success".to_string(),
-        target: user.email.clone(),
-        description: Some("Successful login".to_string()),
-        metadata: serde_json::json!({}),
-        request_id: Some(request_id),
-    }]).await;
+    let _ = SystemLogEntry::insert_batch(
+        pool,
+        &[SystemLogEntry {
+            actor_id: Some(user.id),
+            action: "login_success".to_string(),
+            target: user.email.clone(),
+            description: Some("Successful login".to_string()),
+            metadata: serde_json::json!({}),
+            request_id: Some(request_id),
+        }],
+    )
+    .await;
 
     Ok(Json(LoginResponse {
         user: user.to_public(),
@@ -117,17 +135,13 @@ async fn check_login_lockout(state: &Arc<AppState>, email: &str) -> Result<(), A
     let key = format!("{}{}", LOGIN_FAIL_PREFIX, email);
     if let Some(ref redis) = state.rate_limit_redis {
         let mut conn = redis.lock().await;
-        let count: Option<u32> = match redis::cmd("GET")
-            .arg(&key)
-            .query_async(&mut *conn)
-            .await
-        {
+        let count: Option<u32> = match redis::cmd("GET").arg(&key).query_async(&mut *conn).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("[AUTH] Redis error in login lockout check: {}", e);
                 // Fail closed on Redis errors to prevent brute-force bypass
                 return Err(AppError::TooManyRequests(
-                    "Rate limiting unavailable. Try again later.".to_string()
+                    "Rate limiting unavailable. Try again later.".to_string(),
                 ));
             }
         };
@@ -188,7 +202,11 @@ pub async fn logout_handler(
     let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID_KEY).await.unwrap_or(None);
     let email: Option<String> = if let Some(uid) = user_id {
         if let Some(pool) = state.db_pool.as_ref() {
-            auth::find_user_by_id(pool, uid).await.ok().flatten().map(|u| u.email)
+            auth::find_user_by_id(pool, uid)
+                .await
+                .ok()
+                .flatten()
+                .map(|u| u.email)
         } else {
             None
         }
@@ -196,19 +214,25 @@ pub async fn logout_handler(
         None
     };
 
-    session.delete().await
+    session
+        .delete()
+        .await
         .map_err(|e| AppError::Internal(format!("Session error: {}", e)))?;
 
     if let Some(ref pool) = state.db_pool {
         let request_id = extract_request_id_from_headers(&headers);
-        let _ = SystemLogEntry::insert_batch(pool, &[SystemLogEntry {
-            actor_id: user_id,
-            action: "logout".to_string(),
-            target: email.unwrap_or_else(|| "unknown".to_string()),
-            description: Some("User logged out".to_string()),
-            metadata: serde_json::json!({}),
-            request_id: Some(request_id),
-        }]).await;
+        let _ = SystemLogEntry::insert_batch(
+            pool,
+            &[SystemLogEntry {
+                actor_id: user_id,
+                action: "logout".to_string(),
+                target: email.unwrap_or_else(|| "unknown".to_string()),
+                description: Some("User logged out".to_string()),
+                metadata: serde_json::json!({}),
+                request_id: Some(request_id),
+            }],
+        )
+        .await;
     }
 
     Ok(Json(serde_json::json!({ "success": true })))
@@ -220,11 +244,14 @@ pub async fn me_handler(
 ) -> Result<Json<MeResponse>, AppError> {
     let pool = state.db()?;
 
-    let user_id: uuid::Uuid = session.get(SESSION_USER_ID_KEY).await
+    let user_id: uuid::Uuid = session
+        .get(SESSION_USER_ID_KEY)
+        .await
         .map_err(|e| AppError::Internal(format!("Session error: {}", e)))?
         .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
 
-    let user = auth::find_user_by_id(pool, user_id).await?
+    let user = auth::find_user_by_id(pool, user_id)
+        .await?
         .ok_or_else(|| AppError::Unauthorized("User not found".to_string()))?;
 
     let scopes: Vec<String> = sqlx::query_scalar(
@@ -232,7 +259,7 @@ pub async fn me_handler(
            FROM user_roles ur
            JOIN role_scopes rs ON rs.role_id = ur.role_id
            WHERE ur.user_id = $1
-           ORDER BY rs.scope"#
+           ORDER BY rs.scope"#,
     )
     .bind(user_id)
     .fetch_all(pool)

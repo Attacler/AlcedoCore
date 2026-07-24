@@ -57,14 +57,19 @@ async fn update_setting(
     let db_pool = state.db()?;
 
     if key.is_empty() {
-        return Err(AppError::BadRequest("Setting key cannot be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "Setting key cannot be empty".to_string(),
+        ));
     }
     if key.len() > 255 {
-        return Err(AppError::BadRequest("Setting key must be 255 characters or less".to_string()));
+        return Err(AppError::BadRequest(
+            "Setting key must be 255 characters or less".to_string(),
+        ));
     }
 
     // Read old value before upsert (for event emission — T-64-01)
-    let old_value = SystemSetting::find_by_key(db_pool, &key).await?
+    let old_value = SystemSetting::find_by_key(db_pool, &key)
+        .await?
         .map(|s| s.value)
         .unwrap_or(serde_json::Value::Null);
 
@@ -73,7 +78,8 @@ async fn update_setting(
         &key,
         &payload.value,
         payload.description.as_deref(),
-    ).await?;
+    )
+    .await?;
 
     // Emit event after DB write (EVNT-03 post-commit convention)
     state.event_bus.emit(SystemEvent::SettingChanged {
@@ -84,10 +90,14 @@ async fn update_setting(
     });
 
     let _ = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "setting.updated",
+        &state,
+        &headers,
+        db_pool,
+        "setting_changed",
         key.clone(),
         None,
-    ).await?;
+    )
+    .await?;
 
     Ok(Json(serde_json::json!({
         "key": result.key,
@@ -114,17 +124,22 @@ async fn batch_update_settings(
 
     // Limit batch size to prevent abuse
     if payload.settings.len() > 100 {
-        return Err(AppError::BadRequest("Batch update limited to 100 settings per request".to_string()));
+        return Err(AppError::BadRequest(
+            "Batch update limited to 100 settings per request".to_string(),
+        ));
     }
 
     // Validate keys before touching DB
     for key in payload.settings.keys() {
         if key.is_empty() {
-            return Err(AppError::BadRequest("Setting key cannot be empty".to_string()));
+            return Err(AppError::BadRequest(
+                "Setting key cannot be empty".to_string(),
+            ));
         }
         if key.len() > 255 {
             return Err(AppError::BadRequest(format!(
-                "Setting key too long (max 255 chars): {}", key
+                "Setting key too long (max 255 chars): {}",
+                key
             )));
         }
     }
@@ -132,9 +147,11 @@ async fn batch_update_settings(
     let pairs: Vec<(String, serde_json::Value)> = payload.settings.into_iter().collect();
 
     // Read old values before batch upsert (for event emission — T-64-01)
-    let mut old_values: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+    let mut old_values: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
     for (key, _) in &pairs {
-        let old = SystemSetting::find_by_key(db_pool, key).await?
+        let old = SystemSetting::find_by_key(db_pool, key)
+            .await?
             .map(|s| s.value)
             .unwrap_or(serde_json::Value::Null);
         old_values.insert(key.clone(), old);
@@ -144,7 +161,10 @@ async fn batch_update_settings(
 
     // Emit one event per changed key after DB write (EVNT-03 post-commit convention)
     for (key, new_value) in &pairs {
-        let old_value = old_values.get(key).cloned().unwrap_or(serde_json::Value::Null);
+        let old_value = old_values
+            .get(key)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         state.event_bus.emit(SystemEvent::SettingChanged {
             key: key.clone(),
             old_value,
@@ -153,12 +173,14 @@ async fn batch_update_settings(
         });
     }
 
-    let actor_id = crate::api::permission_check::extract_user_id_from_session(&state, &headers).await?.unwrap_or(uuid::Uuid::nil());
+    let actor_id = crate::api::permission_check::extract_user_id_from_session(&state, &headers)
+        .await?
+        .unwrap_or(uuid::Uuid::nil());
     let mut entries = Vec::with_capacity(pairs.len());
     for (key, _) in &pairs {
         entries.push(crate::db::activity_logs::SystemLogEntry {
             actor_id: Some(actor_id),
-            action: "setting.updated".to_string(),
+            action: "setting_updated".to_string(),
             target: key.clone(),
             description: None,
             metadata: serde_json::json!({}),
@@ -203,15 +225,18 @@ async fn list_developer_keys(
     let db_pool = state.db()?;
 
     let keys = DeveloperApiKey::list_all(db_pool).await?;
-    let resp: Vec<DeveloperKeyResponse> = keys.into_iter().map(|k| DeveloperKeyResponse {
-        raw_key: None,
-        id: k.id,
-        name: k.name,
-        key_prefix: k.key_prefix,
-        is_active: k.is_active,
-        created_at: k.created_at,
-        last_used_at: k.last_used_at,
-    }).collect();
+    let resp: Vec<DeveloperKeyResponse> = keys
+        .into_iter()
+        .map(|k| DeveloperKeyResponse {
+            raw_key: None,
+            id: k.id,
+            name: k.name,
+            key_prefix: k.key_prefix,
+            is_active: k.is_active,
+            created_at: k.created_at,
+            last_used_at: k.last_used_at,
+        })
+        .collect();
 
     Ok(Json(resp))
 }
@@ -237,15 +262,24 @@ async fn create_developer_key(
     // Hash the key using argon2 (same as password hashing)
     let key_hash = crate::services::auth::hash_password(&raw_key).await?;
 
-    let created = DeveloperApiKey::insert(db_pool, payload.name.trim(), &key_hash, &key_prefix).await?;
+    let created =
+        DeveloperApiKey::insert(db_pool, payload.name.trim(), &key_hash, &key_prefix).await?;
 
     let _ = crate::api::logs::log_and_emit(
-        &state, &headers, db_pool, "developer_key.created",
+        &state,
+        &headers,
+        db_pool,
+        "developer_key_created",
         created.key_prefix.clone(),
         None,
-    ).await?;
+    )
+    .await?;
 
-    tracing::info!("[SETTINGS] Created developer API key: name={} id={}", created.name, created.id);
+    tracing::info!(
+        "[SETTINGS] Created developer API key: name={} id={}",
+        created.name,
+        created.id
+    );
 
     Ok(Json(DeveloperKeyResponse {
         raw_key: Some(raw_key),
@@ -269,7 +303,10 @@ async fn delete_developer_key(
 
     let deleted = DeveloperApiKey::delete(db_pool, id).await?;
     if !deleted {
-        return Err(AppError::NotFound(format!("Developer API key not found: {}", id)));
+        return Err(AppError::NotFound(format!(
+            "Developer API key not found: {}",
+            id
+        )));
     }
 
     tracing::info!("[SETTINGS] Deleted developer API key: id={}", id);
@@ -286,7 +323,13 @@ pub fn settings_router(state: Arc<AppState>) -> Router {
         .route("/", get(get_all_settings))
         .route("/:key", put(update_setting))
         .route("/batch", post(batch_update_settings))
-        .route("/developer/keys", get(list_developer_keys).post(create_developer_key))
-        .route("/developer/keys/:id", axum::routing::delete(delete_developer_key))
+        .route(
+            "/developer/keys",
+            get(list_developer_keys).post(create_developer_key),
+        )
+        .route(
+            "/developer/keys/:id",
+            axum::routing::delete(delete_developer_key),
+        )
         .with_state(state)
 }

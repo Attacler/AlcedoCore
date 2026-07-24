@@ -1,9 +1,8 @@
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
-    Json,
     routing::{delete, get},
-    Router,
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -64,12 +63,32 @@ pub struct UpdateScopesRequest {
 
 pub fn roles_router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/roles", get(list_roles_handler).post(create_role_handler))
-        .route("/api/roles/:id", get(get_role_handler).put(update_role_handler).delete(delete_role_handler))
-        .route("/api/roles/:id/permissions", get(list_permissions_handler).post(update_permissions_handler))
-        .route("/api/roles/:id/permissions/:permission_id", delete(delete_permission_handler))
-        .route("/api/roles/:id/policies", get(list_role_policies_handler).post(assign_role_policy_handler))
-        .route("/api/roles/:id/policies/:policy_id", delete(remove_role_policy_handler))
+        .route(
+            "/api/roles",
+            get(list_roles_handler).post(create_role_handler),
+        )
+        .route(
+            "/api/roles/:id",
+            get(get_role_handler)
+                .put(update_role_handler)
+                .delete(delete_role_handler),
+        )
+        .route(
+            "/api/roles/:id/permissions",
+            get(list_permissions_handler).post(update_permissions_handler),
+        )
+        .route(
+            "/api/roles/:id/permissions/:permission_id",
+            delete(delete_permission_handler),
+        )
+        .route(
+            "/api/roles/:id/policies",
+            get(list_role_policies_handler).post(assign_role_policy_handler),
+        )
+        .route(
+            "/api/roles/:id/policies/:policy_id",
+            delete(remove_role_policy_handler),
+        )
         .with_state(state)
 }
 
@@ -95,7 +114,7 @@ pub async fn get_role_handler(
     permission_check::require_scope(&state, &headers, "roles.read").await?;
     let pool = state.db()?;
     let role: Role = sqlx::query_as::<_, Role>(
-        "SELECT id, name, description, is_system, created_at, updated_at FROM roles WHERE id = $1"
+        "SELECT id, name, description, is_system, created_at, updated_at FROM roles WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -111,7 +130,9 @@ pub async fn create_role_handler(
 ) -> Result<Json<RoleResponse>, AppError> {
     permission_check::require_scope(&state, &headers, "roles.write").await?;
     if payload.name.trim().is_empty() {
-        return Err(AppError::BadRequest("Role name cannot be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "Role name cannot be empty".to_string(),
+        ));
     }
     let pool = state.db()?;
     let role: Role = sqlx::query_as::<_, Role>(
@@ -122,16 +143,22 @@ pub async fn create_role_handler(
     .fetch_one(pool)
     .await?;
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, pool, "role.created",
+        &state,
+        &headers,
+        pool,
+        "role_created",
         role.name.clone(),
         Some(format!("Role '{}' created", role.name)),
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::RoleCreated {
-        role_id: role.id,
-        name: role.name.clone(),
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::RoleCreated {
+            role_id: role.id,
+            name: role.name.clone(),
+            request_id: Some(request_id),
+        });
     Ok(Json(RoleResponse { data: role }))
 }
 
@@ -153,16 +180,22 @@ pub async fn update_role_handler(
     .await?
     .ok_or_else(|| AppError::NotFound(format!("Role not found: {}", id)))?;
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, pool, "role.updated",
+        &state,
+        &headers,
+        pool,
+        "role_updated",
         role.name.clone(),
         Some(format!("Role '{}' updated", role.name)),
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::RoleUpdated {
-        role_id: id,
-        name: role.name.clone(),
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::RoleUpdated {
+            role_id: id,
+            name: role.name.clone(),
+            request_id: Some(request_id),
+        });
     Ok(Json(RoleResponse { data: role }))
 }
 
@@ -181,17 +214,25 @@ pub async fn delete_role_handler(
     .await?
     .ok_or_else(|| AppError::BadRequest("Cannot delete system role or role not found".to_string()))?;
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, pool, "role.deleted",
+        &state,
+        &headers,
+        pool,
+        "role_deleted",
         id.to_string(),
         Some(format!("Role '{}' deleted", role.name)),
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::RoleDeleted {
-        role_id: id,
-        name: role.name.clone(),
-        request_id: Some(request_id),
-    });
-    Ok(Json(serde_json::json!({ "success": true, "deleted": role.name })))
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::RoleDeleted {
+            role_id: id,
+            name: role.name.clone(),
+            request_id: Some(request_id),
+        });
+    Ok(Json(
+        serde_json::json!({ "success": true, "deleted": role.name }),
+    ))
 }
 
 pub async fn list_permissions_handler(
@@ -202,7 +243,7 @@ pub async fn list_permissions_handler(
     permission_check::require_scope(&state, &headers, "roles.read").await?;
     let pool = state.db()?;
     let perms: Vec<RoleScope> = sqlx::query_as::<_, RoleScope>(
-        "SELECT id, role_id, scope FROM role_scopes WHERE role_id = $1 ORDER BY scope ASC"
+        "SELECT id, role_id, scope FROM role_scopes WHERE role_id = $1 ORDER BY scope ASC",
     )
     .bind(role_id)
     .fetch_all(pool)
@@ -223,28 +264,36 @@ pub async fn update_permissions_handler(
         .execute(pool)
         .await?;
     for perm in &payload.permissions {
-        sqlx::query("INSERT INTO role_scopes (role_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING")
-            .bind(role_id)
-            .bind(perm)
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO role_scopes (role_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(role_id)
+        .bind(perm)
+        .execute(pool)
+        .await?;
     }
     let perms: Vec<RoleScope> = sqlx::query_as::<_, RoleScope>(
-        "SELECT id, role_id, scope FROM role_scopes WHERE role_id = $1 ORDER BY scope ASC"
+        "SELECT id, role_id, scope FROM role_scopes WHERE role_id = $1 ORDER BY scope ASC",
     )
     .bind(role_id)
     .fetch_all(pool)
     .await?;
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, pool, "role.scopes_updated",
+        &state,
+        &headers,
+        pool,
+        "role_scopes_updated",
         role_id.to_string(),
         Some("Role scopes updated".to_string()),
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::RoleScopesUpdated {
-        role_id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::RoleScopesUpdated {
+            role_id,
+            request_id: Some(request_id),
+        });
     Ok(Json(RoleScopeListResponse { data: perms }))
 }
 
@@ -256,15 +305,15 @@ pub async fn delete_permission_handler(
     permission_check::require_scope(&state, &headers, "roles.write").await?;
     let pool = state.db()?;
     // First, fetch the scope name before deleting
-    let scope_name: Option<String> = sqlx::query_scalar(
-        "SELECT scope FROM role_scopes WHERE role_id = $1 AND id = $2"
-    )
-        .bind(role_id)
-        .bind(permission_id)
-        .fetch_optional(pool)
-        .await?;
+    let scope_name: Option<String> =
+        sqlx::query_scalar("SELECT scope FROM role_scopes WHERE role_id = $1 AND id = $2")
+            .bind(role_id)
+            .bind(permission_id)
+            .fetch_optional(pool)
+            .await?;
 
-    let scope_name = scope_name.ok_or_else(|| AppError::NotFound("Permission not found".to_string()))?;
+    let scope_name =
+        scope_name.ok_or_else(|| AppError::NotFound("Permission not found".to_string()))?;
 
     let result = sqlx::query("DELETE FROM role_scopes WHERE role_id = $1 AND id = $2")
         .bind(role_id)
@@ -275,16 +324,22 @@ pub async fn delete_permission_handler(
         return Err(AppError::NotFound("Permission not found".to_string()));
     }
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, pool, "role.scope_removed",
+        &state,
+        &headers,
+        pool,
+        "role_scope_removed",
         format!("{}/{}", role_id, permission_id),
         None,
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::RoleScopeRemoved {
-        role_id,
-        scope: scope_name,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::RoleScopeRemoved {
+            role_id,
+            scope: scope_name,
+            request_id: Some(request_id),
+        });
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -332,22 +387,30 @@ pub async fn assign_role_policy_handler(
 ) -> Result<Json<serde_json::Value>, AppError> {
     permission_check::require_scope(&state, &headers, "roles.write").await?;
     let pool = state.db()?;
-    sqlx::query("INSERT INTO role_policies (role_id, policy_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
-        .bind(role_id)
-        .bind(payload.policy_id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO role_policies (role_id, policy_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    )
+    .bind(role_id)
+    .bind(payload.policy_id)
+    .execute(pool)
+    .await?;
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, pool, "role.policy_assigned",
+        &state,
+        &headers,
+        pool,
+        "role_policy_assigned",
         format!("{}/{}", role_id, payload.policy_id),
         None,
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::RolePolicyAssigned {
-        role_id,
-        policy_id: payload.policy_id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::RolePolicyAssigned {
+            role_id,
+            policy_id: payload.policy_id,
+            request_id: Some(request_id),
+        });
     Ok(Json(serde_json::json!({ "success": true })))
 }
 
@@ -364,15 +427,21 @@ pub async fn remove_role_policy_handler(
         .execute(pool)
         .await?;
     let (_, request_id) = crate::api::logs::log_and_emit(
-        &state, &headers, pool, "role.policy_removed",
+        &state,
+        &headers,
+        pool,
+        "role_policy_removed",
         format!("{}/{}", role_id, policy_id),
         None,
-    ).await?;
+    )
+    .await?;
 
-    state.event_bus.emit(crate::events::SystemEvent::RolePolicyRemoved {
-        role_id,
-        policy_id,
-        request_id: Some(request_id),
-    });
+    state
+        .event_bus
+        .emit(crate::events::SystemEvent::RolePolicyRemoved {
+            role_id,
+            policy_id,
+            request_id: Some(request_id),
+        });
     Ok(Json(serde_json::json!({ "success": true })))
 }

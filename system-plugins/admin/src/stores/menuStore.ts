@@ -26,6 +26,7 @@ export const useMenuStore = defineStore("menu", () => {
     // ── State ──
     const menus = ref<Menu[]>([]);
     const activeMenuId = ref<string | null>(null);
+    const activeEditMenuId = ref<string | null>(null);
     const loading = ref(false);
     const error = ref<string | null>(null);
     const selectedItemId = ref<string | null>(null);
@@ -41,6 +42,11 @@ export const useMenuStore = defineStore("menu", () => {
     const activeMenu = computed<Menu | null>(() => {
         if (!activeMenuId.value) return null;
         return menus.value.find((m) => m.id === activeMenuId.value) || null;
+    });
+
+    const activeEditMenu = computed<Menu | null>(() => {
+        if (!activeEditMenuId.value) return null;
+        return menus.value.find((m) => m.id === activeEditMenuId.value) || null;
     });
 
     const isDirty = computed(() => {
@@ -105,7 +111,7 @@ export const useMenuStore = defineStore("menu", () => {
     function loadEditMenu(menuId: string) {
         const menu = menus.value.find((m) => m.id === menuId);
         if (menu) {
-            activeMenuId.value = menuId;
+            activeEditMenuId.value = menuId;
             editSections.value = deepClone(menu.sections);
             editMenuName.value = menu.name;
             editMenuIcon.value = menu.icon;
@@ -115,7 +121,7 @@ export const useMenuStore = defineStore("menu", () => {
     }
 
     async function saveEditMenu(menuId?: string): Promise<boolean> {
-        const id = menuId || activeMenuId.value;
+        const id = menuId || activeEditMenuId.value;
         if (!id) return false;
         saving.value = true;
         try {
@@ -241,6 +247,7 @@ export const useMenuStore = defineStore("menu", () => {
     return {
         menus,
         activeMenuId,
+        activeEditMenuId,
         loading,
         error,
         selectedItemId,
@@ -266,5 +273,6 @@ export const useMenuStore = defineStore("menu", () => {
         deleteItem,
         updateItem,
         toggleVisibility,
+        activeEditMenu,
     };
 });

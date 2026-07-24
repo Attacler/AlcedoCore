@@ -65,3 +65,6 @@ system-plugins/admin/check_ky.cjs
 
 # Superpowers plans
 docs/superpowers/plans/*.md
+
+# Core testing directories/files
+core/files

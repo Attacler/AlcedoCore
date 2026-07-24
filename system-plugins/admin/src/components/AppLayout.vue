@@ -9,6 +9,7 @@ import { useViewRegistryStore } from "@/stores/viewRegistry";
 import { useAuthStore } from "@/stores/authStore";
 import { useRouter } from "vue-router";
 import ToastContainer from "@/components/ToastContainer.vue";
+import { Toast } from "primevue";
 
 const authStore = useAuthStore(),
     router = useRouter(),
@@ -379,10 +380,12 @@ onUnmounted(() => {
                     </div>
 
                     <!-- Section Items -->
-                    <router-link
+                    <component
                         v-for="item in visibleSectionItems(section)"
+                        :is="item.external ? 'a' : 'router-link'"
                         :key="item.id"
                         :to="resolveItemRoute(item)"
+                        :href="resolveItemRoute(item)"
                         :target="item.external ? '_blank' : undefined"
                         class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-700 transition-colors border-l-2 border-transparent"
                         :class="{
@@ -398,15 +401,17 @@ onUnmounted(() => {
                             :class="{ 'mx-auto': collapsed && !isMobile }"
                             >{{ item.icon }}</span
                         >
-                        <span v-if="!collapsed || isMobile" class="text-xs">{{
-                            item.label
-                        }}</span>
                         <span
-                            v-if="item.external"
-                            class="material-symbols-outlined text-xs text-slate-400 ml-1"
-                            >open_in_new</span
+                            v-if="!collapsed || isMobile"
+                            class="text-xs flex items-center"
+                            >{{ item.label }}
+                            <span
+                                v-if="item.external"
+                                class="material-symbols-outlined text-xs text-slate-400 ml-1"
+                                >open_in_new</span
+                            ></span
                         >
-                    </router-link>
+                    </component>
 
                     <!-- Empty section placeholder -->
                     <div
