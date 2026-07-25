@@ -14,6 +14,8 @@ import MenuBuilder from "./MenuBuilder.vue";
 import SettingsSession from "./SettingsSession.vue";
 import DeveloperKeysDrawer from "@/components/developerSettings/keysDrawer.vue";
 import { useAlcedoClient } from "@/composables/useAlcedoClient.ts";
+import FileUpload from "@/components/inputs/FileUpload.vue";
+import { MediaFile } from "alcedo-sdk";
 
 const props = defineProps<{ category: string }>();
 const router = useRouter(),
@@ -100,37 +102,15 @@ function cancelLeave() {
     pendingNavigation.value = null;
 }
 
-function openFilePicker(key: string) {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/png,image/jpeg,image/svg+xml,image/x-icon,image/webp";
-    input.addEventListener("change", (e) => onFileSelected(key, e));
-    input.click();
-}
-
-async function onFileSelected(key: string, event: Event) {
-    const target = event.target as HTMLInputElement;
-    const file = target.files?.[0];
-    if (!file) return;
-    uploadingKey.value = key;
-    try {
-        const result = await client.files.upload(file, file.name);
-        store.updateLocalValue(key, result.download_url);
-        toast.show("Image uploaded", "success");
-    } catch (e) {
-        toast.show(
-            `Upload failed: ${e instanceof Error ? e.message : "Unknown error"}`,
-            "error",
-        );
-    } finally {
-        uploadingKey.value = null;
-        target.value = "";
-    }
-}
-
 onMounted(() => {
     store.fetchSettings();
 });
+
+function fileUploaded(key: string, uploadResponse: MediaFile) {
+    store.updateLocalValue(key, uploadResponse.download_url);
+    toast.show("Image uploaded", "success");
+    uploadingKey.value = null;
+}
 </script>
 
 <template>
@@ -336,14 +316,21 @@ onMounted(() => {
                                     class="w-10 h-10 flex items-center justify-center rounded border border-gray-200 bg-gray-50 text-gray-400 text-xs"
                                     >No image</span
                                 >
-                                <Button
-                                    icon="pi pi-upload"
-                                    severity="secondary"
-                                    outlined
-                                    size="small"
-                                    @click="openFilePicker(key)"
-                                    :loading="uploadingKey === key"
-                                />
+                                <FileUpload
+                                    @file-uploaded="fileUploaded(key, $event)"
+                                    :folderID="null"
+                                >
+                                    <template #default="{ openFileupload }">
+                                        <Button
+                                            icon="pi pi-upload"
+                                            severity="secondary"
+                                            outlined
+                                            size="small"
+                                            @click="openFileupload"
+                                            :loading="uploadingKey === key"
+                                        />
+                                    </template>
+                                </FileUpload>
                                 <Button
                                     v-if="store.getLocalValue(key)"
                                     icon="pi pi-trash"

@@ -160,6 +160,16 @@ const routes: RouteRecordRaw[] = [
         component: MediaLibrary,
     },
     {
+        path: "/files/:folderID",
+        name: "MediaLibraryFolder",
+        component: MediaLibrary,
+    },
+    {
+        path: "/files/:folderID/:fileName",
+        name: "MediaLibraryFolderFileDetails",
+        component: MediaLibrary,
+    },
+    {
         path: "/apidocs",
         name: "ApiDocs",
         component: ApiDocs,

@@ -58,3 +58,4 @@ export type {
 } from "./zod-schemas";
 
 export type { DeveloperKey } from "./types/developerKeys";
+export type { FileFolder, MediaFile, ListFilesParameters } from "./types/files";

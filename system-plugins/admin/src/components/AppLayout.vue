@@ -536,7 +536,7 @@ onUnmounted(() => {
             }"
         >
             <!-- Scrollable Content -->
-            <main class="flex-1 p-4 lg:p-6">
+            <main class="flex-1 p-4 flex flex-col grow">
                 <router-view />
             </main>
         </div>
