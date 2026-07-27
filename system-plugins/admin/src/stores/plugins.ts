@@ -5,7 +5,7 @@ import type {
     PluginSchemaResponse,
     MigrationStatus as SdkMigrationStatus,
     PluginPage as SdkPluginPage,
-} from "alcedo-sdk-node";
+} from "alcedocore-sdk-node";
 import { useAlcedoClient } from "../composables/useAlcedoClient";
 import { withAsyncHandlingVoid } from "../utils/asyncUtils";
 
@@ -14,7 +14,7 @@ export type {
     Plugin,
     PluginSchemaResponse,
     MigrationStatus,
-} from "alcedo-sdk-node";
+} from "alcedocore-sdk-node";
 
 // Store-specific interface extending SDK types
 export interface PluginStore extends Omit<Plugin, "type"> {
@@ -447,9 +447,7 @@ export const usePluginsStore = defineStore("plugins", () => {
         return currentPlugin.value;
     }
 
-    async function fetchPluginSettings(
-        name: string,
-    ): Promise<{
+    async function fetchPluginSettings(name: string): Promise<{
         settings: Record<string, unknown>;
         schema: Record<string, unknown> | null;
     }> {
@@ -460,9 +458,7 @@ export const usePluginsStore = defineStore("plugins", () => {
     }
 
     // DOCS-03/API: list available documentation for a plugin
-    async function fetchPluginDocs(
-        name: string,
-    ): Promise<{
+    async function fetchPluginDocs(name: string): Promise<{
         plugin: string;
         docs: Array<{ path: string; size: number }>;
     }> {

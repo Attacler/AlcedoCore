@@ -35,7 +35,7 @@ onMounted(fetchSettings);
         <h1>Plugin Settings</h1>
         <p class="subtitle">
             Demonstrates settings access via
-            <code>alcedo-sdk-rust</code> settings resource
+            <code>alcedocore-sdk-rust</code> settings resource
         </p>
 
         <div v-if="error" class="error-msg">{{ error }}</div>
@@ -54,9 +54,7 @@ onMounted(fetchSettings);
                     <tr>
                         <td class="setting-name">Refresh Interval</td>
                         <td class="setting-value">
-                            {{
-                                settings.refresh_interval ?? "(not set)"
-                            }}
+                            {{ settings.refresh_interval ?? "(not set)" }}
                             seconds
                         </td>
                     </tr>

@@ -10,7 +10,7 @@
     "dependencies": {
         "nuxt": "^3.15.0",
         "vue": "latest",
-        "alcedo-sdk-node": "file:../alcedo-sdk-node",
+        "alcedocore-sdk-node": "file:../alcedocore-sdk-node",
         "tailwindcss": "^4.1.4",
         "@tailwindcss/vite": "^4.1.4"
     }

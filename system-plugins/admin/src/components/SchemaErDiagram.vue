@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
-import type { PluginSchemaResponse } from "alcedo-sdk-node";
+import type { PluginSchemaResponse } from "alcedocore-sdk-node";
 import { schemaToMermaid } from "../utils/schemaToMermaid";
 import { initMermaid } from "../utils/mermaid";
 

@@ -1,15 +1,15 @@
 # Node.js SDK API Reference
 
-Package: `alcedo-sdk-node`  
+Package: `alcedocore-sdk-node`  
 Version: 0.2.0  
 Dependencies: `ky`, `zod`
 
 ## Installation
 
 ```bash
-npm install alcedo-sdk-node
+npm install alcedocore-sdk-node
 # or from source:
-cd sdk/alcedo-sdk-node
+cd sdk/alcedocore-sdk-node
 npm install
 npm run build
 ```
@@ -17,7 +17,7 @@ npm run build
 ## Quick Start
 
 ```typescript
-import { createClient } from "alcedo-sdk-node";
+import { createClient } from "alcedocore-sdk-node";
 
 const client = createClient("http://localhost:8080");
 
@@ -42,7 +42,7 @@ main().catch(console.error);
 Creates a new client instance. All resource modules share a single `ky` HTTP client with automatic retry, timeout, and `X-Request-ID` header injection.
 
 ```typescript
-import { createClient } from "alcedo-sdk-node";
+import { createClient } from "alcedocore-sdk-node";
 
 const client = createClient(baseUrl: string, options?: ClientOptions);
 ```
@@ -430,7 +430,7 @@ import {
     ValidationError,
     AuthenticationError,
     ServerError,
-} from "alcedo-sdk-node";
+} from "alcedocore-sdk-node";
 ```
 
 | Class                 | HTTP Status | Description                |
@@ -468,13 +468,13 @@ import {
     HealthResponseSchema,
     PluginPageSchema,
     PluginManifestSchema,
-} from "alcedo-sdk-node";
+} from "alcedocore-sdk-node";
 ```
 
 Use them to validate API responses at runtime:
 
 ```typescript
-import { PluginManifestSchema } from "alcedo-sdk-node";
+import { PluginManifestSchema } from "alcedocore-sdk-node";
 
 const manifest = PluginManifestSchema.parse(rawManifest);
 ```

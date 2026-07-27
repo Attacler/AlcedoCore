@@ -9,6 +9,6 @@
     },
     "dependencies": {
         "express": "^4.21.0",
-        "alcedo-sdk-node": "file:../../sdk/alcedo-sdk-node"
+        "alcedocore-sdk-node": "file:../../sdk/alcedocore-sdk-node"
     }
 }

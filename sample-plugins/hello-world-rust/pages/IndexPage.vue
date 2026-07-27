@@ -46,7 +46,8 @@ function updateName(newName: string) {
             <div class="border rounded-lg p-4 bg-blue-50">
                 <h3 class="font-semibold text-blue-800">KV Store</h3>
                 <p class="text-sm text-blue-600 mt-1">
-                    CRUD, TTL, batch operations via <code>alcedo-sdk-rust</code>
+                    CRUD, TTL, batch operations via
+                    <code>alcedocore-sdk-rust</code>
                 </p>
                 <a
                     href="/admin#/p/hello-world-rust/kv-demo"

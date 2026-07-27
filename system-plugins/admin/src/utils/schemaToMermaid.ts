@@ -1,4 +1,4 @@
-import type { PluginSchemaResponse } from "alcedo-sdk-node";
+import type { PluginSchemaResponse } from "alcedocore-sdk-node";
 
 export function schemaToMermaid(schema: PluginSchemaResponse): string {
     if (!schema.tables || schema.tables.length === 0) {

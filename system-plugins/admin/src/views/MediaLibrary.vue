@@ -8,7 +8,7 @@ import type {
     FileFolder,
     MediaFile,
     ListFilesParameters,
-} from "alcedo-sdk-node";
+} from "alcedocore-sdk-node";
 import FileUpload from "@/components/inputs/FileUpload.vue";
 import { useRouter } from "vue-router";
 

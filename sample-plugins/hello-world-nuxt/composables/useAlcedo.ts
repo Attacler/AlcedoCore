@@ -1,4 +1,4 @@
-import { createClient } from "alcedo-sdk-node";
+import { createClient } from "alcedocore-sdk-node";
 
 const CORE_URL = process.env.CORE_URL || "http://core:8080";
 

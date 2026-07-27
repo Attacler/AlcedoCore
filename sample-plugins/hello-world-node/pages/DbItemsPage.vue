@@ -70,7 +70,8 @@ onMounted(fetchItems);
     <div class="db-items-page">
         <h1>DB Items</h1>
         <p class="subtitle">
-            Database migrations and query proxy via <code>alcedo-sdk-node</code>
+            Database migrations and query proxy via
+            <code>alcedocore-sdk-node</code>
         </p>
 
         <div v-if="error" class="error-msg">{{ error }}</div>

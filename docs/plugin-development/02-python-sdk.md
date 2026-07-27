@@ -1,13 +1,13 @@
 # Python SDK API Reference
 
-Package: `alcedo-sdk-python` (Python 3.9+)  
+Package: `alcedocore-sdk-python` (Python 3.9+)  
 Version: 0.2.0  
 Dependency: `httpx >= 0.28.0`
 
 ## Installation
 
 ```bash
-pip install alcedo-sdk-python
+pip install alcedocore-sdk-python
 # or from source:
 pip install ./sdk/python/
 ```

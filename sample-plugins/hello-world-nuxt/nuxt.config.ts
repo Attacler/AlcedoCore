@@ -11,6 +11,6 @@ export default defineNuxtConfig({
     nitro: {
         preset: "node-server",
         output: { serverDir: ".output/server" },
-        externals: { inline: ["alcedo-sdk-node"] },
+        externals: { inline: ["alcedocore-sdk-node"] },
     },
 });

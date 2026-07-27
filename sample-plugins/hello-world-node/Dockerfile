@@ -2,7 +2,7 @@
 FROM node:20-alpine AS sdk-builder
 
 WORKDIR /build
-COPY sdk/alcedo-sdk-node/ ./sdk/
+COPY sdk/alcedocore-sdk-node/ ./sdk/
 RUN cd sdk && npm ci && npm run build
 
 # Stage 2: Final image

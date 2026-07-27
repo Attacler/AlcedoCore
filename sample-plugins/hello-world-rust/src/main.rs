@@ -1,6 +1,6 @@
 //! Hello World Rust Plugin — AlcedoCore sample plugin
 //!
-//! Demonstrates all alcedo-sdk-rust capabilities:
+//! Demonstrates all alcedocore-sdk-rust capabilities:
 //! - KV CRUD with TTL, batch, and list operations
 //! - Database migrations and query proxy
 //! - Settings access

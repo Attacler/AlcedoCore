@@ -254,7 +254,7 @@ Reserved for future resource quota declarations (CPU, memory, network). Currentl
 The Node.js SDK exports a `PluginManifestSchema` for validating manifests at build time:
 
 ```typescript
-import { PluginManifestSchema } from "alcedo-sdk-node";
+import { PluginManifestSchema } from "alcedocore-sdk-node";
 
 const manifest = PluginManifestSchema.parse(rawManifest);
 // {

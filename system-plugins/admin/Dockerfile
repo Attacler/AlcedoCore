@@ -1,11 +1,11 @@
 FROM node:24-alpine AS sdk-builder
 WORKDIR /src
-COPY sdk/alcedo-sdk-node/ ./
+COPY sdk/alcedocore-sdk-node/ ./
 RUN npm install && npm run build
 
 FROM node:24-alpine AS builder
 WORKDIR /build
-COPY --from=sdk-builder /src/ /sdk/alcedo-sdk-node/
+COPY --from=sdk-builder /src/ /sdk/alcedocore-sdk-node/
 COPY system-plugins/admin/package.json ./
 RUN npm install
 COPY system-plugins/admin/ .

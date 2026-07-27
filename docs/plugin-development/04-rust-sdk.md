@@ -9,7 +9,7 @@ Dependencies: `reqwest` (rustls-tls), `serde`, `serde_json`, `tokio`, `thiserror
 
 ```toml
 [dependencies]
-alcedo-sdk = { path = "../sdk/alcedo-sdk-rust" }
+alcedo-sdk = { path = "../sdk/alcedocore-sdk-rust" }
 tokio = { version = "1", features = ["full"] }
 ```
 

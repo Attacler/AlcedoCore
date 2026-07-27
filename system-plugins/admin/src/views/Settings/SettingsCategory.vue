@@ -15,7 +15,7 @@ import SettingsSession from "./SettingsSession.vue";
 import DeveloperKeysDrawer from "@/components/developerSettings/keysDrawer.vue";
 import { useAlcedoClient } from "@/composables/useAlcedoClient.ts";
 import FileUpload from "@/components/inputs/FileUpload.vue";
-import { MediaFile } from "alcedo-sdk-node";
+import { MediaFile } from "alcedocore-sdk-node";
 
 const props = defineProps<{ category: string }>();
 const router = useRouter(),

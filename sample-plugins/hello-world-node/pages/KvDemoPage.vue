@@ -172,7 +172,7 @@ async function listKeys() {
         <h1>KV Store Demo</h1>
         <p class="subtitle">
             Demonstrates CRUD, TTL, batch, and list operations via
-            <code>alcedo-sdk-node</code>
+            <code>alcedocore-sdk-node</code>
         </p>
 
         <div v-if="error" class="error-msg">{{ error }}</div>

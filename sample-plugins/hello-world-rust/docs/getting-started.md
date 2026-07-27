@@ -1,6 +1,6 @@
 # Getting Started with Hello-World-Rust Plugin
 
-The Hello-World-Rust plugin demonstrates all alcedo-sdk-rust capabilities from a Rust/Axum environment.
+The Hello-World-Rust plugin demonstrates all alcedocore-sdk-rust capabilities from a Rust/Axum environment.
 
 ## Prerequisites
 

@@ -1,5 +1,5 @@
 import express from "express";
-import { createClient, NotFoundError } from "alcedo-sdk-node";
+import { createClient, NotFoundError } from "alcedocore-sdk-node";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const CORE_URL = process.env.CORE_URL || "http://localhost:8080";
