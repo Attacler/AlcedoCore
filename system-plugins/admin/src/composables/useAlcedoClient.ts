@@ -1,5 +1,5 @@
 import { ref, readonly } from 'vue'
-import { createClient, AlcedoError, NotFoundError, ValidationError, AuthenticationError, ServerError, ConnectionError } from 'alcedo-sdk'
+import { createClient, AlcedoError, NotFoundError, ValidationError, AuthenticationError, ServerError, ConnectionError } from 'alcedo-sdk-node'
 
 const isConnected = ref(true)
 

@@ -1,75 +1,84 @@
 {
-  "name": "hello-world",
-  "version": "2.3.4",
-  "plugin_type": "docker",
-  "system_plugin": false,
-  "scopes": [
-    {"name": "kv.all", "description": "Read/write KV store for counter and TTL demos"},
-    {"name": "items.all", "description": "Read/write collection items"},
-    {"name": "db.query", "description": "Execute SQL queries on plugin schema"},
-    {"name": "db.execute", "description": "Execute SQL writes on plugin schema"}
-  ],
-  "image": "local/static",
-  "env": {},
-  "resources": {},
-  "pages": [
-    { "label": "Hello", "path": "/", "sidebar": true },
-    { "label": "Counter", "path": "/counter", "sidebar": true },
-    { "label": "DB Items", "path": "/items", "sidebar": true }
-  ],
-  "endpoints": [
-    {
-      "method": "GET",
-      "path": "/health",
-      "description": "Health check endpoint",
-      "group": "system"
-    },
-    {
-      "method": "GET",
-      "path": "/api/hello",
-      "description": "Returns greeting message",
-      "group": "api"
-    },
-    {
-      "method": "GET",
-      "path": "/api/counter",
-      "description": "Persistent counter via AlcedoKV SDK",
-      "group": "api"
-    },
-    {
-      "method": "GET",
-      "path": "/api/kv/ttl-demo",
-      "description": "Demonstrates TTL-based key expiry via AlcedoKV",
-      "group": "api"
-    },
-    {
-      "method": "GET",
-      "path": "/api/kv/hello",
-      "description": "Reads a KV entry via AlcedoKV SDK",
-      "group": "api"
-    },
-    {
-      "method": "GET",
-      "path": "/api/db/items",
-      "description": "Lists items from the plugin's database table (via query proxy)",
-      "group": "api"
+    "name": "hello-world",
+    "version": "0.0.3",
+    "plugin_type": "docker",
+    "system_plugin": false,
+    "scopes": [
+        {
+            "name": "kv.all",
+            "description": "Read/write KV store for counter and TTL demos"
+        },
+        { "name": "items.all", "description": "Read/write collection items" },
+        {
+            "name": "db.query",
+            "description": "Execute SQL queries on plugin schema"
+        },
+        {
+            "name": "db.execute",
+            "description": "Execute SQL writes on plugin schema"
+        }
+    ],
+    "image": "local/static",
+    "env": {},
+    "resources": {},
+    "pages": [
+        { "label": "Hello", "path": "/", "sidebar": true },
+        { "label": "Counter", "path": "/counter", "sidebar": true },
+        { "label": "DB Items", "path": "/items", "sidebar": true }
+    ],
+    "endpoints": [
+        {
+            "method": "GET",
+            "path": "/health",
+            "description": "Health check endpoint",
+            "group": "system"
+        },
+        {
+            "method": "GET",
+            "path": "/api/hello",
+            "description": "Returns greeting message",
+            "group": "api"
+        },
+        {
+            "method": "GET",
+            "path": "/api/counter",
+            "description": "Persistent counter via AlcedoKV SDK",
+            "group": "api"
+        },
+        {
+            "method": "GET",
+            "path": "/api/kv/ttl-demo",
+            "description": "Demonstrates TTL-based key expiry via AlcedoKV",
+            "group": "api"
+        },
+        {
+            "method": "GET",
+            "path": "/api/kv/hello",
+            "description": "Reads a KV entry via AlcedoKV SDK",
+            "group": "api"
+        },
+        {
+            "method": "GET",
+            "path": "/api/db/items",
+            "description": "Lists items from the plugin's database table (via query proxy)",
+            "group": "api"
+        }
+    ],
+    "settings_schema": {
+        "type": "object",
+        "properties": {
+            "greeting": {
+                "type": "string",
+                "title": "Greeting Message",
+                "default": "Hello from the admin plugin!",
+                "description": "Custom greeting message displayed on the hello world page"
+            },
+            "refresh_interval": {
+                "type": "integer",
+                "title": "Refresh Interval",
+                "default": 30,
+                "description": "Auto-refresh interval in seconds"
+            }
+        }
     }
-  ],
-  "settings_schema": {
-    "type": "object",
-    "properties": {
-      "greeting": {
-        "type": "string",
-        "title": "Greeting Message",
-        "default": "Hello from the admin plugin!",
-        "description": "Custom greeting message displayed on the hello world page"
-      },
-      "refresh_interval": {
-        "type": "integer",
-        "title": "Refresh Interval",
-        "default": 30,
-        "description": "Auto-refresh interval in seconds"
-      }
-    }
-  }
 }

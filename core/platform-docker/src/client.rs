@@ -77,6 +77,7 @@ impl DockerClient {
         network_mode: Option<&str>,
         volumes: Option<Vec<(String, String)>>,
     ) -> Result<String, AppError> {
+        self.pull_image(image).await?;
         let name = format!("{}-{}", slug, version);
 
         let env_vars: Vec<String> = env
@@ -348,11 +349,34 @@ impl DockerClient {
         })
     }
 
+    // async fn pull_image(image_name: &str) -> Result<(), AppError> {
+    //     let options = Some(CreateImageOptions {
+    //         from_image: Some(image_name.to_string()),
+    //         ..Default::default()
+    //     });
+
+    //     let mut stream = DOCKER.create_image(options, None, None);
+
+    //     while let Some(msg) = stream.next().await {
+    //         match msg {
+    //             Ok(_) => {}
+    //             Err(err) => {
+    //                 return Err(AppError::Internal(format!(
+    //                     "Failed to create container: {}",
+    //                     e
+    //                 )))
+    //             }
+    //         }
+    //     }
+    //     Ok(())
+    // }
+
     async fn create_temp_container(
         &self,
         prefix: &str,
         image_name: &str,
     ) -> Result<(String, String), AppError> {
+        self.pull_image(image_name).await?;
         let name = format!("temp-{}-{}", prefix, uuid::Uuid::new_v4());
         let config = ContainerCreateBody {
             image: Some(image_name.to_string()),
@@ -780,6 +804,7 @@ impl DockerClient {
     ) -> Result<(), AppError> {
         use futures_util::StreamExt;
 
+        self.pull_image(image_name).await?;
         let temp_container = format!("temp-extract-{}", uuid::Uuid::new_v4());
 
         let config = ContainerCreateBody {

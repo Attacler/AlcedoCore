@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "alcedo-sdk"
+name = "alcedo-sdk-rust"
 version = "0.1.0"
 dependencies = [
  "reqwest",
@@ -299,7 +299,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 name = "hello-world-rust"
 version = "1.0.0"
 dependencies = [
- "alcedo-sdk",
+ "alcedo-sdk-rust",
  "axum",
  "serde",
  "serde_json",

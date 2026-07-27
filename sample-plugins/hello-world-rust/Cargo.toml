@@ -5,7 +5,7 @@ edition = "2021"
 description = "AlcedoCore Rust sample plugin — demonstrates all alcedo-sdk capabilities"
 
 [dependencies]
-alcedo-sdk = { path = "../../sdk/alcedo-sdk-rust" }
+alcedo-sdk-rust = { path = "../../sdk/alcedo-sdk-rust" }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

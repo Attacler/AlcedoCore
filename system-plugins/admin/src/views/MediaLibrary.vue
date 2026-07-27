@@ -4,7 +4,11 @@ import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useToast } from "@/composables/useToast";
 import { formatDate, formatFileSize } from "@/utils/formatters";
 import { Drawer } from "primevue";
-import type { FileFolder, MediaFile, ListFilesParameters } from "alcedo-sdk";
+import type {
+    FileFolder,
+    MediaFile,
+    ListFilesParameters,
+} from "alcedo-sdk-node";
 import FileUpload from "@/components/inputs/FileUpload.vue";
 import { useRouter } from "vue-router";
 

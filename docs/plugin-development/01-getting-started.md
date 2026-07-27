@@ -55,10 +55,10 @@ my-plugin/
 
 ### Language Templates
 
-| Language | Server file | SDK package         |
-| -------- | ----------- | ------------------- |
-| Python   | `server.py` | `alcedo-sdk` (PyPI) |
-| Node.js  | `server.js` | `alcedo-sdk` (npm)  |
+| Language | Server file | SDK package                |
+| -------- | ----------- | -------------------------- |
+| Python   | `server.py` | `alcedo-sdk-python` (PyPI) |
+| Node.js  | `server.js` | `alcedo-sdk-node` (npm)    |
 
 ## 3. Understand the Manifest
 

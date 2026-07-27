@@ -1,6 +1,6 @@
 # Getting Started with Hello-World-Node Plugin
 
-The Hello-World-Node plugin demonstrates all alcedo-sdk capabilities from a Node.js/Express environment.
+The Hello-World-Node plugin demonstrates all alcedo-sdk-node capabilities from a Node.js/Express environment.
 
 ## Prerequisites
 

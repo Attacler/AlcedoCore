@@ -14,6 +14,7 @@ import { connectCommand } from "./commands/connect";
 import fs from "node:fs";
 import path from "node:path";
 import { devCommand } from "./commands/dev";
+import { buildCommand } from "./commands/build";
 
 // Read version from package.json
 function getVersion(): string {
@@ -61,6 +62,7 @@ program.option(
 program.addCommand(initCommand);
 program.addCommand(initCoreCommand);
 program.addCommand(deployCommand);
+program.addCommand(buildCommand);
 
 const addCommand = new Command("add").description(
     "Generate plugin components (migrations, endpoints, pages, nav-items)",

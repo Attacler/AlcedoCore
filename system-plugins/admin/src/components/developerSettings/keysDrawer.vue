@@ -7,7 +7,7 @@ import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useToast } from "@/composables/useToast";
 import { formatDate } from "@/utils/formatters";
 import { Drawer } from "primevue";
-import type { DeveloperKey } from "alcedo-sdk";
+import type { DeveloperKey } from "alcedo-sdk-node";
 
 const { client } = useAlcedoClient(),
     toast = useToast();

@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { cwd } from "node:process";
 import { Command } from "commander";
 
-export const proxyCommand = new Command("proxy")
+export const compilePagesCommand = new Command("compile-pages")
     .description("Compile all pages into a dist directory")
     .action(async (opts: null, cmd: Command) => {
         renderPages().catch((err) => {
@@ -16,8 +16,8 @@ export const proxyCommand = new Command("proxy")
             process.exit(1);
         });
     });
-
-const compilerDir = path.dirname(fileURLToPath(cwd()));
+console.log(process.cwd());
+const compilerDir = path.dirname(process.cwd());
 const compilerRootDir = path.join(compilerDir, "..");
 const compilerNodeModules = path.join(compilerRootDir, "node_modules");
 

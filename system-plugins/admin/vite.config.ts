@@ -39,7 +39,10 @@ export default defineConfig({
     resolve: {
         alias: {
             "@": fileURLToPath(new URL("./src", import.meta.url)),
-            "alcedo-sdk": resolve(__dirname, "../../sdk/alcedo-sdk/src"),
+            "alcedo-sdk-node": resolve(
+                __dirname,
+                "../../sdk/alcedo-sdk-node/src",
+            ),
         },
     },
 });

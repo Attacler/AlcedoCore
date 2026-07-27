@@ -8,13 +8,19 @@ use std::sync::Arc;
 
 use crate::api::permission_check;
 use crate::api::responses::ResponseEnvelope;
+use crate::db::queries::{Plugin, PluginVersion, Registry};
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
-use crate::db::queries::{Plugin, PluginVersion, Registry};
 
 fn version_status(active_version: &Option<PluginVersion>) -> (String, String) {
-    let version = active_version.as_ref().map(|v| v.version.clone()).unwrap_or_else(|| "1.0.0".to_string());
-    let status = active_version.as_ref().map(|v| v.status.clone()).unwrap_or_else(|| "stopped".to_string());
+    let version = active_version
+        .as_ref()
+        .map(|v| v.version.clone())
+        .unwrap_or_else(|| "1.0.0".to_string());
+    let status = active_version
+        .as_ref()
+        .map(|v| v.status.clone())
+        .unwrap_or_else(|| "stopped".to_string());
     (version, status)
 }
 
@@ -59,8 +65,15 @@ pub async fn list_plugins_handler(
     let total = all_plugins.len() as i64;
 
     let mut plugins_list = Vec::new();
-    for plugin in all_plugins.into_iter().skip(offset as usize).take(limit as usize) {
-        let active_version = PluginVersion::find_active(db_pool, &plugin.slug).await.ok().flatten();
+    for plugin in all_plugins
+        .into_iter()
+        .skip(offset as usize)
+        .take(limit as usize)
+    {
+        let active_version = PluginVersion::find_active(db_pool, &plugin.slug)
+            .await
+            .ok()
+            .flatten();
         let (version, status) = version_status(&active_version);
 
         plugins_list.push(PluginListItem {
@@ -113,10 +126,14 @@ pub async fn get_plugin_handler(
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
     let db_pool = state.db()?;
 
-    let plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug).await.ok().flatten();
+    let active_version = PluginVersion::find_active(db_pool, &slug)
+        .await
+        .ok()
+        .flatten();
     let (version, status) = version_status(&active_version);
 
     Ok(Json(ResponseEnvelope::success(PluginDetailResponse {
@@ -170,10 +187,18 @@ pub async fn create_plugin_handler(
     let db_pool = state.db()?;
 
     if payload.slug.is_empty() || payload.slug.len() > 255 {
-        return Err(AppError::BadRequest("Invalid slug: must be 1-255 characters".to_string()));
+        return Err(AppError::BadRequest(
+            "Invalid slug: must be 1-255 characters".to_string(),
+        ));
     }
-    if !payload.slug.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-        return Err(AppError::BadRequest("Invalid slug: must be alphanumeric with hyphens and underscores only".to_string()));
+    if !payload
+        .slug
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(AppError::BadRequest(
+            "Invalid slug: must be alphanumeric with hyphens and underscores only".to_string(),
+        ));
     }
     if payload.image.is_empty() {
         return Err(AppError::BadRequest("Image is required".to_string()));
@@ -181,7 +206,10 @@ pub async fn create_plugin_handler(
 
     let existing = Plugin::find_by_slug(db_pool, &payload.slug).await?;
     if existing.is_some() {
-        return Err(AppError::Conflict(format!("Plugin {} already exists", payload.slug)));
+        return Err(AppError::Conflict(format!(
+            "Plugin {} already exists",
+            payload.slug
+        )));
     }
 
     let now = chrono::Utc::now();
@@ -292,7 +320,9 @@ fn parse_image_url(image: &str) -> Result<(String, String), AppError> {
         Some(pos) => pos,
         None => {
             // Image without tag — return empty versions list
-            return Err(AppError::BadRequest("Image has no tag — no versions available".to_string()));
+            return Err(AppError::BadRequest(
+                "Image has no tag — no versions available".to_string(),
+            ));
         }
     };
 
@@ -309,7 +339,11 @@ fn parse_image_url(image: &str) -> Result<(String, String), AppError> {
             // Inside Docker, localhost refers to the container, not the host
             let substituted = std::env::var("LOCAL_REGISTRY_URL")
                 .unwrap_or_else(|_| format!("http://{}", registry));
-            if substituted.contains("://") { substituted } else { format!("http://{}", substituted) }
+            if substituted.contains("://") {
+                substituted
+            } else {
+                format!("http://{}", substituted)
+            }
         } else {
             format!("http://{}", registry)
         };
@@ -317,7 +351,10 @@ fn parse_image_url(image: &str) -> Result<(String, String), AppError> {
         Ok((registry_url, repository))
     } else {
         // Docker Hub image - no registry prefix
-        Ok(("https://registry.hub.docker.com".to_string(), registry_and_repo.to_string()))
+        Ok((
+            "https://registry.hub.docker.com".to_string(),
+            registry_and_repo.to_string(),
+        ))
     }
 }
 
@@ -332,7 +369,8 @@ pub async fn get_plugin_versions_handler(
 
     let db_pool = state.db()?;
 
-    let plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
     // Determine registry URL: prefer registry_id lookup, fall back to parsing image string
@@ -357,11 +395,12 @@ pub async fn get_plugin_versions_handler(
         let repository = last_slash
             .map(|pos| {
                 let after_slash = &image[pos + 1..];
-                after_slash.rfind(':').map(|c| &after_slash[..c]).unwrap_or(after_slash)
+                after_slash
+                    .rfind(':')
+                    .map(|c| &after_slash[..c])
+                    .unwrap_or(after_slash)
             })
-            .unwrap_or_else(|| {
-                image.rfind(':').map(|c| &image[..c]).unwrap_or(&image)
-            });
+            .unwrap_or_else(|| image.rfind(':').map(|c| &image[..c]).unwrap_or(&image));
 
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
@@ -376,10 +415,21 @@ pub async fn get_plugin_versions_handler(
                         if let Some(tags_array) = tags_data.get("tags").and_then(|t| t.as_array()) {
                             for tag_val in tags_array {
                                 let tag = tag_val.as_str().unwrap_or("latest").to_string();
-                                let manifest_url = format!("{}/v2/{}/manifests/{}", reg_url, repository, tag);
-                                let size = client.get(&manifest_url).send().await
+                                let manifest_url =
+                                    format!("{}/v2/{}/manifests/{}", reg_url, repository, tag);
+                                let size = client
+                                    .get(&manifest_url)
+                                    .send()
+                                    .await
                                     .ok()
-                                    .and_then(|r| r.headers().get("Content-Length")?.to_str().ok()?.parse::<i64>().ok())
+                                    .and_then(|r| {
+                                        r.headers()
+                                            .get("Content-Length")?
+                                            .to_str()
+                                            .ok()?
+                                            .parse::<i64>()
+                                            .ok()
+                                    })
                                     .unwrap_or(0);
                                 versions.push(VersionItem { tag, size });
                             }
@@ -398,19 +448,36 @@ pub async fn get_plugin_versions_handler(
                 let client = Client::builder()
                     .timeout(Duration::from_secs(10))
                     .build()
-                    .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {}", e)))?;
+                    .map_err(|e| {
+                        AppError::Internal(format!("Failed to create HTTP client: {}", e))
+                    })?;
                 let tags_url = format!("{}/v2/{}/tags/list", registry_url, repository);
                 match client.get(&tags_url).send().await {
                     Ok(response) => {
                         if response.status().is_success() {
                             if let Ok(tags_data) = response.json::<serde_json::Value>().await {
-                                if let Some(tags_array) = tags_data.get("tags").and_then(|t| t.as_array()) {
+                                if let Some(tags_array) =
+                                    tags_data.get("tags").and_then(|t| t.as_array())
+                                {
                                     for tag_val in tags_array {
                                         let tag = tag_val.as_str().unwrap_or("latest").to_string();
-                                        let manifest_url = format!("{}/v2/{}/manifests/{}", registry_url, repository, tag);
-                                        let size = client.get(&manifest_url).send().await
+                                        let manifest_url = format!(
+                                            "{}/v2/{}/manifests/{}",
+                                            registry_url, repository, tag
+                                        );
+                                        let size = client
+                                            .get(&manifest_url)
+                                            .send()
+                                            .await
                                             .ok()
-                                            .and_then(|r| r.headers().get("Content-Length")?.to_str().ok()?.parse::<i64>().ok())
+                                            .and_then(|r| {
+                                                r.headers()
+                                                    .get("Content-Length")?
+                                                    .to_str()
+                                                    .ok()?
+                                                    .parse::<i64>()
+                                                    .ok()
+                                            })
                                             .unwrap_or(0);
                                         versions.push(VersionItem { tag, size });
                                     }
@@ -438,7 +505,9 @@ pub async fn get_plugin_versions_handler(
     }
 
     versions.sort_by(|a, b| a.tag.cmp(&b.tag));
-    Ok(Json(ResponseEnvelope::success(ListVersionsResponse { versions })))
+    Ok(Json(ResponseEnvelope::success(ListVersionsResponse {
+        versions,
+    })))
 }
 
 pub async fn enable_plugin_handler(
@@ -449,27 +518,41 @@ pub async fn enable_plugin_handler(
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let _plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug).await?
-        .ok_or_else(|| AppError::BadRequest(format!("Plugin {} has no active version. Deploy first.", slug)))?;
+    let active_version = PluginVersion::find_active(db_pool, &slug)
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "Plugin {} has no active version. Deploy first.",
+                slug
+            ))
+        })?;
 
-    let container_id = active_version.container_id.clone()
-        .ok_or_else(|| AppError::BadRequest(format!("Plugin {} has no container. Deploy first.", slug)))?;
+    let container_id = active_version.container_id.clone().ok_or_else(|| {
+        AppError::BadRequest(format!("Plugin {} has no container. Deploy first.", slug))
+    })?;
 
     if active_version.status == "running" {
         // For plugins with a platform (Docker/K8s), verify actual container state
         if let Some(ref platform) = state.platform {
-            let container_running = platform.inspect(&container_id).await
+            let container_running = platform
+                .inspect(&container_id)
+                .await
                 .map(|d| d.state.to_lowercase() == "running")
                 .unwrap_or(false);
             if container_running {
                 return Err(AppError::Conflict("Container already running".to_string()));
             }
             // Container crashed but DB says running — update status
-            tracing::warn!("Container for {} is dead but DB status is 'running'. Resetting status.", slug);
-            PluginVersion::update_status(db_pool, &slug, &active_version.version, "stopped").await?;
+            tracing::warn!(
+                "Container for {} is dead but DB status is 'running'. Resetting status.",
+                slug
+            );
+            PluginVersion::update_status(db_pool, &slug, &active_version.version, "stopped")
+                .await?;
         }
         // Static plugins (no platform) don't have containers — just proceed
     }
@@ -501,17 +584,21 @@ pub async fn disable_plugin_handler(
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let _plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug).await?
+    let active_version = PluginVersion::find_active(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::BadRequest(format!("Plugin {} has no active version.", slug)))?;
 
     if active_version.status == "stopped" {
         // Verify actual container state
         let container_running = match active_version.container_id.as_ref() {
             Some(cid) => match state.platform.as_ref() {
-                Some(platform) => platform.inspect(cid).await
+                Some(platform) => platform
+                    .inspect(cid)
+                    .await
                     .map(|d| d.state.to_lowercase() == "running")
                     .unwrap_or(false),
                 None => false,
@@ -527,10 +614,15 @@ pub async fn disable_plugin_handler(
                 new_scopes: None,
             })));
         }
-        tracing::warn!("Container for {} is running but DB status is 'stopped'. Proceeding to disable.", slug);
+        tracing::warn!(
+            "Container for {} is running but DB status is 'stopped'. Proceeding to disable.",
+            slug
+        );
     }
 
-    let container_id = active_version.container_id.clone()
+    let container_id = active_version
+        .container_id
+        .clone()
         .ok_or_else(|| AppError::Internal("No container ID found".to_string()))?;
 
     if let Some(ref platform) = state.platform {
@@ -559,11 +651,15 @@ pub async fn deploy_plugin_handler(
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
     // Determine version/tag to deploy - tag takes precedence over version
-    let tag = payload.tag.or(payload.version).unwrap_or_else(|| "latest".to_string());
+    let tag = payload
+        .tag
+        .or(payload.version)
+        .unwrap_or_else(|| "latest".to_string());
 
     // Construct image with specific tag.
     // If no explicit tag was provided (defaults to "latest"), keep the original
@@ -609,24 +705,31 @@ pub async fn deploy_plugin_handler(
     // Read manifest from image to update plugin metadata
     let mut new_scopes_detected = Vec::new();
     if let Some(ref platform) = state.platform {
-        match platform.read_file_from_image(&deploy_image, "/app/manifest.json").await {
+        match platform
+            .read_file_from_image(&deploy_image, "/app/manifest.json")
+            .await
+        {
             Ok(manifest_json) => {
                 if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_json) {
                     // Preserve existing values if plugin already exists
-                    let existing_settings: serde_json::Value =
-                        Plugin::find_by_slug(db_pool, &slug).await
-                            .ok().flatten()
-                            .map(|p| p.settings)
-                            .unwrap_or(serde_json::json!({}));
-                    let existing_granted: serde_json::Value =
-                        Plugin::find_by_slug(db_pool, &slug).await
-                            .ok().flatten()
-                            .map(|p| p.granted_scopes)
-                            .unwrap_or(serde_json::json!([]));
+                    let existing_settings: serde_json::Value = Plugin::find_by_slug(db_pool, &slug)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|p| p.settings)
+                        .unwrap_or(serde_json::json!({}));
+                    let existing_granted: serde_json::Value = Plugin::find_by_slug(db_pool, &slug)
+                        .await
+                        .ok()
+                        .flatten()
+                        .map(|p| p.granted_scopes)
+                        .unwrap_or(serde_json::json!([]));
 
                     // Detect new scopes in this version
-                    if let Some(manifest_scopes) = manifest.get("scopes").and_then(|s| s.as_array()) {
-                        let granted_names: Vec<String> = serde_json::from_value(existing_granted.clone()).unwrap_or_default();
+                    if let Some(manifest_scopes) = manifest.get("scopes").and_then(|s| s.as_array())
+                    {
+                        let granted_names: Vec<String> =
+                            serde_json::from_value(existing_granted.clone()).unwrap_or_default();
                         for scope in manifest_scopes {
                             if let Some(name) = scope.get("name").and_then(|n| n.as_str()) {
                                 if !granted_names.iter().any(|g| g == name) {
@@ -636,20 +739,51 @@ pub async fn deploy_plugin_handler(
                         }
                     }
 
-                    let manifest_scopes = manifest.get("scopes").cloned().unwrap_or(serde_json::json!([]));
+                    let manifest_scopes = manifest
+                        .get("scopes")
+                        .cloned()
+                        .unwrap_or(serde_json::json!([]));
                     let plugin_update = Plugin {
                         slug: slug.clone(),
                         image: deploy_image.clone(),
-                        plugin_type: manifest.get("plugin_type").and_then(|v| v.as_str()).unwrap_or("dynamic").to_string(),
-                        system_plugin: manifest.get("system_plugin").and_then(|v| v.as_bool()).unwrap_or(false),
-                        env: manifest.get("env").cloned().unwrap_or(serde_json::json!({})),
-                        resources: manifest.get("resources").cloned().unwrap_or(serde_json::json!({})),
-                        display_name: manifest.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                        description: manifest.get("description").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                        pages: manifest.get("pages").cloned().unwrap_or(serde_json::json!([])),
-                        endpoints: manifest.get("endpoints").cloned().unwrap_or(serde_json::json!([])),
+                        plugin_type: manifest
+                            .get("plugin_type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("dynamic")
+                            .to_string(),
+                        system_plugin: manifest
+                            .get("system_plugin")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        env: manifest
+                            .get("env")
+                            .cloned()
+                            .unwrap_or(serde_json::json!({})),
+                        resources: manifest
+                            .get("resources")
+                            .cloned()
+                            .unwrap_or(serde_json::json!({})),
+                        display_name: manifest
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        description: manifest
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        pages: manifest
+                            .get("pages")
+                            .cloned()
+                            .unwrap_or(serde_json::json!([])),
+                        endpoints: manifest
+                            .get("endpoints")
+                            .cloned()
+                            .unwrap_or(serde_json::json!([])),
                         documentation: serde_json::json!([]),
-                        settings_schema: manifest.get("settings_schema").cloned().unwrap_or(serde_json::json!({})),
+                        settings_schema: manifest
+                            .get("settings_schema")
+                            .cloned()
+                            .unwrap_or(serde_json::json!({})),
                         settings: existing_settings,
                         tags: serde_json::json!([]),
                         requested_scopes: manifest_scopes,
@@ -671,10 +805,13 @@ pub async fn deploy_plugin_handler(
     }
 
     // Re-fetch plugin record after manifest update
-    let _plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let _plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
-    let mut env_map: std::collections::HashMap<String, String> = plugin.env.as_object()
+    let mut env_map: std::collections::HashMap<String, String> = plugin
+        .env
+        .as_object()
         .map(|obj| {
             obj.iter()
                 .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
@@ -692,13 +829,17 @@ pub async fn deploy_plugin_handler(
             "http://core:8080".to_string()
         }
     };
-    env_map.entry("CORE_URL".to_string()).or_insert_with(default_core_url);
+    env_map
+        .entry("CORE_URL".to_string())
+        .or_insert_with(default_core_url);
 
     // Deploy through platform or Docker fallback
     let container_id = if let Some(ref platform) = state.platform {
         platform.deploy(&slug, &tag, &deploy_image, env_map).await?
     } else {
-        return Err(AppError::Internal("No platform configured to deploy plugin".to_string()));
+        return Err(AppError::Internal(
+            "No platform configured to deploy plugin".to_string(),
+        ));
     };
 
     let prev_active = PluginVersion::find_active(db_pool, &slug).await?;
@@ -707,7 +848,9 @@ pub async fn deploy_plugin_handler(
     if let Err(e) = async {
         PluginVersion::set_active(db_pool, &slug, &tag).await?;
         PluginVersion::update_container(db_pool, &slug, &tag, &container_id, "running").await
-    }.await {
+    }
+    .await
+    {
         if let Some(ref platform) = state.platform {
             let _ = platform.remove(&container_id).await;
         }
@@ -721,10 +864,19 @@ pub async fn deploy_plugin_handler(
     }
 
     // Update Redis cache so the proxy handler can skip DB lookups
-    let endpoint_count = plugin.endpoints.as_array().map(|arr| arr.len()).unwrap_or(0);
+    let endpoint_count = plugin
+        .endpoints
+        .as_array()
+        .map(|arr| arr.len())
+        .unwrap_or(0);
     crate::api::proxy::cache_active_plugin(
-        &state.redis_connection, &slug, &container_id, &tag, endpoint_count,
-    ).await;
+        &state.redis_connection,
+        &slug,
+        &container_id,
+        &tag,
+        endpoint_count,
+    )
+    .await;
 
     let new_scopes = if new_scopes_detected.is_empty() {
         None
@@ -750,15 +902,27 @@ pub async fn update_plugin_handler(
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let _plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
-    Plugin::update(db_pool, &slug, payload.display_name.as_ref(), payload.description.as_ref(), payload.tags.as_ref()).await?;
+    Plugin::update(
+        db_pool,
+        &slug,
+        payload.display_name.as_ref(),
+        payload.description.as_ref(),
+        payload.tags.as_ref(),
+    )
+    .await?;
 
-    let updated_plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let updated_plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found after update: {}", slug)))?;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug).await.ok().flatten();
+    let active_version = PluginVersion::find_active(db_pool, &slug)
+        .await
+        .ok()
+        .flatten();
     let (version, status) = version_status(&active_version);
 
     Ok(Json(ResponseEnvelope::success(PluginDetailResponse {
@@ -797,7 +961,8 @@ pub async fn delete_plugin_handler(
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let _plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
     // Clean up event subscriptions
@@ -839,17 +1004,24 @@ pub async fn get_plugin_instance_logs_handler(
     if let Some(ref platform) = state.platform {
         // Use container_id from DB (set by platform.deploy()) — for K8s this is
         // the deployment name (hyphenated), not the constructed plugin_{slug}.
-        let db_pool = state.db_pool.as_ref()
+        let db_pool = state
+            .db_pool
+            .as_ref()
             .ok_or_else(|| AppError::Internal("Database not configured".to_string()))?;
-        let container_id = PluginVersion::find_active(db_pool, &slug).await?
+        let container_id = PluginVersion::find_active(db_pool, &slug)
+            .await?
             .and_then(|v| v.container_id)
             .unwrap_or_else(|| format!("plugin_{}", slug));
-        let logs = platform.get_instance_logs(&container_id, &instance_id, 100).await?;
+        let logs = platform
+            .get_instance_logs(&container_id, &instance_id, 100)
+            .await?;
         let lines: Vec<String> = logs.lines().map(|l| l.to_string()).collect();
         return Ok(Json(lines));
     }
 
-    Err(AppError::Internal("No platform configured to fetch logs".to_string()))
+    Err(AppError::Internal(
+        "No platform configured to fetch logs".to_string(),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -870,22 +1042,32 @@ pub async fn preview_plugin_handler(
     Json(payload): Json<PreviewPluginRequest>,
 ) -> Result<Json<ResponseEnvelope<PreviewPluginResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
-    let slug = payload.image.rsplit_once('/')
+    let slug = payload
+        .image
+        .rsplit_once('/')
         .and_then(|(_, rest)| rest.rsplit_once(':').map(|(name, _)| name.to_string()))
         .unwrap_or_else(|| payload.image.clone());
 
     // Try platform path first (works for both Docker and K8s)
     let manifest = if let Some(ref platform) = state.platform {
-        match platform.read_file_from_image(&payload.image, "/app/manifest.json").await {
+        match platform
+            .read_file_from_image(&payload.image, "/app/manifest.json")
+            .await
+        {
             Ok(content) => serde_json::from_str::<serde_json::Value>(&content).ok(),
-            Err(_) => None,
+            Err(e) => {
+                println!("{:?}", e);
+                None
+            }
         }
     } else {
         None
     };
 
     let migrations = if let Some(ref platform) = state.platform {
-        platform.list_directory_in_image(&payload.image, "/app/migrations").await
+        platform
+            .list_directory_in_image(&payload.image, "/app/migrations")
+            .await
             .unwrap_or_default()
             .into_iter()
             .filter(|f| f.ends_with(".up.sql"))
@@ -913,29 +1095,76 @@ pub fn plugins_router(state: Arc<PluginAppState>) -> Router {
         .route("/:slug/disable", post(disable_plugin_handler))
         .route("/:slug/deploy", post(deploy_plugin_handler))
         .route("/:slug/versions", get(get_plugin_versions_handler))
-        .route("/:slug/instances/:instanceId/logs", get(get_plugin_instance_logs_handler))
+        .route(
+            "/:slug/instances/:instanceId/logs",
+            get(get_plugin_instance_logs_handler),
+        )
         // Routes moved from admin_router
         .route("/deploy", post(crate::api::admin::deploy_plugin_handler))
         .route("/:slug/stop", post(crate::api::admin::stop_plugin_handler))
-        .route("/:slug/restart", post(crate::api::admin::restart_plugin_handler))
-        .route("/:slug/scale", post(crate::api::admin::scale_plugin_handler))
-        .route("/:slug/instances", get(crate::api::admin::get_plugin_instances_handler))
-        .route("/:slug/instances/:instanceId", get(crate::api::admin::get_plugin_instance_handler))
-        .route("/:slug/instances/:instanceId/stats", get(crate::api::admin::get_plugin_instance_stats_handler))
-        .route("/:slug/events", get(crate::api::admin::get_plugin_event_subscriptions))
+        .route(
+            "/:slug/restart",
+            post(crate::api::admin::restart_plugin_handler),
+        )
+        .route(
+            "/:slug/scale",
+            post(crate::api::admin::scale_plugin_handler),
+        )
+        .route(
+            "/:slug/instances",
+            get(crate::api::admin::get_plugin_instances_handler),
+        )
+        .route(
+            "/:slug/instances/:instanceId",
+            get(crate::api::admin::get_plugin_instance_handler),
+        )
+        .route(
+            "/:slug/instances/:instanceId/stats",
+            get(crate::api::admin::get_plugin_instance_stats_handler),
+        )
+        .route(
+            "/:slug/events",
+            get(crate::api::admin::get_plugin_event_subscriptions),
+        )
         .route("/:slug/schema", get(crate::api::admin::get_plugin_schema))
         .route("/:slug/migrations", get(crate::api::admin::list_migrations))
         .route("/:slug/migrations", post(crate::api::admin::run_migration))
-        .route("/:slug/migrations/upload", post(crate::api::admin::upload_migrations_handler))
-        .route("/:slug/rollback/:version", post(crate::api::admin::rollback_migration))
-        .route("/:slug/settings", get(crate::api::admin::get_plugin_settings).patch(crate::api::admin::update_plugin_settings))
+        .route(
+            "/:slug/migrations/upload",
+            post(crate::api::admin::upload_migrations_handler),
+        )
+        .route(
+            "/:slug/rollback/:version",
+            post(crate::api::admin::rollback_migration),
+        )
+        .route(
+            "/:slug/settings",
+            get(crate::api::admin::get_plugin_settings)
+                .patch(crate::api::admin::update_plugin_settings),
+        )
         .route("/:slug/pages", get(crate::api::admin::get_plugin_pages))
-        .route("/:slug/pages/assets", get(crate::api::admin::get_plugin_assets))
-        .route("/:slug/runtime", get(crate::api::admin::get_plugin_runtime_info))
+        .route(
+            "/:slug/pages/assets",
+            get(crate::api::admin::get_plugin_assets),
+        )
+        .route(
+            "/:slug/runtime",
+            get(crate::api::admin::get_plugin_runtime_info),
+        )
         .route("/:slug/logs", get(crate::api::admin::get_plugin_logs))
-        .route("/:slug/logs/:requestId", get(crate::api::admin::get_log_detail))
-        .route("/:slug/scopes", get(crate::api::admin::get_plugin_scopes_handler).post(crate::api::admin::update_plugin_scopes_handler))
+        .route(
+            "/:slug/logs/:requestId",
+            get(crate::api::admin::get_log_detail),
+        )
+        .route(
+            "/:slug/scopes",
+            get(crate::api::admin::get_plugin_scopes_handler)
+                .post(crate::api::admin::update_plugin_scopes_handler),
+        )
         .route("/:slug/docs", get(crate::api::admin::list_plugin_docs))
-        .route("/:slug/docs/*path", get(crate::api::admin::fetch_plugin_doc))
+        .route(
+            "/:slug/docs/*path",
+            get(crate::api::admin::fetch_plugin_doc),
+        )
         .with_state(state)
 }
