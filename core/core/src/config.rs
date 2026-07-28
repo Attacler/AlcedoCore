@@ -55,7 +55,11 @@ impl AppConfig {
         let database_url = std::env::var("DATABASE_URL")
             .ok()
             .filter(|s| !s.is_empty())
-            .or_else(|| std::env::var("APP_DATABASE_URL").ok().filter(|s| !s.is_empty()));
+            .or_else(|| {
+                std::env::var("APP_DATABASE_URL")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+            });
 
         Ok(Self {
             database_url,
@@ -69,7 +73,7 @@ impl AppConfig {
             plugin_network: cfg
                 .get_string("PLUGIN_NETWORK")
                 .unwrap_or_else(|_| "alcedocore_plugins".to_string()),
-            plugins_dir: std::env::var("PLUGIN_PUBLIC_MOUNTS")
+            plugins_dir: std::env::var("PLUGINS_DIR")
                 .unwrap_or_else(|_| "/var/lib/plugin-public".to_string()),
             health_check_interval: Duration::from_secs(
                 cfg.get::<u64>("HEALTH_CHECK_INTERVAL").unwrap_or(5),
@@ -83,7 +87,8 @@ impl AppConfig {
             dev_mode: cfg.get::<bool>("DEV_MODE").unwrap_or(false),
             redis_url: std::env::var("REDIS_URL").unwrap_or_default(),
             capture_body: cfg.get::<bool>("CAPTURE_BODY").unwrap_or(false),
-            capture_body_max_size: cfg.get::<usize>("CAPTURE_BODY_MAX_SIZE")
+            capture_body_max_size: cfg
+                .get::<usize>("CAPTURE_BODY_MAX_SIZE")
                 .unwrap_or(10240)
                 .min(1048576), // clamp to 1MB max
             nested_field_depth_limit: cfg
@@ -91,7 +96,9 @@ impl AppConfig {
                 .unwrap_or(5)
                 .min(10),
             admin_email: std::env::var("ADMIN_EMAIL").ok().filter(|s| !s.is_empty()),
-            admin_password: std::env::var("ADMIN_PASSWORD").ok().filter(|s| !s.is_empty()),
+            admin_password: std::env::var("ADMIN_PASSWORD")
+                .ok()
+                .filter(|s| !s.is_empty()),
             session_ttl_seconds: cfg.get::<u64>("SESSION_TTL_SECONDS").unwrap_or(86400),
             core_public_url: std::env::var("CORE_PUBLIC_URL")
                 .ok()
@@ -103,7 +110,9 @@ impl AppConfig {
             rate_limit_auth_window: cfg.get::<u64>("RATE_LIMIT_AUTH_WINDOW").unwrap_or(60),
             rate_limit_api_requests: cfg.get::<u32>("RATE_LIMIT_API_REQUESTS").unwrap_or(100),
             rate_limit_api_window: cfg.get::<u64>("RATE_LIMIT_API_WINDOW").unwrap_or(60),
-            event_forwarder_max_concurrent: cfg.get::<u32>("EVENT_FORWARDER_MAX_CONCURRENT").unwrap_or(50),
+            event_forwarder_max_concurrent: cfg
+                .get::<u32>("EVENT_FORWARDER_MAX_CONCURRENT")
+                .unwrap_or(50),
         })
     }
 }

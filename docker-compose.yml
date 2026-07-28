@@ -1,14 +1,4 @@
 services:
-    # nginx:
-    #     image: nginx:alpine
-    #     ports:
-    #         - "8080:8080"
-    #     volumes:
-    #         - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    #     command: ["nginx", "-g", "daemon off;"]
-    #     depends_on:
-    #         - core
-
     # core:
     #   build:
     #     context: ./core
@@ -31,7 +21,7 @@ services:
     #     ADMIN_EMAIL: admin@alcedo.dev
     #     ADMIN_PASSWORD: admin123!
     #     PLUGIN_NETWORK: happy-falcon_default
-    #     PLUGIN_PUBLIC_MOUNTS: /var/lib/plugin-public
+    #     PLUGINS_DIR: /var/lib/plugin-public
     #     PLUGINS_DIR: /plugins
     #     COLLECTION_LOG_FLUSH_MS: "100"
     #     SECURITY_COOKIE_SECURE: "false"

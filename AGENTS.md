@@ -104,7 +104,7 @@ Both "docker" and "dynamic" plugin types now correctly map to "user".
 | `DATABASE_URL`                   | PostgreSQL connection string                                            | (required)                                       |
 | `CORE_PORT`                      | Port for alcedocore                                                     | 8080                                             |
 | `PLUGINS_DIR`                    | Directory for static plugin files                                       | /plugins                                         |
-| `PLUGIN_PUBLIC_MOUNTS`           | PVC mount path for plugin file storage (K8s)                            | /var/lib/plugin-public                           |
+| `PLUGINS_DIR`                    | PVC mount path for plugin file storage (K8s)                            | /var/lib/plugin-public                           |
 | `LOCAL_REGISTRY_URL`             | Docker registry URL                                                     | localhost:5000                                   |
 | `DOCKER_SOCKET`                  | Docker socket path                                                      | /var/run/docker.sock                             |
 | `PLUGIN_NETWORK`                 | Docker network name                                                     | alcedocore_plugins                               |
@@ -457,12 +457,12 @@ docker push localhost:5001/my-image:latest
 
 ### Key differences from Docker/Swarm
 
-| Aspect       | Docker/Swarm                        | K8s                                             |
-| ------------ | ----------------------------------- | ----------------------------------------------- |
-| Registry URL | `localhost:5000`                    | `k3d-k8s-e2e-registry:5000`                     |
-| Core access  | `localhost:8080`                    | Port-forward `localhost:6060`                   |
-| Plugin files | `$PLUGINS_DIR/{slug}/` (host mount) | `$PLUGIN_PUBLIC_MOUNTS/{slug}/{version}/` (PVC) |
-| Plugin docs  | Exec into container                 | PVC file read                                   |
+| Aspect       | Docker/Swarm                        | K8s                                    |
+| ------------ | ----------------------------------- | -------------------------------------- |
+| Registry URL | `localhost:5000`                    | `k3d-k8s-e2e-registry:5000`            |
+| Core access  | `localhost:8080`                    | Port-forward `localhost:6060`          |
+| Plugin files | `$PLUGINS_DIR/{slug}/` (host mount) | `$PLUGINS_DIR/{slug}/{version}/` (PVC) |
+| Plugin docs  | Exec into container                 | PVC file read                          |
 
 ---
 
@@ -478,7 +478,7 @@ During deploy (`admin.rs` deploy handler):
 1. Image is pulled by the platform
 2. `extract_from_image()` creates a temp pod running `tar -cf - -C {parent} {leaf} | base64`
 3. The core captures the tar output from pod logs and extracts to the target directory
-4. On K8s: target is `$PLUGIN_PUBLIC_MOUNTS/{slug}/{version}/` (PVC, persistent)
+4. On K8s: target is `$PLUGINS_DIR/{slug}/{version}/` (PVC, persistent)
 5. On Docker: target is `$PLUGINS_DIR/{slug}/` (host mount, ephemeral)
 6. No WebSocket exec needed — pure HTTP (pod logs API)
 
@@ -486,7 +486,7 @@ During deploy (`admin.rs` deploy handler):
 
 `plugin_file_dir()` in `admin.rs` resolves file paths in this order:
 
-1. `$PLUGIN_PUBLIC_MOUNTS/{slug}/{version}/{subdir}` (PVC, persistent on K8s)
+1. `$PLUGINS_DIR/{slug}/{version}/{subdir}` (PVC, persistent on K8s)
 2. `$PLUGINS_DIR/{slug}/{subdir}` (local filesystem, ephemeral)
 3. `$PLUGINS_DIR/plugin-migrations/{slug}` (old migration path, backward compat)
 

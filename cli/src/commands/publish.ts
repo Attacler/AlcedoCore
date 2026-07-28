@@ -1,21 +1,15 @@
 import { Command } from "commander";
-import {
-    createSpinner,
-    success,
-    error as logError,
-    info,
-} from "../utils/logger";
+import { createSpinner, success, error as logError } from "../utils/logger";
 import path from "path";
-import { ConfigSchema, loadConfig } from "../config";
+import { loadConfig } from "../config";
 import { existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
 
-export const buildCommand = new Command("build")
-    .description("Build a plugin as a Docker image")
+export const publishCommand = new Command("publish")
+    .description("Build and push a plugin to an image registry")
     .action(async (slug: string, options: any, cmd: Command) => {
         const spinner = createSpinner(`Preparing build...`);
         const config = loadConfig();
-        // cmd.optsWithGlobals() as Partial<ConfigSchema>,
 
         const pluginDir = config.pluginDir || process.cwd();
         const manifestPath = path.resolve(pluginDir, "manifest.json");
@@ -24,6 +18,12 @@ export const buildCommand = new Command("build")
         if (!existsSync(manifestPath)) {
             spinner.fail();
             logError(`Could not build, manifest.json is missing!`);
+            process.exit(1);
+        }
+
+        if (!config.registryUrl) {
+            spinner.fail();
+            logError(`Registery URL not set`);
             process.exit(1);
         }
 
@@ -43,10 +43,22 @@ export const buildCommand = new Command("build")
 
         try {
             spinner.text = "Building Docker image...";
-            await buildDockerImage(pluginDir, manifest.name, manifest.version);
+            await buildDockerImage(
+                pluginDir,
+                config.registryUrl,
+                manifest.name,
+                manifest.version,
+            );
+            success(`Plugin has been build`);
+            spinner.text = "Pushing Docker image...";
+            await pushDockerImage(
+                config.registryUrl,
+                manifest.name,
+                manifest.version,
+            );
             spinner.succeed();
             success(
-                `Plugin "${slug}" has been build under ${manifest.name}:${manifest.version}`,
+                `Plugin has been build and pushed under ${manifest.name}:${manifest.version}`,
             );
         } catch (err: any) {
             spinner.fail();
@@ -57,11 +69,25 @@ export const buildCommand = new Command("build")
 
 function buildDockerImage(
     pluginDir: string,
+    registryURL: string,
     image: string,
     version: string,
 ): boolean {
-    console.log(`docker build ${pluginDir} ${image}:${version}`);
-    execSync(`docker build -t ${image}:${version} ${pluginDir}`, {
+    execSync(
+        `docker build -t ${registryURL}/${image}:${version} ${pluginDir}`,
+        {
+            stdio: "pipe",
+        },
+    );
+    return true;
+}
+
+function pushDockerImage(
+    registryURL: string,
+    image: string,
+    version: string,
+): boolean {
+    execSync(`docker push ${registryURL}/${image}:${version}`, {
         stdio: "pipe",
     });
     return true;

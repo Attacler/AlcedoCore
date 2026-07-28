@@ -515,7 +515,7 @@ export const usePluginsStore = defineStore("plugins", () => {
     async function fetchPluginDockerInfo(
         name: string,
     ): Promise<{ data?: DockerInfoResponse }> {
-        const response = await client.plugins.docker(name);
+        const response = await client.plugins.runtimeInfo(name);
         return response as { data?: DockerInfoResponse };
     }
 

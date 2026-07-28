@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use async_trait::async_trait;
-use tokio::sync::mpsc;
 use serde::Serialize;
+use std::collections::HashMap;
+use tokio::sync::mpsc;
 
 use crate::error::AppError;
 
@@ -92,23 +92,56 @@ pub trait ContainerRuntime: Send + Sync {
         image: &str,
         env: HashMap<String, String>,
         network_mode: Option<&str>,
-        volumes: Option<Vec<(String, String)>>,
     ) -> Result<String, AppError>;
     async fn start_container(&self, container_id: &str) -> Result<(), AppError>;
     async fn stop_container(&self, container_id: &str, timeout_secs: i64) -> Result<(), AppError>;
     async fn remove_container(&self, container_id: &str, force: bool) -> Result<(), AppError>;
     async fn list_containers(&self) -> Result<Vec<ContainerInfo>, AppError>;
     async fn inspect_container(&self, container_id: &str) -> Result<ContainerDetails, AppError>;
-    async fn get_container_ip(&self, container_id: &str, network_name: &str) -> Result<Option<String>, AppError>;
+    async fn get_container_ip(
+        &self,
+        container_id: &str,
+        network_name: &str,
+    ) -> Result<Option<String>, AppError>;
     async fn restart_container(&self, container_id: &str) -> Result<(), AppError>;
     async fn inspect_image(&self, image_name: &str) -> Result<ImageInfo, AppError>;
-    async fn get_file_from_image(&self, image_name: &str, file_path: &str) -> Result<String, AppError>;
-    async fn get_file_from_container(&self, container_id: &str, path: &str) -> Result<Vec<u8>, AppError>;
-    async fn list_directory_in_container(&self, container_id: &str, path: &str) -> Result<Vec<String>, AppError>;
-    async fn list_directory_recursive_in_container(&self, container_id: &str, path: &str) -> Result<Vec<String>, AppError>;
-    async fn copy_directory_from_container(&self, container_id: &str, container_path: &str, host_dest: &str) -> Result<(), AppError>;
-    async fn copy_directory_from_image(&self, image_name: &str, container_path: &str, host_dest: &str) -> Result<(), AppError>;
-    async fn connect_container_to_network(&self, container_id: &str, network_name: &str) -> Result<(), AppError>;
+    async fn get_file_from_image(
+        &self,
+        image_name: &str,
+        file_path: &str,
+    ) -> Result<String, AppError>;
+    async fn get_file_from_container(
+        &self,
+        container_id: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, AppError>;
+    async fn list_directory_in_container(
+        &self,
+        container_id: &str,
+        path: &str,
+    ) -> Result<Vec<String>, AppError>;
+    async fn list_directory_recursive_in_container(
+        &self,
+        container_id: &str,
+        path: &str,
+    ) -> Result<Vec<String>, AppError>;
+    async fn copy_directory_from_container(
+        &self,
+        container_id: &str,
+        container_path: &str,
+        host_dest: &str,
+    ) -> Result<(), AppError>;
+    async fn copy_directory_from_image(
+        &self,
+        image_name: &str,
+        container_path: &str,
+        host_dest: &str,
+    ) -> Result<(), AppError>;
+    async fn connect_container_to_network(
+        &self,
+        container_id: &str,
+        network_name: &str,
+    ) -> Result<(), AppError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,13 +219,26 @@ pub trait PluginPlatform: Send + Sync {
     async fn list_instances(&self, id: &DeploymentId) -> Result<Vec<InstanceInfo>, AppError>;
 
     /// Get logs for a specific instance within a deployment.
-    async fn get_instance_logs(&self, id: &DeploymentId, instance_id: &str, tail: usize) -> Result<String, AppError>;
+    async fn get_instance_logs(
+        &self,
+        id: &DeploymentId,
+        instance_id: &str,
+        tail: usize,
+    ) -> Result<String, AppError>;
 
     /// Get CPU/memory stats for a specific instance within a deployment.
-    async fn get_instance_stats(&self, id: &DeploymentId, instance_id: &str) -> Result<ContainerStatsSnapshot, AppError>;
+    async fn get_instance_stats(
+        &self,
+        id: &DeploymentId,
+        instance_id: &str,
+    ) -> Result<ContainerStatsSnapshot, AppError>;
 
     /// List files in a directory within a container image (for preview/migrations).
-    async fn list_directory_in_image(&self, image: &str, path: &str) -> Result<Vec<String>, AppError>;
+    async fn list_directory_in_image(
+        &self,
+        image: &str,
+        path: &str,
+    ) -> Result<Vec<String>, AppError>;
 
     /// Inspect a container image.
     async fn inspect_image(&self, image: &str) -> Result<ImageInfo, AppError>;

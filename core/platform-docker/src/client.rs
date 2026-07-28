@@ -1,7 +1,7 @@
 use crate::DOCKER;
 use bollard::models::{
     ContainerCreateBody, HostConfig, Mount, NetworkConnectRequest, NetworkCreateRequest,
-    RestartPolicy, RestartPolicyNameEnum,
+    PortBinding, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateContainerOptions, DownloadFromContainerOptions, ListContainersOptions, ListImagesOptions,
@@ -75,7 +75,6 @@ impl DockerClient {
         image: &str,
         env: HashMap<String, String>,
         network_mode: Option<&str>,
-        volumes: Option<Vec<(String, String)>>,
     ) -> Result<String, AppError> {
         self.pull_image(image).await?;
         let name = format!("{}-{}", slug, version);
@@ -85,39 +84,34 @@ impl DockerClient {
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
 
-        let mounts = volumes.map(|vols| {
-            vols.into_iter()
-                .map(|(source, target)| Mount {
-                    target: Some(target),
-                    source: Some(source),
-                    ..Default::default()
-                })
-                .collect()
-        });
-
         let host_config = HostConfig {
             network_mode: network_mode.map(|nm| nm.to_string()),
-            mounts,
             restart_policy: Some(RestartPolicy {
                 name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
                 maximum_retry_count: None,
             }),
+
             ..Default::default()
         };
+
+        let exposed_ports = vec!["8000/tcp".to_string()];
 
         let config = ContainerCreateBody {
             image: Some(image.to_string()),
             env: Some(env_vars),
             host_config: Some(host_config),
+            exposed_ports: Some(exposed_ports),
+            // entrypoint: Some(vec!["/bin/true".to_string()]),
             ..Default::default()
         };
 
         let options = CreateContainerOptions {
             name: Some(name),
-            platform: "linux/amd64".to_string(),
+            ..Default::default()
         };
-
+        // println!("config: {:?}", options);
         let response = DOCKER.create_container(Some(options), config).await?;
+        // println!("{:?}", response);
         Ok(response.id)
     }
 

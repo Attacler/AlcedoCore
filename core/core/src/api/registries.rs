@@ -460,7 +460,7 @@ pub async fn list_registry_images_handler(
                     .json()
                     .await
                     .map_err(|e| AppError::Internal(format!("Failed to parse catalog: {}", e)))?;
-                println!("catalog: {:?}", catalog);
+                
                 if let Some(repositories) = catalog.get("repositories").and_then(|v| v.as_array()) {
                     let mut repo_futures = Vec::new();
                     for repo in repositories {
@@ -487,17 +487,12 @@ pub async fn list_registry_images_handler(
                                                         .collect::<Vec<String>>()
                                                 })
                                                 .unwrap_or_else(Vec::new);
-                                            println!("tags_data: {:?}", tags_data);
+                                            
                                             let mut tag_futures = Vec::new();
                                             for tag in tag_list {
-                                                let client = client.clone();
                                                 let base_url = base_url.clone();
                                                 let repo_name = repo_name.clone();
                                                 tag_futures.push(async move {
-                                                    let manifest_url = format!(
-                                                        "{}/v2/{}/manifests/{}",
-                                                        base_url, repo_name, tag
-                                                    );
 
                                                     ImageListItem {
                                                         name: repo_name,

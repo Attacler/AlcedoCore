@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use crate::api::permission_check;
 use crate::api::responses::ResponseEnvelope;
+use crate::db::queries::{Plugin, PluginVersion};
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
-use crate::db::queries::{Plugin, PluginVersion};
 
 pub async fn list_plugin_docs(
     State(state): State<Arc<PluginAppState>>,
@@ -21,10 +21,14 @@ pub async fn list_plugin_docs(
 
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
-    let mount_base = std::env::var("PLUGIN_PUBLIC_MOUNTS").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+    let mount_base =
+        std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
     if let Ok(Some(active_version)) = PluginVersion::find_active(db_pool, &slug).await {
         let version = &active_version.version;
-        let docs_path = std::path::Path::new(&mount_base).join(&slug).join(version).join("docs");
+        let docs_path = std::path::Path::new(&mount_base)
+            .join(&slug)
+            .join(version)
+            .join("docs");
         if docs_path.exists() {
             let mut docs = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&docs_path) {
@@ -39,52 +43,68 @@ pub async fn list_plugin_docs(
                     }
                 }
             }
-            return Ok(Json(ResponseEnvelope::success(crate::api::admin::PluginDocsList {
-                plugin: slug.clone(),
-                docs,
-            })));
+            return Ok(Json(ResponseEnvelope::success(
+                crate::api::admin::PluginDocsList {
+                    plugin: slug.clone(),
+                    docs,
+                },
+            )));
         }
     }
 
     if let Some(ref platform) = state.platform {
         let active_version = match PluginVersion::find_active(db_pool, &slug).await {
             Ok(Some(v)) => v,
-            _ => return Ok(Json(ResponseEnvelope::success(crate::api::admin::PluginDocsList {
-                plugin: slug,
-                docs: vec![],
-            }))),
+            _ => {
+                return Ok(Json(ResponseEnvelope::success(
+                    crate::api::admin::PluginDocsList {
+                        plugin: slug,
+                        docs: vec![],
+                    },
+                )))
+            }
         };
         let container_id = match active_version.container_id {
             Some(ref cid) if !cid.is_empty() => cid.clone(),
-            _ => return Ok(Json(ResponseEnvelope::success(crate::api::admin::PluginDocsList {
-                plugin: slug,
-                docs: vec![],
-            }))),
+            _ => {
+                return Ok(Json(ResponseEnvelope::success(
+                    crate::api::admin::PluginDocsList {
+                        plugin: slug,
+                        docs: vec![],
+                    },
+                )))
+            }
         };
         match platform.list_directory(&container_id, "docs").await {
             Ok(entries) => {
-                let docs: Vec<crate::api::admin::DocEntry> = entries.into_iter().map(|name| crate::api::admin::DocEntry {
-                    path: name,
-                    size: 0,
-                }).collect();
-                return Ok(Json(ResponseEnvelope::success(crate::api::admin::PluginDocsList {
-                    plugin: slug,
-                    docs,
-                })));
+                let docs: Vec<crate::api::admin::DocEntry> = entries
+                    .into_iter()
+                    .map(|name| crate::api::admin::DocEntry {
+                        path: name,
+                        size: 0,
+                    })
+                    .collect();
+                return Ok(Json(ResponseEnvelope::success(
+                    crate::api::admin::PluginDocsList { plugin: slug, docs },
+                )));
             }
             Err(_) => {
-                return Ok(Json(ResponseEnvelope::success(crate::api::admin::PluginDocsList {
-                    plugin: slug,
-                    docs: vec![],
-                })));
+                return Ok(Json(ResponseEnvelope::success(
+                    crate::api::admin::PluginDocsList {
+                        plugin: slug,
+                        docs: vec![],
+                    },
+                )));
             }
         }
     }
 
-    Ok(Json(ResponseEnvelope::success(crate::api::admin::PluginDocsList {
-        plugin: slug,
-        docs: vec![],
-    })))
+    Ok(Json(ResponseEnvelope::success(
+        crate::api::admin::PluginDocsList {
+            plugin: slug,
+            docs: vec![],
+        },
+    )))
 }
 
 fn render_docs_directory_markdown(dir_path: &str, entries: &[String]) -> String {
@@ -95,7 +115,11 @@ fn render_docs_directory_markdown(dir_path: &str, entries: &[String]) -> String 
         let entry_path = if dir_path == "docs" {
             display_name.to_string()
         } else {
-            format!("{}/{}", dir_path.strip_prefix("docs/").unwrap_or(dir_path), display_name)
+            format!(
+                "{}/{}",
+                dir_path.strip_prefix("docs/").unwrap_or(dir_path),
+                display_name
+            )
         };
         md.push_str(&format!("- [{}](./{})\n", display_name, entry_path));
     }
@@ -105,7 +129,9 @@ fn render_docs_directory_markdown(dir_path: &str, entries: &[String]) -> String 
 
 pub fn validate_docs_path(path: &str) -> Result<(), AppError> {
     if path.starts_with('/') {
-        return Err(AppError::BadRequest("Absolute paths not allowed".to_string()));
+        return Err(AppError::BadRequest(
+            "Absolute paths not allowed".to_string(),
+        ));
     }
 
     if path.contains('\0') {
@@ -113,7 +139,9 @@ pub fn validate_docs_path(path: &str) -> Result<(), AppError> {
     }
 
     if path.contains("..") {
-        return Err(AppError::BadRequest("Path traversal not allowed".to_string()));
+        return Err(AppError::BadRequest(
+            "Path traversal not allowed".to_string(),
+        ));
     }
 
     Ok(())
@@ -130,33 +158,44 @@ pub async fn fetch_plugin_doc(
 
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug).await?
+    let _plugin = Plugin::find_by_slug(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug).await?
+    let active_version = PluginVersion::find_active(db_pool, &slug)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("No active version for plugin: {}", slug)))?;
 
-    let container_id = active_version.container_id
+    let container_id = active_version
+        .container_id
         .filter(|c| !c.is_empty())
         .ok_or_else(|| AppError::NotFound(format!("No container for plugin: {}", slug)))?;
 
     let normalized_path = path.trim_end_matches('/');
     let docs_subpath = format!("docs/{}", normalized_path);
 
-    let mount_base = std::env::var("PLUGIN_PUBLIC_MOUNTS").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+    let mount_base =
+        std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
     let version = &active_version.version;
-    let file_path = std::path::Path::new(&mount_base).join(&slug).join(version).join(&docs_subpath);
+    let file_path = std::path::Path::new(&mount_base)
+        .join(&slug)
+        .join(version)
+        .join(&docs_subpath);
     if file_path.exists() {
         let build_md_response = |body: String| {
             axum::response::Response::builder()
                 .status(axum::http::StatusCode::OK)
-                .header(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")
+                .header(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/markdown; charset=utf-8",
+                )
                 .body(axum::body::Body::from(body))
                 .map_err(|e| AppError::Internal(format!("Failed to build response: {}", e)))
         };
         if path.ends_with('/') || normalized_path.is_empty() {
             if let Ok(entries) = std::fs::read_dir(&file_path) {
-                let names: Vec<String> = entries.flatten()
+                let names: Vec<String> = entries
+                    .flatten()
                     .filter_map(|e| e.file_name().to_string_lossy().to_string().into())
                     .collect();
                 let md_content = render_docs_directory_markdown(&docs_subpath, &names);
@@ -165,7 +204,7 @@ pub async fn fetch_plugin_doc(
         } else {
             match std::fs::read_to_string(&file_path) {
                 Ok(content) => return build_md_response(content),
-                Err(_) => {},
+                Err(_) => {}
             }
         }
     }
@@ -174,7 +213,10 @@ pub async fn fetch_plugin_doc(
         let build_md_response = |body: String| {
             axum::response::Response::builder()
                 .status(axum::http::StatusCode::OK)
-                .header(axum::http::header::CONTENT_TYPE, "text/markdown; charset=utf-8")
+                .header(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/markdown; charset=utf-8",
+                )
                 .body(axum::body::Body::from(body))
                 .map_err(|e| AppError::Internal(format!("Failed to build response: {}", e)))
         };
@@ -194,7 +236,9 @@ pub async fn fetch_plugin_doc(
             Err(_) => {
                 let alt = format!("/app/{}", docs_subpath);
                 match platform.read_file(&container_id, &alt).await {
-                    Ok(content) => return build_md_response(String::from_utf8_lossy(&content).to_string()),
+                    Ok(content) => {
+                        return build_md_response(String::from_utf8_lossy(&content).to_string())
+                    }
                     Err(_) => return Err(AppError::NotFound("Doc not found".to_string())),
                 }
             }

@@ -1,15 +1,12 @@
 import asyncio
-import json
 import os
 from aiohttp import web
 
-from alcedo_sdk import AlcedoClient, AlcedoKV, KeyNotFoundError, KVStoreError
+from alcedo_sdk import AlcedoClient, KeyNotFoundError, KVStoreError
 
 
 CORE_URL = os.environ.get("CORE_URL", "http://core:8080")
-
-KV = AlcedoKV(base_url=CORE_URL, plugin_slug="hello-world")
-
+PORT = os.environ.get("PORT", "8080")
 
 async def _forward_items(method: str, path: str, body: any, query_params: dict | None = None, request_id: str | None = None) -> dict:
     from alcedo_sdk.exceptions import AlcedoError
@@ -33,10 +30,11 @@ async def _forward_items(method: str, path: str, body: any, query_params: dict |
 
 async def get_counter(request_id: str | None = None) -> int:
     try:
-        val = await KV.get("counter", request_id=request_id)
-        if val is None:
-            return 0
-        return int(val)
+        async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
+            val = await client.kv.get("counter")
+            if val is None:
+                return 0
+            return int(val)
     except KVStoreError as e:
         print(f"[KV Error] get_counter: {e}")
         return 0
@@ -46,7 +44,8 @@ async def decrement_counter(delta: int = 1, request_id: str | None = None) -> in
     count = await get_counter(request_id=request_id)
     count -= delta
     try:
-        await KV.set("counter", str(count), request_id=request_id)
+        async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
+            await client.kv.set("counter",str(count))
     except KVStoreError as e:
         print(f"[KV Error] decrement_counter: {e}")
     return count
@@ -56,7 +55,9 @@ async def increment_counter(delta: int = 1, request_id: str | None = None) -> in
     count = await get_counter(request_id=request_id)
     count += delta
     try:
-        await KV.set("counter", str(count), request_id=request_id)
+        async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
+            res = await client.kv.set("counter",str(count))
+            print(res)
     except KVStoreError as e:
         print(f"[KV Error] increment_counter: {e}")
     return count
@@ -71,18 +72,19 @@ async def ttl_demo(request_id: str | None = None) -> dict:
     }
     try:
         demo_key = "ttl-demo"
-        before = await KV.ttl(demo_key, request_id=request_id)
-        result["before_set"] = before
-        await KV.set(demo_key, "This key will auto-expire", ttl=2, request_id=request_id)
-        after_set = await KV.ttl(demo_key, request_id=request_id)
-        result["after_set"] = after_set
-        val = await KV.get(demo_key, request_id=request_id)
-        result["after_set_value"] = val
-        await asyncio.sleep(3)
-        after_expiry = await KV.get(demo_key)
-        result["after_expiry_value"] = after_expiry
-        after_ttl = await KV.ttl(demo_key)
-        result["after_ttl"] = after_ttl
+        async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
+            before = await client.kv.ttl(demo_key)
+            result["before_set"] = before
+            await client.kv.set(demo_key, "This key will auto-expire", ttl=2)
+            after_set = await client.kv.ttl(demo_key)
+            result["after_set"] = after_set
+            val = await client.kv.get(demo_key)
+            result["after_set_value"] = val
+            await asyncio.sleep(3)
+            after_expiry = await client.kv.get(demo_key)
+            result["after_expiry_value"] = after_expiry
+            after_ttl = await client.kv.ttl(demo_key)
+            result["after_ttl"] = after_ttl
     except KVStoreError as e:
         result["status"] = "error"
         result["error"] = str(e)
@@ -91,8 +93,9 @@ async def ttl_demo(request_id: str | None = None) -> dict:
 
 async def fetch_kv(key: str, request_id: str | None = None) -> dict:
     try:
-        val = await KV.get(key, request_id=request_id)
-        return {"key": key, "value": val}
+        async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
+            val = await client.kv.get(key)
+            return {"key": key, "value": val}
     except KeyNotFoundError:
         return {"key": key, "value": None, "error": "not_found"}
     except KVStoreError as e:
@@ -160,12 +163,6 @@ async def handle_ttl_demo(request: web.Request) -> web.Response:
 async def handle_kv_hello(request: web.Request) -> web.Response:
     rid = _request_id(request)
     result = await fetch_kv("hello", request_id=rid)
-    return _json_response(result)
-
-
-async def handle_db_items(request: web.Request) -> web.Response:
-    rid = _request_id(request)
-    result = await KV.query("SELECT id, name, description, created_at FROM items ORDER BY id ASC", request_id=rid)
     return _json_response(result)
 
 
@@ -247,18 +244,9 @@ async def handle_items_delete(request: web.Request) -> web.Response:
     return _json_response(result, status=status)
 
 
-async def on_startup(app: web.Application):
-    await KV.__aenter__()
-
-
-async def on_shutdown(app: web.Application):
-    await KV.__aexit__(None, None, None)
-
 
 def make_app() -> web.Application:
     app = web.Application()
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
 
     app.router.add_get("/health", handle_health)
     app.router.add_get("/api/hello", handle_hello)
@@ -268,8 +256,6 @@ def make_app() -> web.Application:
     app.router.add_post("/api/counter/decrement", handle_counter_decrement)
     app.router.add_get("/api/kv/ttl-demo", handle_ttl_demo)
     app.router.add_get("/api/kv/hello", handle_kv_hello)
-    app.router.add_get("/api/db/items/data", handle_db_items)
-    app.router.add_get("/pages/dist/plugin-pages.js", handle_plugin_js)
     app.router.add_get("/", handle_root)
 
     # Items CRUD via SDK proxy
@@ -284,4 +270,11 @@ def make_app() -> web.Application:
 
 if __name__ == "__main__":
     app = make_app()
-    web.run_app(app, host="0.0.0.0", port=8080)
+    print("Running on port " + PORT) 
+    web.run_app(app, host="0.0.0.0", port=PORT)
+
+
+
+
+
+

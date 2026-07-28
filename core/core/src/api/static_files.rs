@@ -1,17 +1,16 @@
 use axum::{
     extract::State,
-    response::{IntoResponse, Response},
     http::StatusCode,
+    response::{IntoResponse, Response},
 };
+use mime_guess::MimeGuess;
 use std::path::Path;
 use std::sync::Arc;
-use mime_guess::MimeGuess;
 
 use crate::db::queries::PluginVersion;
 use crate::db::queries::SystemSetting;
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
-
 
 fn reject_path_traversal(path: &str) -> Result<(), AppError> {
     if path.contains("..") {
@@ -47,32 +46,56 @@ pub async fn serve_static_file(
         Err(_) => false,
     };
 
-    let plugins_dir_str = std::env::var("PLUGINS_DIR")
-        .unwrap_or_else(|_| "/plugins".to_string());
+    let plugins_dir_str = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
     let plugins_dir = Path::new(&plugins_dir_str);
 
     let file_bytes = if is_static {
-        let local_path = plugins_dir.join(&path_info.slug).join("public").join(&path_info.path);
-        tracing::info!("[STATIC] Serving static plugin file from: {}", local_path.display());
+        let local_path = plugins_dir
+            .join(&path_info.slug)
+            .join("public")
+            .join(&path_info.path);
+        tracing::info!(
+            "[STATIC] Serving static plugin file from: {}",
+            local_path.display()
+        );
         match std::fs::read(&local_path) {
             Ok(bytes) => bytes,
             Err(e) => {
-                tracing::warn!("[STATIC] Static file not found in public/: {} - {}", local_path.display(), e);
+                tracing::warn!(
+                    "[STATIC] Static file not found in public/: {} - {}",
+                    local_path.display(),
+                    e
+                );
                 // Fallback: check pages/assets/ for admin-style plugins
                 // path like "assets/index-Cq01UYkh.css" -> pages/assets/index-Cq01UYkh.css
                 // path like "index-Cq01UYkh.css" -> pages/assets/index-Cq01UYkh.css
-                let pages_base = plugins_dir.join(&path_info.slug).join("pages").join("assets");
+                let pages_base = plugins_dir
+                    .join(&path_info.slug)
+                    .join("pages")
+                    .join("assets");
                 let pages_path = if path_info.path.starts_with("assets/") {
-                    pages_base.join(path_info.path.strip_prefix("assets/").unwrap_or(&path_info.path))
+                    pages_base.join(
+                        path_info
+                            .path
+                            .strip_prefix("assets/")
+                            .unwrap_or(&path_info.path),
+                    )
                 } else {
                     pages_base.join(&path_info.path)
                 };
-                tracing::info!("[STATIC] Trying pages/assets/ fallback: {}", pages_path.display());
+                tracing::info!(
+                    "[STATIC] Trying pages/assets/ fallback: {}",
+                    pages_path.display()
+                );
                 match std::fs::read(&pages_path) {
                     Ok(bytes) => bytes,
                     Err(_e2) => {
-                        tracing::warn!("[STATIC] Static file not found in pages/assets/ either: {}", pages_path.display());
-                        return AppError::NotFound(format!("File not found: {}", path_info.path)).into_response();
+                        tracing::warn!(
+                            "[STATIC] Static file not found in pages/assets/ either: {}",
+                            pages_path.display()
+                        );
+                        return AppError::NotFound(format!("File not found: {}", path_info.path))
+                            .into_response();
                     }
                 }
             }
@@ -82,7 +105,11 @@ pub async fn serve_static_file(
             Ok(Some(v)) => v,
             Ok(None) => {
                 tracing::warn!("[STATIC] No active version found for {}", path_info.slug);
-                return AppError::NotFound(format!("No active version found for plugin: {}", path_info.slug)).into_response();
+                return AppError::NotFound(format!(
+                    "No active version found for plugin: {}",
+                    path_info.slug
+                ))
+                .into_response();
             }
             Err(e) => {
                 tracing::error!("[STATIC] Database error: {}", e);
@@ -90,7 +117,11 @@ pub async fn serve_static_file(
             }
         };
 
-        match try_read_from_mount(&active_version.slug, &active_version.version, &path_info.path) {
+        match try_read_from_mount(
+            &active_version.slug,
+            &active_version.version,
+            &path_info.path,
+        ) {
             Ok(Some(bytes)) => {
                 tracing::info!("[STATIC] Mount hit: /public/{}", path_info.path);
                 bytes
@@ -98,8 +129,8 @@ pub async fn serve_static_file(
             Ok(None) | Err(_) => {
                 // Fallback: check extracted public directory on filesystem
                 // (populated by deploy handler via extract_from_image).
-                let plugins_dir_str = std::env::var("PLUGINS_DIR")
-                    .unwrap_or_else(|_| "/plugins".to_string());
+                let plugins_dir_str =
+                    std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
                 let fs_path = std::path::Path::new(&plugins_dir_str)
                     .join(&path_info.slug)
                     .join("public")
@@ -117,17 +148,26 @@ pub async fn serve_static_file(
                             .header("Content-Type", mime.as_ref())
                             .header("Content-Length", bytes.len())
                             .body(axum::body::Body::from(bytes))
-                            .unwrap_or_else(|_| AppError::Internal("Failed to build response".to_string()).into_response());
+                            .unwrap_or_else(|_| {
+                                AppError::Internal("Failed to build response".to_string())
+                                    .into_response()
+                            });
                     }
                     Err(_) => {
-                        tracing::info!("[STATIC] Filesystem miss, trying exec: /public/{}", path_info.path);
+                        tracing::info!(
+                            "[STATIC] Filesystem miss, trying exec: /public/{}",
+                            path_info.path
+                        );
                     }
                 }
                 let container_id = match &active_version.container_id {
                     Some(id) => id.clone(),
                     None => {
                         tracing::error!("[STATIC] No container ID for active version");
-                        return AppError::Internal("No container ID for active version".to_string()).into_response();
+                        return AppError::Internal(
+                            "No container ID for active version".to_string(),
+                        )
+                        .into_response();
                     }
                 };
                 let file_path = format!("/public/{}", path_info.path);
@@ -139,7 +179,8 @@ pub async fn serve_static_file(
                     Ok(bytes) => bytes,
                     Err(_) => {
                         tracing::warn!("[STATIC] File not found: {}", file_path);
-                        return AppError::NotFound(format!("File not found: {}", path_info.path)).into_response();
+                        return AppError::NotFound(format!("File not found: {}", path_info.path))
+                            .into_response();
                     }
                 }
             }
@@ -152,20 +193,23 @@ pub async fn serve_static_file(
         mime_guess::mime::APPLICATION_OCTET_STREAM
     };
 
-    tracing::info!("[STATIC] Serving file ({} bytes, mime: {})", file_bytes.len(), mime);
+    tracing::info!(
+        "[STATIC] Serving file ({} bytes, mime: {})",
+        file_bytes.len(),
+        mime
+    );
 
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", mime.as_ref())
         .header("Content-Length", file_bytes.len())
         .body(axum::body::Body::from(file_bytes))
-        .unwrap_or_else(|_| AppError::Internal("Failed to build response".to_string()).into_response())
+        .unwrap_or_else(|_| {
+            AppError::Internal("Failed to build response".to_string()).into_response()
+        })
 }
 
-async fn try_catch_all_proxy(
-    state: &Arc<PluginAppState>,
-    path: &str,
-) -> Option<Response> {
+async fn try_catch_all_proxy(state: &Arc<PluginAppState>, path: &str) -> Option<Response> {
     let db_pool = state.db_pool.as_ref()?;
     let setting = SystemSetting::find_by_key(db_pool, "catch_all_plugin_slug")
         .await
@@ -191,11 +235,15 @@ async fn try_catch_all_proxy(
             path: path.to_string(),
         }),
         request,
-    ).await {
+    )
+    .await
+    {
         Ok(r) => {
             let resp = r.into_response();
             let (parts, body) = resp.into_parts();
-            let content_type = parts.headers.get("content-type")
+            let content_type = parts
+                .headers
+                .get("content-type")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
@@ -212,8 +260,13 @@ async fn try_catch_all_proxy(
                     }
                 }
                 builder = builder.header("Content-Length", new_body.len());
-                return Some(builder.body(axum::body::Body::from(new_body))
-                    .unwrap_or_else(|_| AppError::Internal("Body rewrite failed".to_string()).into_response()));
+                return Some(
+                    builder
+                        .body(axum::body::Body::from(new_body))
+                        .unwrap_or_else(|_| {
+                            AppError::Internal("Body rewrite failed".to_string()).into_response()
+                        }),
+                );
             }
 
             Some(Response::from_parts(parts, body))
@@ -234,21 +287,19 @@ pub async fn serve_index_or_static(
 
     let slug = slug_info.slug.clone();
 
-    let plugins_dir_str = std::env::var("PLUGINS_DIR")
-        .unwrap_or_else(|_| "/plugins".to_string());
+    let plugins_dir_str = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
     let plugins_dir = Path::new(&plugins_dir_str);
 
     let manifest_path = plugins_dir.join(&slug).join("manifest.json");
-    let is_static = manifest_path.exists() && match std::fs::read_to_string(&manifest_path) {
-            Ok(content) => {
-                match serde_json::from_str::<serde_json::Value>(&content) {
-                    Ok(manifest) => {
-                        manifest.get("plugin_type").and_then(|v| v.as_str()) == Some("static")
-                    }
-                    Err(_) => false
+    let is_static = manifest_path.exists()
+        && match std::fs::read_to_string(&manifest_path) {
+            Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(manifest) => {
+                    manifest.get("plugin_type").and_then(|v| v.as_str()) == Some("static")
                 }
-            }
-            Err(_) => false
+                Err(_) => false,
+            },
+            Err(_) => false,
         };
 
     let file_path = if slug_info.path.is_empty() || slug_info.path == "/" {
@@ -259,7 +310,10 @@ pub async fn serve_index_or_static(
 
     let file_bytes = if is_static {
         let local_path = plugins_dir.join(&slug).join("public").join(&file_path);
-        tracing::info!("[STATIC] Serving static plugin index from: {}", local_path.display());
+        tracing::info!(
+            "[STATIC] Serving static plugin index from: {}",
+            local_path.display()
+        );
         match std::fs::read(&local_path) {
             Ok(bytes) => bytes,
             Err(_) => {
@@ -272,28 +326,42 @@ pub async fn serve_index_or_static(
                     } else {
                         pages_base.join(&file_path)
                     };
-                    tracing::info!("[STATIC] Trying pages/assets/ fallback: {}", pages_path.display());
+                    tracing::info!(
+                        "[STATIC] Trying pages/assets/ fallback: {}",
+                        pages_path.display()
+                    );
                     match std::fs::read(&pages_path) {
                         Ok(bytes) => bytes,
                         Err(_e2) => {
                             tracing::warn!("[STATIC] File not found in pages/assets/ either");
-                            return AppError::NotFound(format!("File not found: {}", file_path)).into_response();
+                            return AppError::NotFound(format!("File not found: {}", file_path))
+                                .into_response();
                         }
                     }
                 } else {
                     // For index.html, try pages/index.html fallback
-                    tracing::info!("[STATIC] Static file not found: {}, trying index.html", local_path.display());
+                    tracing::info!(
+                        "[STATIC] Static file not found: {}, trying index.html",
+                        local_path.display()
+                    );
                     let index_path = plugins_dir.join(&slug).join("public").join("index.html");
                     match std::fs::read(&index_path) {
                         Ok(bytes) => bytes,
                         Err(_e) => {
-                            tracing::info!("[STATIC] public/index.html not found, trying pages/index.html");
-                            let pages_index_path = plugins_dir.join(&slug).join("pages").join("index.html");
+                            tracing::info!(
+                                "[STATIC] public/index.html not found, trying pages/index.html"
+                            );
+                            let pages_index_path =
+                                plugins_dir.join(&slug).join("pages").join("index.html");
                             match std::fs::read(&pages_index_path) {
                                 Ok(bytes) => bytes,
                                 Err(_e2) => {
                                     tracing::warn!("[STATIC] Both public/index.html and pages/index.html not found");
-                                    return AppError::NotFound(format!("File not found: {}", file_path)).into_response();
+                                    return AppError::NotFound(format!(
+                                        "File not found: {}",
+                                        file_path
+                                    ))
+                                    .into_response();
                                 }
                             }
                         }
@@ -304,7 +372,8 @@ pub async fn serve_index_or_static(
     } else if state.db_pool.is_some() {
         let db_pool = state.db_pool.as_ref().unwrap();
 
-        let is_static_from_db = match crate::db::queries::Plugin::find_by_slug(db_pool, &slug).await {
+        let is_static_from_db = match crate::db::queries::Plugin::find_by_slug(db_pool, &slug).await
+        {
             Ok(Some(p)) => p.plugin_type == "static",
             Ok(None) => false,
             Err(_) => false,
@@ -312,23 +381,36 @@ pub async fn serve_index_or_static(
 
         if is_static_from_db {
             let local_path = plugins_dir.join(&slug).join("public").join(&file_path);
-            tracing::info!("[STATIC] Serving static plugin from DB check: {}", local_path.display());
+            tracing::info!(
+                "[STATIC] Serving static plugin from DB check: {}",
+                local_path.display()
+            );
             match std::fs::read(&local_path) {
                 Ok(bytes) => bytes,
                 Err(_) => {
-                    tracing::info!("[STATIC] Static file not found: {}, trying index.html", local_path.display());
+                    tracing::info!(
+                        "[STATIC] Static file not found: {}, trying index.html",
+                        local_path.display()
+                    );
                     let index_path = plugins_dir.join(&slug).join("public").join("index.html");
                     match std::fs::read(&index_path) {
                         Ok(bytes) => bytes,
                         Err(_e) => {
                             // Fallback: check pages/index.html for admin-style plugins
-                            tracing::info!("[STATIC] public/index.html not found, trying pages/index.html");
-                            let pages_index_path = plugins_dir.join(&slug).join("pages").join("index.html");
+                            tracing::info!(
+                                "[STATIC] public/index.html not found, trying pages/index.html"
+                            );
+                            let pages_index_path =
+                                plugins_dir.join(&slug).join("pages").join("index.html");
                             match std::fs::read(&pages_index_path) {
                                 Ok(bytes) => bytes,
                                 Err(_e2) => {
                                     tracing::warn!("[STATIC] Both public/index.html and pages/index.html not found");
-                                    return AppError::NotFound(format!("File not found: {}", file_path)).into_response();
+                                    return AppError::NotFound(format!(
+                                        "File not found: {}",
+                                        file_path
+                                    ))
+                                    .into_response();
                                 }
                             }
                         }
@@ -348,7 +430,11 @@ pub async fn serve_index_or_static(
                         return response;
                     }
                     tracing::warn!("[STATIC] No active version found for {}", slug);
-                    return AppError::NotFound(format!("No active version found for plugin: {}", slug)).into_response();
+                    return AppError::NotFound(format!(
+                        "No active version found for plugin: {}",
+                        slug
+                    ))
+                    .into_response();
                 }
                 Err(e) => {
                     tracing::error!("[STATIC] Database error: {}", e);
@@ -363,8 +449,8 @@ pub async fn serve_index_or_static(
                 }
                 Ok(None) | Err(_) => {
                     // Fallback: check extracted public directory on filesystem
-                    let plugins_dir_str = std::env::var("PLUGINS_DIR")
-                        .unwrap_or_else(|_| "/plugins".to_string());
+                    let plugins_dir_str =
+                        std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
                     let fs_path = std::path::Path::new(&plugins_dir_str)
                         .join(&slug)
                         .join("public")
@@ -382,18 +468,23 @@ pub async fn serve_index_or_static(
                                 .header("Content-Type", mime.as_ref())
                                 .header("Content-Length", bytes.len())
                                 .body(axum::body::Body::from(bytes))
-                                .unwrap_or_else(|_| AppError::Internal("Failed to build response".to_string()).into_response());
+                                .unwrap_or_else(|_| {
+                                    AppError::Internal("Failed to build response".to_string())
+                                        .into_response()
+                                });
                         }
                         Err(_) => {
                             tracing::info!("[STATIC] Mount miss, returning 404");
-                            return AppError::NotFound(format!("File not found: {}", file_path)).into_response();
+                            return AppError::NotFound(format!("File not found: {}", file_path))
+                                .into_response();
                         }
                     }
                 }
             }
         }
     } else {
-        return AppError::NotFound(format!("Plugin {} not found (no database)", slug)).into_response();
+        return AppError::NotFound(format!("Plugin {} not found (no database)", slug))
+            .into_response();
     };
 
     let mime = if file_path.contains('.') {
@@ -402,22 +493,35 @@ pub async fn serve_index_or_static(
         mime_guess::mime::APPLICATION_OCTET_STREAM
     };
 
-    tracing::info!("[STATIC] Serving {} ({} bytes)", file_path, file_bytes.len());
+    tracing::info!(
+        "[STATIC] Serving {} ({} bytes)",
+        file_path,
+        file_bytes.len()
+    );
     Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", mime.as_ref())
         .header("Content-Length", file_bytes.len())
         .body(axum::body::Body::from(file_bytes))
-        .unwrap_or_else(|_| AppError::Internal("Failed to build response".to_string()).into_response())
+        .unwrap_or_else(|_| {
+            AppError::Internal("Failed to build response".to_string()).into_response()
+        })
 }
 
-fn try_read_from_mount(slug: &str, version: &str, path: &str) -> Result<Option<Vec<u8>>, std::io::Error> {
+fn try_read_from_mount(
+    slug: &str,
+    version: &str,
+    path: &str,
+) -> Result<Option<Vec<u8>>, std::io::Error> {
     // Reject path traversal
     if path.contains("..") || path.contains('\0') {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Path traversal detected"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Path traversal detected",
+        ));
     }
-    let mount_base = std::env::var("PLUGIN_PUBLIC_MOUNTS")
-        .unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+    let mount_base =
+        std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
 
     let file_path = Path::new(&mount_base)
         .join(slug)
@@ -429,7 +533,11 @@ fn try_read_from_mount(slug: &str, version: &str, path: &str) -> Result<Option<V
         match std::fs::read(&file_path) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(e) => {
-                tracing::warn!("[STATIC] Mount file exists but read failed: {} - {}", file_path.display(), e);
+                tracing::warn!(
+                    "[STATIC] Mount file exists but read failed: {} - {}",
+                    file_path.display(),
+                    e
+                );
                 Err(e)
             }
         }

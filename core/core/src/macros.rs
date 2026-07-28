@@ -19,7 +19,7 @@ macro_rules! delegate_self_impl {
 #[macro_export]
 macro_rules! delegate_impl {
     ($trait:path, $ty:ty, $target:path, {
-        $(fn $name:ident($($arg:ident: $arg_ty:ty),*) -> $ret:ty;)*
+        $(fn $name:ident($($arg:ident: $arg_ty:ty),* $(,)?) -> $ret:ty;)*
     }) => {
         #[::async_trait::async_trait]
         impl $trait for $ty {

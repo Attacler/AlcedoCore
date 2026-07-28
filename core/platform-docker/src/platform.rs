@@ -1,13 +1,16 @@
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use pcl::config::AppConfig;
-use pcl::container::{ContainerDetails, ContainerInfo, ContainerRuntime, ContainerStatsSnapshot, DeploymentEvent, DeploymentId, ImageInfo, InstanceInfo, PluginPlatform};
-use pcl::db::{Pool, queries::PluginVersion};
-use pcl::AppError;
 use crate::client::DockerClient;
+use pcl::config::AppConfig;
+use pcl::container::{
+    ContainerDetails, ContainerInfo, ContainerRuntime, ContainerStatsSnapshot, DeploymentEvent,
+    DeploymentId, ImageInfo, InstanceInfo, PluginPlatform,
+};
+use pcl::db::{queries::PluginVersion, Pool};
+use pcl::AppError;
 
 pub struct DockerPlatform {
     db_pool: Option<Pool>,
@@ -21,7 +24,11 @@ impl DockerPlatform {
         runtime: Arc<dyn ContainerRuntime>,
         config: Arc<AppConfig>,
     ) -> Self {
-        Self { db_pool, runtime, config }
+        Self {
+            db_pool,
+            runtime,
+            config,
+        }
     }
 }
 
@@ -42,8 +49,8 @@ impl PluginPlatform for DockerPlatform {
 
         // Extract and run migrations if a DB pool is available
         if let Some(ref pool) = self.db_pool {
-            let plugins_dir = std::env::var("PLUGINS_DIR")
-                .unwrap_or_else(|_| "/plugins".to_string());
+            let plugins_dir =
+                std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
             let migrations_dir = std::path::Path::new(&plugins_dir)
                 .join("plugin-migrations")
                 .join(slug);
@@ -53,9 +60,11 @@ impl PluginPlatform for DockerPlatform {
                 let _ = std::fs::remove_dir_all(&migrations_dir);
             }
 
-            match self.runtime.copy_directory_from_image(
-                image, "/app/migrations", &migrations_dir_str,
-            ).await {
+            match self
+                .runtime
+                .copy_directory_from_image(image, "/app/migrations", &migrations_dir_str)
+                .await
+            {
                 Ok(()) => {
                     let has_migrations = if migrations_dir.exists() {
                         std::fs::read_dir(&migrations_dir)
@@ -68,7 +77,8 @@ impl PluginPlatform for DockerPlatform {
                     if has_migrations {
                         tracing::info!(
                             "Running migrations for plugin {} from {}",
-                            slug, migrations_dir_str,
+                            slug,
+                            migrations_dir_str,
                         );
                         pcl::db::run_plugin_migrations(pool, slug, &migrations_dir_str).await?;
                     } else {
@@ -81,7 +91,8 @@ impl PluginPlatform for DockerPlatform {
                 {
                     tracing::info!(
                         "No migrations/ directory in image {} for plugin {}",
-                        image, slug,
+                        image,
+                        slug,
                     );
                 }
                 Err(e) => return Err(e),
@@ -111,21 +122,21 @@ impl PluginPlatform for DockerPlatform {
         } else {
             None
         };
-
         // Remove any existing container with the same name
         let container_name = format!("{}-{}", slug, version);
         let _ = self.runtime.remove_container(&container_name, true).await;
 
-        let container_id = self.runtime.create_container(
-            slug, version, image, env, network_mode, None,
-        ).await?;
+        let container_id = self
+            .runtime
+            .create_container(slug, version, image, env, network_mode)
+            .await?;
 
         self.runtime.start_container(&container_id).await?;
 
         if !self.config.dev_mode && !self.config.plugin_network.is_empty() {
-            self.runtime.connect_container_to_network(
-                &container_id, &self.config.plugin_network,
-            ).await?;
+            self.runtime
+                .connect_container_to_network(&container_id, &self.config.plugin_network)
+                .await?;
         }
 
         // Update DB with container ID
@@ -159,7 +170,9 @@ impl PluginPlatform for DockerPlatform {
         }
         // Resolve Swarm service names to actual container IDs
         let resolved_id = crate::services::resolve_for_exec(&crate::DOCKER, id).await;
-        self.runtime.get_container_ip(&resolved_id, &self.config.plugin_network).await
+        self.runtime
+            .get_container_ip(&resolved_id, &self.config.plugin_network)
+            .await
     }
 
     async fn is_replicated_service(&self, id: &DeploymentId) -> bool {
@@ -167,9 +180,7 @@ impl PluginPlatform for DockerPlatform {
     }
 
     async fn scale(&self, id: &DeploymentId, replicas: u32) -> Result<(), AppError> {
-        crate::services::scale_plugin_service(
-            &crate::DOCKER, id, replicas as i64,
-        ).await
+        crate::services::scale_plugin_service(&crate::DOCKER, id, replicas as i64).await
     }
 
     async fn read_file_from_image(&self, image: &str, path: &str) -> Result<String, AppError> {
@@ -177,17 +188,23 @@ impl PluginPlatform for DockerPlatform {
     }
 
     async fn extract_from_image(&self, image: &str, src: &str, dest: &str) -> Result<(), AppError> {
-        self.runtime.copy_directory_from_image(image, src, dest).await
+        self.runtime
+            .copy_directory_from_image(image, src, dest)
+            .await
     }
 
     async fn read_file(&self, id: &DeploymentId, path: &str) -> Result<Vec<u8>, AppError> {
         let resolved_id = crate::services::resolve_for_exec(&crate::DOCKER, id).await;
-        self.runtime.get_file_from_container(&resolved_id, path).await
+        self.runtime
+            .get_file_from_container(&resolved_id, path)
+            .await
     }
 
     async fn list_directory(&self, id: &DeploymentId, path: &str) -> Result<Vec<String>, AppError> {
         let resolved_id = crate::services::resolve_for_exec(&crate::DOCKER, id).await;
-        self.runtime.list_directory_in_container(&resolved_id, path).await
+        self.runtime
+            .list_directory_in_container(&resolved_id, path)
+            .await
     }
 
     async fn health_check(&self) -> Result<(), AppError> {
@@ -211,15 +228,19 @@ impl PluginPlatform for DockerPlatform {
     async fn list_instances(&self, id: &DeploymentId) -> Result<Vec<InstanceInfo>, AppError> {
         if crate::services::is_swarm_service_name(id) {
             let tasks = crate::services::get_service_tasks(&crate::DOCKER, id).await?;
-            Ok(tasks.into_iter().map(|t| InstanceInfo {
-                id: t.task_id,
-                status: t.status,
-                pod_name: t.node_id.unwrap_or_default(),
-                container_id: t.container_id,
-            }).collect())
+            Ok(tasks
+                .into_iter()
+                .map(|t| InstanceInfo {
+                    id: t.task_id,
+                    status: t.status,
+                    pod_name: t.node_id.unwrap_or_default(),
+                    container_id: t.container_id,
+                })
+                .collect())
         } else {
             let containers = self.runtime.list_containers().await?;
-            let instance = containers.iter()
+            let instance = containers
+                .iter()
                 .find(|c| c.id == *id || c.name == *id)
                 .map(|c| InstanceInfo {
                     id: c.id.clone(),
@@ -234,7 +255,12 @@ impl PluginPlatform for DockerPlatform {
         }
     }
 
-    async fn get_instance_logs(&self, _id: &DeploymentId, instance_id: &str, tail: usize) -> Result<String, AppError> {
+    async fn get_instance_logs(
+        &self,
+        _id: &DeploymentId,
+        instance_id: &str,
+        tail: usize,
+    ) -> Result<String, AppError> {
         use bollard::container::LogOutput;
         use bollard::query_parameters::LogsOptions;
         use futures_util::StreamExt;
@@ -259,12 +285,19 @@ impl PluginPlatform for DockerPlatform {
             }
         }
         if output.is_empty() {
-            return Err(AppError::NotFound(format!("No logs found for instance {}", instance_id)));
+            return Err(AppError::NotFound(format!(
+                "No logs found for instance {}",
+                instance_id
+            )));
         }
         Ok(output)
     }
 
-    async fn get_instance_stats(&self, _id: &DeploymentId, instance_id: &str) -> Result<ContainerStatsSnapshot, AppError> {
+    async fn get_instance_stats(
+        &self,
+        _id: &DeploymentId,
+        instance_id: &str,
+    ) -> Result<ContainerStatsSnapshot, AppError> {
         use bollard::query_parameters::StatsOptions;
         use futures_util::StreamExt;
 
@@ -274,15 +307,33 @@ impl PluginPlatform for DockerPlatform {
         };
 
         let mut stats_stream = crate::DOCKER.stats(instance_id, Some(options));
-        let stats = stats_stream.next().await
+        let stats = stats_stream
+            .next()
+            .await
             .ok_or_else(|| AppError::Internal("Failed to get container stats".to_string()))?
-            .map_err(|e| AppError::DockerError { details: e.to_string() })?;
+            .map_err(|e| AppError::DockerError {
+                details: e.to_string(),
+            })?;
 
         // Calculate CPU percentage (handle optional bollard fields)
         let cpu_stats = stats.cpu_stats.as_ref();
         let precpu_stats = stats.precpu_stats.as_ref();
-        let cpu_delta = cpu_stats.and_then(|c| c.cpu_usage.as_ref().and_then(|u| u.total_usage).map(|v| v as f64)).unwrap_or(0.0)
-            - precpu_stats.and_then(|c| c.cpu_usage.as_ref().and_then(|u| u.total_usage).map(|v| v as f64)).unwrap_or(0.0);
+        let cpu_delta = cpu_stats
+            .and_then(|c| {
+                c.cpu_usage
+                    .as_ref()
+                    .and_then(|u| u.total_usage)
+                    .map(|v| v as f64)
+            })
+            .unwrap_or(0.0)
+            - precpu_stats
+                .and_then(|c| {
+                    c.cpu_usage
+                        .as_ref()
+                        .and_then(|u| u.total_usage)
+                        .map(|v| v as f64)
+                })
+                .unwrap_or(0.0);
         let system_delta = cpu_stats.and_then(|c| c.system_cpu_usage).unwrap_or(0) as f64
             - precpu_stats.and_then(|c| c.system_cpu_usage).unwrap_or(0) as f64;
         let num_cpus = cpu_stats.and_then(|c| c.online_cpus).unwrap_or(0) as f64;
@@ -292,7 +343,11 @@ impl PluginPlatform for DockerPlatform {
             0.0
         };
 
-        let mem_usage = stats.memory_stats.as_ref().and_then(|m| m.usage).unwrap_or(0) as i64;
+        let mem_usage = stats
+            .memory_stats
+            .as_ref()
+            .and_then(|m| m.usage)
+            .unwrap_or(0) as i64;
 
         Ok(ContainerStatsSnapshot {
             timestamp: chrono::Utc::now().to_rfc3339(),
@@ -301,8 +356,14 @@ impl PluginPlatform for DockerPlatform {
         })
     }
 
-    async fn list_directory_in_image(&self, image: &str, path: &str) -> Result<Vec<String>, AppError> {
-        crate::client::DockerClient.list_directory_in_image(image, path).await
+    async fn list_directory_in_image(
+        &self,
+        image: &str,
+        path: &str,
+    ) -> Result<Vec<String>, AppError> {
+        crate::client::DockerClient
+            .list_directory_in_image(image, path)
+            .await
     }
 
     async fn inspect_image(&self, image: &str) -> Result<ImageInfo, AppError> {

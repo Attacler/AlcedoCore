@@ -501,7 +501,7 @@ function generateCompose(config: CoreConfig): string {
       ADMIN_EMAIL: "${config.adminEmail}"
       ADMIN_PASSWORD: "${config.adminPassword}"
       PLUGIN_NETWORK: ${config.pluginNetwork}
-      PLUGIN_PUBLIC_MOUNTS: /var/lib/plugin-public
+      PLUGINS_DIR: /var/lib/plugin-public
       PLUGINS_DIR: /plugins
       CORE_PUBLIC_URL: "${config.corePublicUrl || `http://localhost:${config.corePort}`}"
       SYSTEM_PLUGINS_URL: "${config.systemPluginsUrl}"
@@ -668,7 +668,7 @@ data:
   SECURITY_SESSION_FIXATION: "true"
   SECURITY_PASSWORD_MIN_LENGTH: "8"
   PLUGINS_DIR: "/plugins"
-  PLUGIN_PUBLIC_MOUNTS: "/var/lib/plugin-public"
+  PLUGINS_DIR: "/var/lib/plugin-public"
 `,
 
         "03-secrets.yaml": `apiVersion: v1

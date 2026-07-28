@@ -102,7 +102,7 @@ const pluginSlug = ref("");
 const installPhase = ref<"pulling" | "done" | "error">("pulling");
 const installError = ref("");
 const phaseLabels: Record<string, string> = {
-    pulling: "Pulling image...",
+    pulling: "Deploying plugin...",
     done: "Done!",
     error: "Error",
 };

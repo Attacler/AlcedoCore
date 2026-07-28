@@ -1,8 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
 use async_trait::async_trait;
-use futures_util::StreamExt;
-use tokio::sync::mpsc;
+use http::Request;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{
     Container, ContainerPort, EnvVar, Pod, PodSpec, Service, ServicePort,
@@ -12,13 +9,14 @@ use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::api::{
     AttachParams, DeleteParams, ListParams, LogParams, Patch, PatchParams, PostParams, WatchParams,
 };
-use kube::{Api, Client};
 use kube::core::WatchEvent;
-use http::Request;
+use kube::{Api, Client};
+use std::collections::{BTreeMap, HashMap};
+use tokio::sync::mpsc;
 
 use pcl::container::{
-    ContainerDetails, ContainerInfo, ContainerStatsSnapshot, DeploymentEvent, DeploymentId, ImageInfo, InstanceInfo,
-    PluginPlatform,
+    ContainerDetails, ContainerInfo, ContainerStatsSnapshot, DeploymentEvent, DeploymentId,
+    ImageInfo, InstanceInfo, PluginPlatform,
 };
 use pcl::AppError;
 
@@ -29,7 +27,10 @@ const PART_OF_LABEL: &str = "app.kubernetes.io/part-of";
 fn plugin_labels(slug: &str) -> BTreeMap<String, String> {
     let mut labels = BTreeMap::new();
     labels.insert(MANAGED_BY_LABEL.to_string(), MANAGED_BY_VALUE.to_string());
-    labels.insert(PART_OF_LABEL.to_string(), format!("plugin-{}", slug).replace('_', "-"));
+    labels.insert(
+        PART_OF_LABEL.to_string(),
+        format!("plugin-{}", slug).replace('_', "-"),
+    );
     labels
 }
 
@@ -40,16 +41,21 @@ pub struct K8sPlatform {
 
 impl K8sPlatform {
     pub async fn new() -> Result<Self, AppError> {
-        let client = Client::try_default().await
+        let client = Client::try_default()
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to create K8s client: {}", e)))?;
-        let namespace = std::env::var("POD_NAMESPACE")
-            .unwrap_or_else(|_| "default".to_string());
+        let namespace = std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
         Ok(Self { client, namespace })
     }
 
     /// Create a temporary pod that runs a command from a given image.
     /// Returns the pod name so callers can collect logs and clean up.
-    async fn create_temp_pod(&self, prefix: &str, image: &str, command: Vec<String>) -> Result<String, AppError> {
+    async fn create_temp_pod(
+        &self,
+        prefix: &str,
+        image: &str,
+        command: Vec<String>,
+    ) -> Result<String, AppError> {
         let pod_name = format!("tmp-{}-{}", prefix, uuid::Uuid::new_v4());
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         let pod = Pod {
@@ -71,7 +77,8 @@ impl K8sPlatform {
             }),
             ..Default::default()
         };
-        pods.create(&PostParams::default(), &pod).await
+        pods.create(&PostParams::default(), &pod)
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to create temp pod: {}", e)))?;
         Ok(pod_name)
     }
@@ -83,13 +90,15 @@ impl K8sPlatform {
         let wp = WatchParams::default()
             .fields(&format!("metadata.name={}", name))
             .timeout(120);
-        let mut stream = pods.watch(&wp, "0").await
+        let mut stream = pods
+            .watch(&wp, "0")
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to watch pod: {}", e)))?
             .boxed();
 
         use futures_util::StreamExt;
-        use tokio::time::{Duration, sleep};
         use tokio::pin;
+        use tokio::time::{sleep, Duration};
 
         let timeout = sleep(Duration::from_secs(30));
         pin!(timeout);
@@ -157,9 +166,12 @@ impl K8sPlatform {
     async fn resolve_pod_for_id(&self, id: &str) -> Result<String, AppError> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         let lp = ListParams::default().labels(&format!("{}={}", PART_OF_LABEL, id));
-        let list = pods.list(&lp).await
+        let list = pods
+            .list(&lp)
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to list pods: {}", e)))?;
-        list.items.into_iter()
+        list.items
+            .into_iter()
             .find(|p| p.status.as_ref().and_then(|s| s.phase.as_deref()) == Some("Running"))
             .and_then(|p| p.metadata.name)
             .ok_or_else(|| AppError::NotFound(format!("No running pod for deployment '{}'", id)))
@@ -184,11 +196,14 @@ impl PluginPlatform for K8sPlatform {
         // K8s resource names must follow RFC 1123: lowercase alphanumeric, '-' or '.'
         let deployment_name = format!("plugin-{}", slug).replace('_', "-");
 
-        let env_vars: Vec<EnvVar> = env.into_iter().map(|(k, v)| EnvVar {
-            name: k,
-            value: Some(v),
-            ..Default::default()
-        }).collect();
+        let env_vars: Vec<EnvVar> = env
+            .into_iter()
+            .map(|(k, v)| EnvVar {
+                name: k,
+                value: Some(v),
+                ..Default::default()
+            })
+            .collect();
 
         let deployment = Deployment {
             metadata: ObjectMeta {
@@ -216,7 +231,8 @@ impl PluginPlatform for K8sPlatform {
                             ports: vec![ContainerPort {
                                 container_port: 8080,
                                 ..Default::default()
-                            }].into(),
+                            }]
+                            .into(),
                             env: env_vars.into(),
                             ..Default::default()
                         }],
@@ -229,7 +245,9 @@ impl PluginPlatform for K8sPlatform {
         };
 
         let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
-        deployments.create(&PostParams::default(), &deployment).await
+        deployments
+            .create(&PostParams::default(), &deployment)
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to create deployment: {}", e)))?;
 
         let service = Service {
@@ -245,14 +263,17 @@ impl PluginPlatform for K8sPlatform {
                     port: 80,
                     target_port: Some(IntOrString::Int(8080)),
                     ..Default::default()
-                }].into(),
+                }]
+                .into(),
                 ..Default::default()
             }),
             ..Default::default()
         };
 
         let services: Api<Service> = Api::namespaced(self.client.clone(), &self.namespace);
-        services.create(&PostParams::default(), &service).await
+        services
+            .create(&PostParams::default(), &service)
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to create service: {}", e)))?;
 
         Ok(deployment_name)
@@ -262,7 +283,9 @@ impl PluginPlatform for K8sPlatform {
         let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
         let services: Api<Service> = Api::namespaced(self.client.clone(), &self.namespace);
         let _ = services.delete(id, &DeleteParams::default()).await;
-        deployments.delete(id, &DeleteParams::default()).await
+        deployments
+            .delete(id, &DeleteParams::default())
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to delete deployment: {}", e)))?;
         Ok(())
     }
@@ -281,7 +304,9 @@ impl PluginPlatform for K8sPlatform {
                 }
             }
         });
-        deployments.patch(id, &PatchParams::default(), &Patch::Strategic(patch)).await
+        deployments
+            .patch(id, &PatchParams::default(), &Patch::Strategic(patch))
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to restart deployment: {}", e)))?;
         Ok(())
     }
@@ -293,7 +318,9 @@ impl PluginPlatform for K8sPlatform {
                 if let Some(cluster_ip) = spec.cluster_ip {
                     if !cluster_ip.is_empty() && cluster_ip != "None" {
                         // Return IP:port — proxy handler uses this directly
-                        let port = spec.ports.as_ref()
+                        let port = spec
+                            .ports
+                            .as_ref()
                             .and_then(|p| p.first())
                             .map(|p| p.port)
                             .unwrap_or(80);
@@ -325,20 +352,23 @@ impl PluginPlatform for K8sPlatform {
     async fn scale(&self, id: &DeploymentId, replicas: u32) -> Result<(), AppError> {
         let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
         let patch = serde_json::json!({ "spec": { "replicas": replicas } });
-        deployments.patch(id, &PatchParams::default(), &Patch::Strategic(patch)).await
+        deployments
+            .patch(id, &PatchParams::default(), &Patch::Strategic(patch))
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to scale deployment: {}", e)))?;
         Ok(())
     }
 
     async fn read_file_from_image(&self, image: &str, path: &str) -> Result<String, AppError> {
-        let pod_name = self.create_temp_pod("readimg", image, vec![
-            "cat".to_string(), path.to_string(),
-        ]).await?;
+        let pod_name = self
+            .create_temp_pod("readimg", image, vec!["cat".to_string(), path.to_string()])
+            .await?;
 
         let result = self.wait_for_pod_completion(&pod_name).await;
         let logs = if result.is_ok() {
             let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-            pods.logs(&pod_name, &LogParams::default()).await
+            pods.logs(&pod_name, &LogParams::default())
+                .await
                 .map_err(|e| AppError::Internal(format!("Failed to read pod logs: {}", e)))?
         } else {
             String::new()
@@ -355,17 +385,32 @@ impl PluginPlatform for K8sPlatform {
         // For /app/public, this produces: public/index.html
         // Extract to dest and the files land at {dest}/public/index.html.
         let dir = std::path::Path::new(src);
-        let parent = dir.parent().map(|p| p.to_string_lossy()).unwrap_or(std::borrow::Cow::Borrowed("/"));
-        let base = dir.file_name().map(|n| n.to_string_lossy()).unwrap_or(std::borrow::Cow::Borrowed(""));
-        let pod_name = self.create_temp_pod("extract", image, vec![
-            "sh".to_string(), "-c".to_string(),
-            format!("tar -cf - -C {} {} | base64 -w 0", parent, base),
-        ]).await?;
+        let parent = dir
+            .parent()
+            .map(|p| p.to_string_lossy())
+            .unwrap_or(std::borrow::Cow::Borrowed("/"));
+        let base = dir
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or(std::borrow::Cow::Borrowed(""));
+        let pod_name = self
+            .create_temp_pod(
+                "extract",
+                image,
+                vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!("tar -cf - -C {} {} | base64 -w 0", parent, base),
+                ],
+            )
+            .await?;
 
         self.wait_for_pod_completion(&pod_name).await?;
 
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-        let b64_output = pods.logs(&pod_name, &LogParams::default()).await
+        let b64_output = pods
+            .logs(&pod_name, &LogParams::default())
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to read pod logs: {}", e)))?;
 
         self.cleanup_temp_pod(&pod_name).await;
@@ -380,7 +425,8 @@ impl PluginPlatform for K8sPlatform {
             .map_err(|e| AppError::Internal(format!("Failed to create dest dir: {}", e)))?;
 
         let mut archive = tar::Archive::new(std::io::Cursor::new(tar_bytes));
-        archive.unpack(dest)
+        archive
+            .unpack(dest)
             .map_err(|e| AppError::Internal(format!("Failed to unpack tar archive: {}", e)))?;
 
         Ok(())
@@ -394,17 +440,23 @@ impl PluginPlatform for K8sPlatform {
             stderr: true,
             ..Default::default()
         };
-        let mut process = pods.exec(&pod_name, vec!["cat", path], &ap).await
+        let mut process = pods
+            .exec(&pod_name, vec!["cat", path], &ap)
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to exec 'cat {}': {}", path, e)))?;
 
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
         if let Some(mut reader) = process.stdout() {
-            reader.read_to_end(&mut buf).await
+            reader
+                .read_to_end(&mut buf)
+                .await
                 .map_err(|e| AppError::Internal(format!("Failed to read stdout: {}", e)))?;
         }
 
-        process.join().await
+        process
+            .join()
+            .await
             .map_err(|e| AppError::Internal(format!("Exec process failed: {}", e)))?;
         Ok(buf)
     }
@@ -414,7 +466,10 @@ impl PluginPlatform for K8sPlatform {
             Ok(name) => name,
             Err(e) => {
                 tracing::error!("[list_directory] resolve_pod_for_id({}) failed: {}", id, e);
-                return Err(AppError::NotFound(format!("Pod not found for deployment '{}'", id)));
+                return Err(AppError::NotFound(format!(
+                    "Pod not found for deployment '{}'",
+                    id
+                )));
             }
         };
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
@@ -426,7 +481,12 @@ impl PluginPlatform for K8sPlatform {
         let mut process = match pods.exec(&pod_name, vec!["ls", path], &ap).await {
             Ok(p) => p,
             Err(e) => {
-                tracing::error!("[list_directory] exec ls '{}' on {} failed: {}", path, pod_name, e);
+                tracing::error!(
+                    "[list_directory] exec ls '{}' on {} failed: {}",
+                    path,
+                    pod_name,
+                    e
+                );
                 return Err(AppError::Internal(format!("Failed to exec ls: {}", e)));
             }
         };
@@ -434,11 +494,15 @@ impl PluginPlatform for K8sPlatform {
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
         if let Some(mut reader) = process.stdout() {
-            reader.read_to_end(&mut buf).await
+            reader
+                .read_to_end(&mut buf)
+                .await
                 .map_err(|e| AppError::Internal(format!("Failed to read stdout: {}", e)))?;
         }
 
-        process.join().await
+        process
+            .join()
+            .await
             .map_err(|e| AppError::Internal(format!("Exec process failed: {}", e)))?;
 
         Ok(String::from_utf8_lossy(&buf)
@@ -449,7 +513,8 @@ impl PluginPlatform for K8sPlatform {
     }
 
     async fn health_check(&self) -> Result<(), AppError> {
-        let _ = Client::try_default().await
+        let _ = Client::try_default()
+            .await
             .map_err(|e| AppError::Internal(format!("K8s health check failed: {}", e)))?;
         Ok(())
     }
@@ -461,37 +526,58 @@ impl PluginPlatform for K8sPlatform {
     async fn list_deployments(&self) -> Result<Vec<ContainerInfo>, AppError> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         let lp = ListParams::default().labels(MANAGED_BY_LABEL);
-        let list = pods.list(&lp).await
+        let list = pods
+            .list(&lp)
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to list pods: {}", e)))?;
-        Ok(list.items.into_iter().filter_map(|p| {
-            let name = p.metadata.name.clone().unwrap_or_default();
-            let status = p.status.as_ref()
-                .and_then(|s| s.phase.as_deref())
-                .unwrap_or("Unknown")
-                .to_string();
-            if name.is_empty() { None }
-            else {
-                Some(ContainerInfo { id: name.clone(), name, status })
-            }
-        }).collect())
+        Ok(list
+            .items
+            .into_iter()
+            .filter_map(|p| {
+                let name = p.metadata.name.clone().unwrap_or_default();
+                let status = p
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.phase.as_deref())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(ContainerInfo {
+                        id: name.clone(),
+                        name,
+                        status,
+                    })
+                }
+            })
+            .collect())
     }
 
     async fn inspect(&self, id: &DeploymentId) -> Result<ContainerDetails, AppError> {
         let pod_name = self.resolve_pod_for_id(id).await?;
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-        let pod = pods.get(&pod_name).await
+        let pod = pods
+            .get(&pod_name)
+            .await
             .map_err(|e| AppError::NotFound(format!("Pod not found: {}", e)))?;
         Ok(ContainerDetails {
             id: pod.metadata.name.unwrap_or_default(),
             name: id.clone(),
-            state: pod.status.as_ref()
+            state: pod
+                .status
+                .as_ref()
                 .and_then(|s| s.phase.as_deref())
                 .unwrap_or("Unknown")
                 .to_string(),
-            created: pod.metadata.creation_timestamp
+            created: pod
+                .metadata
+                .creation_timestamp
                 .map(|t| t.0.to_rfc3339())
                 .unwrap_or_default(),
-            image: pod.spec.as_ref()
+            image: pod
+                .spec
+                .as_ref()
                 .and_then(|s| s.containers.first())
                 .and_then(|c| c.image.clone())
                 .unwrap_or_default(),
@@ -502,35 +588,54 @@ impl PluginPlatform for K8sPlatform {
     async fn list_instances(&self, id: &DeploymentId) -> Result<Vec<InstanceInfo>, AppError> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         let lp = ListParams::default().labels(&format!("{}={}", PART_OF_LABEL, id));
-        let list = pods.list(&lp).await
+        let list = pods
+            .list(&lp)
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to list pods: {}", e)))?;
-        Ok(list.items.into_iter().map(|p| {
-            let name = p.metadata.name.clone().unwrap_or_default();
-            let status = p.status.as_ref()
-                .and_then(|s| s.phase.as_deref())
-                .unwrap_or("Unknown")
-                .to_string();
-            InstanceInfo {
-                id: name.clone(),
-                status,
-                pod_name: name,
-                container_id: p.status.and_then(|s| s.pod_ip),
-            }
-        }).collect())
+        Ok(list
+            .items
+            .into_iter()
+            .map(|p| {
+                let name = p.metadata.name.clone().unwrap_or_default();
+                let status = p
+                    .status
+                    .as_ref()
+                    .and_then(|s| s.phase.as_deref())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                InstanceInfo {
+                    id: name.clone(),
+                    status,
+                    pod_name: name,
+                    container_id: p.status.and_then(|s| s.pod_ip),
+                }
+            })
+            .collect())
     }
 
-    async fn get_instance_logs(&self, _id: &DeploymentId, instance_id: &str, tail: usize) -> Result<String, AppError> {
+    async fn get_instance_logs(
+        &self,
+        _id: &DeploymentId,
+        instance_id: &str,
+        tail: usize,
+    ) -> Result<String, AppError> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         let lp = LogParams {
             tail_lines: Some(tail as i64),
             ..Default::default()
         };
-        let logs = pods.logs(instance_id, &lp).await
+        let logs = pods
+            .logs(instance_id, &lp)
+            .await
             .map_err(|e| AppError::Internal(format!("Failed to get pod logs: {}", e)))?;
         Ok(logs)
     }
 
-    async fn get_instance_stats(&self, _id: &DeploymentId, instance_id: &str) -> Result<ContainerStatsSnapshot, AppError> {
+    async fn get_instance_stats(
+        &self,
+        _id: &DeploymentId,
+        instance_id: &str,
+    ) -> Result<ContainerStatsSnapshot, AppError> {
         let url = format!(
             "/apis/metrics.k8s.io/v1beta1/namespaces/{}/pods/{}",
             self.namespace, instance_id,
@@ -544,14 +649,21 @@ impl PluginPlatform for K8sPlatform {
             Ok(v) => v,
             Err(kube::Error::Api(api_err)) if api_err.code == 404 => {
                 // metrics-server not installed — return empty stats
-                tracing::info!("[K8S_METRICS] Metrics API not available (metrics-server not installed)");
+                tracing::info!(
+                    "[K8S_METRICS] Metrics API not available (metrics-server not installed)"
+                );
                 return Ok(ContainerStatsSnapshot {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     cpu_percent: 0.0,
                     memory_usage_bytes: 0,
                 });
             }
-            Err(e) => return Err(AppError::Internal(format!("Metrics API request failed: {}", e))),
+            Err(e) => {
+                return Err(AppError::Internal(format!(
+                    "Metrics API request failed: {}",
+                    e
+                )))
+            }
         };
 
         let usage = &body["containers"][0]["usage"];
@@ -565,27 +677,45 @@ impl PluginPlatform for K8sPlatform {
         })
     }
 
-    async fn list_directory_in_image(&self, image: &str, path: &str) -> Result<Vec<String>, AppError> {
-        let pod_name = self.create_temp_pod("lsimg", image, vec![
-            "sh".to_string(), "-c".to_string(),
-            format!("ls -1 {} 2>/dev/null || echo ''", path),
-        ]).await?;
+    async fn list_directory_in_image(
+        &self,
+        image: &str,
+        path: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let pod_name = self
+            .create_temp_pod(
+                "lsimg",
+                image,
+                vec![
+                    "sh".to_string(),
+                    "-c".to_string(),
+                    format!("ls -1 {} 2>/dev/null || echo ''", path),
+                ],
+            )
+            .await?;
 
         let result = self.wait_for_pod_completion(&pod_name).await;
         let output = if result.is_ok() {
             let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-            pods.logs(&pod_name, &LogParams::default()).await
+            pods.logs(&pod_name, &LogParams::default())
+                .await
                 .map_err(|e| AppError::Internal(format!("Failed to read pod logs: {}", e)))?
         } else {
             String::new()
         };
 
         self.cleanup_temp_pod(&pod_name).await;
-        Ok(output.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect())
+        Ok(output
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect())
     }
 
     async fn inspect_image(&self, _image: &str) -> Result<ImageInfo, AppError> {
-        Err(AppError::Internal("Image inspection not available in K8s mode".to_string()))
+        Err(AppError::Internal(
+            "Image inspection not available in K8s mode".to_string(),
+        ))
     }
 
     fn core_url(&self) -> String {

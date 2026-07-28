@@ -1056,7 +1056,6 @@ pub async fn preview_plugin_handler(
         {
             Ok(content) => serde_json::from_str::<serde_json::Value>(&content).ok(),
             Err(e) => {
-                println!("{:?}", e);
                 None
             }
         }

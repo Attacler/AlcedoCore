@@ -6,11 +6,11 @@ use axum::{
 use std::sync::Arc;
 
 use crate::api::permission_check;
+use crate::db::plugin_migrations::{plugin_schema_name, PluginMigrationEngine};
+use crate::db::queries::PluginVersion;
+use crate::db::schema::get_table_schemas;
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
-use crate::db::plugin_migrations::{plugin_schema_name, PluginMigrationEngine};
-use crate::db::schema::get_table_schemas;
-use crate::db::queries::PluginVersion;
 use crate::services::scopes::{check_entity_scope, ScopeSource};
 
 pub async fn get_plugin_schema(
@@ -49,8 +49,12 @@ pub async fn get_plugin_schema(
 }
 
 pub fn plugin_file_dir(slug: &str, version: &str, subdir: &str) -> Option<std::path::PathBuf> {
-    if let Ok(mount) = std::env::var("PLUGIN_PUBLIC_MOUNTS") {
-        let path = std::path::Path::new(&mount).join(slug).join(version).join(subdir);
+    if let Ok(mount) = std::env::var("PLUGINS_DIR") {
+        let path = std::path::Path::new(&mount)
+            .join(slug)
+            .join(version)
+            .join(subdir);
+
         if path.exists() {
             return Some(path);
         }
@@ -61,12 +65,15 @@ pub fn plugin_file_dir(slug: &str, version: &str, subdir: &str) -> Option<std::p
             return Some(path);
         }
         if subdir == "migrations" {
-            let old_path = std::path::Path::new(&dir).join("plugin-migrations").join(slug);
+            let old_path = std::path::Path::new(&dir)
+                .join("plugin-migrations")
+                .join(slug);
             if old_path.exists() {
                 return Some(old_path);
             }
         }
     }
+
     None
 }
 
@@ -79,17 +86,22 @@ pub async fn list_migrations(
 
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
-    let version = PluginVersion::find_active(db_pool, &slug).await?
+    let version = PluginVersion::find_active(db_pool, &slug)
+        .await?
         .map(|v| v.version);
     let migrations_dir = match version {
         Some(ref ver) => crate::api::admin::plugin_file_dir(&slug, ver, "migrations")
             .unwrap_or_else(|| {
                 let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-                std::path::Path::new(&dir).join("plugin-migrations").join(&slug)
+                std::path::Path::new(&dir)
+                    .join("plugin-migrations")
+                    .join(&slug)
             }),
         None => {
             let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-            std::path::Path::new(&dir).join("plugin-migrations").join(&slug)
+            std::path::Path::new(&dir)
+                .join("plugin-migrations")
+                .join(&slug)
         }
     };
 
@@ -97,27 +109,26 @@ pub async fn list_migrations(
         return Ok(Json(vec![]));
     }
 
-    let engine = PluginMigrationEngine::new(
-        db_pool.clone(),
-        migrations_dir,
-        &slug,
-    );
+    let engine = PluginMigrationEngine::new(db_pool.clone(), migrations_dir, &slug);
 
     let statuses = engine.get_migration_status().await?;
 
-    let result: Vec<serde_json::Value> = statuses.into_iter().map(|s| {
-        serde_json::json!({
-            "version": s.version,
-            "name": s.name,
-            "filename": s.filename,
-            "status": if s.applied { "applied" } else { "pending" },
-            "applied": s.applied,
-            "applied_at": s.applied_at.map(|dt| dt.to_rfc3339()),
-            "has_down": s.has_down,
-            "sql": s.sql,
-            "schema": engine.schema_name(),
+    let result: Vec<serde_json::Value> = statuses
+        .into_iter()
+        .map(|s| {
+            serde_json::json!({
+                "version": s.version,
+                "name": s.name,
+                "filename": s.filename,
+                "status": if s.applied { "applied" } else { "pending" },
+                "applied": s.applied,
+                "applied_at": s.applied_at.map(|dt| dt.to_rfc3339()),
+                "has_down": s.has_down,
+                "sql": s.sql,
+                "schema": engine.schema_name(),
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(result))
 }
@@ -130,17 +141,22 @@ pub async fn run_migration(
 
     check_entity_scope(db_pool, ScopeSource::Plugin { slug: &slug }, "db.migrate").await?;
 
-    let version = PluginVersion::find_active(db_pool, &slug).await?
+    let version = PluginVersion::find_active(db_pool, &slug)
+        .await?
         .map(|v| v.version);
     let migrations_dir = match version {
         Some(ref ver) => crate::api::admin::plugin_file_dir(&slug, ver, "migrations")
             .unwrap_or_else(|| {
                 let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-                std::path::Path::new(&dir).join("plugin-migrations").join(&slug)
+                std::path::Path::new(&dir)
+                    .join("plugin-migrations")
+                    .join(&slug)
             }),
         None => {
             let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-            std::path::Path::new(&dir).join("plugin-migrations").join(&slug)
+            std::path::Path::new(&dir)
+                .join("plugin-migrations")
+                .join(&slug)
         }
     };
 
@@ -151,15 +167,12 @@ pub async fn run_migration(
         )));
     }
 
-    let engine = PluginMigrationEngine::new(
-        db_pool.clone(),
-        migrations_dir,
-        &slug,
-    );
+    let engine = PluginMigrationEngine::new(db_pool.clone(), migrations_dir, &slug);
 
     match engine.run_migrations().await {
         Ok(ran) => {
-            PluginVersion::update_status(db_pool, &slug, &version.unwrap_or_default(), "running").await?;
+            PluginVersion::update_status(db_pool, &slug, &version.unwrap_or_default(), "running")
+                .await?;
             Ok(Json(serde_json::json!({
                 "success": ran.errors.is_empty(),
                 "applied": ran.applied,
@@ -171,9 +184,10 @@ pub async fn run_migration(
                 }
             })))
         }
-        Err(e) => {
-            Err(AppError::Internal(format!("Failed to run migrations: {}", e)))
-        }
+        Err(e) => Err(AppError::Internal(format!(
+            "Failed to run migrations: {}",
+            e
+        ))),
     }
 }
 
@@ -181,23 +195,29 @@ pub async fn rollback_migration(
     Path((slug, target_version)): Path<(String, String)>,
     State(state): State<Arc<PluginAppState>>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db_pool.as_ref().ok_or_else(|| {
-        AppError::BadRequest("Database not configured".to_string())
-    })?;
+    let db_pool = state
+        .db_pool
+        .as_ref()
+        .ok_or_else(|| AppError::BadRequest("Database not configured".to_string()))?;
 
     check_entity_scope(db_pool, ScopeSource::Plugin { slug: &slug }, "db.migrate").await?;
 
-    let version = PluginVersion::find_active(db_pool, &slug).await?
+    let version = PluginVersion::find_active(db_pool, &slug)
+        .await?
         .map(|v| v.version);
     let migrations_dir = match version {
         Some(ref ver) => crate::api::admin::plugin_file_dir(&slug, ver, "migrations")
             .unwrap_or_else(|| {
                 let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-                std::path::Path::new(&dir).join("plugin-migrations").join(&slug)
+                std::path::Path::new(&dir)
+                    .join("plugin-migrations")
+                    .join(&slug)
             }),
         None => {
             let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-            std::path::Path::new(&dir).join("plugin-migrations").join(&slug)
+            std::path::Path::new(&dir)
+                .join("plugin-migrations")
+                .join(&slug)
         }
     };
 
@@ -208,11 +228,7 @@ pub async fn rollback_migration(
         )));
     }
 
-    let engine = PluginMigrationEngine::new(
-        db_pool.clone(),
-        migrations_dir,
-        &slug,
-    );
+    let engine = PluginMigrationEngine::new(db_pool.clone(), migrations_dir, &slug);
 
     let rolled_back = engine.rollback_to(&target_version).await?;
 
@@ -254,7 +270,9 @@ pub async fn upload_migrations_handler(
             results.push(crate::api::admin::UploadResult {
                 filename: file.filename.clone(),
                 status: "error".to_string(),
-                error: Some("Invalid filename: contains path separator or directory reference".to_string()),
+                error: Some(
+                    "Invalid filename: contains path separator or directory reference".to_string(),
+                ),
             });
             continue;
         }
@@ -288,5 +306,7 @@ pub async fn upload_migrations_handler(
         }
     }
 
-    Ok(Json(crate::api::admin::UploadMigrationsResponse { results }))
+    Ok(Json(crate::api::admin::UploadMigrationsResponse {
+        results,
+    }))
 }

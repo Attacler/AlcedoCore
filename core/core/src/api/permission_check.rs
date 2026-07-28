@@ -6,14 +6,13 @@ use std::sync::Arc;
 use tower_sessions::session_store::SessionStore;
 use uuid::Uuid;
 
-
+use crate::api::proxy::lookup_plugin_by_request_id;
 use crate::db::filter_compiler::quote;
 use crate::error::AppError;
+use crate::middleware::logging::extract_request_id_from_headers;
 use crate::plugins::health::AppState;
 use crate::services::permissions::{self, PolicyPermission};
 use crate::services::scopes::{check_entity_scope, ScopeSource};
-use crate::api::proxy::lookup_plugin_by_request_id;
-use crate::middleware::logging::extract_request_id_from_headers;
 
 pub enum PermissionCheck {
     Bypass,
@@ -21,7 +20,9 @@ pub enum PermissionCheck {
         plugin_slug: String,
         permissions: Vec<PolicyPermission>,
     },
-    Denied { reason: String },
+    Denied {
+        reason: String,
+    },
 }
 
 impl PermissionCheck {
@@ -58,22 +59,33 @@ pub async fn check_permission(
 
         // Plugins with rootaccess.all bypass collection-level permission checks
         if let Ok(Some(plugin)) = crate::db::queries::Plugin::find_by_slug(db_pool, slug).await {
-            let granted: Vec<String> = serde_json::from_value(plugin.granted_scopes)
-                .unwrap_or_default();
-            if granted.iter().any(|s| crate::services::scopes::scope_matches(s, "rootaccess.all")) {
+            let granted: Vec<String> =
+                serde_json::from_value(plugin.granted_scopes).unwrap_or_default();
+            if granted
+                .iter()
+                .any(|s| crate::services::scopes::scope_matches(s, "rootaccess.all"))
+            {
                 return Ok(PermissionCheck::Bypass);
             }
         }
 
-        let permissions = permissions::get_plugin_permissions(db_pool, slug, collection_name, Some(action)).await?;
+        let permissions =
+            permissions::get_plugin_permissions(db_pool, slug, collection_name, Some(action))
+                .await?;
 
         if permissions.is_empty() {
             return Ok(PermissionCheck::Denied {
-                reason: format!("Plugin '{}' has no permissions on collection '{}'", slug, collection_name),
+                reason: format!(
+                    "Plugin '{}' has no permissions on collection '{}'",
+                    slug, collection_name
+                ),
             });
         }
 
-        return Ok(PermissionCheck::Granted { plugin_slug: slug.clone(), permissions });
+        return Ok(PermissionCheck::Granted {
+            plugin_slug: slug.clone(),
+            permissions,
+        });
     }
 
     if let Some(user_id) = extract_user_id_from_session(state, headers).await? {
@@ -86,9 +98,7 @@ pub async fn check_permission(
             )"#,
         )
         .bind(user_id)
-        .fetch_one(
-            state.db()?
-        )
+        .fetch_one(state.db()?)
         .await
         .map_err(|e| AppError::Internal(format!("Admin check query failed: {}", e)))?;
 
@@ -99,9 +109,19 @@ pub async fn check_permission(
         let db_pool = state.db()?;
 
         let cache_key = format!("perm:{}:{}:{}", user_id, collection_name, action);
-        if let Some(cached) = crate::services::cache::try_get(&state.redis_connection, &cache_key).await {
-            if let Ok(mut cached_permissions) = serde_json::from_str::<Vec<PolicyPermission>>(&cached) {
-                let context = build_user_context(db_pool, &state.redis_connection, &user_id, &cached_permissions).await?;
+        if let Some(cached) =
+            crate::services::cache::try_get(&state.redis_connection, &cache_key).await
+        {
+            if let Ok(mut cached_permissions) =
+                serde_json::from_str::<Vec<PolicyPermission>>(&cached)
+            {
+                let context = build_user_context(
+                    db_pool,
+                    &state.redis_connection,
+                    &user_id,
+                    &cached_permissions,
+                )
+                .await?;
                 for perm in cached_permissions.iter_mut() {
                     if let Some(filter) = perm.filter.as_array_mut() {
                         crate::services::permissions::resolve_variables(filter, &context);
@@ -114,16 +134,21 @@ pub async fn check_permission(
             }
         }
 
-        let mut permissions = get_role_policies_permissions(db_pool, &user_id, collection_name, Some(action)).await?;
+        let mut permissions =
+            get_role_policies_permissions(db_pool, &user_id, collection_name, Some(action)).await?;
 
         if permissions.is_empty() {
             return Ok(PermissionCheck::Denied {
-                reason: format!("User has no permissions on collection '{}'", collection_name),
+                reason: format!(
+                    "User has no permissions on collection '{}'",
+                    collection_name
+                ),
             });
         }
 
         // Resolve {user.*} variables in policy filters (dynamic field resolution)
-        let context = build_user_context(db_pool, &state.redis_connection, &user_id, &permissions).await?;
+        let context =
+            build_user_context(db_pool, &state.redis_connection, &user_id, &permissions).await?;
         for perm in permissions.iter_mut() {
             if let Some(filter) = perm.filter.as_array_mut() {
                 crate::services::permissions::resolve_variables(filter, &context);
@@ -133,11 +158,15 @@ pub async fn check_permission(
         // Populate permission cache
         if !permissions.is_empty() {
             if let Ok(json) = serde_json::to_string(&permissions) {
-                crate::services::cache::try_set(&state.redis_connection, &cache_key, &json, 60).await;
+                crate::services::cache::try_set(&state.redis_connection, &cache_key, &json, 60)
+                    .await;
             }
         }
 
-        return Ok(PermissionCheck::Granted { plugin_slug: collection_name.to_string(), permissions });
+        return Ok(PermissionCheck::Granted {
+            plugin_slug: collection_name.to_string(),
+            permissions,
+        });
     }
 
     // Fallback: check the public role's collection permissions
@@ -148,7 +177,10 @@ pub async fn check_permission(
             reason: "Authentication required".to_string(),
         })
     } else {
-        Ok(PermissionCheck::Granted { plugin_slug: collection_name.to_string(), permissions })
+        Ok(PermissionCheck::Granted {
+            plugin_slug: collection_name.to_string(),
+            permissions,
+        })
     }
 }
 
@@ -163,17 +195,26 @@ pub fn compute_item_permissions_sync(
         return json!({ "update": true, "delete": true });
     }
     let matching_ids = crate::services::permissions::item_matches_any_filter(permissions, item);
-    let matching: Vec<&PolicyPermission> = permissions.iter()
+    let matching: Vec<&PolicyPermission> = permissions
+        .iter()
         .filter(|p| matching_ids.contains(&p.id))
         .collect();
     let can_update = matching.iter().any(|p| p.action == "update");
     let can_delete = matching.iter().any(|p| p.action == "delete");
-    let update_matching_ids: Vec<Uuid> = matching_ids.iter()
+    let update_matching_ids: Vec<Uuid> = matching_ids
+        .iter()
         .copied()
-        .filter(|id| permissions.iter().any(|p| p.id == *id && p.action == "update"))
+        .filter(|id| {
+            permissions
+                .iter()
+                .any(|p| p.id == *id && p.action == "update")
+        })
         .collect();
-    let fields = crate::services::permissions::get_allowed_fields_for_item(permissions, &update_matching_ids)
-        .unwrap_or_default();
+    let fields = crate::services::permissions::get_allowed_fields_for_item(
+        permissions,
+        &update_matching_ids,
+    )
+    .unwrap_or_default();
     let mut result = json!({ "update": can_update, "delete": can_delete });
     if let Some(f) = result.as_object_mut() {
         if !fields.is_empty() {
@@ -203,9 +244,7 @@ pub async fn load_all_user_permissions(
             )"#,
         )
         .bind(user_id)
-        .fetch_one(
-            state.db()?
-        )
+        .fetch_one(state.db()?)
         .await
         .unwrap_or(false);
 
@@ -216,9 +255,19 @@ pub async fn load_all_user_permissions(
         let db_pool = state.db()?;
 
         let cache_key = format!("perm:{}:{}:all", user_id, collection_name);
-        if let Some(cached) = crate::services::cache::try_get(&state.redis_connection, &cache_key).await {
-            if let Ok(mut cached_permissions) = serde_json::from_str::<Vec<PolicyPermission>>(&cached) {
-                let context = build_user_context(db_pool, &state.redis_connection, &user_id, &cached_permissions).await?;
+        if let Some(cached) =
+            crate::services::cache::try_get(&state.redis_connection, &cache_key).await
+        {
+            if let Ok(mut cached_permissions) =
+                serde_json::from_str::<Vec<PolicyPermission>>(&cached)
+            {
+                let context = build_user_context(
+                    db_pool,
+                    &state.redis_connection,
+                    &user_id,
+                    &cached_permissions,
+                )
+                .await?;
                 for perm in cached_permissions.iter_mut() {
                     if let Some(filter) = perm.filter.as_array_mut() {
                         crate::services::permissions::resolve_variables(filter, &context);
@@ -228,9 +277,11 @@ pub async fn load_all_user_permissions(
             }
         }
 
-        let mut permissions = get_role_policies_permissions(db_pool, &user_id, collection_name, None).await?;
+        let mut permissions =
+            get_role_policies_permissions(db_pool, &user_id, collection_name, None).await?;
 
-        let context = build_user_context(db_pool, &state.redis_connection, &user_id, &permissions).await?;
+        let context =
+            build_user_context(db_pool, &state.redis_connection, &user_id, &permissions).await?;
         for perm in permissions.iter_mut() {
             if let Some(filter) = perm.filter.as_array_mut() {
                 crate::services::permissions::resolve_variables(filter, &context);
@@ -240,7 +291,8 @@ pub async fn load_all_user_permissions(
         // Populate permission cache
         if !permissions.is_empty() {
             if let Ok(json) = serde_json::to_string(&permissions) {
-                crate::services::cache::try_set(&state.redis_connection, &cache_key, &json, 60).await;
+                crate::services::cache::try_set(&state.redis_connection, &cache_key, &json, 60)
+                    .await;
             }
         }
 
@@ -254,8 +306,14 @@ pub async fn extract_user_id_from_session(
     state: &Arc<AppState>,
     headers: &HeaderMap,
 ) -> Result<Option<Uuid>, AppError> {
-    let cookie_str = headers.get_all("cookie").iter().filter_map(|c| c.to_str().ok()).collect::<Vec<_>>().join("; ");
-    let session_id_str = cookie_str.split(';')
+    let cookie_str = headers
+        .get_all("cookie")
+        .iter()
+        .filter_map(|c| c.to_str().ok())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let session_id_str = cookie_str
+        .split(';')
         .map(|p| p.trim())
         .filter_map(|p| p.strip_prefix("alcedo_session="))
         .next()
@@ -306,7 +364,8 @@ pub async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result
         return Ok(());
     }
     let db_pool = state.db()?;
-    let uid = extract_user_id_from_session(state, headers).await?
+    let uid = extract_user_id_from_session(state, headers)
+        .await?
         .ok_or_else(|| AppError::Unauthorized("Authentication required".to_string()))?;
     let is_admin: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN role_scopes rs ON rs.role_id = ur.role_id WHERE ur.user_id = $1 AND rs.scope = 'users.all')"#
@@ -374,8 +433,7 @@ async fn get_public_role_policies(
     if action.is_some() {
         sql.push_str(" AND pp.action = $2");
     }
-    let mut query = sqlx::query_as::<_, PolicyPermission>(&sql)
-        .bind(collection_name);
+    let mut query = sqlx::query_as::<_, PolicyPermission>(&sql).bind(collection_name);
     if let Some(a) = action {
         query = query.bind(a);
     }
@@ -407,9 +465,8 @@ async fn check_action_permission(
         None => return Ok(false),
     };
 
-    let action_perms: Vec<&PolicyPermission> = permissions.iter()
-        .filter(|p| p.action == action)
-        .collect();
+    let action_perms: Vec<&PolicyPermission> =
+        permissions.iter().filter(|p| p.action == action).collect();
     if action_perms.is_empty() {
         return Ok(false);
     }
@@ -421,7 +478,11 @@ async fn check_action_permission(
     // In-memory failed — check for dot-notation filters
     let has_dot = action_perms.iter().any(|p| {
         p.filter.as_array().map_or(false, |arr| {
-            arr.iter().any(|c| c.get("field").and_then(|v| v.as_str()).map_or(false, |f| f.contains('.')))
+            arr.iter().any(|c| {
+                c.get("field")
+                    .and_then(|v| v.as_str())
+                    .map_or(false, |f| f.contains('.'))
+            })
         })
     });
     if !has_dot {
@@ -442,8 +503,15 @@ async fn check_action_permission(
     };
     let (perm_where, perm_binds, join_clauses) =
         crate::services::permissions::build_filter_clause_with_joins(
-            &action_perms.iter().map(|p| (*p).clone()).collect::<Vec<_>>(),
-            1, None, collection_name, &collection, &all_cols,
+            &action_perms
+                .iter()
+                .map(|p| (*p).clone())
+                .collect::<Vec<_>>(),
+            1,
+            None,
+            collection_name,
+            &collection,
+            &all_cols,
         );
     if perm_where.is_empty() {
         return Ok(true);
@@ -485,27 +553,45 @@ pub async fn compute_item_permissions(
     }
 
     let matching_ids = crate::services::permissions::item_matches_any_filter(permissions, item);
-    let matching: Vec<&PolicyPermission> = permissions.iter()
-        .filter(|p| matching_ids.contains(&p.id))
-        .collect();
 
     let mut extra_matching = Vec::new();
-    let can_update = check_action_permission("update", &matching_ids, &mut extra_matching, permissions, item, db_pool, collection_name).await?;
-    let can_delete = check_action_permission("delete", &matching_ids, &mut extra_matching, permissions, item, db_pool, collection_name).await?;
+    let can_update = check_action_permission(
+        "update",
+        &matching_ids,
+        &mut extra_matching,
+        permissions,
+        item,
+        db_pool,
+        collection_name,
+    )
+    .await?;
+    let can_delete = check_action_permission(
+        "delete",
+        &matching_ids,
+        &mut extra_matching,
+        permissions,
+        item,
+        db_pool,
+        collection_name,
+    )
+    .await?;
 
     // Compute fields from UPDATE permissions only (used for edit-mode field readonly).
     // Read/delete permissions with unrestricted fields should not override this.
-    let update_perm_ids: std::collections::HashSet<Uuid> = permissions.iter()
+    let update_perm_ids: std::collections::HashSet<Uuid> = permissions
+        .iter()
         .filter(|p| p.action == "update")
         .map(|p| p.id)
         .collect();
-    let update_matching: Vec<Uuid> = matching_ids.iter()
+    let update_matching: Vec<Uuid> = matching_ids
+        .iter()
         .chain(extra_matching.iter())
         .copied()
         .filter(|id| update_perm_ids.contains(id))
         .collect();
-    let fields = crate::services::permissions::get_allowed_fields_for_item(permissions, &update_matching)
-        .unwrap_or_default();
+    let fields =
+        crate::services::permissions::get_allowed_fields_for_item(permissions, &update_matching)
+            .unwrap_or_default();
 
     let mut result = json!({
         "update": can_update,
@@ -521,10 +607,7 @@ pub async fn compute_item_permissions(
     Ok(result)
 }
 
-pub fn restrict_item_fields(
-    item: &Value,
-    permissions: &[PolicyPermission],
-) -> Value {
+pub fn restrict_item_fields(item: &Value, permissions: &[PolicyPermission]) -> Value {
     let matching = permissions::item_matches_any_filter(permissions, item);
     if matching.is_empty() {
         return Value::Null;
@@ -535,13 +618,14 @@ pub fn restrict_item_fields(
         Some(fields) => {
             if let Some(obj) = item.as_object() {
                 let mut filtered = serde_json::Map::new();
-                let mut display_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-                
+                let mut display_keys: std::collections::HashSet<String> =
+                    std::collections::HashSet::new();
+
                 // Always include the record ID
                 if let Some(v) = obj.get("id") {
                     filtered.insert("id".to_string(), v.clone());
                 }
-                
+
                 for f in &fields {
                     if let Some(v) = obj.get(f.as_str()) {
                         filtered.insert(f.clone(), v.clone());
@@ -583,10 +667,16 @@ pub async fn require_scope(
 
     let db_pool = state.db()?;
 
-    let user_id = extract_user_id_from_session(state, headers).await?
+    let user_id = extract_user_id_from_session(state, headers)
+        .await?
         .ok_or_else(|| AppError::Unauthorized("Authentication required".to_string()))?;
 
-    check_entity_scope(db_pool, ScopeSource::User { user_id: &user_id }, required_scope).await
+    check_entity_scope(
+        db_pool,
+        ScopeSource::User { user_id: &user_id },
+        required_scope,
+    )
+    .await
 }
 
 /// Scan permission filters for `{user.*}` variable references and build a context
@@ -664,8 +754,12 @@ pub async fn build_user_context(
 
     // ── Phase 3: resolve dotted references via relationship joins ──
     if !dotted_refs.is_empty() {
-        let users_col = crate::db::collections::get_cached_collection(db_pool, redis, "users").await.ok();
-        let all_cols = crate::db::collections::get_cached_collections(db_pool, redis).await.ok();
+        let users_col = crate::db::collections::get_cached_collection(db_pool, redis, "users")
+            .await
+            .ok();
+        let all_cols = crate::db::collections::get_cached_collections(db_pool, redis)
+            .await
+            .ok();
 
         if let (Some(ref users_def), Some(ref collections)) = (users_col, all_cols) {
             for segments in &dotted_refs {
