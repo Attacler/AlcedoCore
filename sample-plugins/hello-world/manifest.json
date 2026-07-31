@@ -1,6 +1,6 @@
 {
     "name": "hello-world",
-    "version": "0.0.6.8",
+    "version": "0.0.7.2",
     "plugin_type": "docker",
     "system_plugin": false,
     "scopes": [
@@ -30,38 +30,62 @@
         {
             "method": "GET",
             "path": "/health",
-            "description": "Health check endpoint",
-            "group": "system"
+            "description": "Health check endpoint"
         },
         {
             "method": "GET",
             "path": "/api/hello",
-            "description": "Returns greeting message",
-            "group": "api"
+            "description": "Returns greeting message"
         },
         {
             "method": "GET",
-            "path": "/api/counter",
-            "description": "Persistent counter via AlcedoKV SDK",
-            "group": "api"
+            "path": "/api/version",
+            "description": "Plugin version and feature info"
+        },
+        {
+            "method": "GET",
+            "path": "/api/counter/value",
+            "description": "Read persistent counter via AlcedoKV SDK"
+        },
+        {
+            "method": "POST",
+            "path": "/api/counter/increment",
+            "description": "Increment persistent counter"
+        },
+        {
+            "method": "POST",
+            "path": "/api/counter/decrement",
+            "description": "Decrement persistent counter"
         },
         {
             "method": "GET",
             "path": "/api/kv/ttl-demo",
-            "description": "Demonstrates TTL-based key expiry via AlcedoKV",
-            "group": "api"
+            "description": "Demonstrates TTL-based key expiry via AlcedoKV"
         },
         {
             "method": "GET",
             "path": "/api/kv/hello",
-            "description": "Reads a KV entry via AlcedoKV SDK",
-            "group": "api"
+            "description": "Reads a KV entry via AlcedoKV SDK"
         },
         {
             "method": "GET",
-            "path": "/api/db/items",
-            "description": "Lists items from the plugin's database table (via query proxy)",
-            "group": "api"
+            "path": "/api/items/{path}",
+            "description": "List items from a collection"
+        },
+        {
+            "method": "POST",
+            "path": "/api/items/{path}",
+            "description": "Create an item in a collection"
+        },
+        {
+            "method": "PUT",
+            "path": "/api/items/{path}",
+            "description": "Update an item in a collection"
+        },
+        {
+            "method": "DELETE",
+            "path": "/api/items/{path}",
+            "description": "Delete an item from a collection"
         }
     ],
     "settings_schema": {

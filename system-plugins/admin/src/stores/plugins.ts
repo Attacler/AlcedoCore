@@ -364,11 +364,11 @@ export const usePluginsStore = defineStore("plugins", () => {
         slug: string,
         image: string,
     ): Promise<PluginStore> {
-        const data = (await client.plugins.createFromRegistry({
+        const data = await client.plugins.createFromRegistry({
             slug,
             image,
             status: "disabled",
-        })) as any;
+        });
         await fetchPlugins();
         return data.data;
     }
@@ -378,7 +378,7 @@ export const usePluginsStore = defineStore("plugins", () => {
         pluginError.value = null;
         try {
             const response = await client.plugins.get(name);
-            const detail = (response as any)?.data || response;
+            const detail = response?.data || response;
             currentPlugin.value = mapBackendPlugin(detail);
             return currentPlugin.value;
         } catch (e) {
@@ -412,11 +412,15 @@ export const usePluginsStore = defineStore("plugins", () => {
         return { migrations: data.map(mapMigration) };
     }
 
+    async function runPendingMigrations(name: string): Promise<any> {
+        return await client.migrations.run(name);
+    }
+
     async function rollbackMigration(
         name: string,
         version: string,
     ): Promise<any> {
-        return await (client.migrations as any).rollback(name, version);
+        return await client.migrations.rollback(name, version);
     }
 
     async function fetchPluginAssets(
@@ -462,7 +466,7 @@ export const usePluginsStore = defineStore("plugins", () => {
         plugin: string;
         docs: Array<{ path: string; size: number }>;
     }> {
-        const response = (await client.plugins.docs(name)) as any;
+        const response = await client.plugins.docs(name);
         return response.data || { plugin: name, docs: [] };
     }
 
@@ -492,10 +496,7 @@ export const usePluginsStore = defineStore("plugins", () => {
             params.set("status_code", String(options.status_code));
         if (options?.path) params.set("path", options.path);
 
-        const response = (await client.plugins.requestLogs(
-            name,
-            params,
-        )) as any;
+        const response = await client.plugins.requestLogs(name, params);
         return response.data || { logs: [], next_cursor: null };
     }
 
@@ -504,10 +505,7 @@ export const usePluginsStore = defineStore("plugins", () => {
         name: string,
         requestId: string,
     ): Promise<LogDetailResponse> {
-        const response = (await client.plugins.requestLogDetail(
-            name,
-            requestId,
-        )) as any;
+        const response = await client.plugins.requestLogDetail(name, requestId);
         return response.data || { request: null as any, host_calls: [] };
     }
 
@@ -523,7 +521,7 @@ export const usePluginsStore = defineStore("plugins", () => {
     async function fetchPluginVersions(
         name: string,
     ): Promise<ListVersionsResponse> {
-        const response = (await client.plugins.versions(name)) as any;
+        const response = await client.plugins.versions(name);
         return response.data || { versions: [] };
     }
 
@@ -538,7 +536,7 @@ export const usePluginsStore = defineStore("plugins", () => {
 
     // INSTANCES-01/API: list all instances for a plugin
     async function fetchPluginInstances(slug: string): Promise<InstanceInfo[]> {
-        const json = (await client.plugins.instances(slug)) as any;
+        const json = await client.plugins.instances(slug);
         return json.data?.instances || [];
     }
 
@@ -547,7 +545,7 @@ export const usePluginsStore = defineStore("plugins", () => {
         slug: string,
         taskId: string,
     ): Promise<InstanceDetail> {
-        const json = (await client.plugins.instance(slug, taskId)) as any;
+        const json = await client.plugins.instance(slug, taskId);
         return json.data;
     }
 
@@ -556,7 +554,7 @@ export const usePluginsStore = defineStore("plugins", () => {
         slug: string,
         taskId: string,
     ): Promise<ContainerStatsSnapshot> {
-        const json = (await client.plugins.instanceStats(slug, taskId)) as any;
+        const json = await client.plugins.instanceStats(slug, taskId);
         return json.data;
     }
 
@@ -589,7 +587,7 @@ export const usePluginsStore = defineStore("plugins", () => {
 
     // SCOPES-01: fetch scopes for a plugin
     async function fetchPluginScopes(slug: string): Promise<ScopesResponse> {
-        const json = (await client.plugins.scopes(slug)) as any;
+        const json = await client.plugins.scopes(slug);
         return json.data || { requested_scopes: [], granted_scopes: [] };
     }
 
@@ -638,6 +636,7 @@ export const usePluginsStore = defineStore("plugins", () => {
         fetchPluginVersions,
         deployPluginVersion,
         rollbackMigration,
+        runPendingMigrations,
         fetchPluginInstances,
         fetchInstanceDetail,
         fetchInstanceStats,

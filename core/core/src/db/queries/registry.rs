@@ -1,5 +1,6 @@
-use crate::{error::AppError, find_all, delete_by};
+use crate::{delete_by, error::AppError, find_all};
 use serde::{Deserialize, Serialize};
+use sqlx::Execute;
 use sqlx::PgPool;
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]
@@ -19,7 +20,7 @@ impl Registry {
     pub async fn find_by_id(db: &PgPool, id: i32) -> Result<Option<Self>, AppError> {
         let row = sqlx::query_as::<_, Registry>(
             "SELECT id, name, url, pull_url, auth_type, username, password, created_at, updated_at
-             FROM registries WHERE id = $1"
+             FROM registries WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(db)
@@ -27,7 +28,12 @@ impl Registry {
         Ok(row)
     }
 
-    find_all!(find_all, "registries", "id, name, url, pull_url, auth_type, username, password, created_at, updated_at", "name");
+    find_all!(
+        find_all,
+        "registries",
+        "id, name, url, pull_url, auth_type, username, password, created_at, updated_at",
+        "name"
+    );
 
     pub async fn insert(db: &PgPool, registry: &Registry) -> Result<i32, AppError> {
         let password = if let Some(ref pw) = registry.password {
@@ -115,12 +121,24 @@ impl Registry {
         );
 
         let mut q = sqlx::query(&query);
-        if let Some(v) = name { q = q.bind(v); }
-        if let Some(v) = url { q = q.bind(v); }
-        if let Some(v) = pull_url { q = q.bind(v); }
-        if let Some(v) = auth_type { q = q.bind(v); }
-        if let Some(v) = username { q = q.bind(v); }
-        if let Some(ref v) = encrypted_password { q = q.bind(v); }
+        if let Some(v) = name {
+            q = q.bind(v);
+        }
+        if let Some(v) = url {
+            q = q.bind(v);
+        }
+        if let Some(v) = auth_type {
+            q = q.bind(v);
+        }
+        if let Some(v) = username {
+            q = q.bind(v);
+        }
+        if let Some(v) = pull_url {
+            q = q.bind(v);
+        }
+        if let Some(ref v) = encrypted_password {
+            q = q.bind(v);
+        }
         q = q.bind(id);
         q.execute(db).await?;
         Ok(())

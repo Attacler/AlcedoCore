@@ -579,6 +579,8 @@ onMounted(async () => {
                         </label>
                     </div>
 
+                    <!-- // TODO show all frontend components -->
+
                     <Accordion value="0">
                         <AccordionPanel value="0">
                             <AccordionHeader>

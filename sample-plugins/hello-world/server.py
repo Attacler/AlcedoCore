@@ -135,13 +135,13 @@ async def handle_hello(request: web.Request) -> web.Response:
         "status": "ok",
         "message": "Hello from plugin API v2.3.1",
         "path": "/api/hello",
-        "version": "2.3.1",
+        "version": "1.2.3",
     })
 
 
 async def handle_version(request: web.Request) -> web.Response:
     return _json_response({
-        "version": "2.3.1",
+        "version": "1.2.3",
         "name": "hello-world",
         "features": ["KV", "DB proxy", "items API", "frontend pages"],
         "status": "upgraded",

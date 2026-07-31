@@ -6,11 +6,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::api::permission_check;
 use crate::api::responses::ResponseEnvelope;
 use crate::db::queries::{Plugin, PluginVersion, Registry};
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
+use crate::{api::permission_check, container::InstanceInfo};
 
 fn version_status(active_version: &Option<PluginVersion>) -> (String, String) {
     let version = active_version
@@ -671,136 +671,125 @@ pub async fn deploy_plugin_handler(
         format!("{}:{}", image_base, tag)
     };
 
-    let existing_version = PluginVersion::find_by_slug_and_version(db_pool, &slug, &tag).await?;
+    if let None = state.platform {
+        return Err(AppError::Internal("Platform incorrect.".to_string()));
+    }
 
-    if let Some(existing) = existing_version {
-        if let Some(ref cid) = existing.container_id {
-            if !cid.is_empty() {
-                if let Some(ref platform) = state.platform {
-                    let _ = platform.remove(cid).await;
-                }
-            }
+    let platform = state.platform.clone().unwrap();
+
+    platform.ensure_image(&deploy_image).await?;
+
+    let container_id = PluginVersion::find_active(db_pool, &slug)
+        .await?
+        .and_then(|v| v.container_id)
+        .unwrap_or_else(|| format!("plugin-{}", slug.replace('_', "-")));
+
+    let instances = platform.list_instances(&container_id).await?;
+
+    for instance in instances {
+        if let Some(cid) = instance.container_id {
+            platform.remove(&cid).await?;
         }
-        PluginVersion::update_status(db_pool, &slug, &tag, "deploying").await?;
-    } else {
-        let new_version = PluginVersion {
-            slug: slug.clone(),
-            version: tag.clone(),
-            container_id: None,
-            status: "deploying".to_string(),
-            is_active: true,
-            deployed_at: Some(chrono::Utc::now()),
-            public_synced: false,
-            public_path: None,
-            pages_synced: false,
-            pages_path: None,
-        };
-        PluginVersion::insert(db_pool, &new_version).await?;
     }
 
-    if let Some(ref platform) = state.platform {
-        platform.ensure_image(&deploy_image).await?;
-    }
+    PluginVersion::update_status(db_pool, &slug, &tag, "deploying").await?;
 
     // Read manifest from image to update plugin metadata
     let mut new_scopes_detected = Vec::new();
-    if let Some(ref platform) = state.platform {
-        match platform
-            .read_file_from_image(&deploy_image, "/app/manifest.json")
-            .await
-        {
-            Ok(manifest_json) => {
-                if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_json) {
-                    // Preserve existing values if plugin already exists
-                    let existing_settings: serde_json::Value = Plugin::find_by_slug(db_pool, &slug)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|p| p.settings)
-                        .unwrap_or(serde_json::json!({}));
-                    let existing_granted: serde_json::Value = Plugin::find_by_slug(db_pool, &slug)
-                        .await
-                        .ok()
-                        .flatten()
-                        .map(|p| p.granted_scopes)
-                        .unwrap_or(serde_json::json!([]));
+    match platform
+        .read_file_from_image(&deploy_image, "/app/manifest.json")
+        .await
+    {
+        Ok(manifest_json) => {
+            if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_json) {
+                // Preserve existing values if plugin already exists
+                let existing_settings: serde_json::Value = Plugin::find_by_slug(db_pool, &slug)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|p| p.settings)
+                    .unwrap_or(serde_json::json!({}));
+                let existing_granted: serde_json::Value = Plugin::find_by_slug(db_pool, &slug)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|p| p.granted_scopes)
+                    .unwrap_or(serde_json::json!([]));
 
-                    // Detect new scopes in this version
-                    if let Some(manifest_scopes) = manifest.get("scopes").and_then(|s| s.as_array())
-                    {
-                        let granted_names: Vec<String> =
-                            serde_json::from_value(existing_granted.clone()).unwrap_or_default();
-                        for scope in manifest_scopes {
-                            if let Some(name) = scope.get("name").and_then(|n| n.as_str()) {
-                                if !granted_names.iter().any(|g| g == name) {
-                                    new_scopes_detected.push(scope.clone());
-                                }
+                // Detect new scopes in this version
+                if let Some(manifest_scopes) = manifest.get("scopes").and_then(|s| s.as_array()) {
+                    let granted_names: Vec<String> =
+                        serde_json::from_value(existing_granted.clone()).unwrap_or_default();
+                    for scope in manifest_scopes {
+                        if let Some(name) = scope.get("name").and_then(|n| n.as_str()) {
+                            if !granted_names.iter().any(|g| g == name) {
+                                new_scopes_detected.push(scope.clone());
                             }
                         }
                     }
+                }
 
-                    let manifest_scopes = manifest
-                        .get("scopes")
+                let manifest_scopes = manifest
+                    .get("scopes")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([]));
+                let plugin_update = Plugin {
+                    slug: slug.clone(),
+                    image: deploy_image.clone(),
+                    plugin_type: manifest
+                        .get("plugin_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("dynamic")
+                        .to_string(),
+                    system_plugin: manifest
+                        .get("system_plugin")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    env: manifest
+                        .get("env")
                         .cloned()
-                        .unwrap_or(serde_json::json!([]));
-                    let plugin_update = Plugin {
-                        slug: slug.clone(),
-                        image: deploy_image.clone(),
-                        plugin_type: manifest
-                            .get("plugin_type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("dynamic")
-                            .to_string(),
-                        system_plugin: manifest
-                            .get("system_plugin")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false),
-                        env: manifest
-                            .get("env")
-                            .cloned()
-                            .unwrap_or(serde_json::json!({})),
-                        resources: manifest
-                            .get("resources")
-                            .cloned()
-                            .unwrap_or(serde_json::json!({})),
-                        display_name: manifest
-                            .get("name")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string()),
-                        description: manifest
-                            .get("description")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string()),
-                        pages: manifest
-                            .get("pages")
-                            .cloned()
-                            .unwrap_or(serde_json::json!([])),
-                        endpoints: manifest
-                            .get("endpoints")
-                            .cloned()
-                            .unwrap_or(serde_json::json!([])),
-                        documentation: serde_json::json!([]),
-                        settings_schema: manifest
-                            .get("settings_schema")
-                            .cloned()
-                            .unwrap_or(serde_json::json!({})),
-                        settings: existing_settings,
-                        tags: serde_json::json!([]),
-                        requested_scopes: manifest_scopes,
-                        granted_scopes: existing_granted,
-                        registry_id: None,
-                        enabled: true,
-                        created_at: None,
-                        updated_at: None,
-                    };
-                    if let Err(e) = Plugin::upsert(db_pool, &plugin_update).await {
-                        tracing::warn!("Failed to upsert plugin record from manifest: {}", e);
-                    }
+                        .unwrap_or(serde_json::json!({})),
+                    resources: manifest
+                        .get("resources")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({})),
+                    display_name: manifest
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    description: manifest
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()),
+                    pages: manifest
+                        .get("pages")
+                        .cloned()
+                        .unwrap_or(serde_json::json!([])),
+                    endpoints: manifest
+                        .get("endpoints")
+                        .cloned()
+                        .unwrap_or(serde_json::json!([])),
+                    documentation: serde_json::json!([]),
+                    settings_schema: manifest
+                        .get("settings_schema")
+                        .cloned()
+                        .unwrap_or(serde_json::json!({})),
+                    settings: existing_settings,
+                    tags: serde_json::json!([]),
+                    requested_scopes: manifest_scopes,
+                    granted_scopes: existing_granted,
+                    registry_id: None,
+                    enabled: true,
+                    created_at: None,
+                    updated_at: None,
+                };
+                if let Err(e) = Plugin::upsert(db_pool, &plugin_update).await {
+                    tracing::warn!("Failed to upsert plugin record from manifest: {}", e);
                 }
             }
-            Err(e) => {
-                tracing::warn!("No manifest.json found in image {}: {}", deploy_image, e);
-            }
+        }
+        Err(e) => {
+            tracing::warn!("No manifest.json found in image {}: {}", deploy_image, e);
         }
     }
 
@@ -809,7 +798,7 @@ pub async fn deploy_plugin_handler(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
-    let mut env_map: std::collections::HashMap<String, String> = plugin
+    let mut env: std::collections::HashMap<String, String> = plugin
         .env
         .as_object()
         .map(|obj| {
@@ -820,28 +809,20 @@ pub async fn deploy_plugin_handler(
         .unwrap_or_default();
 
     // Inject CORE_URL so the plugin can make SDK callbacks to the core
-    let default_core_url = || -> String {
-        if let Some(ref platform) = state.platform {
-            platform.core_url()
-        } else if cfg!(debug_assertions) {
-            "http://172.17.0.1:8080".to_string()
-        } else {
-            "http://core:8080".to_string()
-        }
+    let default_core_url = if let Some(ref platform) = state.platform {
+        platform.core_url()
+    } else if cfg!(debug_assertions) {
+        "http://172.17.0.1:8080".to_string()
+    } else {
+        "http://core:8080".to_string()
     };
-    env_map
-        .entry("CORE_URL".to_string())
-        .or_insert_with(default_core_url);
+
+    let port = if state.dev_mode { "8000" } else { "8080" };
+    env.insert("PORT".to_string(), port.to_string());
+    env.insert("CORE_URL".to_string(), default_core_url);
 
     // Deploy through platform or Docker fallback
-    let container_id = if let Some(ref platform) = state.platform {
-        platform.deploy(&slug, &tag, &deploy_image, env_map).await?
-    } else {
-        return Err(AppError::Internal(
-            "No platform configured to deploy plugin".to_string(),
-        ));
-    };
-
+    let container_id = platform.deploy(&slug, &tag, &deploy_image, env).await?;
     let prev_active = PluginVersion::find_active(db_pool, &slug).await?;
 
     // Try to update DB state; if this fails, clean up the running container
@@ -851,9 +832,7 @@ pub async fn deploy_plugin_handler(
     }
     .await
     {
-        if let Some(ref platform) = state.platform {
-            let _ = platform.remove(&container_id).await;
-        }
+        let _ = platform.remove(&container_id).await;
         return Err(e);
     }
 
@@ -1055,9 +1034,7 @@ pub async fn preview_plugin_handler(
             .await
         {
             Ok(content) => serde_json::from_str::<serde_json::Value>(&content).ok(),
-            Err(e) => {
-                None
-            }
+            Err(e) => None,
         }
     } else {
         None

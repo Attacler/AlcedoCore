@@ -4,7 +4,9 @@ use axum::{
     response::Response,
     Json,
 };
-use std::sync::Arc;
+use std::{fs::DirEntry, io::Error, sync::Arc};
+use tokio::fs::read_dir;
+use walkdir::WalkDir;
 
 use crate::api::permission_check;
 use crate::api::responses::ResponseEnvelope;
@@ -29,20 +31,40 @@ pub async fn list_plugin_docs(
             .join(&slug)
             .join(version)
             .join("docs");
+
         if docs_path.exists() {
             let mut docs = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(&docs_path) {
-                for entry in entries.flatten() {
-                    if let Ok(file_type) = entry.file_type() {
-                        if file_type.is_file() {
-                            docs.push(crate::api::admin::DocEntry {
-                                path: entry.file_name().to_string_lossy().to_string(),
-                                size: 0,
-                            });
-                        }
+            let files = traverse_directories_relative(&docs_path);
+
+            println!("Dirs: {:?}", files);
+
+            for (directory, files) in files {
+                for file in files {
+                    if directory.len() > 0 {
+                        docs.push(crate::api::admin::DocEntry {
+                            path: format!("{}/{}", directory, file),
+                            size: 0,
+                        });
+                    } else {
+                        docs.push(crate::api::admin::DocEntry {
+                            path: file,
+                            size: 0,
+                        });
                     }
                 }
             }
+            // if let Ok(entries) = std::fs::read_dir(&docs_path) {
+            //     for entry in entries.flatten() {
+            //         if let Ok(file_type) = entry.file_type() {
+            //             if file_type.is_file() {
+            //                 docs.push(crate::api::admin::DocEntry {
+            //                     path: entry.file_name().to_string_lossy().to_string(),
+            //                     size: 0,
+            //                 });
+            //             }
+            //         }
+            //     }
+            // }
             return Ok(Json(ResponseEnvelope::success(
                 crate::api::admin::PluginDocsList {
                     plugin: slug.clone(),
@@ -52,59 +74,71 @@ pub async fn list_plugin_docs(
         }
     }
 
-    if let Some(ref platform) = state.platform {
-        let active_version = match PluginVersion::find_active(db_pool, &slug).await {
-            Ok(Some(v)) => v,
-            _ => {
-                return Ok(Json(ResponseEnvelope::success(
-                    crate::api::admin::PluginDocsList {
-                        plugin: slug,
-                        docs: vec![],
-                    },
-                )))
-            }
-        };
-        let container_id = match active_version.container_id {
-            Some(ref cid) if !cid.is_empty() => cid.clone(),
-            _ => {
-                return Ok(Json(ResponseEnvelope::success(
-                    crate::api::admin::PluginDocsList {
-                        plugin: slug,
-                        docs: vec![],
-                    },
-                )))
-            }
-        };
-        match platform.list_directory(&container_id, "docs").await {
-            Ok(entries) => {
-                let docs: Vec<crate::api::admin::DocEntry> = entries
-                    .into_iter()
-                    .map(|name| crate::api::admin::DocEntry {
-                        path: name,
-                        size: 0,
-                    })
-                    .collect();
-                return Ok(Json(ResponseEnvelope::success(
-                    crate::api::admin::PluginDocsList { plugin: slug, docs },
-                )));
-            }
-            Err(_) => {
-                return Ok(Json(ResponseEnvelope::success(
-                    crate::api::admin::PluginDocsList {
-                        plugin: slug,
-                        docs: vec![],
-                    },
-                )));
-            }
-        }
-    }
-
     Ok(Json(ResponseEnvelope::success(
         crate::api::admin::PluginDocsList {
             plugin: slug,
             docs: vec![],
         },
     )))
+}
+
+pub fn traverse_directories_relative(root: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    let mut result = Vec::new();
+
+    // First, handle the root directory itself
+    if root.is_dir() {
+        let file_names: Vec<String> = root
+            .read_dir()
+            .map(|dir_entries| {
+                dir_entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        result.push(("".to_string(), file_names));
+    }
+
+    // Then, handle subdirectories recursively
+    for entry in WalkDir::new(root) {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue, // Skip errors (e.g., permission denied)
+        };
+
+        if entry.file_type().is_dir() {
+            // Skip the root directory (already handled above)
+            if entry.path() == root {
+                continue;
+            }
+
+            // Get the directory path relative to the root
+            let dir_path = entry
+                .path()
+                .strip_prefix(root)
+                .unwrap_or_else(|_| entry.path());
+            let dir_path_str = dir_path.to_string_lossy().into_owned();
+
+            // Collect file names in this directory
+            let file_names: Vec<String> = entry
+                .path()
+                .read_dir()
+                .map(|dir_entries| {
+                    dir_entries
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.file_type().map_or(false, |ft| ft.is_file()))
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            result.push((dir_path_str, file_names));
+        }
+    }
+
+    result
 }
 
 fn render_docs_directory_markdown(dir_path: &str, entries: &[String]) -> String {

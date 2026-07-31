@@ -284,7 +284,6 @@ Scopes are declared in `manifest.json` and granted at deploy time.
 | `kv.ttl`             | Get KV key TTL (`GET /api/kv/:key/ttl`)                                                         |
 | `db.query`           | Execute SELECT queries via `/p/:slug/db/query`                                                  |
 | `db.execute`         | Execute INSERT/UPDATE/DELETE via `/p/:slug/db/execute`                                          |
-| `db.migrate`         | Run plugin database migrations                                                                  |
 | `items.read`         | Read items from collections                                                                     |
 | `items.write`        | Create/update/delete items                                                                      |
 | `items.all`          | All item operations (wildcard for all `items.*`)                                                |

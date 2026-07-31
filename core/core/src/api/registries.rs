@@ -266,7 +266,6 @@ pub async fn update_registry_handler(
             ));
         }
     }
-
     Registry::update(
         db_pool,
         id,
@@ -460,7 +459,7 @@ pub async fn list_registry_images_handler(
                     .json()
                     .await
                     .map_err(|e| AppError::Internal(format!("Failed to parse catalog: {}", e)))?;
-                
+
                 if let Some(repositories) = catalog.get("repositories").and_then(|v| v.as_array()) {
                     let mut repo_futures = Vec::new();
                     for repo in repositories {
@@ -487,13 +486,12 @@ pub async fn list_registry_images_handler(
                                                         .collect::<Vec<String>>()
                                                 })
                                                 .unwrap_or_else(Vec::new);
-                                            
+
                                             let mut tag_futures = Vec::new();
                                             for tag in tag_list {
                                                 let base_url = base_url.clone();
                                                 let repo_name = repo_name.clone();
                                                 tag_futures.push(async move {
-
                                                     ImageListItem {
                                                         name: repo_name,
                                                         tag: if tag.is_empty() {

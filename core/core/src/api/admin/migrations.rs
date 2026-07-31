@@ -139,8 +139,6 @@ pub async fn run_migration(
 ) -> Result<Json<serde_json::Value>, AppError> {
     let db_pool = state.db()?;
 
-    check_entity_scope(db_pool, ScopeSource::Plugin { slug: &slug }, "db.migrate").await?;
-
     let version = PluginVersion::find_active(db_pool, &slug)
         .await?
         .map(|v| v.version);
@@ -199,8 +197,6 @@ pub async fn rollback_migration(
         .db_pool
         .as_ref()
         .ok_or_else(|| AppError::BadRequest("Database not configured".to_string()))?;
-
-    check_entity_scope(db_pool, ScopeSource::Plugin { slug: &slug }, "db.migrate").await?;
 
     let version = PluginVersion::find_active(db_pool, &slug)
         .await?

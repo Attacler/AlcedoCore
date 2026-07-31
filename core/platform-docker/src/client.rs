@@ -138,7 +138,8 @@ impl DockerClient {
             force,
             ..Default::default()
         };
-        DOCKER.remove_container(container_id, Some(options)).await?;
+        let remove = DOCKER.remove_container(container_id, Some(options)).await?;
+        println!("Resp: {:?}:{:?}", remove, container_id);
         Ok(())
     }
 

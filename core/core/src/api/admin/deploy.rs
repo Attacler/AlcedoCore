@@ -132,33 +132,39 @@ pub async fn deploy_plugin_handler(
                     }
                     Err(_) => {
                         tracing::warn!("No manifest.json found in image {} - will deploy without plugin metadata", payload.image);
-                        None
+                        return Err(AppError::BadRequest(
+                            "The given plugin does not have a manifest.json.".to_string(),
+                        ));
                     }
                 }
             }
         }
     } else {
-        None
+        return Err(AppError::BadRequest(
+            "The given plugin does not have a manifest.json.".to_string(),
+        ));
     };
+    let manifest_content = manifest_content.unwrap();
+    let manifest_content =
+        serde_json::from_str::<serde_json::Value>(&manifest_content).map_err(|_| {
+            AppError::BadRequest(
+                "The given plugin does not have a valid manifest.json.".to_string(),
+            )
+        })?;
 
     let manifest_scopes = manifest_content
-        .as_ref()
-        .and_then(|c| {
-            serde_json::from_str::<serde_json::Value>(c)
-                .ok()
-                .and_then(|m| {
-                    m.get("scopes").and_then(|s| s.as_array()).map(|arr| {
-                        serde_json::Value::Array(
-                            arr.iter()
-                                .filter_map(|s| {
-                                    s.get("name")
-                                        .and_then(|n| n.as_str())
-                                        .map(|n| serde_json::Value::String(n.to_string()))
-                                })
-                                .collect::<Vec<_>>(),
-                        )
+        .get("scopes")
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            serde_json::Value::Array(
+                arr.iter()
+                    .filter_map(|s| {
+                        s.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|n| serde_json::Value::String(n.to_string()))
                     })
-                })
+                    .collect::<Vec<_>>(),
+            )
         })
         .unwrap_or(serde_json::json!([]));
 
@@ -194,143 +200,101 @@ pub async fn deploy_plugin_handler(
         serde_json::json!({})
     };
 
-    if let Some(ref manifest_json) = manifest_content {
-        if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(manifest_json) {
-            let plugin_record = Plugin {
-                slug: payload.slug.clone(),
-                image: payload.image.clone(),
-                plugin_type: manifest
-                    .get("plugin_type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("dynamic")
-                    .to_string(),
-                system_plugin: manifest
-                    .get("system_plugin")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
-                env: manifest
-                    .get("env")
-                    .cloned()
-                    .unwrap_or(serde_json::json!({})),
-                resources: manifest
-                    .get("resources")
-                    .cloned()
-                    .unwrap_or(serde_json::json!({})),
-                display_name: manifest
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
-                description: manifest
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()),
-                pages: manifest
-                    .get("pages")
-                    .cloned()
-                    .unwrap_or(serde_json::json!([])),
-                endpoints: manifest
-                    .get("endpoints")
-                    .cloned()
-                    .unwrap_or(serde_json::json!([])),
-                documentation: serde_json::json!([]),
-                settings_schema: manifest
-                    .get("settings_schema")
-                    .cloned()
-                    .unwrap_or(serde_json::json!({})),
-                settings: initial_settings,
-                tags: serde_json::json!([]),
-                requested_scopes: manifest_scopes.clone(),
-                granted_scopes: granted,
-                registry_id: payload.registry_id,
-                enabled: true,
-                created_at: None,
-                updated_at: None,
-            };
-            if let Err(e) = Plugin::upsert(db_pool, &plugin_record).await {
-                tracing::warn!("Failed to upsert plugin record: {}", e);
-            }
-        }
-    } else {
-        let plugin_record = Plugin {
-            slug: payload.slug.clone(),
-            image: payload.image.clone(),
-            plugin_type: "dynamic".to_string(),
-            system_plugin: false,
-            env: serde_json::json!({}),
-            resources: serde_json::json!({}),
-            display_name: None,
-            description: None,
-            pages: serde_json::json!([]),
-            endpoints: serde_json::json!([]),
-            documentation: serde_json::json!([]),
-            settings_schema: serde_json::json!({}),
-            settings: initial_settings,
-            tags: serde_json::json!([]),
-            requested_scopes: serde_json::json!([]),
-            granted_scopes: granted,
-            registry_id: payload.registry_id,
-            enabled: true,
-            created_at: None,
-            updated_at: None,
-        };
-        let _ = Plugin::upsert(db_pool, &plugin_record).await;
+    let plugin_record = Plugin {
+        slug: payload.slug.clone(),
+        image: payload.image.clone(),
+        plugin_type: manifest_content
+            .get("plugin_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("dynamic")
+            .to_string(),
+        system_plugin: false,
+        env: manifest_content
+            .get("env")
+            .cloned()
+            .unwrap_or(serde_json::json!({})),
+        resources: manifest_content
+            .get("resources")
+            .cloned()
+            .unwrap_or(serde_json::json!({})),
+        display_name: manifest_content
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        description: manifest_content
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        pages: manifest_content
+            .get("pages")
+            .cloned()
+            .unwrap_or(serde_json::json!([])),
+        endpoints: manifest_content
+            .get("endpoints")
+            .cloned()
+            .unwrap_or(serde_json::json!([])),
+        documentation: serde_json::json!([]),
+        settings_schema: manifest_content
+            .get("settings_schema")
+            .cloned()
+            .unwrap_or(serde_json::json!({})),
+        settings: initial_settings,
+        tags: serde_json::json!([]),
+        requested_scopes: manifest_scopes.clone(),
+        granted_scopes: granted,
+        registry_id: payload.registry_id,
+        enabled: true,
+        created_at: Some(chrono::offset::Utc::now()),
+        updated_at: Some(chrono::offset::Utc::now()),
+    };
+    if let Err(e) = Plugin::upsert(db_pool, &plugin_record).await {
+        tracing::warn!("Failed to upsert plugin record: {}", e);
     }
 
-    if let Some(ref manifest_json) = manifest_content {
-        if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(manifest_json) {
-            if let Some(events) = manifest.get("events").and_then(|v| v.as_array()) {
-                let callback_url =
-                    crate::api::admin::resolve_plugin_callback_url(&payload.slug, &state);
-                for event_val in events {
-                    if let Some(event_type) = event_val.as_str() {
-                        let result = sqlx::query(
-                            "INSERT INTO event_subscriptions (plugin_slug, event_type, callback_url)
+    if let Some(events) = manifest_content.get("events").and_then(|v| v.as_array()) {
+        let callback_url = crate::api::admin::resolve_plugin_callback_url(&payload.slug, &state);
+        for event_val in events {
+            if let Some(event_type) = event_val.as_str() {
+                let result = sqlx::query(
+                    "INSERT INTO event_subscriptions (plugin_slug, event_type, callback_url)
                              VALUES ($1, $2, $3)
-                             ON CONFLICT (plugin_slug, event_type) DO UPDATE SET callback_url = $3"
-                        )
-                        .bind(&payload.slug)
-                        .bind(event_type)
-                        .bind(&callback_url)
-                        .execute(db_pool)
-                        .await;
-                        if let Err(e) = result {
-                            tracing::warn!(
-                                "Failed to register event subscription for {}: {}",
-                                event_type,
-                                e
-                            );
-                        }
-                    }
+                             ON CONFLICT (plugin_slug, event_type) DO UPDATE SET callback_url = $3",
+                )
+                .bind(&payload.slug)
+                .bind(event_type)
+                .bind(&callback_url)
+                .execute(db_pool)
+                .await;
+                if let Err(e) = result {
+                    tracing::warn!(
+                        "Failed to register event subscription for {}: {}",
+                        event_type,
+                        e
+                    );
                 }
-                tracing::info!(
-                    "Registered {} event subscriptions for plugin {}",
-                    events.len(),
-                    payload.slug
-                );
             }
         }
+        tracing::info!(
+            "Registered {} event subscriptions for plugin {}",
+            events.len(),
+            payload.slug
+        );
     }
 
     let mut env = payload.env.clone();
-    let default_core_url = || -> String {
-        if state.dev_mode {
-            format!(
-                "http://{}:8080",
-                std::env::var("DEV_CORE_IP").expect("Expected DEV_CORE_IP to be provided")
-            )
-        } else if let Some(ref platform) = state.platform {
-            platform.core_url()
-        } else {
-            "http://core:8080".to_string()
-        }
+    let default_core_url = if state.dev_mode {
+        format!(
+            "http://{}:8080",
+            std::env::var("DEV_CORE_IP").expect("Expected DEV_CORE_IP to be provided")
+        )
+    } else if let Some(ref platform) = state.platform {
+        platform.core_url()
+    } else {
+        "http://core:8080".to_string()
     };
     let port = if state.dev_mode { "8000" } else { "8080" };
     env.insert("PORT".to_string(), port.to_string());
-    env.entry("CORE_URL".to_string())
-        .or_insert_with(default_core_url);
-    env.entry("REDIS_URL".to_string()).or_insert_with(|| {
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://redis:6379/0".to_string())
-    });
+    env.insert("CORE_URL".to_string(), default_core_url);
 
     let container_id = if payload.start_container {
         let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());

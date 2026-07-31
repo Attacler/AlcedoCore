@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from "vue";
 import type { PluginSchemaResponse } from "alcedocore-sdk-node";
-import { schemaToMermaid } from "../utils/schemaToMermaid";
-import { initMermaid } from "../utils/mermaid";
+import { schemaToMermaid } from "@/utils/schemaToMermaid";
+import { initMermaid } from "@/utils/mermaid";
 
 const props = defineProps<{
     schema: PluginSchemaResponse;

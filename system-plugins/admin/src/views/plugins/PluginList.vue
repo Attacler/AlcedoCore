@@ -9,12 +9,9 @@ import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import PluginRow from "@/components/plugins/PluginRow.vue";
 
 const router = useRouter(),
-    store = usePluginsStore(),
-    toast = useToast();
+    store = usePluginsStore();
 
-const searchQuery = ref(""),
-    showModal = ref(false),
-    pluginToDelete = ref<Plugin | null>(null);
+const searchQuery = ref("");
 
 onMounted(() => {
     store.fetchPlugins();
@@ -25,31 +22,6 @@ const filteredPlugins = computed(() => {
         plugin.name.toLowerCase().includes(searchQuery.value.toLowerCase()),
     );
 });
-
-function showDeleteModal(plugin: Plugin) {
-    pluginToDelete.value = plugin;
-    showModal.value = true;
-}
-
-function closeModal() {
-    showModal.value = false;
-    pluginToDelete.value = null;
-}
-
-async function confirmDelete() {
-    if (!pluginToDelete.value) return;
-    try {
-        await store.deletePlugin(pluginToDelete.value.name);
-        toast.show(`Plugin "${pluginToDelete.value.name}" deleted`, "success");
-    } catch (e) {
-        toast.show(
-            `Failed to delete: ${e instanceof Error ? e.message : "Unknown error"}`,
-            "error",
-        );
-    } finally {
-        closeModal();
-    }
-}
 
 function navigateToPlugin(name: string) {
     router.push(`/plugins/${encodeURIComponent(name)}`);
@@ -85,7 +57,6 @@ function navigateToPlugin(name: string) {
                 :key="plugin.name"
                 :plugin="plugin"
                 @click="navigateToPlugin(plugin.name)"
-                @uninstall="showDeleteModal"
             />
             <div
                 v-if="filteredPlugins.length === 0"
@@ -94,13 +65,5 @@ function navigateToPlugin(name: string) {
                 No plugins found
             </div>
         </div>
-
-        <ConfirmDialog
-            :visible="showModal"
-            header="Delete Plugin"
-            :message="`Delete ${pluginToDelete?.name}?`"
-            @confirm="confirmDelete"
-            @cancel="closeModal"
-        />
     </div>
 </template>

@@ -1,72 +1,88 @@
 {
-  "name": "admin",
-  "version": "0.1.0",
-  "display_name": "System Admin",
-  "description": "Admin dashboard for managing plugins, viewing system health, and monitoring deployments",
-  "public_folder": "public",
-  "plugin_type": "static",
-  "system_plugin": true,
-  "scopes": [
-    {"name": "plugins.read", "description": "List and view plugins"},
-    {"name": "plugins.write", "description": "Manage plugins (deploy, delete, enable/disable)"},
-    {"name": "settings.read.all", "description": "Read system settings"},
-    {"name": "settings.write.all", "description": "Update system settings"},
-    {"name": "roles.read", "description": "List and view roles"},
-    {"name": "roles.write", "description": "Manage roles and permissions"},
-    {"name": "kv.get", "description": "Read KV store entries"},
-    {"name": "kv.put", "description": "Write KV store entries"},
-    {"name": "policies.read", "description": "List and view policies"},
-    {"name": "policies.write", "description": "Manage policies"},
-    {"name": "users.all", "description": "Manage users"},
-    {"name": "db.query", "description": "Execute SQL queries on plugin schemas"},
-    {"name": "db.migrate", "description": "Run plugin migrations"}
-  ],
-  "author": "Plugin Core Team",
-  "homepage": "",
-  "license": "MIT",
-  "tags": ["admin", "system", "management"],
-  "icon": "",
-  "pages": [
-    {"path": "/sample", "label": "Sample Page", "icon": "page", "sidebar": true}
-  ],
-  "endpoints": [
-    {
-      "method": "GET",
-      "path": "/api/plugins/list",
-      "description": "List all plugins",
-      "group": "plugins"
+    "name": "admin",
+    "version": "0.1.0",
+    "display_name": "System Admin",
+    "description": "Admin dashboard for managing plugins, viewing system health, and monitoring deployments",
+    "public_folder": "public",
+    "plugin_type": "static",
+    "system_plugin": true,
+    "scopes": [
+        { "name": "plugins.read", "description": "List and view plugins" },
+        {
+            "name": "plugins.write",
+            "description": "Manage plugins (deploy, delete, enable/disable)"
+        },
+        { "name": "settings.read.all", "description": "Read system settings" },
+        {
+            "name": "settings.write.all",
+            "description": "Update system settings"
+        },
+        { "name": "roles.read", "description": "List and view roles" },
+        {
+            "name": "roles.write",
+            "description": "Manage roles and permissions"
+        },
+        { "name": "kv.get", "description": "Read KV store entries" },
+        { "name": "kv.put", "description": "Write KV store entries" },
+        { "name": "policies.read", "description": "List and view policies" },
+        { "name": "policies.write", "description": "Manage policies" },
+        { "name": "users.all", "description": "Manage users" },
+        {
+            "name": "db.query",
+            "description": "Execute SQL queries on plugin schemas"
+        }
+    ],
+    "author": "Plugin Core Team",
+    "homepage": "",
+    "license": "MIT",
+    "tags": ["admin", "system", "management"],
+    "icon": "",
+    "pages": [
+        {
+            "path": "/sample",
+            "label": "Sample Page",
+            "icon": "page",
+            "sidebar": true
+        }
+    ],
+    "endpoints": [
+        {
+            "method": "GET",
+            "path": "/api/plugins/list",
+            "description": "List all plugins",
+            "group": "plugins"
+        },
+        {
+            "method": "GET",
+            "path": "/api/plugins/:slug",
+            "description": "Get plugin details",
+            "group": "plugins"
+        }
+    ],
+    "documentation": [
+        {
+            "title": "Getting Started",
+            "path": "docs/getting-started.md"
+        }
+    ],
+    "settings_schema": {
+        "type": "object",
+        "properties": {
+            "theme": {
+                "type": "string",
+                "enum": ["light", "dark"],
+                "default": "dark",
+                "description": "UI theme"
+            },
+            "refreshInterval": {
+                "type": "integer",
+                "default": 30,
+                "description": "Auto-refresh interval in seconds"
+            }
+        }
     },
-    {
-      "method": "GET",
-      "path": "/api/plugins/:slug",
-      "description": "Get plugin details",
-      "group": "plugins"
+    "settings": {
+        "theme": "dark",
+        "refreshInterval": 30
     }
-  ],
-  "documentation": [
-    {
-      "title": "Getting Started",
-      "path": "docs/getting-started.md"
-    }
-  ],
-  "settings_schema": {
-    "type": "object",
-    "properties": {
-      "theme": {
-        "type": "string",
-        "enum": ["light", "dark"],
-        "default": "dark",
-        "description": "UI theme"
-      },
-      "refreshInterval": {
-        "type": "integer",
-        "default": 30,
-        "description": "Auto-refresh interval in seconds"
-      }
-    }
-  },
-  "settings": {
-    "theme": "dark",
-    "refreshInterval": 30
-  }
 }
