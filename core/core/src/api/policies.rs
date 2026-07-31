@@ -601,6 +601,65 @@ pub async fn list_plugin_policies(
     Ok(Json(json!({ "data": rows })))
 }
 
+pub async fn list_assigned_plugins(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(policy_id): Path<Uuid>,
+) -> Result<Json<Value>, AppError> {
+    let db_pool = state.db()?;
+    permission_check::require_scope(&state, &headers, "policies.read").await?;
+
+    #[derive(sqlx::FromRow, Serialize)]
+    struct AssignedPluginRow {
+        plugin_slug: String,
+        plugin_name: Option<String>,
+        policy_id: Uuid,
+        created_at: chrono::DateTime<chrono::Utc>,
+    }
+
+    let mut select = sea_query::Query::select();
+    select
+        .expr(sea_query::Expr::col((
+            sea_query::Alias::new("pp"),
+            sea_query::Alias::new("plugin_slug"),
+        )))
+        .expr_as(
+            sea_query::Expr::col((sea_query::Alias::new("p"), sea_query::Alias::new("display_name"))),
+            sea_query::Alias::new("plugin_name"),
+        )
+        .expr(sea_query::Expr::col((
+            sea_query::Alias::new("pp"),
+            sea_query::Alias::new("policy_id"),
+        )))
+        .expr(sea_query::Expr::col((
+            sea_query::Alias::new("pp"),
+            sea_query::Alias::new("created_at"),
+        )))
+        .from_as(sea_query::Alias::new("plugin_policies"), sea_query::Alias::new("pp"))
+        .join_as(
+            sea_query::JoinType::LeftJoin,
+            sea_query::Alias::new("plugins"),
+            sea_query::Alias::new("p"),
+            sea_query::Expr::col((sea_query::Alias::new("p"), sea_query::Alias::new("slug")))
+                .equals((sea_query::Alias::new("pp"), sea_query::Alias::new("plugin_slug"))),
+        )
+        .and_where(sea_query::SimpleExpr::Custom(
+            "pp.policy_id = $1".to_string(),
+        ))
+        .order_by(
+            (sea_query::Alias::new("pp"), sea_query::Alias::new("plugin_slug")),
+            sea_query::Order::Asc,
+        );
+
+    let sql = select.to_string(sea_query::PostgresQueryBuilder);
+    let rows = sqlx::query_as::<_, AssignedPluginRow>(&sql)
+        .bind(policy_id)
+        .fetch_all(db_pool)
+        .await?;
+
+    Ok(Json(json!({ "data": { "plugins": rows } })))
+}
+
 pub async fn assign_policy(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -713,6 +772,7 @@ pub fn policies_router(state: Arc<AppState>) -> Router {
             "/api/policies/:id/permissions/:pid",
             put(update_permission).delete(delete_permission),
         )
+        .route("/api/policies/:id/plugins", get(list_assigned_plugins))
         .route(
             "/api/plugins/:slug/policies",
             get(list_plugin_policies).post(assign_policy),

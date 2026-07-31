@@ -11,6 +11,7 @@ import router from "./router";
 import "primeicons/primeicons.css";
 import "./style.css";
 import FilterBuilder from "./components/FilterBuilder.vue";
+import { Tooltip } from "primevue";
 // Expose FilterBuilder globally for plugin pages to use
 if (!(window as any).FilterBuilder) {
     (window as any).FilterBuilder = FilterBuilder;
@@ -42,5 +43,6 @@ app.use(PrimeVue, {
         },
     },
 });
+app.directive("tooltip", Tooltip);
 
 app.mount("#app");
