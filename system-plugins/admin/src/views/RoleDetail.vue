@@ -120,7 +120,7 @@ async function assignPolicies() {
                         :severity="role.is_system ? 'info' : 'warn'"
                     />
                 </div>
-                <p v-if="role.description" class="text-sm text-gray-500 ml-8">
+                <p v-if="role.description" class="text-gray-500 ml-8">
                     {{ role.description }}
                 </p>
             </div>
@@ -224,7 +224,7 @@ async function assignPolicies() {
                                 <template #body="{ data }">
                                     <span
                                         v-if="data.description"
-                                        class="text-gray-500 text-xs"
+                                        class="text-gray-500"
                                         >{{ data.description }}</span
                                     >
                                 </template>
