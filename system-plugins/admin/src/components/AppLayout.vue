@@ -7,7 +7,7 @@ import type { MenuSection, MenuItem } from "@/types/menu";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useViewRegistryStore } from "@/stores/viewRegistry";
 import { useAuthStore } from "@/stores/authStore";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import ToastContainer from "@/components/ToastContainer.vue";
 import { Toast } from "primevue";
 
@@ -18,6 +18,10 @@ const authStore = useAuthStore(),
     menuStore = useMenuStore(),
     settingsStore = useSettingsStore(),
     viewRegistry = useViewRegistryStore();
+
+const fullPage = computed(
+    () => router.currentRoute.value.meta.fullPage || false,
+);
 
 const sidebarOpen = ref(false),
     isMobile = ref(false),
@@ -536,7 +540,10 @@ onUnmounted(() => {
             }"
         >
             <!-- Scrollable Content -->
-            <main class="flex-1 p-4 flex flex-col grow">
+            <main
+                class="flex-1 flex flex-col grow"
+                :class="{ 'p-4': !fullPage }"
+            >
                 <router-view />
             </main>
         </div>

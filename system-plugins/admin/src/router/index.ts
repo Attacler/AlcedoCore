@@ -91,6 +91,7 @@ const routes: RouteRecordRaw[] = [
         path: "/collections/:name/edit",
         name: "CollectionBuilder",
         component: CollectionBuilder,
+        meta: { fullPage: true },
     },
     {
         path: "/collections/:name/data",

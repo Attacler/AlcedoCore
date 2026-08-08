@@ -1,5 +1,6 @@
+import { useExtensionRegistryStore } from "./extensionRegistry";
 import { defineStore } from "pinia";
-import { ref, computed } from "vue";
+import { ref, computed, nextTick } from "vue";
 import type {
     Plugin,
     PluginSchemaResponse,
@@ -21,6 +22,7 @@ export interface PluginStore extends Omit<Plugin, "type"> {
     plugin_type: "system" | "user";
     description?: string;
     displayName?: string;
+    name: string;
     created_at?: string;
     updated_at?: string;
     endpoints?: Record<string, EndpointInfo>;
@@ -293,6 +295,7 @@ function mapPage(backendPage: BackendPageInfo): SdkPluginPage {
 
 export const usePluginsStore = defineStore("plugins", () => {
     const { client } = useAlcedoClient();
+    const extensionRegistry = useExtensionRegistryStore();
 
     const plugins = ref<PluginStore[]>([]);
     const currentPlugin = ref<PluginStore | null>(null);
@@ -324,7 +327,43 @@ export const usePluginsStore = defineStore("plugins", () => {
                 (response as any)?.data?.plugins ||
                 (response as any)?.plugins ||
                 [];
-            plugins.value = pluginList.map(mapBackendPlugin);
+            const pluginArray = pluginList.map(mapBackendPlugin);
+            plugins.value = pluginArray;
+            await nextTick();
+            console.log(
+                JSON.parse(JSON.stringify(pluginArray)),
+                pluginArray.map((e) => e.status),
+            );
+            for (const enabledPlugin of pluginArray.filter(
+                (e) => e.status == "enabled",
+            )) {
+                console.log({ enabledPlugin });
+                if (!enabledPlugin.name) continue;
+
+                try {
+                    const load = await fetchPluginAssets(enabledPlugin.name);
+
+                    if (!load.default) continue;
+                    console.log(enabledPlugin.name, { load });
+
+                    for (const input of load.default.inputs) {
+                        console.log(input);
+                        extensionRegistry.registerInputWidget({
+                            component: input.component,
+                            label: input.label,
+                            supportedFieldTypes: [],
+                            pluginSlug: enabledPlugin.name,
+                            type: input.name,
+                            settingsComponent: input.settingsComponent,
+                            group: input.group || "Custom",
+                            icon: input.icon,
+                            custom: true,
+                        });
+                    }
+                } catch (e) {
+                    console.error(e);
+                }
+            }
         });
     }
 
@@ -423,10 +462,21 @@ export const usePluginsStore = defineStore("plugins", () => {
         return await client.migrations.rollback(name, version);
     }
 
-    async function fetchPluginAssets(
-        name: string,
-    ): Promise<{ css: string; js: string }> {
-        return await client.plugins.assets(name);
+    async function fetchPluginAssets(name: string): Promise<null | any> {
+        const assets = await client.plugins.assets(name);
+        console.log({ assets });
+        if (!assets?.js) {
+            return null;
+        }
+        const blob = new Blob([assets.js], {
+            type: "application/javascript",
+        });
+        const url = URL.createObjectURL(blob);
+        const module = await import(/* @vite-ignore */ url);
+        URL.revokeObjectURL(url);
+        console.log(name, { module });
+        // debugger;
+        return module;
     }
 
     async function fetchPluginPages(name: string): Promise<SdkPluginPage[]> {
