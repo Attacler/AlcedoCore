@@ -31,6 +31,7 @@ const props = withDefaults(defineProps<{
   filters: Record<string, string>
   systemFields: string[]
   embedded?: boolean
+  actions?: boolean
   nestedDepth?: number
   currentDepth?: number
   collectionFields?: FieldDefinition[]
@@ -43,6 +44,7 @@ const props = withDefaults(defineProps<{
   editValues?: Record<string, Record<string, any>>
 }>(), {
   embedded: false,
+  actions: false,
   nestedDepth: 2,
   currentDepth: 0,
   collectionFields: () => [],
@@ -103,18 +105,16 @@ function onRowClick(event: any) {
 
 // ── Expandable rows ──
 
-const expandedRows = ref<any[]>([])
+const expandedRows = ref<Record<string, boolean>>({})
 
 function isExpanded(item: any): boolean {
-  return expandedRows.value.some(r => r.id === item.id)
+  return !!expandedRows.value[item.id]
 }
 
 function toggleExpand(item: any) {
-  const idx = expandedRows.value.findIndex(r => r.id === item.id)
-  if (idx >= 0) {
-    expandedRows.value.splice(idx, 1)
-  } else {
-    expandedRows.value.push(item)
+  const expanded = !isExpanded(item)
+  expandedRows.value = { ...expandedRows.value, [item.id]: expanded }
+  if (expanded) {
     emit('row-expand', item)
   }
 }
@@ -197,7 +197,7 @@ function isRowDirty(item: any): boolean {
       @row-click="onRowClick"
     >
       <!-- Expand Column (when enabled) -->
-      <Column v-if="enableExpand && expandableFields.length > 0" :style="{ width: '3rem', minWidth: '3rem' }">
+      <Column v-if="enableExpand && (expandableFields.length > 0 || $slots['relational-sections'])" :style="{ width: '3rem', minWidth: '3rem' }">
         <template #body="slotProps">
           <div class="flex items-center gap-1">
             <button
@@ -296,7 +296,7 @@ function isRowDirty(item: any): boolean {
       </Column>
 
       <!-- Actions column -->
-      <Column v-if="!embedded" header="Actions" :header-style="{ textAlign: 'right' }">
+      <Column v-if="!embedded || actions" header="Actions" :header-style="{ textAlign: 'right' }">
         <template #body="slotProps">
           <div v-if="editable" class="flex items-center justify-end gap-2">
             <span
@@ -323,7 +323,8 @@ function isRowDirty(item: any): boolean {
       <!-- Expansion slot for nested data -->
       <template #expansion="slotProps">
         <div class="p-3 bg-gray-50/50">
-          <div v-if="getExpandedRowState(slotProps.data)?.loading" class="flex items-center justify-center py-4">
+          <slot name="relational-sections" :row="slotProps.data">
+            <div v-if="getExpandedRowState(slotProps.data)?.loading" class="flex items-center justify-center py-4">
             <i class="pi pi-spin pi-spinner text-blue-500" style="font-size: 1rem" />
             <span class="ml-2 text-sm text-gray-500">Loading nested data...</span>
           </div>
@@ -396,6 +397,7 @@ function isRowDirty(item: any): boolean {
           <div v-else class="text-sm text-gray-400 py-2 text-center">
             No nested data.
           </div>
+          </slot>
         </div>
       </template>
     </DataTable>

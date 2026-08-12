@@ -72,9 +72,28 @@ async function save() {
       if (value === null || value === undefined || value === '') continue
       payload[key] = value instanceof Date ? value.toISOString() : value
     }
+    // Merge inlined O2M children into the same request (parent + children, atomic).
+    let inlinedTempIds: string[] = []
+    if (recordFormRef.value && typeof recordFormRef.value.getCreateBody === 'function') {
+      const { body, inlinedTempIds: ids } = recordFormRef.value.getCreateBody()
+      if (body) Object.assign(payload, body)
+      inlinedTempIds = ids
+    }
     const res = await client.items.create(props.collectionName, payload) as any
+    const createdRaw = res.created || res.data || res
+    const created = Array.isArray(createdRaw) ? createdRaw[0] : createdRaw
+    const createdId = created?.id ?? null
+    // Drop inlined children, then flush any remaining queued ops (nested ones).
+    if (recordFormRef.value) {
+      if (typeof recordFormRef.value.consumeInlinedCreates === 'function') {
+        recordFormRef.value.consumeInlinedCreates(inlinedTempIds)
+      }
+      if (createdId && typeof recordFormRef.value.flushPendingChildren === 'function') {
+        await recordFormRef.value.flushPendingChildren(createdId)
+      }
+    }
     toast.show('Item created successfully', 'success')
-    emit('created', res.data || res)
+    emit('created', created)
     visibleInner.value = false
     emit('update:visible', false)
   } catch (e) {

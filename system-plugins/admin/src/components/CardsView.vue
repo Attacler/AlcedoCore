@@ -23,12 +23,14 @@ const props = defineProps<{
   filters: Record<string, string>
   systemFields: string[]
   embedded?: boolean
+  actions?: boolean
 }>()
 
 const emit = defineEmits<{
   'update:sort': [field: string, order: 'asc' | 'desc']
   'update:page': [page: number]
   'update:filters': [filters: Record<string, string>]
+  'edit-item': [item: any]
   'delete-item': [item: any]
   'retry': []
 }>()
@@ -223,7 +225,7 @@ function onCardClick(item: any) {
             <span class="text-base font-semibold text-gray-900 truncate mr-2">
               {{ getTitle(item) }}
             </span>
-              <Button v-if="!embedded && item.$permissions?.delete !== false"
+              <Button v-if="(!embedded || actions) && item.$permissions?.delete !== false"
               icon="pi pi-trash"
               severity="danger"
               text
@@ -231,6 +233,15 @@ function onCardClick(item: any) {
               class="flex-shrink-0"
               @click="$emit('delete-item', item)"
               :title="'Delete item'"
+            />
+              <Button v-if="(!embedded || actions) && item.$permissions?.update !== false"
+              icon="pi pi-pencil"
+              severity="secondary"
+              text
+              rounded
+              class="flex-shrink-0"
+              @click="$emit('edit-item', item)"
+              :title="'Edit item'"
             />
           </div>
         </template>

@@ -53,6 +53,8 @@ const props = defineProps<{
   systemFields: string[]
   overrideRenderMode?: string | null
   embedded?: boolean
+  enableExpand?: boolean
+  collectionFields?: FieldDefinition[]
 }>()
 
 const renderMode = computed(() => {
@@ -152,11 +154,17 @@ const currentViewComponent = computed(() => {
       :filters="filters"
       :system-fields="systemFields"
       :embedded="embedded"
+      :enable-expand="enableExpand"
+      :collection-fields="collectionFields"
       @update:sort="(field: string, order: 'asc' | 'desc') => $emit('update:sort', field, order)"
       @update:page="(p: number) => $emit('update:page', p)"
       @update:filters="(f: Record<string, string>) => $emit('update:filters', f)"
       @delete-item="(i: any) => $emit('delete-item', i)"
-    />
+    >
+      <template v-for="(_, name) in $slots" :key="name" #[name]="slotProps">
+        <slot :name="name" v-bind="slotProps" />
+      </template>
+    </component>
   </Transition>
 </template>
 

@@ -5,7 +5,7 @@ import { useAlcedoClient } from '@/composables/useAlcedoClient'
 import { useToast } from '@/composables/useToast'
 import RecordForm from '@/components/RecordForm.vue'
 
-const props = defineProps<{ visible: boolean; collectionName: string }>()
+const props = defineProps<{ visible: boolean; collectionName: string; deferred?: boolean }>()
 const emit = defineEmits<{ 'update:visible': [value: boolean]; 'created': [item: any] }>()
 
 const collectionsStore = useCollectionsStore()
@@ -33,14 +33,45 @@ async function save() {
   if (recordFormRef.value && !recordFormRef.value.validate()) return
   saving.value = true
   try {
+    // In deferred mode, do not persist the record — hand the raw values back
+    // so the parent form can save them together with its own record.
+    if (props.deferred) {
+      const payload: Record<string, any> = {}
+      for (const [key, value] of Object.entries(formValues.value)) {
+        if (value === null || value === undefined || value === '') continue
+        payload[key] = value instanceof Date ? value.toISOString() : value
+      }
+      emit('created', payload)
+      visibleInner.value = false; emit('update:visible', false)
+      return
+    }
+
     const payload: Record<string, any> = {}
     for (const [key, value] of Object.entries(formValues.value)) {
       if (value === null || value === undefined || value === '') continue
       payload[key] = value instanceof Date ? value.toISOString() : value
     }
+    // Merge inlined O2M children into the same request (parent + children, atomic).
+    let inlinedTempIds: string[] = []
+    if (recordFormRef.value && typeof recordFormRef.value.getCreateBody === 'function') {
+      const { body, inlinedTempIds: ids } = recordFormRef.value.getCreateBody()
+      if (body) Object.assign(payload, body)
+      inlinedTempIds = ids
+    }
     const res = await client.items.create(props.collectionName, payload) as any
-    const created = res.created || res.data || res
-    const item = Array.isArray(created) ? created[0] : created
+    const createdRaw = res.created || res.data || res
+    const created = Array.isArray(createdRaw) ? createdRaw : [createdRaw]
+    const item = created[0]
+    const createdId = item?.id ?? null
+    // Drop inlined children, then flush any remaining queued ops (nested ones).
+    if (recordFormRef.value) {
+      if (typeof recordFormRef.value.consumeInlinedCreates === 'function') {
+        recordFormRef.value.consumeInlinedCreates(inlinedTempIds)
+      }
+      if (createdId && typeof recordFormRef.value.flushPendingChildren === 'function') {
+        await recordFormRef.value.flushPendingChildren(createdId)
+      }
+    }
     toast.show('Item created successfully', 'success')
     emit('created', item)
     visibleInner.value = false; emit('update:visible', false)
@@ -56,7 +87,7 @@ function close() { visibleInner.value = false; emit('update:visible', false) }
     <template v-else>
       <div v-if="fetchError" class="text-red-500 text-sm mb-4">{{ fetchError }}</div>
       <div v-else class="space-y-3">
-        <RecordForm ref="recordFormRef" :collection-name="collectionName" v-model="formValues" />
+        <RecordForm ref="recordFormRef" :collection-name="collectionName" v-model="formValues" :scalar-only="deferred" />
       </div>
     </template>
     <template #footer>

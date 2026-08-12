@@ -4,7 +4,7 @@
 //! 72-relational-crud
 
 use serde_json::{Map, Value};
-use sqlx::{PgConnection, PgPool, Postgres};
+use sqlx::{PgConnection, Postgres};
 
 use crate::db::collections::{CollectionDefinition, FieldType};
 use crate::db::filter_compiler::quote;
@@ -97,20 +97,20 @@ fn find_reverse_fk_column(
 }
 
 // ---------------------------------------------------------------------------
-// POST body processing — M:1 nested creates (uses pool directly)
+// POST body processing — M:1 nested creates (transactional)
 // ---------------------------------------------------------------------------
 
-/// Process a CreateItemsBody for relational fields. For each M:1 relationship
-/// field whose value is a nested JSON object (without `id`), creates a new
-/// record in the related collection and replaces the object with the created
-/// UUID.
+/// Process M:1 nested objects in a create body within an existing transaction.
+///
+/// For each M:1 relationship field whose value is a nested JSON object
+/// (without `id`), creates a new record in the related collection and replaces
+/// the object with the created UUID.
 pub async fn process_create_body_for_relational(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     collection: &CollectionDefinition,
     items: &mut [Map<String, Value>],
+    all_collections: &[CollectionDefinition],
 ) -> Result<(), AppError> {
-    let all_collections = crate::db::collections::list_collections(pool).await?;
-
     for item in items.iter_mut() {
         let field_names: Vec<String> = item.keys().cloned().collect();
         for key in &field_names {
@@ -119,7 +119,7 @@ pub async fn process_create_body_for_relational(
                 None => continue,
             };
 
-            let dir = match detect_crud_direction(key, &collection.name, collection, &all_collections) {
+            let dir = match detect_crud_direction(key, &collection.name, collection, all_collections) {
                 Ok(d) => d,
                 Err(_) => continue,
             };
@@ -128,13 +128,62 @@ pub async fn process_create_body_for_relational(
                 CrudDirection::ManyToOne { ref target_collection, .. } => {
                     if let Value::Object(obj) = &val {
                         if !obj.contains_key("id") {
-                            let target_def = get_collection_def(&all_collections, target_collection)?;
-                            let created_id = insert_record(pool, target_collection, target_def, obj).await?;
+                            let target_def = get_collection_def(all_collections, target_collection)?;
+                            let created_id = insert_record(&mut *conn, target_collection, target_def, obj).await?;
                             item.insert(key.clone(), Value::String(created_id));
                         }
                     }
                 }
                 CrudDirection::OneToMany { .. } => {}
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract O2M create objects from a field value. Accepts either a plain array
+/// of objects or an object with a `create` array (e.g. `{ create: [...] }`).
+fn collect_o2m_create_objects(val: &Value) -> Vec<Map<String, Value>> {
+    match val {
+        Value::Object(details) => match details.get("create") {
+            Some(Value::Array(arr)) => arr.iter().filter_map(|e| e.as_object().cloned()).collect(),
+            _ => Vec::new(),
+        },
+        Value::Array(arr) => arr.iter().filter_map(|e| e.as_object().cloned()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Process O2M creates inside a create body within an existing transaction.
+///
+/// For each key that resolves to a OneToMany direction whose value is an O2M
+/// array or an `{ create: [...] }` object, inserts a child record in the target
+/// collection with the FK column set to `parent_id`. Runs inside the caller's
+/// transaction so the parent + children commit atomically.
+pub async fn process_o2m_create_body(
+    conn: &mut PgConnection,
+    collection: &CollectionDefinition,
+    parent_id: &str,
+    body: &Map<String, Value>,
+    all_collections: &[CollectionDefinition],
+) -> Result<(), AppError> {
+    for (key, val) in body.iter() {
+        let dir = match detect_crud_direction(key, &collection.name, collection, all_collections) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+
+        if let CrudDirection::OneToMany { ref target_collection, ref fk_column } = dir {
+            let create_objs = collect_o2m_create_objects(val);
+            if create_objs.is_empty() {
+                continue;
+            }
+
+            let target_def = get_collection_def(all_collections, target_collection)?;
+            for mut child in create_objs {
+                child.insert(fk_column.clone(), Value::String(parent_id.to_string()));
+                insert_record(&mut *conn, target_collection, target_def, &child).await?;
             }
         }
     }
@@ -250,13 +299,11 @@ pub async fn process_update_body_for_relational(
 
                         let target_def = get_collection_def(all_collections, target_collection)?;
 
-                        if let Some(create_arr) = details.get("create").and_then(|v| v.as_array()) {
-                            for obj_val in create_arr {
-                                if let Some(obj) = obj_val.as_object() {
-                                    let mut create_body = obj.clone();
-                                    create_body.insert(fk_column.clone(), Value::String(parent_id.to_string()));
-                                    insert_record(&mut *conn, target_collection, target_def, &create_body).await?;
-                                }
+                        if let Some(create_arr) = details.get("create") {
+                            for obj in collect_o2m_create_objects(create_arr) {
+                                let mut create_body = obj.clone();
+                                create_body.insert(fk_column.clone(), Value::String(parent_id.to_string()));
+                                insert_record(&mut *conn, target_collection, target_def, &create_body).await?;
                             }
                         }
 

@@ -5,6 +5,7 @@ const rawProps = defineProps<{
     field: any;
     dropBeforeKey: string | null;
     isDragging: boolean;
+    showRemove?: boolean;
 }>();
 const props = toRefs(rawProps);
 
@@ -14,6 +15,7 @@ const emit = defineEmits([
     "onFieldDrop",
     "onFieldDragStart",
     "openFieldEditor",
+    "onRemove",
 ]);
 </script>
 
@@ -61,6 +63,16 @@ const emit = defineEmits([
                 >
             </div>
             <div class="flex items-center gap-0.5" v-if="!field.is_system">
+                <Button
+                    v-if="props.showRemove.value"
+                    icon="pi pi-times"
+                    text
+                    severity="secondary"
+                    size="small"
+                    @click="emit('onRemove', field)"
+                    title="Remove from section"
+                    class="opacity-0 group-hover:opacity-100"
+                />
                 <Button
                     icon="pi pi-cog"
                     text

@@ -168,13 +168,45 @@ pub(crate) async fn create_layout_section(
         if rel_field.is_empty() {
             return Err(AppError::BadRequest("relation_field is required for relational sections".to_string()));
         }
-        let has_field = collection.fields.iter().any(|f| {
-            f.name == rel_field && f.field_type == crate::db::collections::FieldType::Relationship
-        });
-        if !has_field {
-            return Err(AppError::BadRequest(format!(
-                "'{}' is not a relationship field on '{}'", rel_field, name
-            )));
+        // Support both relation field locations:
+        //  - Namespaced "<childCollection>.<field>": the field is a relationship
+        //    on the CHILD collection that references this collection (e.g.
+        //    "contacts.customer" on the "customers" detail page).
+        //  - Legacy bare field name: a relationship field on THIS collection.
+        if let Some((child_col, field_name)) = rel_field.split_once('.') {
+            if child_col.is_empty() || field_name.is_empty() {
+                return Err(AppError::BadRequest(
+                    "relation_field must be '<collection>.<field>' or a relationship field on the current collection".to_string(),
+                ));
+            }
+            let child = match collections::get_collection(db_pool, child_col).await {
+                Ok(c) => c,
+                Err(_) => {
+                    return Err(AppError::BadRequest(format!(
+                        "'{}' is not a valid collection", child_col
+                    )));
+                }
+            };
+            let has_field = child.fields.iter().any(|f| {
+                f.name == field_name
+                    && f.field_type == crate::db::collections::FieldType::Relationship
+                    && f.related_collection.as_deref() == Some(name.as_str())
+            });
+            if !has_field {
+                return Err(AppError::BadRequest(format!(
+                    "'{}' is not a relationship field on '{}' referencing '{}'",
+                    field_name, child_col, name
+                )));
+            }
+        } else {
+            let has_field = collection.fields.iter().any(|f| {
+                f.name == rel_field && f.field_type == crate::db::collections::FieldType::Relationship
+            });
+            if !has_field {
+                return Err(AppError::BadRequest(format!(
+                    "'{}' is not a relationship field on '{}'", rel_field, name
+                )));
+            }
         }
     }
 

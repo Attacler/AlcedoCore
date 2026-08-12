@@ -3,10 +3,8 @@
 //! Covers: nested field selection, relational CRUD, display field customization,
 //! relational sections, and parent field inlining.
 
-use serde_json::{json, Value};
+use serde_json::json;
 use sqlx::PgPool;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
 
 #[path = "common/mod.rs"]
 mod common;
@@ -15,69 +13,18 @@ mod common;
 // Test infrastructure
 // ---------------------------------------------------------------------------
 
-pub struct TestDb {
-    pool: PgPool,
-    _container: ContainerAsync<Postgres>,
-}
-
-impl TestDb {
-    pub async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let (pool, container) = common::start_postgres().await?;
-        Self::run_migrations(&pool).await?;
-        Ok(Self { pool, _container: container })
-    }
-
-    pub fn pool(&self) -> &PgPool {
-        &self.pool
-    }
-
-    async fn run_migrations(pool: &PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto").execute(pool).await?;
-        let sqls = vec![
-            include_str!("../../core-migrations/001_create_plugins.up.sql"),
-            include_str!("../../core-migrations/002_create_plugin_versions.up.sql"),
-            include_str!("../../core-migrations/003_create_schema_migrations.up.sql"),
-            include_str!("../../core-migrations/004_create_request_logs.up.sql"),
-            include_str!("../../core-migrations/005_create_registries.up.sql"),
-            include_str!("../../core-migrations/006_create_collection_definitions.up.sql"),
-            include_str!("../../core-migrations/007_create_saved_views.up.sql"),
-            include_str!("../../core-migrations/008_create_system_settings.up.sql"),
-            include_str!("../../core-migrations/009_add_request_body_capture.up.sql"),
-            include_str!("../../core-migrations/010_create_host_calls.up.sql"),
-            include_str!("../../core-migrations/011_activity_logs.up.sql"),
-        ];
-        for sql in &sqls {
-            for stmt in sql.split(';') {
-                let t = stmt.trim();
-                if !t.is_empty() { sqlx::query(t).execute(pool).await?; }
-            }
-        }
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS collection_sections (
-                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                collection_name TEXT NOT NULL, name TEXT NOT NULL,
-                relation_field TEXT NOT NULL, view_type TEXT NOT NULL DEFAULT 'table',
-                default_filter JSONB DEFAULT NULL, display_fields TEXT[] DEFAULT NULL,
-                item_limit INTEGER NOT NULL DEFAULT 25,
-                ordinal_position INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )"
-        ).execute(pool).await?;
-        Ok(())
-    }
-}
-
 use plugin_core::db::collections::{FieldDefinition, FieldType};
 use plugin_core::services::collection_builder::CollectionBuilder;
 
 async fn create_coll(pool: &PgPool, name: &str, fields: Vec<FieldDefinition>) {
     let sql = CollectionBuilder::build_create_table_stmt(name, &fields).unwrap();
-    sqlx::query(&sql).execute(pool).await.unwrap();
-    let fields_json = serde_json::to_value(&fields).unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query(&sql).execute(&mut *tx).await.unwrap();
     sqlx::query(
-        "INSERT INTO collection_definitions (name, fields, display_options) VALUES ($1, $2, '{}')"
-    ).bind(name).bind(&fields_json).execute(pool).await.unwrap();
+        "INSERT INTO collection_definitions (name, display_name, display_options) VALUES ($1, $2, '{}')"
+    ).bind(name).bind(name).execute(&mut *tx).await.unwrap();
+    plugin_core::db::fields::replace_fields_in_tx(&mut tx, name, &fields).await.unwrap();
+    tx.commit().await.unwrap();
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +33,7 @@ async fn create_coll(pool: &PgPool, name: &str, fields: Vec<FieldDefinition>) {
 
 #[tokio::test]
 async fn test_e2e_nested_field_selection() {
-    let td = TestDb::new().await.unwrap();
+    let td = common::TestDb::new().await.unwrap();
     let p = td.pool();
 
     create_coll(p, "e2e_authors", vec![
@@ -141,7 +88,7 @@ async fn test_e2e_relational_crud() {
     use plugin_core::db::relational_crud;
     use plugin_core::db::collections as db_colls;
 
-    let td = TestDb::new().await.unwrap();
+    let td = common::TestDb::new().await.unwrap();
     let p = td.pool();
 
     create_coll(p, "e2e_orgs", vec![
@@ -154,8 +101,11 @@ async fn test_e2e_relational_crud() {
 
     // Inline M:1 create via relational_crud
     let coll = db_colls::get_collection(p, "e2e_contacts").await.unwrap();
+    let all_collections = db_colls::list_collections(p).await.unwrap();
     let mut items = vec![json!({"name": "Bob", "org_id": {"name": "Acme"}}).as_object().unwrap().clone()];
-    relational_crud::process_create_body_for_relational(p, &coll, &mut items).await.unwrap();
+    let mut tx = p.begin().await.unwrap();
+    relational_crud::process_create_body_for_relational(&mut tx, &coll, &mut items, &all_collections).await.unwrap();
+    tx.commit().await.unwrap();
     assert!(items[0]["org_id"].as_str().is_some(), "org_id should be UUID");
 
     // Create the contact via items API
@@ -177,7 +127,7 @@ async fn test_e2e_display_field() {
     use plugin_core::db::collections as db_colls;
     use plugin_core::db::collection_items::{self, CollectionItemsQuery};
 
-    let td = TestDb::new().await.unwrap();
+    let td = common::TestDb::new().await.unwrap();
     let p = td.pool();
 
     create_coll(p, "e2e_depts", vec![
@@ -218,7 +168,7 @@ async fn test_e2e_display_field() {
 
 #[tokio::test]
 async fn test_e2e_relational_sections() {
-    let td = TestDb::new().await.unwrap();
+    let td = common::TestDb::new().await.unwrap();
     let p = td.pool();
 
     sqlx::query(
@@ -244,7 +194,7 @@ async fn test_e2e_relational_sections() {
 async fn test_e2e_parent_field_inlining() {
     use plugin_core::db::collections as db_colls;
 
-    let td = TestDb::new().await.unwrap();
+    let td = common::TestDb::new().await.unwrap();
     let p = td.pool();
 
     create_coll(p, "e2e_companies", vec![

@@ -11,6 +11,7 @@ import {
     type CollectionLayout,
 } from "@/stores/collections";
 import { useToast } from "@/composables/useToast";
+import { getSectionChildCollectionName } from "@/composables/useSectionLayout";
 import { useExtensionRegistryStore } from "@/stores/extensionRegistry";
 import {
     getDisplayType,
@@ -28,70 +29,75 @@ import CardsViewSettings from "@/components/CardsViewSettings.vue";
 import KanbanViewSettings from "@/components/KanbanViewSettings.vue";
 import FilterBuilder from "@/components/FilterBuilder.vue";
 import FieldPreview from "./fieldPreview.vue";
+import { Tag } from "primevue";
 
-const route = useRoute();
-const store = useCollectionsStore();
-const toast = useToast();
+const route = useRoute(),
+    store = useCollectionsStore(),
+    toast = useToast(),
+    extensionRegistry = useExtensionRegistryStore();
 
-const emit = defineEmits(["loadSections"]);
-
-const editorNameInput = ref<any>(null);
-
-const collectionName = computed(() => route.params.name as string);
-const loading = ref(true);
-const loadError = ref<string | null>(null);
 const fields = defineModel<(FieldDefinition & { _key: string })[]>("fields", {
-    required: true,
-});
-const allCollections = ref<{ name: string }[]>([]);
-const editingField = ref<FieldDefinition | null>(null);
-const editingFieldKey = ref<string | null>(null);
-const dropBeforeKey = ref<string | null>(null);
-const sections = defineModel<CollectionSection[]>("sections", {
-    required: true,
-});
-const isDragging = defineModel<boolean>("isDragging", {
-    required: true,
-});
-const showSectionEditor = ref(false);
-const editingSection = ref<any>(null);
-const sectionTypeChoice = ref<"field_group" | "relational" | null>(null);
-const showSectionTypeDialog = ref(false);
-const sectionFormData = ref<any>(null);
+        required: true,
+    }),
+    sections = defineModel<CollectionSection[]>("sections", {
+        required: true,
+    }),
+    isDragging = defineModel<boolean>("isDragging", {
+        required: true,
+    }),
+    activeLayoutId = defineModel<string | null>("activeLayoutId", {
+        required: true,
+    }),
+    dragType = defineModel<string | null>("dragType", {
+        required: true,
+    }),
+    dragFieldKey = defineModel<string | null>("dragFieldKey", {
+        required: true,
+    }),
+    emit = defineEmits(["loadSections"]);
 
-// Layout state
-const collLayouts = ref<CollectionLayout[]>([]);
-const activeLayoutId = defineModel<string | null>("activeLayoutId", {
-    required: true,
-});
+const editorNameInput = ref<any>(null),
+    loading = ref(true),
+    loadError = ref<string | null>(null),
+    allCollections = ref<{ name: string }[]>([]),
+    editingField = ref<FieldDefinition | null>(null),
+    editingFieldKey = ref<string | null>(null),
+    dropBeforeKey = ref<string | null>(null),
+    showSectionEditor = ref(false),
+    editingSection = ref<any>(null),
+    sectionTypeChoice = ref<"field_group" | "relational" | null>(null),
+    showSectionTypeDialog = ref(false),
+    sectionFormData = ref<any>(null);
 
-/** Columns config derived from sectionFormData.default_filter */
-const sectionColumns = computed({
-    get: () => (sectionFormData.value as any)?._columns ?? 1,
-    set: (val: number) => {
-        if (sectionFormData.value) {
-            (sectionFormData.value as any)._columns = val;
-            if (val === 2) {
-                // Initialize field_columns for all fields in the section
-                const fc: Record<string, number> = {};
-                for (const name of (sectionFormData.value as any)
-                    .display_fields || []) {
-                    fc[name] =
-                        (sectionFormData.value as any)._field_columns?.[name] ||
-                        1;
+const collectionName = computed(() => route.params.name as string),
+    collLayouts = ref<CollectionLayout[]>([]),
+    sectionColumns = computed({
+        get: () => (sectionFormData.value as any)?._columns ?? 1,
+        set: (val: number) => {
+            if (sectionFormData.value) {
+                (sectionFormData.value as any)._columns = val;
+                if (val === 2) {
+                    // Initialize field_columns for all fields in the section
+                    const fc: Record<string, number> = {};
+                    for (const name of (sectionFormData.value as any)
+                        .display_fields || []) {
+                        fc[name] =
+                            (sectionFormData.value as any)._field_columns?.[
+                                name
+                            ] || 1;
+                    }
+                    (sectionFormData.value as any)._field_columns = fc;
                 }
-                (sectionFormData.value as any)._field_columns = fc;
             }
-        }
-    },
-});
+        },
+    });
 
 // Section drag-and-drop reordering
-const dragSectionId = ref<string | null>(null);
-const dragOverSectionId = ref<string | null>(null);
-const dropBeforeSectionKey = ref<string | null>(null);
-const dropAfterLastSection = ref(false);
-const dragOverEmptySectionId = ref<string | null>(null);
+const dragSectionId = ref<string | null>(null),
+    dragOverSectionId = ref<string | null>(null),
+    dropBeforeSectionKey = ref<string | null>(null),
+    dropAfterLastSection = ref(false),
+    dragOverEmptySectionId = ref<string | null>(null);
 
 function onSectionDragStart(section: any) {
     dragSectionId.value = section.id || section._key;
@@ -156,19 +162,10 @@ function onSectionDrop(target: any) {
 const collectionMeta = ref<Collection | null>(null);
 const collectionDisplayName = ref("");
 
-const extensionRegistry = useExtensionRegistryStore();
-
 let keyCounter = 0;
 function nextKey(): string {
     return `f_${++keyCounter}_${Date.now()}`;
 }
-
-let dragType = defineModel<string | null>("dragType", {
-    required: true,
-});
-let dragFieldKey = defineModel<string | null>("dragFieldKey", {
-    required: true,
-});
 
 function makeField(displayType: string, pos: number): any {
     const entry = getDisplayType(displayType);
@@ -214,9 +211,6 @@ function makeField(displayType: string, pos: number): any {
 function openNewFieldEditor(field: any) {
     editingField.value = field;
     editingFieldKey.value = field._key;
-    nextTick(() => {
-        editorNameInput.value?.focus();
-    });
 }
 
 function onFieldDragStart(event: DragEvent, key: string) {
@@ -622,13 +616,13 @@ watch(
             childCollectionFields.value = [];
             return;
         }
-        const f = fields.value.find((f) => f.name === rf);
-        if (!f?.related_collection) {
+        const childName = getSectionChildCollectionName(rf, fields.value);
+        if (!childName) {
             childCollectionFields.value = [];
             return;
         }
         try {
-            const coll = await store.getCollection(f.related_collection);
+            const coll = await store.getCollection(childName);
             childCollectionFields.value = coll.fields || [];
         } catch (e) {
             console.warn(
@@ -648,18 +642,15 @@ function onViewSettingsChange(key: string, value: any) {
 }
 
 function getChildCollectionName(section: any): string {
-    if (!section?.relation_field) return "";
-    const f = fields.value.find((f) => f.name === section.relation_field);
-    return f?.related_collection || "";
+    return getSectionChildCollectionName(section?.relation_field, fields.value);
 }
 
 const namedFields = computed(() =>
     fields.value.filter((f) => f.name && /^[a-z][a-z0-9_]*$/.test(f.name)),
 );
 
-const relationFieldOptions = computed(() => {
-    debugger;
-    return store.collections
+const relationFieldOptions = computed(() =>
+    store.collections
         .map((c) =>
             c.fields
                 .filter((f) => f.related_collection == collectionName.value)
@@ -672,9 +663,9 @@ const relationFieldOptions = computed(() => {
         .flat()
         .map((f) => ({
             label: `${f.display_name || f.name} (${f.collectionDisplayName || "?"})`,
-            value: f.name,
-        }));
-});
+            value: `${f.collectionName}.${f.name}`,
+        })),
+);
 
 const orderedSections = computed(() => {
     return [...sections.value].sort(
@@ -698,6 +689,16 @@ function getSectionFields(section: any): typeof fields.value {
             const bIdx = fieldNames.indexOf(b.name);
             return aIdx - bIdx;
         });
+}
+
+/** Remove a field from a section's field list (mirrors drag-out behavior). */
+function removeFieldFromSection(section: any, field: any) {
+    if (!section?.display_fields || !field?.name) return;
+    const idx = section.display_fields.indexOf(field.name);
+    if (idx >= 0) section.display_fields.splice(idx, 1);
+    if (section._field_columns && field.name in section._field_columns) {
+        delete section._field_columns[field.name];
+    }
 }
 
 /** Flatten fields into a list with interleaved gap zone items for drag-and-drop. */
@@ -796,10 +797,13 @@ function editSection(section: any) {
     showSectionEditor.value = true;
     // Load child fields for settings/filter
     if (section.relation_field) {
-        const f = fields.value.find((f) => f.name === section.relation_field);
-        if (f?.related_collection) {
+        const childName = getSectionChildCollectionName(
+            section.relation_field,
+            fields.value,
+        );
+        if (childName) {
             store
-                .getCollection(f.related_collection)
+                .getCollection(childName)
                 .then((coll) => {
                     childCollectionFields.value = coll.fields || [];
                 })
@@ -1105,11 +1109,15 @@ const availableDisplayTypes = computed(() => {
                                     :field="field"
                                     :dropBeforeKey="dropBeforeKey"
                                     :isDragging="isDragging"
+                                    :show-remove="true"
                                     @onDragOverField="onDragOverField"
                                     @onDragLeaveField="onDragLeaveField"
                                     @onFieldDrop="onFieldDrop"
                                     @onFieldDragStart="onFieldDragStart"
                                     @openFieldEditor="openFieldEditor"
+                                    @onRemove="
+                                        removeFieldFromSection(section, $event)
+                                    "
                                 />
                             </div>
                             <div class="flex-1 min-w-0 space-y-2">
@@ -1121,11 +1129,15 @@ const availableDisplayTypes = computed(() => {
                                     :field="field"
                                     :dropBeforeKey="dropBeforeKey"
                                     :isDragging="isDragging"
+                                    :show-remove="true"
                                     @onDragOverField="onDragOverField"
                                     @onDragLeaveField="onDragLeaveField"
                                     @onFieldDrop="onFieldDrop"
                                     @onFieldDragStart="onFieldDragStart"
                                     @openFieldEditor="openFieldEditor"
+                                    @onRemove="
+                                        removeFieldFromSection(section, $event)
+                                    "
                                 />
                             </div>
                         </div>
@@ -1136,22 +1148,32 @@ const availableDisplayTypes = computed(() => {
                                 :field="field"
                                 :dropBeforeKey="dropBeforeKey"
                                 :isDragging="isDragging"
+                                :show-remove="true"
                                 @onDragOverField="onDragOverField"
                                 @onDragLeaveField="onDragLeaveField"
                                 @onFieldDrop="onFieldDrop"
                                 @onFieldDragStart="onFieldDragStart"
                                 @openFieldEditor="openFieldEditor"
+                                @onRemove="
+                                    removeFieldFromSection(section, $event)
+                                "
                             />
                         </div>
                     </template>
                 </div>
 
                 <!-- Relational: compact info row -->
-                <div v-else class="px-4 py-3 text-sm text-gray-500">
-                    <span class="italic"
-                        >via {{ section.relation_field }} &#183;
-                        {{ section.view_type }} view</span
-                    >
+                <div v-else class="px-4 py-3 text-sm text-gray-500 flex">
+                    <Tag>{{ section.view_type }}</Tag>
+
+                    <Breadcrumb
+                        :model="
+                            (section.relation_field || '')
+                                .split('.')
+                                .map((label) => ({ label }))
+                        "
+                        class="pointer-events-none"
+                    />
                 </div>
             </div>
         </template>
@@ -1486,6 +1508,7 @@ const availableDisplayTypes = computed(() => {
                     ref="editorNameInput"
                     class="w-full"
                     fluid
+                    autofocus
                 />
                 <p v-if="fieldNameError" class="text-xs text-red-500 mt-1">
                     Lowercase letters, numbers, and underscores only

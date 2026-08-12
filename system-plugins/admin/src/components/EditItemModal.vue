@@ -15,6 +15,7 @@ const toast = useToast()
 
 const visibleInner = ref(props.visible)
 const formValues = ref<Record<string, any>>({})
+const parentItem = ref<Record<string, any> | null>(null)
 const fields = ref<FieldDefinition[]>([])
 const saving = ref(false)
 const loadingInit = ref(false)
@@ -33,6 +34,7 @@ async function loadData() {
     if (props.itemId) {
       const res = await client.items.get(props.collectionName, props.itemId) as any
       const item = res.data || res
+      parentItem.value = item
       const values: Record<string, any> = {}
       for (const f of fields.value) { if (!SYSTEM_FIELD_NAMES.includes(f.name)) values[f.name] = item[f.name] ?? null }
       formValues.value = values
@@ -53,6 +55,9 @@ async function save() {
     }
     if (props.itemId) {
       const res = await client.items.patch(props.collectionName, props.itemId, payload) as any
+      if (recordFormRef.value && typeof recordFormRef.value.flushPendingChildren === 'function') {
+        await recordFormRef.value.flushPendingChildren(props.itemId)
+      }
       toast.show('Item updated successfully', 'success')
       emit('saved', res.data || res)
     } else {
@@ -72,7 +77,7 @@ function close() { visibleInner.value = false; emit('update:visible', false) }
   <Dialog v-model:visible="visibleInner" :header="'Edit ' + (collectionName || 'Item')" :modal="true" :style="{ width: '640px' }" :draggable="false" :closable="!saving" @update:visible="onVisibleChange">
     <div v-if="loadingInit" class="text-center py-8 text-gray-500">Loading...</div>
     <div v-else class="space-y-3">
-      <RecordForm ref="recordFormRef" :collection-name="collectionName" v-model="formValues" :fields-override="fields" />
+      <RecordForm ref="recordFormRef" :collection-name="collectionName" v-model="formValues" :fields-override="fields" :parent-item="parentItem" />
     </div>
     <template #footer>
       <div class="flex gap-2 justify-end">

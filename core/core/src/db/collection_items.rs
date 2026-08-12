@@ -11,6 +11,7 @@ use sea_query::{Expr, Order, PostgresQueryBuilder, Query, SimpleExpr};
 use crate::db::collections::{get_collection, CollectionDefinition, FieldDefinition, FieldType};
 use crate::db::filter_compiler::compile_filter;
 use crate::db::filter_condition::{GroupResult, GroupedQueryRequest, GroupedQueryResponse};
+use crate::db::relational_crud::{self, CrudDirection};
 use crate::db::Pool;
 use crate::error::AppError;
 use crate::services::permissions::PolicyPermission;
@@ -798,6 +799,19 @@ pub async fn grouped_query_items(
 /// rejected with `BadRequest` (CRUD-06).  Values are best-effort coerced to
 /// match the declared field type.  On success returns the created rows
 /// (including server-generated defaults) via `RETURNING row_to_json(...)`.
+struct ParsedCreateItem {
+    scalar: serde_json::Map<String, serde_json::Value>,
+    relational: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Create items in the collection.
+///
+/// Accepts a single item object or an array of items. Supports nested
+/// relational creates in the same request:
+/// - O2M reverse keys (e.g. `{ contacts: { create: [...] } }`) are processed
+///   after the parent row is inserted, within the same transaction.
+/// - M:1 nested objects (e.g. `{ author: { name: "Alice" } }`) create the
+///   related record first and replace the object with the created UUID.
 pub async fn create_items(
     pool: &Pool,
     collection_name: &str,
@@ -814,9 +828,62 @@ pub async fn create_items(
         return Err(AppError::BadRequest("No items provided".to_string()));
     }
 
-    // Validate every item's field names and ensure none are empty.
-    for item in &items {
+    // Determine if any key is a potential relational field. A key needs
+    // relational processing when it isn't a known scalar field on this
+    // collection, or when its value is an object/array (O2M body, M:1 nested
+    // object, or a parent-owned one_to_many array). If none of those are
+    // present, we can skip loading the full collection list.
+    let field_names: std::collections::HashSet<&str> =
+        collection.fields.iter().map(|f| f.name.as_str()).collect();
+    let has_relational_keys = items.iter().any(|item| {
+        item.iter().any(|(k, v)| {
+            !field_names.contains(k.as_str()) || v.is_object() || v.is_array()
+        })
+    });
+
+    let all_collections = if has_relational_keys {
+        Some(crate::db::collections::list_collections(pool).await?)
+    } else {
+        None
+    };
+
+    // Split each item into scalar fields + O2M relational bodies. M:1 nested
+    // objects stay in `scalar` (processed just before the parent insert).
+    let mut parsed: Vec<ParsedCreateItem> = Vec::with_capacity(items.len());
+
+    for item in items {
         let keys: Vec<String> = item.keys().cloned().collect();
+        if keys.is_empty() {
+            return Err(AppError::BadRequest(
+                "Each item must have at least one field".to_string(),
+            ));
+        }
+
+        let mut scalar = item.clone();
+        let mut relational: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        if let Some(ref all_cols) = all_collections {
+            for key in &keys {
+                let is_o2m = match relational_crud::detect_crud_direction(
+                    key, &collection.name, &collection, all_cols,
+                ) {
+                    Ok(CrudDirection::OneToMany { .. }) => {
+                        matches!(item.get(key), Some(v) if v.is_object() || v.is_array())
+                    }
+                    _ => false,
+                };
+                if is_o2m {
+                    if let Some(v) = scalar.remove(key) {
+                        relational.insert(key.clone(), v);
+                    }
+                }
+            }
+        }
+        parsed.push(ParsedCreateItem { scalar, relational });
+    }
+
+    // Validate every item's scalar field names and ensure none are empty.
+    for item in &parsed {
+        let keys: Vec<String> = item.scalar.keys().cloned().collect();
         if keys.is_empty() {
             return Err(AppError::BadRequest(
                 "Each item must have at least one field".to_string(),
@@ -828,8 +895,8 @@ pub async fn create_items(
     // Compute the union of all columns across all items.
     let all_cols: Vec<String> = {
         let mut set = std::collections::BTreeSet::new();
-        for item in &items {
-            for key in item.keys() {
+        for item in &parsed {
+            for key in item.scalar.keys() {
                 set.insert(key.clone());
             }
         }
@@ -851,18 +918,35 @@ pub async fn create_items(
         details: format!("Transaction begin failed: {}", e),
     })?;
 
+    // Process M:1 nested objects (e.g. `{ author: { name: "Alice" } }`) before
+    // the parent insert — creates the related record and replaces the object
+    // with the created UUID. Runs inside the transaction.
+    if let Some(ref all_cols) = all_collections {
+        let mut scalar_maps: Vec<serde_json::Map<String, serde_json::Value>> =
+            parsed.iter().map(|p| p.scalar.clone()).collect();
+        relational_crud::process_create_body_for_relational(
+            &mut *tx,
+            &collection,
+            &mut scalar_maps,
+            all_cols,
+        ).await?;
+        for (p, m) in parsed.iter_mut().zip(scalar_maps) {
+            p.scalar = m;
+        }
+    }
+
     // Insert items in batches of 100 using multi-row INSERT ... VALUES (...), (...) ...
     let batch_size: usize = 100;
-    let mut results: Vec<serde_json::Value> = Vec::with_capacity(items.len());
+    let mut results: Vec<serde_json::Value> = Vec::with_capacity(parsed.len());
 
-    for chunk in items.chunks(batch_size) {
+    for chunk in parsed.chunks(batch_size) {
         let mut all_bind_values: Vec<serde_json::Value> = Vec::new();
         let mut value_rows: Vec<String> = Vec::with_capacity(chunk.len());
 
         for item in chunk {
             let mut row_placeholders: Vec<String> = Vec::with_capacity(all_cols.len());
             for col_name in &all_cols {
-                let val = item.get(col_name.as_str()).cloned().unwrap_or(serde_json::Value::Null);
+                let val = item.scalar.get(col_name.as_str()).cloned().unwrap_or(serde_json::Value::Null);
                 let field_type = collection.fields.iter()
                     .find(|f| &f.name == col_name.as_str())
                     .map(|f| &f.field_type);
@@ -912,7 +996,7 @@ pub async fn create_items(
     }
 
     // Insert into item_files for File field values
-    for (item_input, result) in items.iter().zip(results.iter()) {
+    for (item, result) in parsed.iter().zip(results.iter()) {
         let item_id = result.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if item_id.is_empty() {
             continue;
@@ -921,7 +1005,7 @@ pub async fn create_items(
             if field.field_type != FieldType::File {
                 continue;
             }
-            if let Some(serde_json::Value::Array(file_ids)) = item_input.get(&field.name) {
+            if let Some(serde_json::Value::Array(file_ids)) = item.scalar.get(&field.name) {
                 for file_id in file_ids {
                     let fid = match file_id.as_str() {
                         Some(s) => s,
@@ -942,6 +1026,26 @@ pub async fn create_items(
                 }
             }
         }
+    }
+
+    // Process O2M child creates (e.g. `{ contacts: { create: [...] } }`) within
+    // the same transaction — parent + children commit atomically.
+    for (item, result) in parsed.iter().zip(results.iter()) {
+        if item.relational.is_empty() {
+            continue;
+        }
+        let parent_id = match result.get("id").and_then(|v| v.as_str()) {
+            Some(id) => id.to_string(),
+            None => continue,
+        };
+        let all_cols = all_collections.as_deref().unwrap_or(&[]);
+        relational_crud::process_o2m_create_body(
+            &mut *tx,
+            &collection,
+            &parent_id,
+            &item.relational,
+            all_cols,
+        ).await?;
     }
 
     tx.commit().await.map_err(|e| AppError::DatabaseError {

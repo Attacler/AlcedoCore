@@ -30,6 +30,10 @@ import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useToast } from "@/composables/useToast";
 import { useAuthStore } from "@/stores/authStore";
 import QuickAddModal from "@/components/QuickAddModal.vue";
+import RelationalSection from "@/components/RelationalSection.vue";
+import { useSectionLayout } from "@/composables/useSectionLayout";
+
+const { normalizeSection } = useSectionLayout();
 
 const route = useRoute();
 const router = useRouter();
@@ -68,6 +72,31 @@ const overrideRenderMode = ref<string | null>(null);
 
 // Quick Add Modal state (Phase 38)
 const showQuickAddModal = ref(false);
+
+// Relational sections from the resolved layout — rendered in expandable rows
+const relationalSections = ref<any[]>([]);
+
+async function fetchRelationalSections() {
+  relationalSections.value = [];
+  if (!collectionName.value) return;
+  try {
+    const response = (await collectionsStore.getResolvedLayout(
+      collectionName.value,
+    )) as any;
+    const data = response?.data || response;
+    const raw = data?.sections || [];
+    relationalSections.value = raw
+      .map(normalizeSection)
+      .filter((s: any) => s.section_type === "relational" || s.relation_field);
+    console.log(
+      "[CollectionData] relational sections:",
+      relationalSections.value.map((s: any) => s.name),
+    );
+  } catch (e) {
+    console.warn("[CollectionData] Failed to resolve relational sections", e);
+    relationalSections.value = [];
+  }
+}
 
 // Create policy — fetched from GET /api/collections/{name}/$create
 const createPolicy = ref<{
@@ -623,6 +652,8 @@ async function loadCollectionData(name: string) {
 
     await fetchRelatedFieldOptions();
 
+    await fetchRelationalSections();
+
     await savedViewsStore.fetchViews(name);
 
     const viewParam = route.query.view as string | undefined;
@@ -863,13 +894,26 @@ onMounted(() => {
             :override-render-mode="overrideRenderMode"
             :display-field-names="displayFieldNames"
             :view-specific="currentViewSettings"
+            :enable-expand="relationalSections.length > 0"
+            :collection-fields="fields"
             @update:sort="onUpdateSort"
             @update:page="goToPage"
             @update:filters="onUpdateFilters"
             @delete-item="confirmDelete"
             @retry="fetchItems"
             @add-item="onRequestAddItem"
-        />
+        >
+            <template v-if="relationalSections.length > 0" #relational-sections="{ row }">
+                <RelationalSection
+                    v-for="section in relationalSections"
+                    :key="section.id"
+                    :section="section"
+                    :parent-collection-name="collectionName"
+                    :parent-item="row"
+                    :parent-fields="fields"
+                />
+            </template>
+        </ViewRenderer>
     </div>
 
     <!-- Quick Add Modal (Phase 38) -->

@@ -33,6 +33,44 @@ export function useSectionLayout() {
 }
 
 /**
+ * Parse a relational section's relation_field into its parts.
+ *
+ * Namespaced format: "<collection>.<field>" (e.g. "contacts.customer").
+ * Legacy format: a bare field name whose related_collection lives on the
+ * current (parent) collection.
+ */
+export function parseRelationField(
+  relationField: string | null | undefined,
+): { collection: string | null; field: string } | null {
+  if (!relationField) return null
+  const idx = relationField.indexOf('.')
+  if (idx > 0 && idx < relationField.length - 1) {
+    return {
+      collection: relationField.slice(0, idx),
+      field: relationField.slice(idx + 1),
+    }
+  }
+  return { collection: null, field: relationField }
+}
+
+/**
+ * Resolve the child collection name for a relational section.
+ *
+ * - Namespaced "collection.field" → the collection that owns the relation field.
+ * - Legacy bare field name → the parent field's related_collection.
+ */
+export function getSectionChildCollectionName(
+  relationField: string | null | undefined,
+  parentFields: { name: string; related_collection?: string | null }[],
+): string {
+  const parsed = parseRelationField(relationField)
+  if (!parsed) return ''
+  if (parsed.collection) return parsed.collection
+  const parentField = parentFields.find((f) => f.name === parsed.field)
+  return parentField?.related_collection || ''
+}
+
+/**
  * Filter a field list by column index.
  *
  * Uses section._field_columns to determine which column each field belongs to.

@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, defineAsyncComponent } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useCollectionsStore, type FieldDefinition } from '@/stores/collections'
 import FieldNameLabel from '@/components/FieldNameLabel.vue'
+
+const RelationalSection = defineAsyncComponent(() => import('@/components/RelationalSection.vue'))
 
 interface ExpandedRowState {
   loading: boolean
@@ -17,7 +19,7 @@ import Dialog from 'primevue/dialog'
 import { useAlcedoClient } from '@/composables/useAlcedoClient'
 import { useToast } from '@/composables/useToast'
 import { useChildCrud, isTempId } from '@/composables/useChildCrud'
-import { useSectionLayout, getColumnFields as getColumnFieldsShared } from '@/composables/useSectionLayout'
+import { useSectionLayout, getColumnFields as getColumnFieldsShared, parseRelationField, getSectionChildCollectionName as getSectionChildCollectionNameShared } from '@/composables/useSectionLayout'
 
 const route = useRoute()
 const router = useRouter()
@@ -118,6 +120,11 @@ const fields = computed(() => {
   return [...collection.value.fields].sort((a, b) => (a.ordinal_position ?? 0) - (b.ordinal_position ?? 0))
 })
 
+/** Resolve the child collection for a relational section (namespaced "collection.field" or legacy parent-owned field). */
+function getSectionChildCollection(section: any): string {
+  return getSectionChildCollectionNameShared(section?.relation_field, collection.value?.fields || [])
+}
+
 // Initialize child CRUD composable with shared state refs
 const childCrud = useChildCrud({
   sectionItems,
@@ -147,9 +154,32 @@ const childCreatePermission = ref<Record<string, boolean>>({})
 const childCreateCollectionName = computed(() => {
   const section = childCreateSection.value
   if (!section) return ''
-  const targetField = collection.value?.fields.find(f => f.name === section.relation_field)
-  return targetField?.related_collection || ''
+  return getSectionChildCollection(section)
 })
+
+// Refs to rendered RelationalSection components (namespaced relations), for Option B flush
+const relSectionRefs = ref<Record<string, any>>({})
+
+function setRelSectionRef(id: string, el: any) {
+  if (el) {
+    relSectionRefs.value[id] = el
+  } else {
+    delete relSectionRefs.value[id]
+  }
+}
+
+function isNamespacedRelational(section: any): boolean {
+  return section.section_type === 'relational' && !!parseRelationField(section.relation_field)?.collection
+}
+
+async function flushRelationalSections() {
+  for (const id of Object.keys(relSectionRefs.value)) {
+    const el = relSectionRefs.value[id]
+    if (el && typeof el.flushPending === 'function') {
+      await el.flushPending(itemId.value)
+    }
+  }
+}
 
 const activeTab = ref('details')
 
@@ -393,10 +423,17 @@ function fieldChanged(field: FieldDefinition, editValue: any, originalValue: any
 function buildPayload(): Record<string, any> {
   const payload: Record<string, any> = {}
   for (const field of formFields.value) {
-    // Skip relationship fields — they're handled by the child edit loop
-    if (field.type === 'relationship') continue
     const value = editValues.value[field.name]
     const original = item.value?.[field.name]
+    // Relationship fields:
+    // - Pending inline create (nested object, no id) → send as nested M:1 create.
+    // - Otherwise they're handled by the child edit loop / inline parent flow.
+    if (field.type === 'relationship') {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        payload[field.name] = value
+      }
+      continue
+    }
     // Skip fields that haven't actually changed
     if (!fieldChanged(field, value, original)) continue
     if (field.type === 'datetime' && value instanceof Date) {
@@ -443,6 +480,9 @@ async function doSave() {
     for (const section of orderedDetailSections.value) {
       if (section.section_type !== 'relational') continue
       const sectionId = section.id
+      // Namespaced "collection.field" relations live on the child collection —
+      // their child rows are edited via the child dialog, not the parent payload.
+      if (parseRelationField(section.relation_field)?.collection) continue
       const o2mBody: Record<string, any> = {}
       let hasChanges = false
 
@@ -478,13 +518,20 @@ async function doSave() {
     }
 
     // Single PATCH — backend handles parent + children atomically
-    const body = await client.items.patch(collectionName.value, itemId.value, parentPayload) as any
-    const updated = body.updated
-    if (updated) item.value = { ...item.value, ...updated }
+    const hasParentChanges = Object.keys(parentPayload).length > 0
+    if (hasParentChanges) {
+      const body = await client.items.patch(collectionName.value, itemId.value, parentPayload) as any
+      const updated = body.updated
+      if (updated) item.value = { ...item.value, ...updated }
+    }
+
+    // Flush deferred child edits for namespaced relational sections (Option B)
+    await flushRelationalSections()
 
     // Refresh all relational sections to get latest child data with real IDs
     for (const section of orderedDetailSections.value) {
       if (section.section_type !== 'relational') continue
+      if (isNamespacedRelational(section)) continue
       const sec = sections.value.find((s: any) => s.id === section.id)
       if (sec) loadSectionData(sec)
     }
@@ -583,10 +630,10 @@ function getColumnFields(section: any, colIdx: number): any[] {
 }
 
 async function fetchChildCreatePermission(section: any) {
-  const field = collection.value?.fields.find((f: any) => f.name === section.relation_field)
-  if (!field?.related_collection) return
+  const relName = getSectionChildCollection(section)
+  if (!relName) return
   try {
-    const policy = await client.collections.getCreatePolicy(field.related_collection) as any
+    const policy = await client.collections.getCreatePolicy(relName) as any
     childCreatePermission.value[section.id] = policy?.$permissions?.create === true
   } catch {
     childCreatePermission.value[section.id] = false
@@ -606,6 +653,7 @@ async function loadSections() {
     sections.value = raw.map(normalizeSection)
     for (const section of sections.value) {
       if (section.section_type === 'relational') {
+        if (isNamespacedRelational(section)) continue
         await loadSectionFields(section)
         await loadSectionData(section)
         loadNestedCollectionFields(section)
@@ -623,6 +671,7 @@ async function switchLayout(layoutId: string) {
     sections.value = raw.map(normalizeSection)
     for (const section of sections.value) {
       if (section.section_type === 'relational') {
+        if (isNamespacedRelational(section)) continue
         await loadSectionFields(section)
         await loadSectionData(section)
         loadNestedCollectionFields(section)
@@ -634,18 +683,18 @@ async function switchLayout(layoutId: string) {
 
 async function loadSectionFields(section: any) {
   try {
-    const targetField = collection.value?.fields.find(f => f.name === section.relation_field)
-    if (!targetField?.related_collection) return
-    const relColl = await collectionsStore.getCollection(targetField.related_collection)
+    const relName = getSectionChildCollection(section)
+    if (!relName) return
+    const relColl = await collectionsStore.getCollection(relName)
     sectionFields.value[section.id] = relColl.fields || []
   } catch (e) { console.warn('[RecordDetail] Failed to load section fields', e); sectionFields.value[section.id] = [] }
 }
 
 async function loadNestedCollectionFields(section: any) {
   try {
-    const targetField = collection.value?.fields.find(f => f.name === section.relation_field)
-    if (!targetField?.related_collection) return
-    const relColl = await collectionsStore.getCollection(targetField.related_collection)
+    const relName = getSectionChildCollection(section)
+    if (!relName) return
+    const relColl = await collectionsStore.getCollection(relName)
     const relFields = (relColl.fields || []).filter(
       (f: FieldDefinition) => f.type === 'relationship' && f.related_collection
     )
@@ -664,9 +713,8 @@ async function loadSectionData(section: any) {
   sectionLoading.value[section.id] = true
   sectionError.value[section.id] = null
   try {
-    const targetField = collection.value?.fields.find(f => f.name === section.relation_field)
-    if (!targetField?.related_collection) return
-    const relName = targetField.related_collection
+    const relName = getSectionChildCollection(section)
+    if (!relName) return
     const queryParams = new URLSearchParams()
     queryParams.set('limit', String(section.item_limit || 25))
     queryParams.set('offset', '0')
@@ -718,9 +766,8 @@ async function handleRowExpand(section: any, item: any) {
   }
 
   try {
-    const targetField = collection.value?.fields.find(f => f.name === section.relation_field)
-    if (!targetField?.related_collection) return
-    const relName = targetField.related_collection
+    const relName = getSectionChildCollection(section)
+    if (!relName) return
 
     const res = await client.items.get(relName, itemId) as any
 
@@ -743,9 +790,8 @@ async function loadSectionPage(section: any, page: number) {
   sectionPage.value[section.id] = page
   sectionLoading.value[section.id] = true
   try {
-    const targetField = collection.value?.fields.find(f => f.name === section.relation_field)
-    if (!targetField?.related_collection) return
-    const relName = targetField.related_collection
+    const relName = getSectionChildCollection(section)
+    if (!relName) return
     const offset = (page - 1) * (section.item_limit || 25)
     const queryParams = new URLSearchParams()
     queryParams.set('limit', String(section.item_limit || 25))
@@ -808,8 +854,8 @@ async function checkChildVisibility(section: any) {
   const vis = section.default_filter?.section_visibility
   if (!vis?.child) { sectionVisibilityPassed.value[section.id] = true; return }
 
-  const targetField = collection.value?.fields.find((f: any) => f.name === section.relation_field)
-  if (!targetField?.related_collection) { sectionVisibilityPassed.value[section.id] = true; return }
+  const relName = getSectionChildCollection(section)
+  if (!relName) { sectionVisibilityPassed.value[section.id] = true; return }
 
   try {
     let filterObj: any = {}
@@ -831,7 +877,7 @@ async function checkChildVisibility(section: any) {
       }
     }
 
-    const res = await client.items.list(targetField.related_collection, {
+    const res = await client.items.list(relName, {
       limit: '1',
       filter: JSON.stringify(filterObj),
     }) as any
@@ -1168,7 +1214,8 @@ onUnmounted(() => {
                         <div v-else class="space-y-1">
                           <FormFieldRenderer :collection-name="collectionName" :field-name="field.name"
                             v-model="editValues[field.name]" :invalid="errors[field.name] || false"
-                            :readonly="!canEditField(field.name)" />
+                            :readonly="!canEditField(field.name)"
+                            :inline-create="isEditing" />
                         </div>
                       </dd>
                     </div>
@@ -1191,7 +1238,8 @@ onUnmounted(() => {
                         <div v-else class="space-y-1">
                           <FormFieldRenderer :collection-name="collectionName" :field-name="field.name"
                             v-model="editValues[field.name]" :invalid="errors[field.name] || false"
-                            :readonly="!canEditField(field.name)" />
+                            :readonly="!canEditField(field.name)"
+                            :inline-create="isEditing" />
                         </div>
                       </dd>
                     </div>
@@ -1213,7 +1261,8 @@ onUnmounted(() => {
                     <div v-else class="space-y-1">
                       <FormFieldRenderer :collection-name="collectionName" :field-name="field.name"
                         v-model="editValues[field.name]" :invalid="errors[field.name] || false"
-                        :readonly="!canEditField(field.name)" />
+                        :readonly="!canEditField(field.name)"
+                        :inline-create="isEditing" />
                     </div>
                   </dd>
                 </div>
@@ -1222,6 +1271,18 @@ onUnmounted(() => {
 
             <!-- Relational Section -->
             <section v-else-if="shouldShowSection(section)" :id="`section-${section.id}`" class="scroll-mt-6 mt-8">
+              <!-- Namespaced relations: reusable component (RecordForm popup, deferred flush in edit mode) -->
+              <RelationalSection
+                v-if="isNamespacedRelational(section)"
+                :ref="(el: any) => setRelSectionRef(section.id, el)"
+                :section="section"
+                :parent-collection-name="collectionName"
+                :parent-item="item"
+                :parent-fields="fields"
+                :deferred="isEditing"
+                @count="(n: number) => { sectionTotal[section.id] = n }"
+              />
+              <template v-else>
               <div class="flex items-center justify-between mb-3">
                 <h2 class="text-lg font-semibold text-gray-800">{{ section.name }}</h2>
                 <Button
@@ -1253,7 +1314,7 @@ onUnmounted(() => {
                 :is="sectionViewComponent(section.view_type)"
                 :items="sectionItems[section.id]"
                 :fields="sectionViewFields(section)"
-                :collection-name="section.relation_field"
+                :collection-name="getSectionChildCollection(section)"
                 :loading="false"
                 :error="null"
                 :total="sectionTotal[section.id] || 0"
@@ -1285,6 +1346,7 @@ onUnmounted(() => {
                 No related items found.
               </div>
             </div>
+              </template>
           </section>
           </template>
 

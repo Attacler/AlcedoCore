@@ -418,10 +418,27 @@ pub(crate) async fn resolve_layout(
         match default {
             Some((id, name)) => (id, name, true, 0),
             None => {
-                return Err(AppError::NotFound(format!(
-                    "No layouts found for collection '{}'",
-                    name
-                )))
+                // Fall back to any layout (new/API-created collections have no
+                // default flagged layout and no role grants yet).
+                let fallback = sqlx::query_as::<_, (String, String)>(
+                    "SELECT id::text, name FROM collection_layouts WHERE collection_name = $1 ORDER BY ordinal_position LIMIT 1"
+                )
+                .bind(&name)
+                .fetch_optional(db_pool)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    details: format!("Failed to find fallback layout: {}", e),
+                })?;
+
+                match fallback {
+                    Some((id, name)) => (id, name, false, 0),
+                    None => {
+                        return Err(AppError::NotFound(format!(
+                            "No layouts found for collection '{}'",
+                            name
+                        )))
+                    }
+                }
             }
         }
     };

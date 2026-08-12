@@ -1,5 +1,6 @@
 import { type Ref, type ComputedRef } from 'vue'
 import type { FieldDefinition } from '@/stores/collections'
+import { getSectionChildCollectionName as resolveChildCollectionName } from '@/composables/useSectionLayout'
 
 /**
  * Shared child CRUD logic extracted from RecordForm.vue and RecordDetail.vue.
@@ -93,10 +94,7 @@ export function useChildCrud(config: {
 
   /** Resolve the related collection name from a section's relation_field */
   function getChildCollectionName(section: any): string {
-    const relationFieldName = section.relation_field
-    if (!relationFieldName) return ''
-    const fieldDef = config.fields.value.find((f: any) => f.name === relationFieldName)
-    return fieldDef?.related_collection || ''
+    return resolveChildCollectionName(section?.relation_field, config.fields.value)
   }
 
   /** Template-friendly alias for getChildCollectionName */
