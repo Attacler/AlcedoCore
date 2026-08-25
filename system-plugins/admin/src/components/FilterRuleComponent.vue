@@ -24,10 +24,6 @@ const emit = defineEmits<{
     remove: [];
 }>();
 
-// ---------------------------------------------------------------------------
-// Field tree — fully built after pre-fetching all related collections
-// ---------------------------------------------------------------------------
-
 interface FieldTreeNode {
     key: string;
     label: string;
@@ -211,7 +207,7 @@ function onValueChange(newValue: unknown) {
     <div
         class="filter-rule flex flex-col sm:flex-row sm:items-start gap-1 sm:gap-2 p-2 bg-white border border-gray-200 rounded-md"
     >
-        <div class="filter-field w-full sm:flex-1 min-w-0">
+        <div class="w-full sm:flex-1 min-w-0">
             <label
                 class="block text-xs text-gray-500 mb-0.5 sm:mb-1 font-medium"
                 >Field</label
@@ -235,7 +231,7 @@ function onValueChange(newValue: unknown) {
             </TreeSelect>
         </div>
 
-        <div class="filter-operator w-full sm:flex-1 min-w-0">
+        <div class="w-full sm:flex-1 min-w-0">
             <label
                 class="block text-xs text-gray-500 mb-0.5 sm:mb-1 font-medium"
                 >Operator</label
@@ -252,10 +248,7 @@ function onValueChange(newValue: unknown) {
             />
         </div>
 
-        <div
-            v-if="requiresValue"
-            class="filter-value w-full sm:flex-[2] min-w-0"
-        >
+        <div v-if="requiresValue" class="w-full sm:flex-2 min-w-0">
             <label
                 class="block text-xs text-gray-500 mb-0.5 sm:mb-1 font-medium"
                 >Value</label

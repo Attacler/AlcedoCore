@@ -1,7 +1,29 @@
 <script setup lang="ts">
-defineProps<{ field?: any }>()
+const props = withDefaults(
+    defineProps<{
+        field?: any;
+        modelValue?: any;
+        invalid?: boolean | string;
+        readonly?: boolean;
+    }>(),
+    {
+        modelValue: "",
+    },
+);
+
+const emit = defineEmits<{
+    "update:modelValue": [value: string];
+}>();
 </script>
 
 <template>
-  <InputText :placeholder="'Single Line'" fluid class="text-sm" />
+    <InputText
+        :modelValue="props.modelValue ?? ''"
+        @update:modelValue="emit('update:modelValue', $event ?? '')"
+        :placeholder="field?.default_value || '-'"
+        :invalid="!!invalid"
+        :readonly="readonly"
+        fluid
+        class="text-sm"
+    />
 </template>

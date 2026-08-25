@@ -34,6 +34,7 @@ pub struct PluginListItem {
     pub version: String,
     pub status: String,
     pub tags: serde_json::Value,
+    pub registry: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,6 +76,7 @@ pub async fn list_plugins_handler(
             .ok()
             .flatten();
         let (version, status) = version_status(&active_version);
+        let registry = resolve_plugin_registry(db_pool, &plugin).await;
 
         plugins_list.push(PluginListItem {
             slug: plugin.slug.clone(),
@@ -85,6 +87,7 @@ pub async fn list_plugins_handler(
             version,
             status,
             tags: plugin.tags,
+            registry,
         });
     }
 
@@ -307,6 +310,38 @@ pub struct LifecycleResponse {
     pub container_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_scopes: Option<Vec<serde_json::Value>>,
+}
+
+/// Resolve the display name of the registry a plugin was pulled from.
+///
+/// Prefers the plugin's `registry_id` FK; falls back to deriving the registry
+/// host from the image string (e.g. "localhost:5000/hello-world:1.0.0").
+async fn resolve_plugin_registry(
+    db_pool: &sqlx::PgPool,
+    plugin: &Plugin,
+) -> Option<String> {
+    if let Some(registry_id) = plugin.registry_id {
+        if let Ok(Some(registry)) = Registry::find_by_id(db_pool, registry_id).await {
+            return Some(registry.name);
+        }
+    }
+
+    // Fall back to parsing the registry host from the image string.
+    let image = &plugin.image;
+    // Strip any tag (last ':') and repo, keeping the leading registry segment.
+    let no_tag = match image.rfind(':') {
+        Some(pos) => &image[..pos],
+        None => image,
+    };
+    let host = match no_tag.find('/') {
+        Some(pos) => &no_tag[..pos],
+        None => "registry.hub.docker.com",
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
 }
 
 fn parse_image_url(image: &str) -> Result<(String, String), AppError> {

@@ -120,7 +120,7 @@ pub(crate) fn validate_fields_for_write(
 ///
 /// This is **best-effort** — PostgreSQL will still validate the final types
 /// when the INSERT / UPDATE executes.
-fn coerce_value(value: serde_json::Value, field_type: &FieldType) -> serde_json::Value {
+pub(crate) fn coerce_value(value: serde_json::Value, field_type: &FieldType) -> serde_json::Value {
     match field_type {
         FieldType::Int => match value {
             serde_json::Value::Number(_) => value,
@@ -157,8 +157,15 @@ fn coerce_value(value: serde_json::Value, field_type: &FieldType) -> serde_json:
         },
         // Relationship fields store UUID values — pass through as-is
         FieldType::Relationship => value,
-        // File fields: convert JSON array of UUIDs to PostgreSQL array literal string
+        // File fields: convert UUID array (or single UUID string) to PostgreSQL array literal
         FieldType::File => match value {
+            serde_json::Value::String(s) => {
+                if s.is_empty() {
+                    serde_json::Value::String("{}".to_string())
+                } else {
+                    serde_json::Value::String(format!("{{{}}}", s))
+                }
+            }
             serde_json::Value::Array(arr) => {
                 let uuids: Vec<String> = arr.iter()
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -182,6 +189,19 @@ fn coerce_value(value: serde_json::Value, field_type: &FieldType) -> serde_json:
             }
             _ => value,
         },
+    }
+}
+
+/// Extract file UUID strings from a File field value. Accepts either a single
+/// UUID string or an array of UUID strings (the two shapes the frontend emits).
+pub(crate) fn file_ids_from_value(value: &serde_json::Value) -> Vec<String> {
+    match value {
+        serde_json::Value::String(s) if !s.is_empty() => vec![s.clone()],
+        serde_json::Value::Array(arr) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect(),
+        _ => vec![],
     }
 }
 
@@ -1005,14 +1025,10 @@ pub async fn create_items(
             if field.field_type != FieldType::File {
                 continue;
             }
-            if let Some(serde_json::Value::Array(file_ids)) = item.scalar.get(&field.name) {
-                for file_id in file_ids {
-                    let fid = match file_id.as_str() {
-                        Some(s) => s,
-                        None => continue,
-                    };
+            if let Some(raw) = item.scalar.get(&field.name) {
+                for fid in file_ids_from_value(raw) {
                     sqlx::query(
-                        "INSERT INTO item_files (item_id, collection_name, field_name, file_id) VALUES ($1, $2, $3, $4::uuid) ON CONFLICT DO NOTHING"
+                        "INSERT INTO item_files (item_id, collection_name, field_name, file_id) VALUES ($1::uuid, $2, $3, $4::uuid) ON CONFLICT DO NOTHING"
                     )
                     .bind(item_id)
                     .bind(collection_name)
@@ -1237,12 +1253,8 @@ pub async fn update_items(
                     })?;
 
                 // Insert new item_files entries
-                if let Some(serde_json::Value::Array(file_ids)) = body.update.get(*field_name) {
-                    for file_id in file_ids {
-                        let fid = match file_id.as_str() {
-                            Some(s) => s,
-                            None => continue,
-                        };
+                if let Some(raw) = body.update.get(*field_name) {
+                    for fid in file_ids_from_value(raw) {
                         sqlx::query(
                             "INSERT INTO item_files (item_id, collection_name, field_name, file_id) VALUES ($1::uuid, $2, $3, $4::uuid) ON CONFLICT DO NOTHING"
                         )

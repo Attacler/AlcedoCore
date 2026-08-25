@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, watch, markRaw } from "vue";
+import { ref, computed, onMounted, watch, markRaw } from "vue";
 import type { Component } from "vue";
 import { useRoute } from "vue-router";
 import {
@@ -13,28 +13,28 @@ import {
 import { useToast } from "@/composables/useToast";
 import { getSectionChildCollectionName } from "@/composables/useSectionLayout";
 import { useExtensionRegistryStore } from "@/stores/extensionRegistry";
-import {
-    getDisplayType,
-    DISPLAY_TYPE_REGISTRY,
-} from "@/stores/displayTypeRegistry";
+import { getInputComponent } from "@/inputs";
+import { getDisplayComponentDef } from "@/display";
+import { withSystemFields } from "@/composables/useSystemFields";
 import Button from "primevue/button";
 import InputText from "primevue/inputtext";
 import Select from "primevue/select";
-import Checkbox from "primevue/checkbox";
 import InputNumber from "primevue/inputnumber";
-import ToggleSwitch from "primevue/toggleswitch";
 import Drawer from "primevue/drawer";
-import TableViewSettings from "@/components/TableViewSettings.vue";
-import CardsViewSettings from "@/components/CardsViewSettings.vue";
-import KanbanViewSettings from "@/components/KanbanViewSettings.vue";
+import TableViewSettings from "@/views/TableViewSettings.vue";
+import CardsViewSettings from "@/views/CardsViewSettings.vue";
+import KanbanViewSettings from "@/views/KanbanViewSettings.vue";
 import FilterBuilder from "@/components/FilterBuilder.vue";
 import FieldPreview from "./fieldPreview.vue";
+import FieldPropertiesDrawer from "./fieldPropertiesDrawer.vue";
 import { Tag } from "primevue";
+import { useDevServerStore } from "@/stores/devServerStore.ts";
 
 const route = useRoute(),
     store = useCollectionsStore(),
     toast = useToast(),
-    extensionRegistry = useExtensionRegistryStore();
+    extensionRegistry = useExtensionRegistryStore(),
+    devStore = useDevServerStore();
 
 const fields = defineModel<(FieldDefinition & { _key: string })[]>("fields", {
         required: true,
@@ -56,8 +56,7 @@ const fields = defineModel<(FieldDefinition & { _key: string })[]>("fields", {
     }),
     emit = defineEmits(["loadSections"]);
 
-const editorNameInput = ref<any>(null),
-    loading = ref(true),
+const loading = ref(true),
     loadError = ref<string | null>(null),
     allCollections = ref<{ name: string }[]>([]),
     editingField = ref<FieldDefinition | null>(null),
@@ -168,17 +167,45 @@ function nextKey(): string {
 }
 
 function makeField(displayType: string, pos: number): any {
-    const entry = getDisplayType(displayType);
+    const displayDef =
+        (devStore.pluginDetails?.displays || []).find(
+            (e) => e.name == displayType,
+        ) ||
+        getDisplayComponentDef(displayType) ||
+        extensionRegistry.getDisplayWidget(displayType);
 
-    // Determine field type: static registry type or fall back to plugin's supported type
     let fieldType: FieldType = "string";
-    if (entry?.dbType) {
-        fieldType = entry.dbType as FieldType;
-    } else {
-        // Plugin input widget: use its first supported field type
-        const pluginWidget = extensionRegistry.getInputWidget(displayType);
-        if (pluginWidget && pluginWidget.supportedFieldTypes.length > 0) {
-            fieldType = pluginWidget.supportedFieldTypes[0];
+    let preferredInputs: string[] = ["raw"];
+    let displayComponent: string | undefined = displayType;
+
+    if (displayDef && displayDef.supportedFieldTypes.length > 0) {
+        fieldType = displayDef.supportedFieldTypes[0] as FieldType;
+    }
+    if (displayDef?.preferredInputs) {
+        preferredInputs = displayDef.preferredInputs;
+    }
+    if (!displayDef) {
+        displayComponent = undefined;
+    }
+
+    let inputComponent: string | undefined;
+
+    for (const candidate of preferredInputs) {
+        const def =
+            getInputComponent(candidate) ||
+            extensionRegistry.getInputWidget(candidate);
+        if (def && def.supportedFieldTypes.includes(fieldType)) {
+            inputComponent = candidate;
+            break;
+        }
+    }
+
+    if (!inputComponent) {
+        const raw = getInputComponent("raw");
+        if (raw && raw.supportedFieldTypes.includes(fieldType)) {
+            inputComponent = "raw";
+        } else if (getInputComponent(fieldType)) {
+            inputComponent = fieldType;
         }
     }
 
@@ -192,10 +219,12 @@ function makeField(displayType: string, pos: number): any {
         unique: false,
         default_value: null,
         display_type: displayType,
+        display_component: displayComponent,
+        input_component: inputComponent,
         ordinal_position: pos,
         _displayType: displayType,
     };
-    if (entry?.isRel) {
+    if (displayDef?.supportedFieldTypes.includes("relationship")) {
         field.type = "relationship" as FieldType;
         const RELATION_TYPE_MAP: Record<string, string> = {
             "relation-many-to-one": "many_to_one",
@@ -204,6 +233,14 @@ function makeField(displayType: string, pos: number): any {
         };
         field.relationship_type =
             RELATION_TYPE_MAP[displayType] || "many_to_one";
+    }
+    if (fieldType === "file") {
+        field.options = {
+            multiple: inputComponent === "file-list",
+            max_file_size: 10485760,
+            allowed_mime_types: [],
+            folder_id: null,
+        };
     }
     return field;
 }
@@ -433,46 +470,6 @@ function onFieldDrop(_event: DragEvent, targetKey: string) {
     finishDrag();
 }
 
-function isType(field: any, types: string[]): boolean {
-    return types.includes(field._displayType || field.type);
-}
-
-function fieldTypeLabel(field: any): string {
-    const dt = field._displayType || field.type;
-    const entry = getDisplayType(dt);
-    if (entry) return entry.label;
-    const pluginWidget = extensionRegistry.getInputWidget(dt);
-    return pluginWidget?.label || dt;
-}
-
-function defaultValuePlaceholder(type: string): string {
-    if (["int", "long-int"].includes(type)) return "0";
-    if (["float", "number", "decimal", "currency", "percent"].includes(type))
-        return "0.0";
-    if (["datetime", "date", "date/time"].includes(type)) return "Now";
-    if (type === "uuid") return "(auto-generated)";
-    return "";
-}
-
-function isRelType(type: string): boolean {
-    return ["relationship", "lookup", "multi-select-lookup"].includes(type);
-}
-
-const currentSettingsComponent = computed(() => {
-    if (!editingField.value) return null;
-    const dt = editingField.value.display_type || "default";
-    const entry = getDisplayType(dt);
-    if (entry?.settingsComponent) return entry.settingsComponent;
-    const pluginWidget = extensionRegistry.getInputWidget(dt);
-    if (pluginWidget?.settingsComponent) return pluginWidget.settingsComponent;
-    return null;
-});
-
-function onDisplayTypeChange(value: string) {
-    if (!editingField.value) return;
-    editingField.value.display_type = value === "default" ? undefined : value;
-}
-
 function openFieldEditor(field: any) {
     editingField.value = field;
     editingFieldKey.value = field._key;
@@ -484,6 +481,8 @@ function openFieldEditor(field: any) {
             field.options.max_file_size = 10485760;
         if (!field.options.allowed_mime_types)
             field.options.allowed_mime_types = [];
+        if (field.options.folder_id === undefined)
+            field.options.folder_id = null;
     }
 }
 
@@ -511,28 +510,15 @@ function replaceTempName(field: any) {
 }
 
 function closeFieldEditor() {
-    if (editingField.value) replaceTempName(editingField.value);
     editingField.value = null;
     editingFieldKey.value = null;
 }
 
-function onEditName(event: Event) {
-    if (editingField.value)
-        editingField.value.name = (
-            event.target as HTMLInputElement
-        ).value.toLowerCase();
-}
-function onEditDisplayName(event: Event) {
-    if (editingField.value) {
-        const v = (event.target as HTMLInputElement).value;
-        editingField.value.display_name = (v || null) as string | undefined;
-    }
-}
-function onEditDefault(event: Event) {
-    if (editingField.value) {
-        const v = (event.target as HTMLInputElement).value;
-        editingField.value.default_value = v === "" ? null : v;
-    }
+function saveFieldEditor(field: FieldDefinition) {
+    if (!editingField.value) return;
+    Object.assign(editingField.value, field);
+    replaceTempName(editingField.value);
+    closeFieldEditor();
 }
 
 function deleteEditingField() {
@@ -542,12 +528,6 @@ function deleteEditingField() {
     closeFieldEditor();
 }
 
-const fieldNameError = computed(() => {
-    if (!editingField.value) return false;
-    if (!editingField.value.name) return false;
-    return !/^[a-z][a-z0-9_]*$/.test(editingField.value.name);
-});
-
 async function loadCollection(name: string) {
     loading.value = true;
     loadError.value = null;
@@ -555,10 +535,12 @@ async function loadCollection(name: string) {
         const c = await store.getCollection(name);
         collectionMeta.value = c;
         collectionDisplayName.value = c.display_name || "";
-        fields.value = (c.fields || []).map((f: FieldDefinition) => ({
-            ...f,
-            _key: nextKey(),
-        }));
+        fields.value = withSystemFields(c.fields || []).map(
+            (f: FieldDefinition) => ({
+                ...f,
+                _key: nextKey(),
+            }),
+        );
     } catch (e) {
         loadError.value =
             e instanceof Error ? e.message : "Failed to load collection";
@@ -574,7 +556,8 @@ onMounted(async () => {
         console.warn("[CollectionBuilder] Failed to load collection", e);
     }
     try {
-        allCollections.value = await store.fetchCollectionsLight();
+        await store.fetchCollections();
+        allCollections.value = store.collections;
     } catch (e) {
         console.warn(
             "[CollectionBuilder] Failed to fetch collections light",
@@ -603,10 +586,31 @@ const currentViewSettingsComponent = computed(() => {
     if (!sectionFormData.value?.relation_field) return null;
     const vt = sectionFormData.value.view_type || "table";
     if (BUILTIN_VIEW_SETTINGS[vt]) return BUILTIN_VIEW_SETTINGS[vt];
-    const extReg = useExtensionRegistryStore();
-    const pluginView = extReg.getViewType(vt);
+
+    const pluginView = extensionRegistry.getView(vt);
     if (pluginView?.settingsComponent) return pluginView.settingsComponent;
     return null;
+});
+
+/** View types offered for a relational section: builtins + plugin views. */
+const sectionViewTypeOptions = computed(() => {
+    const opts = [
+        { label: "Table", value: "table" },
+        { label: "Cards", value: "cards" },
+        { label: "Kanban", value: "kanban" },
+    ];
+    for (const v of extensionRegistry.allViewTypes) {
+        if (!["table", "cards", "kanban"].includes(v.type)) {
+            opts.push({ label: v.label, value: v.type });
+        }
+    }
+    for (const v of extensionRegistry.allViewTypes) {
+        opts.push({
+            label: `${v.pluginSlug}: ${v.label}`,
+            value: `plugin:${v.pluginSlug}:${v.label}`,
+        });
+    }
+    return opts;
 });
 
 watch(
@@ -616,7 +620,7 @@ watch(
             childCollectionFields.value = [];
             return;
         }
-        const childName = getSectionChildCollectionName(rf, fields.value);
+        const childName = getSectionChildCollectionName(rf);
         if (!childName) {
             childCollectionFields.value = [];
             return;
@@ -642,7 +646,7 @@ function onViewSettingsChange(key: string, value: any) {
 }
 
 function getChildCollectionName(section: any): string {
-    return getSectionChildCollectionName(section?.relation_field, fields.value);
+    return getSectionChildCollectionName(section?.relation_field);
 }
 
 const namedFields = computed(() =>
@@ -699,19 +703,6 @@ function removeFieldFromSection(section: any, field: any) {
     if (section._field_columns && field.name in section._field_columns) {
         delete section._field_columns[field.name];
     }
-}
-
-/** Flatten fields into a list with interleaved gap zone items for drag-and-drop. */
-function flatSectionFields(section: any): any[] {
-    const sectionFields = getSectionFields(section);
-    const sectionId = section.id || section._key;
-    const result: any[] = [];
-    result.push({ _key: `__gap_first_${sectionId}`, _isGap: true });
-    for (const field of sectionFields) {
-        result.push(field);
-        result.push({ _key: `__gap_after_${field._key}`, _isGap: true });
-    }
-    return result;
 }
 
 /** Flatten fields for a single column (0 = left, 1 = right) in a 2-column section. */
@@ -797,10 +788,7 @@ function editSection(section: any) {
     showSectionEditor.value = true;
     // Load child fields for settings/filter
     if (section.relation_field) {
-        const childName = getSectionChildCollectionName(
-            section.relation_field,
-            fields.value,
-        );
+        const childName = getSectionChildCollectionName(section.relation_field);
         if (childName) {
             store
                 .getCollection(childName)
@@ -967,52 +955,28 @@ watch(
         }
     },
 );
-
-const availableDisplayTypes = computed(() => {
-    if (!editingField.value) return [];
-    const pkType =
-        (editingField.value as any)._displayType ||
-        editingField.value.display_type ||
-        editingField.value.type;
-    const pkEntry = getDisplayType(pkType);
-
-    const types: { type: string; label: string }[] = [
-        { type: "default", label: "Default" },
-    ];
-
-    const effectiveDbType = pkEntry?.dbType || editingField.value.type;
-
-    types.push(
-        ...DISPLAY_TYPE_REGISTRY.filter(
-            (e) => e.dbType === effectiveDbType,
-        ).map((e) => ({ type: e.type, label: e.label })),
-    );
-
-    types.push(
-        ...extensionRegistry
-            .getInputWidgetsForFieldType(editingField.value.type)
-            .map((w) => ({ type: w.type, label: w.label })),
-    );
-
-    return types;
-});
 </script>
 
 <template>
     <div
-        class="bg-white rounded-lg border border-gray-200 overflow-hidden"
         @dragover.prevent
         @drop="onDropAtEnd($event)"
+        class="flex flex-col gap-2 overflow-hidden"
     >
-        <!-- Sections organized by ordinal_position -->
-        <template
+        <div
             v-for="section in orderedSections"
             :key="section.id || section._key"
+            class="bg-white rounded-lg border border-gray-200"
+            @dragover.prevent="onSectionDragOver(section)"
+            @dragleave="
+                dragOverSectionId = null;
+                clearSectionDropIndicator(section);
+            "
+            @drop="onSectionDrop(section)"
         >
-            <!-- Section drop indicator (before each section) -->
             <div
                 v-if="dropBeforeSectionKey === (section.id || section._key)"
-                class="h-1 bg-blue-400 rounded mx-2"
+                class="h-5 bg-blue-400 rounded mx-2"
             ></div>
 
             <div
@@ -1022,16 +986,9 @@ const availableDisplayTypes = computed(() => {
                         ? 'opacity-50'
                         : ''
                 "
-                @dragover.prevent="onSectionDragOver(section)"
-                @dragleave="
-                    dragOverSectionId = null;
-                    clearSectionDropIndicator(section);
-                "
-                @drop="onSectionDrop(section)"
             >
-                <!-- Section Header -->
                 <div
-                    class="flex items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-200"
+                    class="flex items-center justify-between px-4 py-2 bg-gray-50 border-b border-gray-200 rounded-t-lg"
                     :class="
                         dragOverSectionId === (section.id || section._key)
                             ? 'bg-blue-50'
@@ -1045,11 +1002,13 @@ const availableDisplayTypes = computed(() => {
                             @dragstart="onSectionDragStart(section)"
                             >&#9776;</span
                         >
-                        <span class="text-sm font-semibold text-gray-700">{{
-                            section.name
-                        }}</span>
+                        <span class="text-sm font-semibold text-gray-700">
+                            {{ section.name }}
+                        </span>
+                    </div>
+                    <div class="flex gap-1">
                         <span
-                            class="text-xs text-gray-400 px-1.5 py-0.5 rounded-full bg-gray-100"
+                            class="text-xs text-gray-500 px-1.5 py-0.5 rounded-full bg-gray-100 my-auto"
                         >
                             {{
                                 section.section_type === "field_group"
@@ -1057,8 +1016,6 @@ const availableDisplayTypes = computed(() => {
                                     : "Relational"
                             }}
                         </span>
-                    </div>
-                    <div class="flex gap-1">
                         <Button
                             icon="pi pi-pencil"
                             text
@@ -1097,54 +1054,10 @@ const availableDisplayTypes = computed(() => {
                             <template v-else>Drop fields here</template>
                         </div>
                     </template>
-                    <template v-else>
-                        <!-- 2-column layout -->
-                        <div v-if="section._columns === 2" class="flex gap-4">
-                            <div class="flex-1 grid min-w-0 space-y-2">
-                                <FieldPreview
-                                    v-for="field in flatColumnFields(
-                                        section,
-                                        0,
-                                    )"
-                                    :field="field"
-                                    :dropBeforeKey="dropBeforeKey"
-                                    :isDragging="isDragging"
-                                    :show-remove="true"
-                                    @onDragOverField="onDragOverField"
-                                    @onDragLeaveField="onDragLeaveField"
-                                    @onFieldDrop="onFieldDrop"
-                                    @onFieldDragStart="onFieldDragStart"
-                                    @openFieldEditor="openFieldEditor"
-                                    @onRemove="
-                                        removeFieldFromSection(section, $event)
-                                    "
-                                />
-                            </div>
-                            <div class="flex-1 min-w-0 space-y-2">
-                                <FieldPreview
-                                    v-for="field in flatColumnFields(
-                                        section,
-                                        1,
-                                    )"
-                                    :field="field"
-                                    :dropBeforeKey="dropBeforeKey"
-                                    :isDragging="isDragging"
-                                    :show-remove="true"
-                                    @onDragOverField="onDragOverField"
-                                    @onDragLeaveField="onDragLeaveField"
-                                    @onFieldDrop="onFieldDrop"
-                                    @onFieldDragStart="onFieldDragStart"
-                                    @openFieldEditor="openFieldEditor"
-                                    @onRemove="
-                                        removeFieldFromSection(section, $event)
-                                    "
-                                />
-                            </div>
-                        </div>
-                        <!-- 1-column layout -->
-                        <div v-else class="grid gap-2">
+                    <div class="flex gap-4" v-else>
+                        <div class="flex-1 min-w-0 space-y-2">
                             <FieldPreview
-                                v-for="field in flatSectionFields(section)"
+                                v-for="field in flatColumnFields(section, 0)"
                                 :field="field"
                                 :dropBeforeKey="dropBeforeKey"
                                 :isDragging="isDragging"
@@ -1157,9 +1070,31 @@ const availableDisplayTypes = computed(() => {
                                 @onRemove="
                                     removeFieldFromSection(section, $event)
                                 "
+                                @stoppedDragging="isDragging = false"
                             />
                         </div>
-                    </template>
+                        <div
+                            class="flex-1 min-w-0 space-y-2"
+                            v-if="section._columns === 2"
+                        >
+                            <FieldPreview
+                                v-for="field in flatColumnFields(section, 1)"
+                                :field="field"
+                                :dropBeforeKey="dropBeforeKey"
+                                :isDragging="isDragging"
+                                :show-remove="true"
+                                @onDragOverField="onDragOverField"
+                                @onDragLeaveField="onDragLeaveField"
+                                @onFieldDrop="onFieldDrop"
+                                @onFieldDragStart="onFieldDragStart"
+                                @openFieldEditor="openFieldEditor"
+                                @onRemove="
+                                    removeFieldFromSection(section, $event)
+                                "
+                                @stoppedDragging="isDragging = false"
+                            />
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Relational: compact info row -->
@@ -1176,7 +1111,7 @@ const availableDisplayTypes = computed(() => {
                     />
                 </div>
             </div>
-        </template>
+        </div>
 
         <!-- Drop indicator after last section -->
         <div
@@ -1365,14 +1300,7 @@ const availableDisplayTypes = computed(() => {
                     >
                     <Select
                         v-model="sectionFormData.view_type"
-                        :options="[
-                            { label: 'Table', value: 'table' },
-                            { label: 'Cards', value: 'cards' },
-                            {
-                                label: 'Kanban',
-                                value: 'kanban',
-                            },
-                        ]"
+                        :options="sectionViewTypeOptions"
                         option-label="label"
                         option-value="value"
                         class="w-full"
@@ -1425,46 +1353,6 @@ const availableDisplayTypes = computed(() => {
                         "
                     />
                 </div>
-                <!-- Section Visibility -->
-                <div
-                    v-if="sectionFormData.relation_field"
-                    class="border-t pt-4 mt-2 space-y-3"
-                >
-                    <label class="block text-xs font-medium text-gray-600 mb-1"
-                        >Section Visibility</label
-                    >
-                    <p class="text-xs text-gray-400 mb-2">
-                        Only show this section when conditions are met.
-                    </p>
-                    <div
-                        class="border border-gray-200 rounded-md p-3 space-y-3"
-                    >
-                        <div>
-                            <label
-                                class="block text-xs font-medium text-gray-500 mb-1"
-                                >Parent matches</label
-                            >
-                            <FilterBuilder
-                                v-model="sectionFormData.visibility_parent"
-                                :fields="namedFields"
-                                :collection-name="collectionName"
-                            />
-                        </div>
-                        <div class="border-t pt-3">
-                            <label
-                                class="block text-xs font-medium text-gray-500 mb-1"
-                                >Any child matches</label
-                            >
-                            <FilterBuilder
-                                v-model="sectionFormData.visibility_child"
-                                :fields="childCollectionFields"
-                                :collection-name="
-                                    getChildCollectionName(sectionFormData)
-                                "
-                            />
-                        </div>
-                    </div>
-                </div>
             </template>
         </div>
         <template #footer>
@@ -1482,226 +1370,11 @@ const availableDisplayTypes = computed(() => {
         </template>
     </Drawer>
 
-    <!-- Field Properties Drawer -->
-    <Drawer
-        :visible="editingField !== null"
-        @update:visible="
-            (val) => {
-                if (!val) closeFieldEditor();
-            }
-        "
-        header="Field Properties"
-        position="right"
-        :style="{ width: '500px' }"
-    >
-        <div v-if="editingField" class="space-y-4">
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1"
-                    >API Name</label
-                >
-                <InputText
-                    :value="editingField.name"
-                    @input="onEditName($event)"
-                    maxlength="59"
-                    :invalid="fieldNameError"
-                    placeholder="field_name"
-                    ref="editorNameInput"
-                    class="w-full"
-                    fluid
-                    autofocus
-                />
-                <p v-if="fieldNameError" class="text-xs text-red-500 mt-1">
-                    Lowercase letters, numbers, and underscores only
-                </p>
-                <p class="text-xs text-gray-400 mt-1 text-right">
-                    {{ (editingField.name || "").length }}/59
-                </p>
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1"
-                    >Display Name</label
-                >
-                <InputText
-                    :value="editingField.display_name ?? ''"
-                    @input="onEditDisplayName($event)"
-                    placeholder="Display name (shown in UI)"
-                    class="w-full"
-                    fluid
-                />
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1"
-                    >Type</label
-                >
-                <div
-                    class="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-md text-gray-600"
-                >
-                    {{ fieldTypeLabel(editingField) }}
-                </div>
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-2"
-                    >Constraints</label
-                >
-                <div class="flex gap-4">
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <Checkbox
-                            :binary="true"
-                            v-model="editingField.required"
-                        />
-                        <span class="text-sm text-gray-700">Required</span>
-                    </label>
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <Checkbox
-                            :binary="true"
-                            v-model="editingField.unique"
-                        />
-                        <span class="text-sm text-gray-700">Unique</span>
-                    </label>
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <Checkbox
-                            :binary="true"
-                            :model-value="(editingField as any).full_width"
-                            @update:model-value="
-                                (val: any) => {
-                                    (editingField as any).full_width = val;
-                                }
-                            "
-                        />
-                        <span class="text-sm text-gray-700">Full Width</span>
-                    </label>
-                </div>
-            </div>
-            <div
-                v-if="
-                    !isRelType(editingField.type) &&
-                    !isType(editingField, ['auto-number'])
-                "
-            >
-                <label class="block text-xs font-medium text-gray-600 mb-1"
-                    >Default Value</label
-                >
-                <InputText
-                    :value="editingField.default_value ?? ''"
-                    @input="onEditDefault($event)"
-                    class="w-full"
-                    fluid
-                    :placeholder="defaultValuePlaceholder(editingField.type)"
-                />
-            </div>
-            <div>
-                <label class="block text-xs font-medium text-gray-600 mb-1"
-                    >Display Type</label
-                >
-                <Select
-                    :model-value="editingField.display_type || 'default'"
-                    @change="onDisplayTypeChange($event.value)"
-                    :options="availableDisplayTypes"
-                    option-label="label"
-                    option-value="type"
-                    class="w-full"
-                />
-            </div>
-            <!-- Settings Component: rendered based on display_type -->
-            <div v-if="currentSettingsComponent">
-                <component
-                    :is="currentSettingsComponent"
-                    :field="editingField"
-                    :collection-name="collectionName"
-                />
-            </div>
-
-            <!-- File Options -->
-            <div
-                v-if="editingField.type === 'file'"
-                class="border-t pt-4 mt-4 space-y-4"
-            >
-                <h4 class="text-sm font-medium text-gray-700">File Options</h4>
-
-                <div>
-                    <label class="block text-xs font-medium text-gray-600 mb-1"
-                        >Allow Multiple</label
-                    >
-                    <ToggleSwitch
-                        v-model="(editingField as any).options.multiple"
-                    />
-                    <p class="text-xs text-gray-400 mt-1">
-                        Allow uploading multiple files to this field
-                    </p>
-                </div>
-
-                <div>
-                    <label class="block text-xs font-medium text-gray-600 mb-1"
-                        >Max File Size (bytes)</label
-                    >
-                    <InputNumber
-                        v-model="(editingField as any).options.max_file_size"
-                        :min="0"
-                        :step="1048576"
-                        class="w-full"
-                        fluid
-                    />
-                    <p class="text-xs text-gray-400 mt-1">
-                        Maximum file size in bytes. 0 = no limit. Default: 10MB
-                        (10485760)
-                    </p>
-                </div>
-
-                <div>
-                    <label class="block text-xs font-medium text-gray-600 mb-1"
-                        >Allowed MIME Types</label
-                    >
-                    <InputText
-                        :model-value="
-                            (
-                                (editingField as any).options
-                                    ?.allowed_mime_types || []
-                            ).join(', ')
-                        "
-                        @update:model-value="
-                            (val: any) => {
-                                (
-                                    editingField as any
-                                ).options.allowed_mime_types = (val || '')
-                                    .split(',')
-                                    .map((s: string) => s.trim())
-                                    .filter((s: string) => s.length > 0);
-                            }
-                        "
-                        placeholder="image/*, application/pdf"
-                        class="w-full"
-                        fluid
-                    />
-                    <p class="text-xs text-gray-400 mt-1">
-                        Leave empty to allow all types. Use glob patterns like
-                        image/*
-                    </p>
-                </div>
-            </div>
-        </div>
-        <template #footer>
-            <div class="flex justify-between">
-                <Button
-                    label="Delete Field"
-                    severity="danger"
-                    text
-                    @click="deleteEditingField"
-                />
-                <div class="flex gap-2">
-                    <Button
-                        label="Cancel"
-                        severity="secondary"
-                        outlined
-                        @click="closeFieldEditor"
-                    />
-                    <Button
-                        label="Done"
-                        severity="primary"
-                        :disabled="!editingField?.name"
-                        @click="closeFieldEditor"
-                    />
-                </div>
-            </div>
-        </template>
-    </Drawer>
+    <FieldPropertiesDrawer
+        :field="editingField"
+        :collection-name="collectionName"
+        @close="closeFieldEditor"
+        @save="saveFieldEditor"
+        @delete="deleteEditingField"
+    />
 </template>

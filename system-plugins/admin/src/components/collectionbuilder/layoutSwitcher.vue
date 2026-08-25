@@ -7,7 +7,7 @@ import {
 } from "@/stores/collections";
 import { useRolesStore } from "@/stores/rolesStore";
 import { Button, Drawer, Tab, Tabs, TabList, TabPanels } from "primevue";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import SaveChangesButon from "./saveChangesButon.vue";
 
 const props = defineProps<{
@@ -30,10 +30,12 @@ const store = useCollectionsStore(),
     toast = useToast();
 
 const layoutRoles = ref<{ role_id: string; role_name: string }[]>([]),
-    showLayoutRolesDialog = ref(false),
     selectedLayoutRoleIds = ref<string[]>([]),
     showLayoutDialog = ref(false),
-    layoutDialogName = ref("");
+    layoutDialogName = ref(""),
+    showEditLayoutDialog = ref(false),
+    editLayoutName = ref(""),
+    editLayoutSaving = ref(false);
 
 async function deleteCurrentLayout() {
     if (!activeLayoutId.value) return;
@@ -56,8 +58,13 @@ async function deleteCurrentLayout() {
     }
 }
 
-async function openLayoutRolesDialog() {
+const activeLayout = computed(
+    () => collLayouts.value.find((l) => l.id === activeLayoutId.value) ?? null,
+);
+
+async function openEditLayoutDialog() {
     if (!activeLayoutId.value) return;
+    editLayoutName.value = activeLayout.value?.name ?? "";
     try {
         await rolesStore.fetchRoles();
         const assigned = await store.getLayoutRoles(
@@ -66,30 +73,44 @@ async function openLayoutRolesDialog() {
         );
         layoutRoles.value = assigned;
         selectedLayoutRoleIds.value = assigned.map((r: any) => r.role_id);
-        showLayoutRolesDialog.value = true;
+        showEditLayoutDialog.value = true;
     } catch (e) {
         toast.show(
-            `Failed to load roles: ${e instanceof Error ? e.message : "Unknown error"}`,
+            `Failed to load layout: ${e instanceof Error ? e.message : "Unknown error"}`,
             "error",
         );
     }
 }
 
-async function saveLayoutRoles() {
+async function saveEditLayout() {
     if (!activeLayoutId.value) return;
+    const newName = editLayoutName.value.trim();
+    if (!newName) {
+        toast.show("Layout name cannot be empty", "error");
+        return;
+    }
+    editLayoutSaving.value = true;
     try {
+        if (newName !== activeLayout.value?.name) {
+            await store.updateLayout(props.collectionName, activeLayoutId.value, {
+                name: newName,
+            });
+            emit("reloadLayouts");
+        }
         await store.setLayoutRoles(
             props.collectionName,
             activeLayoutId.value,
             selectedLayoutRoleIds.value,
         );
-        showLayoutRolesDialog.value = false;
-        toast.show("Layout roles assigned", "success");
+        showEditLayoutDialog.value = false;
+        toast.show("Layout updated", "success");
     } catch (e) {
         toast.show(
-            `Failed to save layout roles: ${e instanceof Error ? e.message : "Unknown error"}`,
+            `Failed to save layout: ${e instanceof Error ? e.message : "Unknown error"}`,
             "error",
         );
+    } finally {
+        editLayoutSaving.value = false;
     }
 }
 
@@ -155,18 +176,11 @@ async function saveLayout() {
                 />
                 <Button
                     v-if="activeLayoutId"
-                    icon="pi pi-users"
+                    icon="pi pi-pencil"
                     severity="secondary"
                     size="small"
-                    label="Roles"
-                    @click="openLayoutRolesDialog"
-                />
-                <Button
-                    v-if="collLayouts.length > 1 && activeLayoutId"
-                    icon="pi pi-trash"
-                    severity="danger"
-                    size="small"
-                    @click="deleteCurrentLayout"
+                    label="Edit layout"
+                    @click="openEditLayoutDialog"
                 />
                 <SaveChangesButon
                     :collectionMeta="collectionMeta"
@@ -197,51 +211,80 @@ async function saveLayout() {
         </TabPanels>
     </Tabs>
 
-    <!-- Layout Roles Dialog -->
+    <!-- Edit Layout Drawer (generic: rename + roles) -->
     <Drawer
-        v-model:visible="showLayoutRolesDialog"
-        header="Assign Roles to Layout"
+        v-model:visible="showEditLayoutDialog"
+        header="Edit Layout"
         :style="{ width: '450px' }"
         position="right"
     >
-        <div class="space-y-3">
-            <p class="text-sm text-gray-500">
-                Users with these roles will see this layout.
-            </p>
-            <div
-                v-if="rolesStore.roles.length === 0"
-                class="text-sm text-gray-400 text-center py-4"
-            >
-                No roles found
-            </div>
-            <div
-                v-for="role in rolesStore.roles"
-                :key="role.id"
-                class="flex items-center gap-3 py-1"
-            >
-                <Checkbox
-                    :inputId="'role-' + role.id"
-                    :binary="true"
-                    :modelValue="selectedLayoutRoleIds.includes(role.id)"
-                    @update:modelValue="toggleLayoutRole(role.id)"
-                />
-                <label
-                    :for="'role-' + role.id"
-                    class="text-sm cursor-pointer"
-                    >{{ role.name }}</label
+        <div class="space-y-5">
+            <div>
+                <label class="block text-xs font-medium text-gray-600 mb-1"
+                    >Layout Name</label
                 >
+                <InputText
+                    v-model="editLayoutName"
+                    class="w-full"
+                    fluid
+                    @keydown.enter="saveEditLayout"
+                />
             </div>
-            <div class="flex justify-end gap-2 pt-2 border-t border-gray-200">
+            <div>
+                <div class="text-sm font-medium text-gray-700 mb-1">Roles</div>
+                <p class="text-sm text-gray-500 mb-2">
+                    Users with these roles will see this layout.
+                </p>
+                <div
+                    v-if="rolesStore.roles.length === 0"
+                    class="text-sm text-gray-400 text-center py-4"
+                >
+                    No roles found
+                </div>
+                <div
+                    v-for="role in rolesStore.roles"
+                    :key="role.id"
+                    class="flex items-center gap-3 py-1"
+                >
+                    <Checkbox
+                        :inputId="'role-' + role.id"
+                        :binary="true"
+                        :modelValue="selectedLayoutRoleIds.includes(role.id)"
+                        @update:modelValue="toggleLayoutRole(role.id)"
+                    />
+                    <label
+                        :for="'role-' + role.id"
+                        class="text-sm cursor-pointer"
+                        >{{ role.name }}</label
+                    >
+                </div>
+            </div>
+            <div
+                class="flex justify-between items-center gap-2 pt-2 border-t border-gray-200"
+            >
                 <Button
-                    label="Cancel"
-                    severity="secondary"
-                    @click="showLayoutRolesDialog = false"
+                    v-if="collLayouts.length > 1"
+                    label="Delete"
+                    severity="danger"
+                    icon="pi pi-trash"
+                    @click="
+                        showEditLayoutDialog = false;
+                        deleteCurrentLayout();
+                    "
                 />
-                <Button
-                    label="Save"
-                    severity="primary"
-                    @click="saveLayoutRoles"
-                />
+                <div class="flex gap-2 ml-auto">
+                    <Button
+                        label="Cancel"
+                        severity="secondary"
+                        @click="showEditLayoutDialog = false"
+                    />
+                    <Button
+                        label="Save"
+                        severity="primary"
+                        :loading="editLayoutSaving"
+                        @click="saveEditLayout"
+                    />
+                </div>
             </div>
         </div>
     </Drawer>

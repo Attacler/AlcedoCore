@@ -1,7 +1,54 @@
 <script setup lang="ts">
-defineProps<{ field?: any }>()
+import { computed } from "vue";
+
+const props = defineProps<{
+    field?: any;
+    invalid?: boolean | string;
+    readonly?: boolean;
+}>();
+
+const value = defineModel<number>({
+    set(v: number | string) {
+        if (v == null || v === "") return null;
+        const n = typeof v === "number" ? v : Number(v);
+        return Number.isNaN(n) ? null : n;
+    },
+});
+
+const variant = computed(() => {
+    const ic = props.field?.input_component;
+    if (ic && ic !== "number") return ic;
+    return props.field?.type === "float" ? "decimal" : "number";
+});
+
+const inputProps = computed(() => {
+    switch (variant.value) {
+        case "currency":
+            return {
+                mode: "currency",
+                currency: "USD",
+                locale: "en-US",
+                minFractionDigits: 2,
+                maxFractionDigits: 2,
+            };
+        case "decimal":
+            return { minFractionDigits: 0, maxFractionDigits: 10 };
+        case "percent":
+            return { suffix: " %", minFractionDigits: 0, maxFractionDigits: 2 };
+        default:
+            return { minFractionDigits: 0, maxFractionDigits: 0 };
+    }
+});
 </script>
 
 <template>
-  <InputNumber :placeholder="'Number'" class="text-sm max-w-xs" fluid />
+    <InputNumber
+        v-bind="inputProps"
+        v-model="value"
+        :placeholder="field?.default_value || undefined"
+        :invalid="!!invalid"
+        :readonly="readonly"
+        fluid
+        class="text-sm"
+    />
 </template>

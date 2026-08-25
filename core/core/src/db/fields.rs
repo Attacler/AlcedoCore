@@ -4,12 +4,6 @@ use crate::db::collections::{FieldDefinition, FieldType};
 use crate::db::Pool;
 use crate::error::AppError;
 
-#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct FieldOption {
-    pub label: String,
-    pub value: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct FieldRow {
     pub id: Uuid,
@@ -21,6 +15,8 @@ pub struct FieldRow {
     pub unique_constraint: bool,
     pub default_value: Option<serde_json::Value>,
     pub display_type: Option<String>,
+    pub input_component: Option<String>,
+    pub display_component: Option<String>,
     pub ordinal_position: i32,
     pub related_collection: Option<String>,
     pub relationship_type: Option<String>,
@@ -65,9 +61,14 @@ fn str_to_field_type(s: &str) -> FieldType {
 
 impl FieldRow {
     pub fn to_definition(&self) -> FieldDefinition {
-        let options: Option<Vec<FieldOption>> = self.options.as_ref()
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .filter(|v: &Vec<FieldOption>| !v.is_empty());
+        let options: Option<serde_json::Value> = self.options.clone()
+            .filter(|v| {
+                if let Some(arr) = v.as_array() {
+                    !arr.is_empty()
+                } else {
+                    true
+                }
+            });
 
         let inline_parent: Option<Vec<String>> = self.inline_parent_fields.as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -81,6 +82,8 @@ impl FieldRow {
             unique: self.unique_constraint,
             default: self.default_value.clone(),
             display_type: self.display_type.clone(),
+            input_component: self.input_component.clone(),
+            display_component: self.display_component.clone(),
             related_collection: self.related_collection.clone(),
             relationship_type: self.relationship_type.clone(),
             display_field: self.display_field.clone(),
@@ -93,8 +96,7 @@ impl FieldRow {
     }
 
     pub fn from_definition(def: &FieldDefinition, collection_name: &str, ordinal: i32) -> Self {
-        let options_json = def.options.as_ref()
-            .and_then(|v| serde_json::to_value(v).ok());
+        let options_json = def.options.clone();
         let inline_parent_json = def.inline_parent_fields.as_ref()
             .and_then(|v| serde_json::to_value(v).ok());
 
@@ -108,6 +110,8 @@ impl FieldRow {
             unique_constraint: def.unique,
             default_value: def.default.clone(),
             display_type: def.display_type.clone(),
+            input_component: def.input_component.clone(),
+            display_component: def.display_component.clone(),
             ordinal_position: ordinal,
             related_collection: def.related_collection.clone(),
             relationship_type: def.relationship_type.clone(),
@@ -129,7 +133,7 @@ pub async fn list_fields_in_tx(
 ) -> Result<Vec<FieldRow>, AppError> {
     let rows = sqlx::query_as::<_, FieldRow>(
         "SELECT id, collection_name, name, display_name, field_type, required, \
-         unique_constraint, default_value, display_type, ordinal_position, \
+         unique_constraint, default_value, display_type, input_component, display_component, ordinal_position, \
          related_collection, relationship_type, display_field, inline_parent_fields, \
          options, is_system, hidden, full_width, created_at, updated_at \
          FROM collection_fields \
@@ -148,7 +152,7 @@ pub async fn list_fields_in_tx(
 pub async fn list_fields(pool: &Pool, collection_name: &str) -> Result<Vec<FieldRow>, AppError> {
     let rows = sqlx::query_as::<_, FieldRow>(
         "SELECT id, collection_name, name, display_name, field_type, required, \
-         unique_constraint, default_value, display_type, ordinal_position, \
+         unique_constraint, default_value, display_type, input_component, display_component, ordinal_position, \
          related_collection, relationship_type, display_field, inline_parent_fields, \
          options, is_system, hidden, full_width, created_at, updated_at \
          FROM collection_fields \
@@ -199,13 +203,13 @@ pub async fn replace_fields_in_tx(
         let inserted = sqlx::query_as::<_, FieldRow>(
             "INSERT INTO collection_fields \
              (collection_name, name, display_name, field_type, required, unique_constraint, \
-              default_value, display_type, ordinal_position, related_collection, \
+              default_value, display_type, input_component, display_component, ordinal_position, related_collection, \
               relationship_type, display_field, inline_parent_fields, options, \
               is_system, hidden, full_width) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, \
-                     $15, $16, $17) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::jsonb, \
+                     $17, $18, $19) \
              RETURNING id, collection_name, name, display_name, field_type, required, \
-                       unique_constraint, default_value, display_type, ordinal_position, \
+                       unique_constraint, default_value, display_type, input_component, display_component, ordinal_position, \
                        related_collection, relationship_type, display_field, inline_parent_fields, \
                        options, is_system, hidden, full_width, created_at, updated_at"
         )
@@ -217,6 +221,8 @@ pub async fn replace_fields_in_tx(
         .bind(row.unique_constraint)
         .bind(&default_str)
         .bind(&row.display_type)
+        .bind(&row.input_component)
+        .bind(&row.display_component)
         .bind(row.ordinal_position)
         .bind(&row.related_collection)
         .bind(&row.relationship_type)

@@ -246,15 +246,22 @@ pub(crate) async fn update_collection_item(
                 Some(crate::db::collections::FieldType::Datetime) => {
                     format!("${}::timestamptz", idx)
                 }
+                Some(crate::db::collections::FieldType::File) => {
+                    format!("${}::uuid[]", idx)
+                }
                 _ => format!("${}", idx),
             };
             set_clauses.push(format!("{} = {}", q, placeholder));
-            bind_values.push(
-                scalar_fields
-                    .get(key.as_str())
-                    .cloned()
-                    .unwrap_or(Value::Null),
-            );
+            let raw_value = scalar_fields
+                .get(key.as_str())
+                .cloned()
+                .unwrap_or(Value::Null);
+            let value = if let Some(crate::db::collections::FieldType::File) = field_type {
+                crate::db::collection_items::coerce_value(raw_value, &crate::db::collections::FieldType::File)
+            } else {
+                raw_value
+            };
+            bind_values.push(value);
         }
 
         let id_idx = bind_values.len() as u32 + 1;
@@ -362,6 +369,44 @@ pub(crate) async fn update_collection_item(
         }
     }
     // --- End inline parent field updates ---
+
+    // Sync item_files for File fields being updated
+    let file_fields: Vec<&crate::db::collections::FieldDefinition> = collection
+        .fields
+        .iter()
+        .filter(|f| f.field_type == crate::db::collections::FieldType::File && body.contains_key(&f.name))
+        .collect();
+    if !file_fields.is_empty() {
+        for field_def in file_fields {
+            sqlx::query(
+                "DELETE FROM item_files WHERE item_id = $1::uuid AND field_name = $2",
+            )
+            .bind(&id)
+            .bind(&field_def.name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Failed to delete item_files: {}", e),
+            })?;
+
+            if let Some(raw) = body.get(&field_def.name) {
+                for fid in crate::db::collection_items::file_ids_from_value(raw) {
+                    sqlx::query(
+                        "INSERT INTO item_files (item_id, collection_name, field_name, file_id) VALUES ($1::uuid, $2, $3, $4::uuid) ON CONFLICT DO NOTHING"
+                    )
+                    .bind(&id)
+                    .bind(&name)
+                    .bind(&field_def.name)
+                    .bind(fid)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AppError::DatabaseError {
+                        details: format!("Failed to insert item_files link: {}", e),
+                    })?;
+                }
+            }
+        }
+    }
 
     tx.commit().await.map_err(|e| AppError::DatabaseError {
         details: format!("Transaction commit failed: {}", e),

@@ -16,6 +16,7 @@ const emit = defineEmits([
     "onFieldDragStart",
     "openFieldEditor",
     "onRemove",
+    "stoppedDragging",
 ]);
 </script>
 
@@ -39,28 +40,27 @@ const emit = defineEmits([
         draggable="true"
         class="group relative border rounded-lg px-3 py-0.5 transition-all cursor-grab active:cursor-grabbing border-gray-200 hover:border-blue-300 hover:shadow-sm"
         @dragstart="emit('onFieldDragStart', $event, field._key)"
+        @dragend="emit('stoppedDragging')"
     >
         <div class="flex items-center justify-between">
-            <div class="flex items-center gap-1.5 min-w-0">
+            <div class="flex items-center gap-1.5 min-w-0 h-9 grow">
                 <span
-                    v-if="!field.is_system"
                     class="text-gray-300 group-hover:text-gray-400 text-xs cursor-grab select-none"
                     >&#9776;</span
                 >
-                <span
-                    v-else
-                    class="material-symbols-outlined text-gray-300 text-sm"
-                    >lock</span
+                <label class="block text-xs font-medium truncate text-gray-600">
+                    <FieldNameLabel :field="field" />
+                    <span v-if="field.required" class="text-red-400 ml-0.5">
+                        *
+                    </span>
+                </label>
+                <div
+                    v-if="field.is_system"
+                    class="material-symbols-outlined text-gray-600 text-sm ml-auto"
+                    v-tooltip.bottom="'System fields cannot be editted'"
                 >
-                <label
-                    class="block text-xs font-medium truncate"
-                    :class="field.is_system ? 'text-gray-400' : 'text-gray-600'"
-                    ><FieldNameLabel :field="field" /><span
-                        v-if="field.required"
-                        class="text-red-400 ml-0.5"
-                        >*</span
-                    ></label
-                >
+                    lock
+                </div>
             </div>
             <div class="flex items-center gap-0.5" v-if="!field.is_system">
                 <Button

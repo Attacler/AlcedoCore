@@ -37,11 +37,17 @@ async fn test_e2e_nested_field_selection() {
     let p = td.pool();
 
     create_coll(p, "e2e_authors", vec![
-        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
     ]).await;
     create_coll(p, "e2e_articles", vec![
-        FieldDefinition { name: "title".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
-        FieldDefinition { name: "author_id".into(), field_type: FieldType::Relationship, required: false, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: Some("e2e_authors".into()), relationship_type: Some("many_to_one".into()), display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "title".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "author_id".into(), field_type: FieldType::Relationship, required: false, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: Some("e2e_authors".into()), relationship_type: Some("many_to_one".into()), display_field: None, inline_parent_fields: None },
     ]).await;
 
     // Create test data via raw SQL
@@ -92,11 +98,17 @@ async fn test_e2e_relational_crud() {
     let p = td.pool();
 
     create_coll(p, "e2e_orgs", vec![
-        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
     ]).await;
     create_coll(p, "e2e_contacts", vec![
-        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
-        FieldDefinition { name: "org_id".into(), field_type: FieldType::Relationship, required: false, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: Some("e2e_orgs".into()), relationship_type: Some("many_to_one".into()), display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "org_id".into(), field_type: FieldType::Relationship, required: false, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: Some("e2e_orgs".into()), relationship_type: Some("many_to_one".into()), display_field: None, inline_parent_fields: None },
     ]).await;
 
     // Inline M:1 create via relational_crud
@@ -131,11 +143,17 @@ async fn test_e2e_display_field() {
     let p = td.pool();
 
     create_coll(p, "e2e_depts", vec![
-        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
     ]).await;
     create_coll(p, "e2e_emps", vec![
-        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
-        FieldDefinition { name: "dept_id".into(), field_type: FieldType::Relationship, required: false, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: Some("e2e_depts".into()), relationship_type: Some("many_to_one".into()), display_field: Some("name".into()), inline_parent_fields: None },
+        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "dept_id".into(), field_type: FieldType::Relationship, required: false, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: Some("e2e_depts".into()), relationship_type: Some("many_to_one".into()), display_field: Some("name".into()), inline_parent_fields: None },
     ]).await;
 
     // Create test data
@@ -173,7 +191,7 @@ async fn test_e2e_relational_sections() {
 
     sqlx::query(
         "INSERT INTO collection_sections (collection_name, name, relation_field, view_type, item_limit, ordinal_position) VALUES ($1, $2, $3, $4, $5, $6)"
-    ).bind("e2e_test_coll").bind("Test Section").bind("rel_field").bind("table").bind(25).bind(1)
+    ).bind("e2e_test_coll").bind("Test Section").bind("children.parent").bind("table").bind(25).bind(1)
     .execute(p).await.unwrap();
 
     let rows: Vec<(String, String, String)> = sqlx::query_as(
@@ -182,6 +200,7 @@ async fn test_e2e_relational_sections() {
 
     assert_eq!(rows.len(), 1, "Should have 1 section");
     assert_eq!(rows[0].0, "Test Section", "Name should match");
+    assert_eq!(rows[0].1, "children.parent", "relation_field should be namespaced '<collection>.<field>'");
 
     println!("TEST-05 passed: relational sections");
 }
@@ -198,12 +217,20 @@ async fn test_e2e_parent_field_inlining() {
     let p = td.pool();
 
     create_coll(p, "e2e_companies", vec![
-        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
-        FieldDefinition { name: "website".into(), field_type: FieldType::String, required: false, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "website".into(), field_type: FieldType::String, required: false, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
     ]).await;
     create_coll(p, "e2e_staff", vec![
-        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
-        FieldDefinition { name: "company_id".into(), field_type: FieldType::Relationship, required: false, unique: false, default: None, display_name: None, display_type: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: Some("e2e_companies".into()), relationship_type: Some("many_to_one".into()), display_field: None, inline_parent_fields: Some(vec!["name".into(), "website".into()]) },
+        FieldDefinition { name: "name".into(), field_type: FieldType::String, required: true, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: None, relationship_type: None, display_field: None, inline_parent_fields: None },
+        FieldDefinition { name: "company_id".into(), field_type: FieldType::Relationship, required: false, unique: false, default: None, display_name: None, display_type: None,
+                        input_component: None,
+                        display_component: None, options: None, is_system: false, hidden: false, full_width: false, related_collection: Some("e2e_companies".into()), relationship_type: Some("many_to_one".into()), display_field: None, inline_parent_fields: Some(vec!["name".into(), "website".into()]) },
     ]).await;
 
     // Verify inline_parent_fields in collection definition

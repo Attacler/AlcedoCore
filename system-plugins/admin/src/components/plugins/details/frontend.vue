@@ -19,19 +19,9 @@ async function loadFrontendManifest() {
         frontendLoading,
         frontendError,
         async () => {
-            const assets = await store.fetchPluginAssets(
+            const module = await store.fetchPluginAssets(
                 route.params.name as string,
             );
-            if (!assets?.js) {
-                frontendManifest.value = null;
-                return;
-            }
-            const blob = new Blob([assets.js], {
-                type: "application/javascript",
-            });
-            const url = URL.createObjectURL(blob);
-            const module = await import(/* @vite-ignore */ url);
-            URL.revokeObjectURL(url);
             frontendManifest.value = module.default || null;
         },
         "Failed to load frontend assets",

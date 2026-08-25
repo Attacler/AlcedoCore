@@ -36,7 +36,9 @@ async function handleSave() {
     }
     saving.value = true;
     try {
-        const payload = validFields.map((f, i) => {
+        const payload = validFields
+            .filter((f) => !f.is_system)
+            .map((f, i) => {
             const p: any = {
                 name: f.name,
                 display_name: f.display_name || null,
@@ -45,10 +47,12 @@ async function handleSave() {
                 unique: f.unique,
                 default_value: f.default_value,
                 display_type: f.display_type,
+                input_component: f.input_component,
+                display_component: f.display_component,
                 ordinal_position: i + 1,
             };
             const a = f as any;
-            if (a.full_width) p.full_width = true;
+
             if (a.related_collection) {
                 p.related_collection = a.related_collection;
                 p.relationship_type = a.relationship_type;
@@ -74,27 +78,46 @@ async function handleSave() {
             saving.value = false;
             return;
         }
+
         for (const section of props.sections) {
             if (section.id) {
+                const sectionType = section.section_type || "field_group";
+                const sectionPayload: any = {
+                    name: section.name,
+                    section_type: sectionType,
+                    ordinal_position: section.ordinal_position,
+                    default_filter: null,
+                };
+                if (sectionType === "field_group") {
+                    sectionPayload.display_fields =
+                        section.display_fields || [];
+                    sectionPayload.relation_field = null;
+                    sectionPayload.view_type = null;
+                    sectionPayload.item_limit = null;
+                    sectionPayload.default_filter =
+                        (section._columns ?? 0) > 1
+                            ? {
+                                  _columns: section._columns,
+                                  _field_columns:
+                                      section._field_columns || {},
+                              }
+                            : null;
+                } else {
+                    sectionPayload.display_fields = null;
+                    sectionPayload.relation_field =
+                        section.relation_field || "";
+                    sectionPayload.view_type =
+                        section.view_type || "table";
+                    sectionPayload.item_limit = section.item_limit || 25;
+                    sectionPayload.default_filter =
+                        section.default_filter || null;
+                }
                 await store
                     .updateLayoutSection(
                         props.collectionName,
                         props.activeLayoutId,
                         section.id,
-                        {
-                            name: section.name,
-                            section_type: "field_group",
-                            display_fields: section.display_fields || [],
-                            ordinal_position: section.ordinal_position,
-                            default_filter:
-                                (section._columns ?? 0) > 1
-                                    ? {
-                                          _columns: section._columns,
-                                          _field_columns:
-                                              section._field_columns || {},
-                                      }
-                                    : null,
-                        },
+                        sectionPayload,
                     )
                     .catch((e: any) =>
                         console.warn(

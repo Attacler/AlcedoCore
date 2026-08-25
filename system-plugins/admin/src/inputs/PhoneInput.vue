@@ -1,7 +1,30 @@
 <script setup lang="ts">
-defineProps<{ field?: any }>()
+const props = withDefaults(
+    defineProps<{
+        field?: any;
+        modelValue?: any;
+        invalid?: boolean | string;
+        readonly?: boolean;
+    }>(),
+    {
+        modelValue: "",
+    },
+);
+
+const emit = defineEmits<{
+    "update:modelValue": [value: string];
+}>();
 </script>
 
 <template>
-  <InputMask :placeholder="'Phone'" mask="(999) 999-9999" fluid class="text-sm" />
+    <InputText
+        :modelValue="props.modelValue ?? ''"
+        @update:modelValue="emit('update:modelValue', $event ?? '')"
+        type="tel"
+        placeholder="+1 (555) 000-0000"
+        :invalid="!!invalid"
+        :readonly="readonly"
+        fluid
+        class="text-sm"
+    />
 </template>

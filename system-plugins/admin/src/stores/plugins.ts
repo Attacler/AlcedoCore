@@ -9,15 +9,19 @@ import type {
 } from "alcedocore-sdk-node";
 import { useAlcedoClient } from "../composables/useAlcedoClient";
 import { withAsyncHandlingVoid } from "../utils/asyncUtils";
+import TableViewSettings from "@/views/TableViewSettings.vue";
+import TableView from "@/views/TableView.vue";
+import CardsView from "@/views/CardsView.vue";
+import KanbanView from "@/views/KanbanView.vue";
+import KanbanViewSettings from "@/views/KanbanViewSettings.vue";
+import CardsViewSettings from "@/views/CardsViewSettings.vue";
 
-// Re-export types for external use
 export type {
     Plugin,
     PluginSchemaResponse,
     MigrationStatus,
 } from "alcedocore-sdk-node";
 
-// Store-specific interface extending SDK types
 export interface PluginStore extends Omit<Plugin, "type"> {
     plugin_type: "system" | "user";
     description?: string;
@@ -25,6 +29,7 @@ export interface PluginStore extends Omit<Plugin, "type"> {
     name: string;
     created_at?: string;
     updated_at?: string;
+    registry?: string | null;
     endpoints?: Record<string, EndpointInfo>;
     settings?: {
         env_vars?: Record<string, string>;
@@ -35,7 +40,6 @@ export interface PluginStore extends Omit<Plugin, "type"> {
     documentation?: string[];
 }
 
-// Endpoint info from the plugin record
 export interface EndpointInfo {
     method: string;
     path?: string;
@@ -49,17 +53,6 @@ export interface SettingsRequest {
     capabilities?: Record<string, unknown>;
 }
 
-// Backend MigrationStatus response (wire format from /api/plugins/:slug/migrations)
-//
-// This type is intentionally NOT the SDK's `MigrationStatus`. The backend returns
-// additional fields the SDK type does not model:
-//   - `filename` (the .sql file basename)
-//   - `status` ('applied' | 'pending' human-readable label)
-//   - `applied` (boolean) and `applied_at` (RFC3339 timestamp)
-//   - `has_down` (whether a corresponding down migration exists)
-//   - `schema` (the Postgres schema name)
-// The store exposes the SDK shape to views via `mapMigration()` (see below);
-// richer fields are kept on the wire type for the few call-sites that need them.
 interface BackendMigrationStatus {
     version: string;
     name: string;
@@ -72,7 +65,6 @@ interface BackendMigrationStatus {
     schema: string;
 }
 
-// Backend page info (may include sidebar)
 interface BackendPageInfo {
     path: string;
     label: string;
@@ -80,7 +72,6 @@ interface BackendPageInfo {
     sidebar?: boolean;
 }
 
-// Backend schema response (different column format)
 interface BackendTableInfo {
     table_name: string;
     columns: {
@@ -108,7 +99,6 @@ interface BackendSchemaResponse {
     tables: BackendTableInfo[];
 }
 
-// Log entry from API
 export interface RequestLogEntry {
     request_uuid: string;
     plugin_name: string;
@@ -139,7 +129,6 @@ export interface LogDetailResponse {
     host_calls: HostCallEntry[];
 }
 
-// Docker info response from API
 export interface DockerInfoResponse {
     image: string;
     image_id: string;
@@ -150,13 +139,11 @@ export interface DockerInfoResponse {
     status: string;
 }
 
-// Version item from registry
 export interface VersionItem {
     tag: string;
     size: number;
 }
 
-// List versions response
 export interface ListVersionsResponse {
     versions: VersionItem[];
 }
@@ -215,6 +202,7 @@ function mapBackendPlugin(backendPlugin: {
     updated_at?: string;
     endpoints?: Record<string, EndpointInfo>;
     documentation?: string[];
+    registry?: string | null;
 }): PluginStore {
     return {
         name: backendPlugin.slug || backendPlugin.name || "",
@@ -235,6 +223,7 @@ function mapBackendPlugin(backendPlugin: {
         description: backendPlugin.description,
         created_at: backendPlugin.created_at,
         updated_at: backendPlugin.updated_at,
+        registry: backendPlugin.registry ?? null,
         endpoints: backendPlugin.endpoints,
         documentation: backendPlugin.documentation,
     };
@@ -283,7 +272,6 @@ function mapMigration(
     };
 }
 
-// Map backend page to SDK format
 function mapPage(backendPage: BackendPageInfo): SdkPluginPage {
     return {
         path: backendPage.path,
@@ -297,28 +285,26 @@ export const usePluginsStore = defineStore("plugins", () => {
     const { client } = useAlcedoClient();
     const extensionRegistry = useExtensionRegistryStore();
 
-    const plugins = ref<PluginStore[]>([]);
-    const currentPlugin = ref<PluginStore | null>(null);
-    const loading = ref(false);
-    const error = ref<string | null>(null);
-    const pluginPagesMap = ref<Record<string, SdkPluginPage[]>>({});
-    const pluginLoading = ref(false);
-    const pluginError = ref<string | null>(null);
-    const developerApiKeys = ref<any[]>([]);
+    const plugins = ref<PluginStore[]>([]),
+        currentPlugin = ref<PluginStore | null>(null),
+        loading = ref(false),
+        error = ref<string | null>(null),
+        pluginPagesMap = ref<Record<string, SdkPluginPage[]>>({}),
+        pluginLoading = ref(false);
 
-    const totalPlugins = computed(() => plugins.value.length);
-    const enabledPlugins = computed(() =>
-        plugins.value.filter((p) => p.status === "enabled"),
-    );
-    const disabledPlugins = computed(() =>
-        plugins.value.filter((p) => p.status === "disabled"),
-    );
-    const systemPlugins = computed(() =>
-        plugins.value.filter((p) => p.plugin_type === "system"),
-    );
-    const userPlugins = computed(() =>
-        plugins.value.filter((p) => p.plugin_type === "user"),
-    );
+    const totalPlugins = computed(() => plugins.value.length),
+        enabledPlugins = computed(() =>
+            plugins.value.filter((p) => p.status === "enabled"),
+        ),
+        disabledPlugins = computed(() =>
+            plugins.value.filter((p) => p.status === "disabled"),
+        ),
+        systemPlugins = computed(() =>
+            plugins.value.filter((p) => p.plugin_type === "system"),
+        ),
+        userPlugins = computed(() =>
+            plugins.value.filter((p) => p.plugin_type === "user"),
+        );
 
     async function fetchPlugins() {
         await withAsyncHandlingVoid(loading, error, async () => {
@@ -330,12 +316,9 @@ export const usePluginsStore = defineStore("plugins", () => {
             const pluginArray = pluginList.map(mapBackendPlugin);
             plugins.value = pluginArray;
             await nextTick();
-            console.log(
-                JSON.parse(JSON.stringify(pluginArray)),
-                pluginArray.map((e) => e.status),
-            );
+
             for (const enabledPlugin of pluginArray.filter(
-                (e) => e.status == "enabled",
+                (e: any) => e.status == "enabled",
             )) {
                 console.log({ enabledPlugin });
                 if (!enabledPlugin.name) continue;
@@ -346,12 +329,12 @@ export const usePluginsStore = defineStore("plugins", () => {
                     if (!load.default) continue;
                     console.log(enabledPlugin.name, { load });
 
-                    for (const input of load.default.inputs) {
-                        console.log(input);
+                    for (const input of load.default.inputs || []) {
                         extensionRegistry.registerInputWidget({
                             component: input.component,
                             label: input.label,
-                            supportedFieldTypes: [],
+                            supportedFieldTypes:
+                                input.supportedFieldTypes || [],
                             pluginSlug: enabledPlugin.name,
                             type: input.name,
                             settingsComponent: input.settingsComponent,
@@ -360,10 +343,61 @@ export const usePluginsStore = defineStore("plugins", () => {
                             custom: true,
                         });
                     }
+
+                    for (const display of load.default.displays || []) {
+                        extensionRegistry.registerDisplayWidget({
+                            component: display.component,
+                            label: display.label,
+                            supportedFieldTypes:
+                                display.supportedFieldTypes || [],
+                            preferredInputs: display.preferredInputs,
+                            pluginSlug: enabledPlugin.name,
+                            type: display.name,
+                            settingsComponent: display.settingsComponent,
+                            group: display.group || "Custom",
+                            icon: display.icon,
+                            custom: true,
+                        });
+                    }
+
+                    for (const page of load.default.pages || []) {
+                        extensionRegistry.registerNavItem({
+                            component: page.component,
+                            icon: page.icon,
+                            label: page.label,
+                            pluginSlug: enabledPlugin.name,
+                            path: page.path,
+                            sidebar: page.sidebar || true,
+                        });
+                    }
                 } catch (e) {
                     console.error(e);
                 }
             }
+
+            extensionRegistry.registerViewType({
+                component: TableView,
+                label: "Table",
+                pluginSlug: "system",
+                type: "table",
+                settingsComponent: TableViewSettings,
+            });
+
+            extensionRegistry.registerViewType({
+                component: CardsView,
+                label: "Cards",
+                pluginSlug: "system",
+                type: "cards",
+                settingsComponent: CardsViewSettings,
+            });
+
+            extensionRegistry.registerViewType({
+                component: KanbanView,
+                label: "Kanban",
+                pluginSlug: "system",
+                type: "kanban",
+                settingsComponent: KanbanViewSettings,
+            });
         });
     }
 
@@ -377,54 +411,19 @@ export const usePluginsStore = defineStore("plugins", () => {
         await fetchPlugins();
     }
 
-    async function uninstallPlugin(name: string) {
-        await client.plugins.uninstall(name);
-        await fetchPlugins();
-    }
-
     async function deletePlugin(name: string) {
         await client.plugins.delete(name);
         await fetchPlugins();
     }
 
-    async function installPlugin(formData: FormData) {
-        const zipFile = formData.get("zip") as File;
-        await client.plugins.install(zipFile);
-        await fetchPlugins();
-    }
-
-    async function createPlugin(formData: FormData): Promise<PluginStore> {
-        const response = await client.plugins.create(formData);
-        await fetchPlugins();
-        return response;
-    }
-
-    async function addFromRegistry(
-        slug: string,
-        image: string,
-    ): Promise<PluginStore> {
-        const data = await client.plugins.createFromRegistry({
-            slug,
-            image,
-            status: "disabled",
-        });
-        await fetchPlugins();
-        return data.data;
-    }
-
     async function fetchPluginDetail(name: string): Promise<PluginStore> {
         pluginLoading.value = true;
-        pluginError.value = null;
         try {
             const response = await client.plugins.get(name);
             const detail = response?.data || response;
             currentPlugin.value = mapBackendPlugin(detail);
             return currentPlugin.value;
         } catch (e) {
-            pluginError.value =
-                e instanceof Error
-                    ? e.message
-                    : "Failed to fetch plugin detail";
             throw e;
         } finally {
             pluginLoading.value = false;
@@ -474,8 +473,17 @@ export const usePluginsStore = defineStore("plugins", () => {
         const url = URL.createObjectURL(blob);
         const module = await import(/* @vite-ignore */ url);
         URL.revokeObjectURL(url);
-        console.log(name, { module });
-        // debugger;
+
+        const existingCSS = document.querySelector("style[cid='" + name + "']");
+
+        if (existingCSS) existingCSS.remove();
+
+        if (assets.css) {
+            const style = document.createElement("style");
+            style.innerHTML = assets.css;
+            style.setAttribute("cid", name);
+            document.head.appendChild(style);
+        }
         return module;
     }
 
@@ -511,7 +519,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         };
     }
 
-    // DOCS-03/API: list available documentation for a plugin
     async function fetchPluginDocs(name: string): Promise<{
         plugin: string;
         docs: Array<{ path: string; size: number }>;
@@ -520,7 +527,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         return response.data || { plugin: name, docs: [] };
     }
 
-    // DOCS-04/API: fetch a specific doc's markdown content
     async function fetchDocContent(
         name: string,
         docPath: string,
@@ -529,7 +535,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         return content;
     }
 
-    // LOGS-01/API: fetch request logs for a plugin
     async function fetchPluginLogs(
         name: string,
         options?: {
@@ -550,7 +555,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         return response.data || { logs: [], next_cursor: null };
     }
 
-    // LOGS-02/API: fetch log detail with host calls
     async function fetchPluginLogDetail(
         name: string,
         requestId: string,
@@ -559,7 +563,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         return response.data || { request: null as any, host_calls: [] };
     }
 
-    // DOCKER-01/API: fetch Docker image info for a plugin
     async function fetchPluginDockerInfo(
         name: string,
     ): Promise<{ data?: DockerInfoResponse }> {
@@ -567,7 +570,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         return response as { data?: DockerInfoResponse };
     }
 
-    // VERSIONS-01/API: fetch available versions from registry for a plugin
     async function fetchPluginVersions(
         name: string,
     ): Promise<ListVersionsResponse> {
@@ -575,7 +577,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         return response.data || { versions: [] };
     }
 
-    // VERSIONS-02/API: deploy a specific version by tag
     async function deployPluginVersion(
         name: string,
         tag: string,
@@ -584,13 +585,11 @@ export const usePluginsStore = defineStore("plugins", () => {
         return response as { data?: { status: string } };
     }
 
-    // INSTANCES-01/API: list all instances for a plugin
     async function fetchPluginInstances(slug: string): Promise<InstanceInfo[]> {
         const json = await client.plugins.instances(slug);
         return json.data?.instances || [];
     }
 
-    // INSTANCES-02/API: get detail for a specific instance
     async function fetchInstanceDetail(
         slug: string,
         taskId: string,
@@ -599,7 +598,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         return json.data;
     }
 
-    // INSTANCES-03/API: get CPU/memory stats snapshot for an instance
     async function fetchInstanceStats(
         slug: string,
         taskId: string,
@@ -608,7 +606,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         return json.data;
     }
 
-    // INSTANCES-04/API: get logs for a specific instance
     async function fetchInstanceLogs(
         slug: string,
         taskId: string,
@@ -616,7 +613,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         return (await client.plugins.instanceLogs(slug, taskId)) as string[];
     }
 
-    // INSTANCES-05/API: scale a plugin to a given number of replicas
     async function scalePlugin(
         slug: string,
         replicas: number,
@@ -635,13 +631,11 @@ export const usePluginsStore = defineStore("plugins", () => {
         return await client.plugins.restart(name, containerId);
     }
 
-    // SCOPES-01: fetch scopes for a plugin
     async function fetchPluginScopes(slug: string): Promise<ScopesResponse> {
         const json = await client.plugins.scopes(slug);
         return json.data || { requested_scopes: [], granted_scopes: [] };
     }
 
-    // SCOPES-02: update granted scopes
     async function updatePluginScopes(
         slug: string,
         scopes: string[],
@@ -653,9 +647,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         plugins,
         loading,
         error,
-        currentPlugin,
-        pluginLoading,
-        pluginError,
         totalPlugins,
         enabledPlugins,
         disabledPlugins,
@@ -664,11 +655,7 @@ export const usePluginsStore = defineStore("plugins", () => {
         fetchPlugins,
         enablePlugin,
         disablePlugin,
-        uninstallPlugin,
         deletePlugin,
-        installPlugin,
-        createPlugin,
-        addFromRegistry,
         fetchPluginDetail,
         fetchPluginSchema,
         fetchPluginMigrations,
@@ -694,7 +681,6 @@ export const usePluginsStore = defineStore("plugins", () => {
         scalePlugin,
         fetchPluginScopes,
         updatePluginScopes,
-        developerApiKeys,
         restartPlugin,
     };
 });

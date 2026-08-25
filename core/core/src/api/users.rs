@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
-    routing::{delete, get, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -33,12 +33,19 @@ pub struct UpdateUserRequest {
     pub password: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
 pub fn users_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/users", get(list_users_handler).post(create_user_handler))
         .route("/api/users/:id", get(get_user_handler))
         .route("/api/users/:id", put(update_user_handler))
         .route("/api/users/:id", delete(delete_user_handler))
+        .route("/api/users/:id/password", post(change_password_handler))
         .with_state(state)
 }
 
@@ -607,4 +614,47 @@ pub async fn delete_user_handler(
             Ok(Json(json!({ "success": true })))
         }
     }
+}
+
+pub async fn change_password_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> Result<Json<Value>, AppError> {
+    let pool = state.db()?;
+
+    let caller_id = permission_check::extract_user_id_from_session(&state, &headers).await?;
+    let is_self = caller_id == Some(id);
+    let is_admin = permission_check::require_scope(&state, &headers, "users.all").await.is_ok();
+
+    if !is_self && !is_admin {
+        return Err(AppError::Forbidden("You can only change your own password".to_string()));
+    }
+
+    if payload.new_password.len() < 8 {
+        return Err(AppError::BadRequest("Password must be at least 8 characters".to_string()));
+    }
+
+    let current_hash: String = sqlx::query_scalar(
+        r#"SELECT password_hash FROM users WHERE id = $1"#
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("User not found: {}", id)))?;
+
+    let valid = auth::verify_password(&payload.current_password, &current_hash).await?;
+    if !valid {
+        return Err(AppError::BadRequest("Current password is incorrect".to_string()));
+    }
+
+    let new_hash = auth::hash_password(&payload.new_password).await?;
+    sqlx::query(r#"UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2"#)
+        .bind(&new_hash)
+        .bind(id)
+        .execute(pool)
+        .await?;
+
+    Ok(Json(json!({ "success": true })))
 }

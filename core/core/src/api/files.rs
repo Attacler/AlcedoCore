@@ -273,12 +273,12 @@ pub async fn upload_file(
                 filename
             )));
         }
-    } else if let Some(fid) = folder_id {
+    } else {
         let existing = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, storage_path FROM file_metadata WHERE filename = $1 AND folder_id = $2",
+            "SELECT id, storage_path FROM file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2",
         )
         .bind(&filename)
-        .bind(fid)
+        .bind(folder_id)
         .fetch_optional(db_pool)
         .await
         .map_err(|e| AppError::DatabaseError {

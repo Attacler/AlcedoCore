@@ -37,9 +37,7 @@ const quickAddMenuItems = computed(() => {
         },
     }));
 
-    const enabledPlugins =
-        pluginsStore.plugins?.filter((p: any) => p.status === "enabled") || [];
-    const pluginPages = enabledPlugins.flatMap((plugin) => {
+    const pluginPages = pluginsStore.enabledPlugins.flatMap((plugin) => {
         const pages = pluginsStore.getCachedPluginPages(plugin.name) || [];
         return pages.map((p) => ({
             label: `${plugin.displayName || plugin.name}: ${p.label}`,

@@ -5,11 +5,12 @@ import { useCollectionsStore } from "@/stores/collections";
 import { useMenuStore } from "@/stores/menuStore";
 import type { MenuSection, MenuItem } from "@/types/menu";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { useViewRegistryStore } from "@/stores/viewRegistry";
 import { useAuthStore } from "@/stores/authStore";
-import { useRoute, useRouter } from "vue-router";
+import { useRouter } from "vue-router";
 import ToastContainer from "@/components/ToastContainer.vue";
-import { Toast } from "primevue";
+import SplashScreen from "@/components/SplashScreen.vue";
+import { Message, Toast } from "primevue";
+import { useDevServerStore } from "@/stores/devServerStore";
 
 const authStore = useAuthStore(),
     router = useRouter(),
@@ -17,7 +18,7 @@ const authStore = useAuthStore(),
     collectionsStore = useCollectionsStore(),
     menuStore = useMenuStore(),
     settingsStore = useSettingsStore(),
-    viewRegistry = useViewRegistryStore();
+    devStore = useDevServerStore();
 
 const fullPage = computed(
     () => router.currentRoute.value.meta.fullPage || false,
@@ -35,7 +36,6 @@ const filteredSections = computed(() => {
     return [...menuStore.mergedSections];
 });
 
-/** Settings-mode sidebar sections */
 const settingsSections = computed<MenuSection[]>(() => {
     const sections: MenuSection[] = [];
 
@@ -226,11 +226,6 @@ function visibleSectionItems(section: { items: any[]; visible: boolean }) {
     return section.items.filter((i: any) => i.visible !== false);
 }
 
-/**
- * Resolve the route for a menu item.
- * External items use their url directly (handled via router-link :to).
- * Internal items use their route path.
- */
 function resolveItemRoute(item: {
     route?: string;
     url?: string;
@@ -247,8 +242,43 @@ onMounted(() => {
 
     settingsStore.fetchSettings();
     collectionsStore.fetchCollections();
-    viewRegistry.discoverViews();
+    pluginsStore.fetchPlugins();
+    bootStarted.value = true;
 });
+
+const bootStarted = ref(false);
+const booting = ref(true);
+const bootStartTime = Date.now();
+const MIN_SPLASH_MS = 10;
+
+watch(
+    () => [
+        authStore.initialized,
+        bootStarted.value,
+        collectionsStore.loading,
+        settingsStore.loading,
+        menuStore.loading,
+        pluginsStore.loading,
+    ],
+    () => {
+        if (
+            booting.value &&
+            authStore.initialized &&
+            bootStarted.value &&
+            !collectionsStore.loading &&
+            !settingsStore.loading &&
+            !menuStore.loading &&
+            !pluginsStore.loading
+        ) {
+            const remaining = Math.max(
+                0,
+                MIN_SPLASH_MS - (Date.now() - bootStartTime),
+            );
+            setTimeout(() => (booting.value = false), remaining);
+        }
+    },
+    { immediate: true },
+);
 
 onUnmounted(() => {
     window.removeEventListener("resize", checkMobile);
@@ -257,7 +287,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <div class="flex flex-col min-h-screen bg-gray-100">
+    <SplashScreen
+        v-if="booting"
+        :site-name="branding.siteName"
+        :logo-url="branding.logoUrl"
+    />
+    <div class="flex flex-col min-h-screen bg-gray-100" v-else>
         <!-- Fixed Sidebar (desktop) / Drawer (mobile) -->
         <aside
             class="fixed left-0 top-0 h-dvh bg-slate-800 text-white z-40 flex flex-col transition-all duration-300"
@@ -436,6 +471,16 @@ onUnmounted(() => {
                 v-if="authStore.user"
                 class="border-t border-slate-700 px-3 py-2"
             >
+                <routerLink to="/settings/developer">
+                    <Message
+                        v-if="devStore.enabled"
+                        :severity="devStore.connected ? 'success' : 'error'"
+                        class="mb-2"
+                    >
+                        Devmode:
+                        {{ devStore.connected ? "Connected" : "Disconnected" }}
+                    </Message>
+                </routerLink>
                 <div
                     class="flex items-center gap-2"
                     :class="{ 'justify-center': collapsed && !isMobile }"

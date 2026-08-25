@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@chialab/esbuild-plugin-postcss": "^1.0.1",
+    "@types/express": "^5.0.6",
     "chalk": "^4.1.2",
     "check-disk-space": "^3.4.0",
     "chokidar": "^5.0.0",
@@ -23,6 +24,7 @@
     "detect-port": "^2.1.0",
     "dotenv": "^17.4.2",
     "ejs": "^3.1.9",
+    "express": "^5.2.1",
     "inquirer": "^8.2.7",
     "ora": "^5.4.1",
     "unplugin-vue": "^7.2.0"

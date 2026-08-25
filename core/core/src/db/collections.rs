@@ -43,6 +43,15 @@ pub struct FieldDefinition {
     /// Maps to the display/input widget type (e.g. "single-line", "pick-list")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_type: Option<String>,
+    /// Explicit input widget used when editing this field (e.g. "email",
+    /// "number", "file"). When unset, the input is resolved from the field type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_component: Option<String>,
+    /// Explicit display widget used when rendering this field read-only
+    /// (e.g. "email", "currency", "file-list"). When unset, the display is
+    /// resolved from the field type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_component: Option<String>,
     /// For Relationship fields: the referenced collection name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub related_collection: Option<String>,
@@ -55,9 +64,11 @@ pub struct FieldDefinition {
     /// For Relationship fields: list of parent fields to show inline on child record detail
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_parent_fields: Option<Vec<String>>,
-    /// For pick-list/multi-select: list of label/value options
+    /// Field-specific options. For pick-list/multi-select this is an array of
+    /// label/value options; for file fields it is an object (e.g. multiple,
+    /// max_file_size, allowed_mime_types).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub options: Option<Vec<fields::FieldOption>>,
+    pub options: Option<serde_json::Value>,
 
     #[serde(default)]
     pub is_system: bool,

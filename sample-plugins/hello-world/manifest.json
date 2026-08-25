@@ -1,6 +1,6 @@
 {
     "name": "hello-world",
-    "version": "0.0.7.5",
+    "version": "0.0.8.1",
     "plugin_type": "docker",
     "system_plugin": false,
     "scopes": [

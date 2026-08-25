@@ -1,29 +1,29 @@
 import { createRouter, createWebHashHistory, RouteRecordRaw } from "vue-router";
 import { useAuthStore } from "@/stores/authStore";
-import LoginView from "@/views/LoginView.vue";
-import Dashboard from "@/views/Dashboard.vue";
-import PluginList from "@/views/plugins/PluginList.vue";
-import PluginCreate from "@/views/plugins/PluginCreate.vue";
-import PluginDetail from "@/views/plugins/PluginDetail.vue";
-import PluginSettings from "@/views/plugins/PluginSettings.vue";
-import PluginPage from "@/views/plugins/PluginPage.vue";
-import RegistryList from "@/views/RegistryList.vue";
-import RegistryDetail from "@/views/RegistryDetail.vue";
-import CollectionList from "@/views/CollectionList.vue";
-import CollectionData from "@/views/CollectionData.vue";
-import RecordDetail from "@/views/RecordDetail.vue";
-import PoliciesIndex from "@/views/PoliciesIndex.vue";
-import PolicyDetail from "@/views/PolicyDetail.vue";
-import UsersIndex from "@/views/UsersIndex.vue";
-import UserDetail from "@/views/UserDetail.vue";
-import RolesIndex from "@/views/RolesIndex.vue";
-import RoleDetail from "@/views/RoleDetail.vue";
-import SettingsIndex from "@/views/Settings/SettingsIndex.vue";
-import SettingsActivity from "@/views/Settings/SettingsActivity.vue";
-import SettingsCategory from "@/views/Settings/SettingsCategory.vue";
-import MediaLibrary from "@/views/MediaLibrary.vue";
-import ApiDocs from "@/views/ApiDocs.vue";
-import CollectionBuilder from "@/views/CollectionBuilder.vue";
+import LoginView from "@/pages/LoginView.vue";
+import Dashboard from "@/pages/Dashboard.vue";
+import PluginList from "@/pages/plugins/PluginList.vue";
+import PluginCreate from "@/pages/plugins/PluginCreate.vue";
+import PluginDetail from "@/pages/plugins/PluginDetail.vue";
+import PluginSettings from "@/pages/plugins/PluginSettings.vue";
+import PluginPage from "@/pages/plugins/PluginPage.vue";
+import RegistryList from "@/pages/RegistryList.vue";
+import RegistryDetail from "@/pages/RegistryDetail.vue";
+import CollectionList from "@/pages/CollectionList.vue";
+import CollectionData from "@/pages/CollectionData.vue";
+import RecordDetail from "@/pages/RecordDetail.vue";
+import PoliciesIndex from "@/pages/PoliciesIndex.vue";
+import PolicyDetail from "@/pages/PolicyDetail.vue";
+import UsersIndex from "@/pages/UsersIndex.vue";
+import UserDetail from "@/pages/UserDetail.vue";
+import RolesIndex from "@/pages/RolesIndex.vue";
+import RoleDetail from "@/pages/RoleDetail.vue";
+import SettingsIndex from "@/pages/Settings/SettingsIndex.vue";
+import SettingsActivity from "@/pages/Settings/SettingsActivity.vue";
+import SettingsCategory from "@/pages/Settings/SettingsCategory.vue";
+import MediaLibrary from "@/pages/MediaLibrary.vue";
+import ApiDocs from "@/pages/ApiDocs.vue";
+import CollectionBuilder from "@/pages/CollectionBuilder.vue";
 
 const routes: RouteRecordRaw[] = [
     {
@@ -153,7 +153,6 @@ const routes: RouteRecordRaw[] = [
         path: "/settings/:category",
         name: "SettingsCategory",
         component: SettingsCategory,
-        props: true,
     },
     {
         path: "/files",

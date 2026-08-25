@@ -4,20 +4,12 @@ import ItemsPage from "./ItemsPage.vue";
 import ExampleView from "./ExampleView.vue";
 import ExampleCollectionView from "./ExampleCollectionView.vue";
 import StarRatingInput from "./StarRatingInput.vue";
-import ColorBadgeDisplay from "./ColorBadgeDisplay.vue";
-
-export {
-    IndexPage,
-    CounterPage,
-    ItemsPage,
-    ExampleView,
-    ExampleCollectionView,
-    StarRatingInput,
-    ColorBadgeDisplay,
-};
+import StarRatingDisplay from "./StarRatingDisplay.vue";
+import TestDisplay from "./TestDisplay.vue";
+import TestDisplaySettings from "./TestDisplaySettings.vue";
 
 export default {
-    manifestVersion: 1,
+    manifestVersion: 2,
     pluginSlug: "hello-world",
     pages: [
         {
@@ -63,14 +55,27 @@ export default {
             icon: "star_half",
             component: StarRatingInput,
             group: "Number",
+            supportedFieldTypes: ["int"],
         },
     ],
     displays: [
         {
-            name: "color-badge",
-            label: "Color Badge",
-            icon: "colorize",
-            component: ColorBadgeDisplay,
+            name: "star-rating",
+            label: "Star Rating",
+            icon: "star_half",
+            component: StarRatingDisplay,
+            supportedFieldTypes: ["int"],
+            preferredInputs: ["star-rating", "number"],
+        },
+        {
+            name: "test-display",
+            label: "Test Display",
+            group: "Dev Test",
+            icon: "box",
+            component: TestDisplay,
+            settingsComponent: TestDisplaySettings,
+            supportedFieldTypes: ["int"],
+            preferredInputs: ["number"],
         },
     ],
 };

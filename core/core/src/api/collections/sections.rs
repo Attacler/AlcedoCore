@@ -77,6 +77,48 @@ async fn verify_layout_belongs_to_collection(
     Ok(())
 }
 
+/// Validate that a relational section's relation_field is in the namespaced
+/// "<childCollection>.<field>" format, where the field is a relationship on the
+/// child collection that references the current collection.
+async fn validate_relational_relation_field(
+    db_pool: &sqlx::PgPool,
+    collection_name: &str,
+    relation_field: Option<&str>,
+) -> Result<(), AppError> {
+    let rel_field = relation_field.unwrap_or("");
+    if rel_field.is_empty() {
+        return Err(AppError::BadRequest("relation_field is required for relational sections".to_string()));
+    }
+    let (child_col, field_name) = match rel_field.split_once('.') {
+        Some(pair) if !pair.0.is_empty() && !pair.1.is_empty() => pair,
+        _ => {
+            return Err(AppError::BadRequest(
+                "relation_field must be '<collection>.<field>' (a relationship field on the child collection)".to_string(),
+            ));
+        }
+    };
+    let child = match collections::get_collection(db_pool, child_col).await {
+        Ok(c) => c,
+        Err(_) => {
+            return Err(AppError::BadRequest(format!(
+                "'{}' is not a valid collection", child_col
+            )));
+        }
+    };
+    let has_field = child.fields.iter().any(|f| {
+        f.name == field_name
+            && f.field_type == crate::db::collections::FieldType::Relationship
+            && f.related_collection.as_deref() == Some(collection_name)
+    });
+    if !has_field {
+        return Err(AppError::BadRequest(format!(
+            "'{}' is not a relationship field on '{}' referencing '{}'",
+            field_name, child_col, collection_name
+        )));
+    }
+    Ok(())
+}
+
 /// GET /api/collections/:name/layouts/:layout_id/sections
 pub(crate) async fn list_layout_sections(
     State(state): State<Arc<AppState>>,
@@ -163,51 +205,7 @@ pub(crate) async fn create_layout_section(
     let section_type = if body.section_type.is_empty() { "relational".to_string() } else { body.section_type.clone() };
 
     if section_type == "relational" {
-        let collection = collections::get_collection(db_pool, &name).await?;
-        let rel_field = body.relation_field.as_deref().unwrap_or("");
-        if rel_field.is_empty() {
-            return Err(AppError::BadRequest("relation_field is required for relational sections".to_string()));
-        }
-        // Support both relation field locations:
-        //  - Namespaced "<childCollection>.<field>": the field is a relationship
-        //    on the CHILD collection that references this collection (e.g.
-        //    "contacts.customer" on the "customers" detail page).
-        //  - Legacy bare field name: a relationship field on THIS collection.
-        if let Some((child_col, field_name)) = rel_field.split_once('.') {
-            if child_col.is_empty() || field_name.is_empty() {
-                return Err(AppError::BadRequest(
-                    "relation_field must be '<collection>.<field>' or a relationship field on the current collection".to_string(),
-                ));
-            }
-            let child = match collections::get_collection(db_pool, child_col).await {
-                Ok(c) => c,
-                Err(_) => {
-                    return Err(AppError::BadRequest(format!(
-                        "'{}' is not a valid collection", child_col
-                    )));
-                }
-            };
-            let has_field = child.fields.iter().any(|f| {
-                f.name == field_name
-                    && f.field_type == crate::db::collections::FieldType::Relationship
-                    && f.related_collection.as_deref() == Some(name.as_str())
-            });
-            if !has_field {
-                return Err(AppError::BadRequest(format!(
-                    "'{}' is not a relationship field on '{}' referencing '{}'",
-                    field_name, child_col, name
-                )));
-            }
-        } else {
-            let has_field = collection.fields.iter().any(|f| {
-                f.name == rel_field && f.field_type == crate::db::collections::FieldType::Relationship
-            });
-            if !has_field {
-                return Err(AppError::BadRequest(format!(
-                    "'{}' is not a relationship field on '{}'", rel_field, name
-                )));
-            }
-        }
+        validate_relational_relation_field(db_pool, &name, body.relation_field.as_deref()).await?;
     }
 
     let max_pos = sqlx::query_as::<_, (Option<i32>,)>(
@@ -255,6 +253,11 @@ pub(crate) async fn update_layout_section(
 
     let _pc = permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
     verify_layout_belongs_to_collection(db_pool, &layout_id, &name).await?;
+
+    let section_type = if body.section_type.is_empty() { "relational".to_string() } else { body.section_type.clone() };
+    if section_type == "relational" {
+        validate_relational_relation_field(db_pool, &name, body.relation_field.as_deref()).await?;
+    }
 
     let result = sqlx::query(
         "UPDATE collection_sections SET name = $1, section_type = $2, relation_field = $3, view_type = $4, default_filter = $5, display_fields = $6, item_limit = $7, updated_at = NOW() WHERE id::text = $8 AND layout_id = (SELECT id FROM collection_layouts WHERE id::text = $9)"
