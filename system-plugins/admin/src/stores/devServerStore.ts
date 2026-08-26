@@ -43,6 +43,7 @@ export const useDevServerStore = defineStore("devServer", () => {
 
     function connect() {
         enabled.value = true;
+
         if (eventSource.value) {
             eventSource.value.close();
         }
@@ -79,6 +80,7 @@ export const useDevServerStore = defineStore("devServer", () => {
             eventSource.value = null;
         }
         connected.value = false;
+
         resetDevState();
     }
 

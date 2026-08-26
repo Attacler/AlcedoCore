@@ -1,12 +1,5 @@
 <script setup lang="ts">
-import {
-    onMounted,
-    onUnmounted,
-    ref,
-    shallowRef,
-    computed,
-    type Component,
-} from "vue";
+import { onMounted, ref, shallowRef, computed, type Component } from "vue";
 import { useRoute } from "vue-router";
 import { useDevServerStore } from "@/stores/devServerStore";
 import { useExtensionRegistryStore } from "@/stores/extensionRegistry";
@@ -85,12 +78,6 @@ onMounted(async () => {
     );
 
     fetchPageInfo();
-
-    devServerStore.connect();
-});
-
-onUnmounted(() => {
-    devServerStore.disconnect();
 });
 </script>
 

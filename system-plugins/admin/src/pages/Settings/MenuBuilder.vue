@@ -333,9 +333,8 @@ onMounted(async () => {
         await loadMenuForEditing(allMenus.value[0].id);
     }
     collectionsStore.fetchCollections();
-    const enabled =
-        pluginsStore.plugins?.filter((p: any) => p.status === "enabled") || [];
-    for (const plugin of enabled) {
+
+    for (const plugin of pluginsStore.enabledPlugins) {
         pluginsStore.fetchPluginPages(plugin.name).catch(() => {});
     }
 });
