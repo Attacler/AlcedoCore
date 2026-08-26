@@ -153,6 +153,7 @@ const routes: RouteRecordRaw[] = [
         path: "/settings/:category",
         name: "SettingsCategory",
         component: SettingsCategory,
+        props: true,
     },
     {
         path: "/files",
