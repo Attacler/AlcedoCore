@@ -146,9 +146,14 @@ pub fn make_router(
     router = router.layer(axum::middleware::from_fn_with_state(state.clone(), crate::middleware::auth::auth_middleware));
     // Rate limit middleware — inner layer (runs after CORS, before auth)
     router = router.layer(axum::middleware::from_fn_with_state(state, crate::middleware::rate_limit::rate_limit_middleware));
-    // Security headers middleware — outermost layer, applied to all responses
+    // Security headers middleware — applied to all responses
     router = router.layer(axum::middleware::from_fn(
         crate::middleware::security_headers::security_headers_middleware,
+    ));
+    // Request ID middleware — outermost layer: extracts/echoes X-Request-ID
+    // (response header + RequestId extension) for tracing and plugin auth.
+    router = router.layer(axum::middleware::from_fn(
+        crate::middleware::request_id::request_id_middleware,
     ));
     // CORS middleware — handles preflight before auth/rate-limit
     let cors_origins = std::env::var("CORS_ORIGINS")

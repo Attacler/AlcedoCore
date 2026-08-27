@@ -1,12 +1,4 @@
-export {
-    AlcedoError,
-    ConnectionError,
-    NotFoundError,
-    ValidationError,
-    AuthenticationError,
-    ServerError,
-    createClient,
-} from "./client";
+export { createClient } from "./client";
 export type { ClientOptions } from "./client";
 
 export { createHealthResource } from "./health";

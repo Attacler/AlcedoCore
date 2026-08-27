@@ -211,16 +211,10 @@ onMounted(() => {
                             </template>
                         </Column>
                         <Column
-                            field="target"
-                            header="Target"
-                            :sortable="true"
-                        />
-                        <Column
                             field="collection_name"
                             header="Collection"
                             :sortable="true"
                         />
-                        <Column field="description" header="Description" />
                         <Column header="" style="width: 3rem">
                             <template #body>
                                 <Button
@@ -309,11 +303,6 @@ onMounted(() => {
                         <Column
                             field="target"
                             header="Target"
-                            :sortable="true"
-                        />
-                        <Column
-                            field="collection_name"
-                            header="Collection"
                             :sortable="true"
                         />
                         <Column field="description" header="Description" />

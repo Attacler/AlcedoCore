@@ -1,13 +1,5 @@
 import { ref, readonly } from "vue";
-import {
-    createClient,
-    AlcedoError,
-    NotFoundError,
-    ValidationError,
-    AuthenticationError,
-    ServerError,
-    ConnectionError,
-} from "alcedocore-sdk-node";
+import { createClient } from "alcedocore-sdk-node";
 
 const isConnected = ref(true);
 
@@ -31,12 +23,3 @@ export function useAlcedoClient(devServerUrl?: string) {
         assets,
     };
 }
-
-export {
-    AlcedoError,
-    NotFoundError,
-    ValidationError,
-    AuthenticationError,
-    ServerError,
-    ConnectionError,
-};

@@ -36,7 +36,6 @@ export interface FieldDefinition {
     inline_parent_fields?: string[];
     options?: FieldOption[] | Record<string, any>;
     is_system?: boolean;
-    hidden?: boolean;
     child_field?: string;
     _key?: string;
     _tempName?: string;
@@ -67,7 +66,6 @@ export interface Collection {
     created_at?: string;
     updated_at?: string;
     is_system?: boolean;
-    display_options?: Record<string, any>;
 }
 
 export interface CollectionLayout {

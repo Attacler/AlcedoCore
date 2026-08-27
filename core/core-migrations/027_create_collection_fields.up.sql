@@ -16,7 +16,6 @@ CREATE TABLE collection_fields (
     options JSONB DEFAULT '[]'::jsonb,
     is_system BOOLEAN NOT NULL DEFAULT false,
     hidden BOOLEAN NOT NULL DEFAULT false,
-    full_width BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(collection_name, name)
@@ -28,7 +27,7 @@ CREATE INDEX idx_collection_fields_ordinal ON collection_fields(collection_name,
 INSERT INTO collection_fields (
     collection_name, name, display_name, field_type, required, unique_constraint,
     default_value, display_type, ordinal_position, related_collection,
-    relationship_type, display_field, inline_parent_fields, is_system, hidden, full_width
+    relationship_type, display_field, inline_parent_fields, is_system, hidden
 )
 SELECT
     cd.name,
@@ -46,7 +45,6 @@ SELECT
     COALESCE(f.value->'inline_parent_fields', '[]'::jsonb),
     COALESCE((f.value->>'is_system')::boolean, false),
     COALESCE((f.value->>'hidden')::boolean, false),
-    COALESCE((f.value->>'full_width')::boolean, false)
 FROM collection_definitions cd,
 LATERAL jsonb_array_elements(cd.fields) WITH ORDINALITY AS f(value, ordinality);
 

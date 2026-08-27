@@ -1,108 +1,128 @@
 {
-    "name": "hello-world",
-    "version": "0.0.8.1",
-    "plugin_type": "docker",
-    "system_plugin": false,
-    "scopes": [
-        {
-            "name": "kv.all",
-            "description": "Read/write KV store for counter and TTL demos"
-        },
-        { "name": "items.all", "description": "Read/write collection items" },
-        {
-            "name": "db.query",
-            "description": "Execute SQL queries on plugin schema"
-        },
-        {
-            "name": "db.execute",
-            "description": "Execute SQL writes on plugin schema"
-        }
-    ],
-    "image": "local/static",
-    "env": {},
-    "resources": {},
-    "pages": [
-        { "label": "Hello", "path": "/", "sidebar": true },
-        { "label": "Counter", "path": "/counter", "sidebar": true },
-        { "label": "DB Items", "path": "/items", "sidebar": true }
-    ],
-    "endpoints": [
-        {
-            "method": "GET",
-            "path": "/health",
-            "description": "Health check endpoint"
-        },
-        {
-            "method": "GET",
-            "path": "/api/hello",
-            "description": "Returns greeting message"
-        },
-        {
-            "method": "GET",
-            "path": "/api/version",
-            "description": "Plugin version and feature info"
-        },
-        {
-            "method": "GET",
-            "path": "/api/counter/value",
-            "description": "Read persistent counter via AlcedoKV SDK"
-        },
-        {
-            "method": "POST",
-            "path": "/api/counter/increment",
-            "description": "Increment persistent counter"
-        },
-        {
-            "method": "POST",
-            "path": "/api/counter/decrement",
-            "description": "Decrement persistent counter"
-        },
-        {
-            "method": "GET",
-            "path": "/api/kv/ttl-demo",
-            "description": "Demonstrates TTL-based key expiry via AlcedoKV"
-        },
-        {
-            "method": "GET",
-            "path": "/api/kv/hello",
-            "description": "Reads a KV entry via AlcedoKV SDK"
-        },
-        {
-            "method": "GET",
-            "path": "/api/items/{path}",
-            "description": "List items from a collection"
-        },
-        {
-            "method": "POST",
-            "path": "/api/items/{path}",
-            "description": "Create an item in a collection"
-        },
-        {
-            "method": "PUT",
-            "path": "/api/items/{path}",
-            "description": "Update an item in a collection"
-        },
-        {
-            "method": "DELETE",
-            "path": "/api/items/{path}",
-            "description": "Delete an item from a collection"
-        }
-    ],
-    "settings_schema": {
-        "type": "object",
-        "properties": {
-            "greeting": {
-                "type": "string",
-                "title": "Greeting Message",
-                "default": "Hello from the admin plugin!",
-                "description": "Custom greeting message displayed on the hello world page"
-            },
-            "refresh_interval": {
-                "type": "integer",
-                "title": "Refresh Interval",
-                "default": 30,
-                "description": "Auto-refresh interval in seconds"
-            }
-        }
+  "name": "hello-world",
+  "version": "0.0.8.1",
+  "plugin_type": "docker",
+  "system_plugin": false,
+  "scopes": [
+    {
+      "name": "kv.all",
+      "description": "Read/write KV store for counter and TTL demos"
+    },
+    {
+      "name": "items.all",
+      "description": "Read/write collection items"
+    },
+    {
+      "name": "db.query",
+      "description": "Execute SQL queries on plugin schema"
+    },
+    {
+      "name": "db.execute",
+      "description": "Execute SQL writes on plugin schema"
     }
+  ],
+  "image": "local/static",
+  "env": {},
+  "resources": {},
+  "pages": [
+    {
+      "label": "Hello",
+      "path": "/",
+      "sidebar": true
+    },
+    {
+      "label": "Counter",
+      "path": "/counter",
+      "sidebar": true
+    },
+    {
+      "label": "DB Items",
+      "path": "/items",
+      "sidebar": true
+    },
+    {
+      "label": "TestPage",
+      "path": "/test-page",
+      "sidebar": true
+    }
+  ],
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/health",
+      "description": "Health check endpoint"
+    },
+    {
+      "method": "GET",
+      "path": "/api/hello",
+      "description": "Returns greeting message"
+    },
+    {
+      "method": "GET",
+      "path": "/api/version",
+      "description": "Plugin version and feature info"
+    },
+    {
+      "method": "GET",
+      "path": "/api/counter/value",
+      "description": "Read persistent counter via AlcedoKV SDK"
+    },
+    {
+      "method": "POST",
+      "path": "/api/counter/increment",
+      "description": "Increment persistent counter"
+    },
+    {
+      "method": "POST",
+      "path": "/api/counter/decrement",
+      "description": "Decrement persistent counter"
+    },
+    {
+      "method": "GET",
+      "path": "/api/kv/ttl-demo",
+      "description": "Demonstrates TTL-based key expiry via AlcedoKV"
+    },
+    {
+      "method": "GET",
+      "path": "/api/kv/hello",
+      "description": "Reads a KV entry via AlcedoKV SDK"
+    },
+    {
+      "method": "GET",
+      "path": "/api/items/{path}",
+      "description": "List items from a collection"
+    },
+    {
+      "method": "POST",
+      "path": "/api/items/{path}",
+      "description": "Create an item in a collection"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/items/{path}",
+      "description": "Update an item in a collection"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/items/{path}",
+      "description": "Delete an item from a collection"
+    }
+  ],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "greeting": {
+        "type": "string",
+        "title": "Greeting Message",
+        "default": "Hello from the admin plugin!",
+        "description": "Custom greeting message displayed on the hello world page"
+      },
+      "refresh_interval": {
+        "type": "integer",
+        "title": "Refresh Interval",
+        "default": 30,
+        "description": "Auto-refresh interval in seconds"
+      }
+    }
+  }
 }

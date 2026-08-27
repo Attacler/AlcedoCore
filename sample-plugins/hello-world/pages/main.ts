@@ -7,6 +7,7 @@ import StarRatingInput from "./StarRatingInput.vue";
 import StarRatingDisplay from "./StarRatingDisplay.vue";
 import TestDisplay from "./TestDisplay.vue";
 import TestDisplaySettings from "./TestDisplaySettings.vue";
+import TestPage from "./test-page.vue";
 
 export default {
     manifestVersion: 2,
@@ -32,6 +33,13 @@ export default {
             icon: "database",
             sidebar: true,
             component: ItemsPage,
+        },
+        {
+            path: "/test-page",
+            label: "Items",
+            icon: "database",
+            sidebar: true,
+            component: TestPage,
         },
     ],
     views: [

@@ -5,10 +5,10 @@
 //!
 //! 71-nested-field-selection-api
 
-use std::collections::HashSet;
 use crate::db::collections::{CollectionDefinition, FieldDefinition, FieldType};
 use crate::db::filter_compiler::quote;
 use crate::error::AppError;
+use std::collections::HashSet;
 
 /// Options for field resolution.
 pub struct FieldResolverOptions {
@@ -96,16 +96,15 @@ pub fn resolve_nested_fields(
     }
 
     // Re-filter to paths with dots after wildcard expansion
-    let expanded_dot: Vec<String> = expanded.into_iter()
-        .filter(|p| p.contains('.'))
-        .collect();
+    let expanded_dot: Vec<String> = expanded.into_iter().filter(|p| p.contains('.')).collect();
 
     if expanded_dot.is_empty() {
         return Ok(Vec::new());
     }
 
     // Group by first segment
-    let mut groups: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     for path in &expanded_dot {
         let dot_pos = path.find('.').unwrap_or(path.len());
         let first = path[..dot_pos].to_string();
@@ -115,13 +114,18 @@ pub fn resolve_nested_fields(
     let mut fragments = Vec::new();
     for (first_segment, paths) in groups {
         // Cycle detection
-        if options.visited.contains(&(base_collection.to_string(), first_segment.clone())) {
+        if options
+            .visited
+            .contains(&(base_collection.to_string(), first_segment.clone()))
+        {
             return Err(AppError::BadRequest(format!(
                 "Circular reference detected at path segment '{}' on collection '{}'",
                 first_segment, base_collection
             )));
         }
-        options.visited.insert((base_collection.to_string(), first_segment.clone()));
+        options
+            .visited
+            .insert((base_collection.to_string(), first_segment.clone()));
 
         // Depth limit
         if options.visited.len() > options.depth_limit {
@@ -168,7 +172,12 @@ fn resolve_group(
         })?;
 
     // Detect relationship direction
-    let direction = detect_direction(first_segment, current_collection, current_def, all_collections)?;
+    let direction = detect_direction(
+        first_segment,
+        current_collection,
+        current_def,
+        all_collections,
+    )?;
 
     // When backlink=false, skip reverse (1:M) relations instead of resolving them.
     // This prevents circular reference explosion during wildcard expansion while
@@ -185,12 +194,24 @@ fn resolve_group(
 
     // Determine target collection and column metadata
     let (target_collection, fk_column, _pk_column) = match &direction {
-        Direction::ManyToOne { target_collection, fk_column, target_pk_column } => {
-            (target_collection.clone(), fk_column.clone(), target_pk_column.clone())
-        }
-        Direction::OneToMany { target_collection, fk_column, base_pk_column } => {
-            (target_collection.clone(), fk_column.clone(), base_pk_column.clone())
-        }
+        Direction::ManyToOne {
+            target_collection,
+            fk_column,
+            target_pk_column,
+        } => (
+            target_collection.clone(),
+            fk_column.clone(),
+            target_pk_column.clone(),
+        ),
+        Direction::OneToMany {
+            target_collection,
+            fk_column,
+            base_pk_column,
+        } => (
+            target_collection.clone(),
+            fk_column.clone(),
+            base_pk_column.clone(),
+        ),
     };
 
     // Strip prefix from all paths to get suffixes
@@ -212,12 +233,20 @@ fn resolve_group(
 
     // Build the subquery fragment according to direction
     match direction {
-        Direction::ManyToOne { .. } => Ok(
-            build_m2o_subquery(&entries, &target_collection, &fk_column, current_collection, first_segment)
-        ),
-        Direction::OneToMany { .. } => Ok(
-            build_o2m_subquery(&entries, &target_collection, &fk_column, current_collection, first_segment)
-        ),
+        Direction::ManyToOne { .. } => Ok(build_m2o_subquery(
+            &entries,
+            &target_collection,
+            &fk_column,
+            current_collection,
+            first_segment,
+        )),
+        Direction::OneToMany { .. } => Ok(build_o2m_subquery(
+            &entries,
+            &target_collection,
+            &fk_column,
+            current_collection,
+            first_segment,
+        )),
     }
 }
 
@@ -238,13 +267,11 @@ fn collect_json_entries(
     options: &mut FieldResolverOptions,
 ) -> Result<Vec<JsonEntry>, AppError> {
     // Split each suffix into segments
-    let segments_list: Vec<Vec<&str>> = suffixes
-        .iter()
-        .map(|s| s.split('.').collect())
-        .collect();
+    let segments_list: Vec<Vec<&str>> = suffixes.iter().map(|s| s.split('.').collect()).collect();
 
     // Group by first segment of each suffix
-    let mut groups: std::collections::HashMap<&str, Vec<Vec<&str>>> = std::collections::HashMap::new();
+    let mut groups: std::collections::HashMap<&str, Vec<Vec<&str>>> =
+        std::collections::HashMap::new();
     for segs in &segments_list {
         if segs.is_empty() || (segs.len() == 1 && segs[0].is_empty()) {
             continue;
@@ -327,14 +354,18 @@ fn detect_direction(
     all_collections: &[CollectionDefinition],
 ) -> Result<Direction, AppError> {
     // 1. Try M:1 forward or 1:M reverse: segment is a relationship field on current collection
-    if let Some(field) = current_def.fields.iter().find(|f| {
-        f.name == segment && f.field_type == FieldType::Relationship
-    }) {
+    if let Some(field) = current_def
+        .fields
+        .iter()
+        .find(|f| f.name == segment && f.field_type == FieldType::Relationship)
+    {
         if let Some(ref target) = field.related_collection {
             match field.relationship_type.as_deref() {
                 Some("one_to_many") => {
                     // O2M: FK is on the target collection pointing back to us
-                    if let Some(target_def) = all_collections.iter().find(|c| c.name == target.as_str()) {
+                    if let Some(target_def) =
+                        all_collections.iter().find(|c| c.name == target.as_str())
+                    {
                         if let Some(reverse_field) = target_def.fields.iter().find(|f| {
                             f.field_type == FieldType::Relationship
                                 && f.related_collection.as_deref() == Some(current_collection)
@@ -615,7 +646,6 @@ mod tests {
                         display_field: None,
                         inline_parent_fields: None,
                         options: None,
-                        full_width: false,
                         is_system: false,
                         hidden: false,
                     },
@@ -634,12 +664,10 @@ mod tests {
                         display_field: None,
                         inline_parent_fields: None,
                         options: None,
-                        full_width: false,
                         is_system: false,
                         hidden: false,
                     },
                 ],
-                display_options: None,
                 is_system: false,
                 plugin_slug: None,
                 created_at: None,
@@ -664,7 +692,6 @@ mod tests {
                         display_field: None,
                         inline_parent_fields: None,
                         options: None,
-                        full_width: false,
                         is_system: false,
                         hidden: false,
                     },
@@ -683,12 +710,10 @@ mod tests {
                         display_field: None,
                         inline_parent_fields: None,
                         options: None,
-                        full_width: false,
                         is_system: false,
                         hidden: false,
                     },
                 ],
-                display_options: None,
                 is_system: false,
                 plugin_slug: None,
                 created_at: None,
@@ -713,7 +738,6 @@ mod tests {
                         display_field: None,
                         inline_parent_fields: None,
                         options: None,
-                        full_width: false,
                         is_system: false,
                         hidden: false,
                     },
@@ -732,12 +756,10 @@ mod tests {
                         display_field: None,
                         inline_parent_fields: None,
                         options: None,
-                        full_width: false,
                         is_system: false,
                         hidden: false,
                     },
                 ],
-                display_options: None,
                 is_system: false,
                 plugin_slug: None,
                 created_at: None,
@@ -763,7 +785,8 @@ mod tests {
             visited: HashSet::new(),
         };
 
-        let fragments = resolve_nested_fields(&fields, "articles", &collections, &mut options).unwrap();
+        let fragments =
+            resolve_nested_fields(&fields, "articles", &collections, &mut options).unwrap();
         assert_eq!(fragments.len(), 1);
         assert_eq!(fragments[0].alias, alias);
         let clause = &fragments[0].select_clause;
@@ -781,11 +804,18 @@ mod tests {
             visited: HashSet::new(),
         };
 
-        let fragments = resolve_nested_fields(&fields, "articles", &collections, &mut options).unwrap();
+        let fragments =
+            resolve_nested_fields(&fields, "articles", &collections, &mut options).unwrap();
         // Should expand to author.* and produce at least author fragment
-        assert!(!fragments.is_empty(), "Expected at least one fragment from wildcard");
+        assert!(
+            !fragments.is_empty(),
+            "Expected at least one fragment from wildcard"
+        );
         let has_author = fragments.iter().any(|f| f.alias == "author");
-        assert!(has_author, "Expected 'author' fragment from wildcard expansion");
+        assert!(
+            has_author,
+            "Expected 'author' fragment from wildcard expansion"
+        );
     }
 
     #[test]
@@ -795,9 +825,7 @@ mod tests {
         let mut options = FieldResolverOptions {
             depth_limit: 5,
             backlink: true,
-            visited: HashSet::from([
-                ("articles".to_string(), "author".to_string()),
-            ]),
+            visited: HashSet::from([("articles".to_string(), "author".to_string())]),
         };
 
         let result = resolve_nested_fields(&fields, "articles", &collections, &mut options);
@@ -820,8 +848,13 @@ mod tests {
             visited: HashSet::new(),
         };
 
-        let fragments = resolve_nested_fields(&fields, "articles", &collections, &mut options).unwrap();
-        assert_eq!(fragments.len(), 1, "Both fields on same relation should produce one fragment");
+        let fragments =
+            resolve_nested_fields(&fields, "articles", &collections, &mut options).unwrap();
+        assert_eq!(
+            fragments.len(),
+            1,
+            "Both fields on same relation should produce one fragment"
+        );
         assert_eq!(fragments[0].alias, "author");
         assert!(fragments[0].select_clause.contains("'name'"));
         assert!(fragments[0].select_clause.contains("'email'"));

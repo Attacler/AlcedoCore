@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use uuid::Uuid;
 use crate::db::fields;
 use crate::db::Pool;
 use crate::error::AppError;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use uuid::Uuid;
 
 /// The supported field types per COLL-07, plus Relationship (Phase 27) and Boolean
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
@@ -28,6 +28,7 @@ pub enum FieldType {
 
 /// A single field in a collection definition per COLL-08
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+
 pub struct FieldDefinition {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,20 +76,16 @@ pub struct FieldDefinition {
 
     #[serde(default)]
     pub hidden: bool,
-
-    #[serde(default)]
-    pub full_width: bool,
 }
 
 /// Full collection definition as stored in collection_definitions table
 #[derive(Debug, Clone, Serialize, Deserialize)]
+
 pub struct CollectionDefinition {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub fields: Vec<FieldDefinition>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_options: Option<serde_json::Value>,
     #[serde(default)]
     pub is_system: bool,
 
@@ -101,6 +98,7 @@ pub struct CollectionDefinition {
 
 /// A group of items that reference a given item through a relationship field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+
 pub struct ReferencingGroup {
     /// The collection that contains the reference
     pub collection_name: String,
@@ -112,8 +110,15 @@ pub struct ReferencingGroup {
     pub items: Vec<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+
+pub struct UpdateCollectionMetaDataResponse {
+    success: bool,
+}
+
 /// POST /api/collections request body
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+
 pub struct CreateCollectionRequest {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,6 +129,7 @@ pub struct CreateCollectionRequest {
 
 /// PUT /api/collections/:name request body
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+
 pub struct UpdateCollectionRequest {
     pub fields: Vec<FieldDefinition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -131,8 +137,12 @@ pub struct UpdateCollectionRequest {
 }
 
 const RESERVED_TABLE_NAMES: &[&str] = &[
-    "plugins", "plugin_versions", "registries", "request_logs",
-    "schema_migrations", "collection_definitions",
+    "plugins",
+    "plugin_versions",
+    "registries",
+    "request_logs",
+    "schema_migrations",
+    "collection_definitions",
     "_sqlx_migrations",
 ];
 
@@ -142,11 +152,14 @@ const RESERVED_TABLE_NAMES: &[&str] = &[
 /// - No reserved system table names
 pub fn validate_collection_name(name: &str) -> Result<(), AppError> {
     if name.is_empty() {
-        return Err(AppError::BadRequest("Collection name cannot be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "Collection name cannot be empty".to_string(),
+        ));
     }
     if name.len() > 59 {
         return Err(AppError::BadRequest(format!(
-            "Collection name too long: {} chars (max 59)", name.len()
+            "Collection name too long: {} chars (max 59)",
+            name.len()
         )));
     }
     let re = regex::Regex::new(r"^[a-z][a-z0-9_]*$").unwrap();
@@ -158,7 +171,8 @@ pub fn validate_collection_name(name: &str) -> Result<(), AppError> {
     }
     if RESERVED_TABLE_NAMES.contains(&name) {
         return Err(AppError::BadRequest(format!(
-            "Collection name '{}' is a reserved system table name", name
+            "Collection name '{}' is a reserved system table name",
+            name
         )));
     }
     Ok(())
@@ -167,11 +181,14 @@ pub fn validate_collection_name(name: &str) -> Result<(), AppError> {
 /// Validate field names: alphanumeric + underscore, starts with letter, no reserved names
 pub fn validate_field_name(name: &str) -> Result<(), AppError> {
     if name.is_empty() {
-        return Err(AppError::BadRequest("Field name cannot be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "Field name cannot be empty".to_string(),
+        ));
     }
     if name.len() > 59 {
         return Err(AppError::BadRequest(format!(
-            "Field name too long: {} chars (max 59)", name.len()
+            "Field name too long: {} chars (max 59)",
+            name.len()
         )));
     }
     let re = regex::Regex::new(r"^[a-zA-Z][a-zA-Z0-9_]*$").unwrap();
@@ -185,7 +202,8 @@ pub fn validate_field_name(name: &str) -> Result<(), AppError> {
     let reserved_fields = ["id", "created_at", "updated_at"];
     if reserved_fields.contains(&name) {
         return Err(AppError::BadRequest(format!(
-            "Field name '{}' is reserved for implicit system columns", name
+            "Field name '{}' is reserved for implicit system columns",
+            name
         )));
     }
     Ok(())
@@ -194,21 +212,27 @@ pub fn validate_field_name(name: &str) -> Result<(), AppError> {
 /// Validate all fields in a collection creation/update request
 pub fn validate_fields(fields: &[FieldDefinition]) -> Result<(), AppError> {
     if fields.is_empty() {
-        return Err(AppError::BadRequest("Collection must have at least one field".to_string()));
+        return Err(AppError::BadRequest(
+            "Collection must have at least one field".to_string(),
+        ));
     }
     let mut seen = std::collections::HashSet::new();
     for field in fields {
         validate_field_name(&field.name)?;
         if !seen.insert(field.name.clone()) {
             return Err(AppError::BadRequest(format!(
-                "Duplicate field name: '{}'", field.name
+                "Duplicate field name: '{}'",
+                field.name
             )));
         }
 
         // Validate relationship fields (Phase 27)
         if field.field_type == FieldType::Relationship {
             if field.related_collection.is_none()
-                || field.related_collection.as_ref().map_or(true, |c| c.is_empty())
+                || field
+                    .related_collection
+                    .as_ref()
+                    .map_or(true, |c| c.is_empty())
             {
                 return Err(AppError::BadRequest(format!(
                     "Relationship field '{}' must have a related_collection specified",
@@ -254,8 +278,8 @@ pub async fn list_accessible_collections(
         return Ok(vec![]);
     };
 
-    let rows = sqlx::query_as::<_, (String, Option<String>, serde_json::Value, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        r#"SELECT DISTINCT cd.name, cd.display_name, cd.display_options, cd.is_system, cd.plugin_slug, cd.created_at, cd.updated_at
+    let rows = sqlx::query_as::<_, (String, Option<String>, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
+        r#"SELECT DISTINCT cd.name, cd.display_name, cd.is_system, cd.plugin_slug, cd.created_at, cd.updated_at
            FROM collection_definitions cd
            JOIN policy_permissions pp ON pp.collection_name = cd.name
            JOIN role_policies rp ON rp.policy_id = pp.policy_id
@@ -269,14 +293,13 @@ pub async fn list_accessible_collections(
     .map_err(|e| AppError::DatabaseError { details: format!("Failed to list accessible collections: {}", e) })?;
 
     let mut collections = Vec::new();
-    for (name, display_name, display_opts, is_system, plugin_slug, created_at, updated_at) in rows {
+    for (name, display_name, is_system, plugin_slug, created_at, updated_at) in rows {
         let field_rows = fields::list_fields(pool, &name).await?;
         let fields: Vec<FieldDefinition> = field_rows.iter().map(|r| r.to_definition()).collect();
         collections.push(CollectionDefinition {
             name,
             display_name,
             fields,
-            display_options: Some(display_opts),
             is_system,
             plugin_slug,
             created_at: Some(created_at),
@@ -288,22 +311,21 @@ pub async fn list_accessible_collections(
 
 /// List all collection definitions
 pub async fn list_collections(pool: &Pool) -> Result<Vec<CollectionDefinition>, AppError> {
-    let rows = sqlx::query_as::<_, (String, Option<String>, serde_json::Value, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "SELECT name, display_name, display_options, is_system, plugin_slug, created_at, updated_at FROM collection_definitions ORDER BY updated_at DESC"
+    let rows = sqlx::query_as::<_, (String, Option<String>,  bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
+        "SELECT name, display_name, is_system, plugin_slug, created_at, updated_at FROM collection_definitions ORDER BY updated_at DESC"
     )
     .fetch_all(pool)
     .await
     .map_err(|e| AppError::DatabaseError { details: format!("Failed to list collections: {}", e) })?;
 
     let mut collections = Vec::new();
-    for (name, display_name, display_opts, is_system, plugin_slug, created_at, updated_at) in rows {
+    for (name, display_name, is_system, plugin_slug, created_at, updated_at) in rows {
         let field_rows = fields::list_fields(pool, &name).await?;
         let fields: Vec<FieldDefinition> = field_rows.iter().map(|r| r.to_definition()).collect();
         collections.push(CollectionDefinition {
             name,
             display_name,
             fields,
-            display_options: Some(display_opts),
             is_system,
             plugin_slug,
             created_at: Some(created_at),
@@ -318,8 +340,8 @@ pub async fn get_collection_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     name: &str,
 ) -> Result<CollectionDefinition, AppError> {
-    let row = sqlx::query_as::<_, (String, Option<String>, serde_json::Value, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "SELECT name, display_name, display_options, is_system, plugin_slug, created_at, updated_at FROM collection_definitions WHERE name = $1"
+    let row = sqlx::query_as::<_, (String, Option<String>, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
+        "SELECT name, display_name, is_system, plugin_slug, created_at, updated_at FROM collection_definitions WHERE name = $1"
     )
     .bind(name)
     .fetch_optional(&mut **tx)
@@ -334,18 +356,17 @@ pub async fn get_collection_in_tx(
         name: row.0,
         display_name: row.1,
         fields,
-        display_options: Some(row.2),
-        is_system: row.3,
-        plugin_slug: row.4,
-        created_at: Some(row.5),
-        updated_at: Some(row.6),
+        is_system: row.2,
+        plugin_slug: row.3,
+        created_at: Some(row.4),
+        updated_at: Some(row.5),
     })
 }
 
 /// Get a single collection definition by name (pool-based)
 pub async fn get_collection(pool: &Pool, name: &str) -> Result<CollectionDefinition, AppError> {
-    let row = sqlx::query_as::<_, (String, Option<String>, serde_json::Value, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "SELECT name, display_name, display_options, is_system, plugin_slug, created_at, updated_at FROM collection_definitions WHERE name = $1"
+    let row = sqlx::query_as::<_, (String, Option<String>, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
+        "SELECT name, display_name, is_system, plugin_slug, created_at, updated_at FROM collection_definitions WHERE name = $1"
     )
     .bind(name)
     .fetch_optional(pool)
@@ -360,129 +381,11 @@ pub async fn get_collection(pool: &Pool, name: &str) -> Result<CollectionDefinit
         name: row.0,
         display_name: row.1,
         fields,
-        display_options: Some(row.2),
-        is_system: row.3,
-        plugin_slug: row.4,
-        created_at: Some(row.5),
-        updated_at: Some(row.6),
+        is_system: row.2,
+        plugin_slug: row.3,
+        created_at: Some(row.4),
+        updated_at: Some(row.5),
     })
-}
-
-/// Insert a new collection definition row (metadata only — no DDL)
-/// Used standalone for Plan 1. In Plan 2 this is called within a DDL transaction.
-pub async fn create_collection_metadata(
-    pool: &Pool,
-    req: &CreateCollectionRequest,
-) -> Result<CollectionDefinition, AppError> {
-    let mut tx = pool.begin().await.map_err(|e| AppError::DatabaseError {
-        details: format!("Transaction begin failed: {}", e),
-    })?;
-
-    let row = sqlx::query_as::<_, (String, Option<String>, serde_json::Value, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "INSERT INTO collection_definitions (name, display_name, display_options) VALUES ($1, $2, $3) RETURNING name, display_name, display_options, is_system, plugin_slug, created_at, updated_at"
-    )
-    .bind(&req.name)
-    .bind(&req.display_name)
-    .bind(&serde_json::Value::Object(serde_json::Map::new()))
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(ref db_err) = e {
-            if db_err.constraint() == Some("collection_definitions_pkey") {
-                return AppError::Conflict(format!("Collection '{}' already exists", req.name));
-            }
-        }
-        AppError::DatabaseError { details: format!("Failed to create collection: {}", e) }
-    })?;
-
-    let field_rows = fields::replace_fields_in_tx(
-        &mut tx, &req.name, &req.fields
-    ).await?;
-    let fields: Vec<FieldDefinition> = field_rows.iter().map(|r| r.to_definition()).collect();
-
-    tx.commit().await.map_err(|e| AppError::DatabaseError {
-        details: format!("Transaction commit failed: {}", e),
-    })?;
-
-    Ok(CollectionDefinition {
-        name: row.0,
-        display_name: row.1,
-        fields,
-        display_options: Some(row.2),
-        is_system: row.3,
-        plugin_slug: row.4,
-        created_at: Some(row.5),
-        updated_at: Some(row.6),
-    })
-}
-
-/// Update collection definition metadata (fields table replacement)
-pub async fn update_collection_metadata(
-    pool: &Pool,
-    name: &str,
-    req: &UpdateCollectionRequest,
-) -> Result<CollectionDefinition, AppError> {
-    let mut tx = pool.begin().await.map_err(|e| AppError::DatabaseError {
-        details: format!("Transaction begin failed: {}", e),
-    })?;
-
-    // Update display_name if provided
-    if let Some(ref dn) = req.display_name {
-        sqlx::query("UPDATE collection_definitions SET display_name = $1 WHERE name = $2")
-            .bind(dn)
-            .bind(name)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| AppError::DatabaseError {
-                details: format!("Failed to update collection display_name: {}", e),
-            })?;
-    }
-
-    // Replace fields in fields table
-    let field_rows = fields::replace_fields_in_tx(&mut tx, name, &req.fields).await?;
-    let fields: Vec<FieldDefinition> = field_rows.iter().map(|r| r.to_definition()).collect();
-
-    let row = sqlx::query_as::<_, (String, Option<String>, serde_json::Value, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "UPDATE collection_definitions SET updated_at = NOW() WHERE name = $1 RETURNING name, display_name, display_options, is_system, plugin_slug, created_at, updated_at"
-    )
-    .bind(name)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|e| AppError::DatabaseError { details: format!("Failed to update collection: {}", e) })?
-    .ok_or_else(|| AppError::NotFound(format!("Collection '{}' not found", name)))?;
-
-    tx.commit().await.map_err(|e| AppError::DatabaseError {
-        details: format!("Transaction commit failed: {}", e),
-    })?;
-
-    Ok(CollectionDefinition {
-        name: row.0,
-        display_name: row.1,
-        fields,
-        display_options: Some(row.2),
-        is_system: row.3,
-        plugin_slug: row.4,
-        created_at: Some(row.5),
-        updated_at: Some(row.6),
-    })
-}
-
-/// Delete a collection definition row (metadata only — no DDL)
-pub async fn delete_collection_metadata(
-    pool: &Pool,
-    name: &str,
-) -> Result<(), AppError> {
-    let result = sqlx::query("DELETE FROM collection_definitions WHERE name = $1")
-        .bind(name)
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::DatabaseError { details: format!("Failed to delete collection: {}", e) })?;
-
-    if result.rows_affected() == 0 {
-        return Err(AppError::NotFound(format!("Collection '{}' not found", name)));
-    }
-
-    Ok(())
 }
 
 /// Get all items that reference a specific item across all collections.
@@ -545,12 +448,18 @@ pub async fn get_referencing_items(
             (format!("{} = $1::uuid", quoted_fk_col), vec![])
         } else {
             let (clause, binds) = crate::services::permissions::build_filter_clause_with_offset(
-                perms, 1, None, Some(collection),
+                perms,
+                1,
+                None,
+                Some(collection),
             );
             if clause.is_empty() {
                 (format!("{} = $1::uuid", quoted_fk_col), vec![])
             } else {
-                (format!("({}) = $1::uuid AND ({})", quoted_fk_col, clause), binds)
+                (
+                    format!("({}) = $1::uuid AND ({})", quoted_fk_col, clause),
+                    binds,
+                )
             }
         };
 
@@ -565,15 +474,16 @@ pub async fn get_referencing_items(
         for val in &extra_binds {
             query = crate::bind_json_value!(query, val);
         }
-        let (raw_result,): (serde_json::Value,) = query
-            .fetch_one(pool)
-            .await
-            .map_err(|e| AppError::DatabaseError {
-                details: format!(
-                    "Reverse lookup query failed for {}::{}: {}",
-                    collection.name, field.name, e
-                ),
-            })?;
+        let (raw_result,): (serde_json::Value,) =
+            query
+                .fetch_one(pool)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    details: format!(
+                        "Reverse lookup query failed for {}::{}: {}",
+                        collection.name, field.name, e
+                    ),
+                })?;
 
         let items = match raw_result {
             serde_json::Value::Array(arr) => arr,
@@ -583,7 +493,9 @@ pub async fn get_referencing_items(
         results.push(ReferencingGroup {
             collection_name: collection.name.clone(),
             field_name: field.name.clone(),
-            relationship_type: field.relationship_type.clone()
+            relationship_type: field
+                .relationship_type
+                .clone()
                 .unwrap_or_else(|| "many_to_one".to_string()),
             items,
         });

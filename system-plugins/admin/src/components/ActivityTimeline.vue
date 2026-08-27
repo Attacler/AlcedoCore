@@ -4,6 +4,7 @@ import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import LogDetailPopup from "@/components/LogDetailPopup.vue";
 import { formatLogTime } from "@/utils/formatters";
 import { useActivityLogStore } from "@/stores/activityLogStore";
+import { TimelineEntry } from "alcedocore-sdk-node/activityLogs";
 
 const props = defineProps<{
     collectionName: string;
@@ -13,15 +14,6 @@ const props = defineProps<{
 const { client } = useAlcedoClient();
 
 const activityStore = useActivityLogStore();
-
-interface TimelineEntry {
-    id: string;
-    action: string;
-    description: string | null;
-    metadata?: Record<string, unknown> | null;
-    diff?: Record<string, unknown> | null;
-    created_at: string;
-}
 
 const entries = ref<TimelineEntry[]>([]),
     loading = ref(false),
@@ -52,12 +44,7 @@ async function fetchTimeline() {
         params.set("limit", "50");
         params.set("offset", "0");
 
-        const response = (await client.activityLogs.listCollections(
-            params,
-        )) as {
-            data: TimelineEntry[];
-            total: number;
-        };
+        const response = await client.activityLogs.listCollections(params);
         entries.value = response.data || [];
     } catch (e) {
         error.value =

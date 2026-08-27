@@ -21,7 +21,6 @@ SET fields = (
             'inline_parent_fields', cf.inline_parent_fields,
             'is_system', cf.is_system,
             'hidden', cf.hidden,
-            'full_width', cf.full_width
         ) ORDER BY cf.ordinal_position
     ), '[]'::jsonb)
     FROM collection_fields cf

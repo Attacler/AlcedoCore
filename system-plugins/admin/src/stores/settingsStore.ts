@@ -218,20 +218,14 @@ export const useSettingsStore = defineStore("settings", () => {
         return null;
     }
 
-    // ── Actions ──
     async function fetchSettings() {
         loading.value = true;
         error.value = null;
         try {
-            const response = (await client.appSettings.list()) as Record<
-                string,
-                any
-            >;
-            settings.value = response?.data || response || {};
+            settings.value = await client.appSettings.list();
             savedValues.value = { ...settings.value };
             localEdits.value = {};
 
-            // Fetch plugins for dynamic dropdowns (e.g., catch_all_plugin_slug)
             try {
                 const pluginsRes = await client.plugins.list();
                 const plugins =

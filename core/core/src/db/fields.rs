@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use crate::db::collections::{FieldDefinition, FieldType};
 use crate::db::Pool;
 use crate::error::AppError;
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct FieldRow {
@@ -25,7 +25,6 @@ pub struct FieldRow {
     pub options: Option<serde_json::Value>,
     pub is_system: bool,
     pub hidden: bool,
-    pub full_width: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -61,16 +60,17 @@ fn str_to_field_type(s: &str) -> FieldType {
 
 impl FieldRow {
     pub fn to_definition(&self) -> FieldDefinition {
-        let options: Option<serde_json::Value> = self.options.clone()
-            .filter(|v| {
-                if let Some(arr) = v.as_array() {
-                    !arr.is_empty()
-                } else {
-                    true
-                }
-            });
+        let options: Option<serde_json::Value> = self.options.clone().filter(|v| {
+            if let Some(arr) = v.as_array() {
+                !arr.is_empty()
+            } else {
+                true
+            }
+        });
 
-        let inline_parent: Option<Vec<String>> = self.inline_parent_fields.as_ref()
+        let inline_parent: Option<Vec<String>> = self
+            .inline_parent_fields
+            .as_ref()
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .filter(|v: &Vec<String>| !v.is_empty());
 
@@ -90,14 +90,15 @@ impl FieldRow {
             inline_parent_fields: inline_parent,
             is_system: self.is_system,
             hidden: self.hidden,
-            full_width: self.full_width,
             options,
         }
     }
 
     pub fn from_definition(def: &FieldDefinition, collection_name: &str, ordinal: i32) -> Self {
         let options_json = def.options.clone();
-        let inline_parent_json = def.inline_parent_fields.as_ref()
+        let inline_parent_json = def
+            .inline_parent_fields
+            .as_ref()
             .and_then(|v| serde_json::to_value(v).ok());
 
         FieldRow {
@@ -120,7 +121,6 @@ impl FieldRow {
             options: options_json,
             is_system: def.is_system,
             hidden: def.hidden,
-            full_width: def.full_width,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
         }
@@ -135,7 +135,7 @@ pub async fn list_fields_in_tx(
         "SELECT id, collection_name, name, display_name, field_type, required, \
          unique_constraint, default_value, display_type, input_component, display_component, ordinal_position, \
          related_collection, relationship_type, display_field, inline_parent_fields, \
-         options, is_system, hidden, full_width, created_at, updated_at \
+         options, is_system, hidden, created_at, updated_at \
          FROM collection_fields \
          WHERE collection_name = $1 \
          ORDER BY ordinal_position ASC"
@@ -154,7 +154,7 @@ pub async fn list_fields(pool: &Pool, collection_name: &str) -> Result<Vec<Field
         "SELECT id, collection_name, name, display_name, field_type, required, \
          unique_constraint, default_value, display_type, input_component, display_component, ordinal_position, \
          related_collection, relationship_type, display_field, inline_parent_fields, \
-         options, is_system, hidden, full_width, created_at, updated_at \
+         options, is_system, hidden, created_at, updated_at \
          FROM collection_fields \
          WHERE collection_name = $1 \
          ORDER BY ordinal_position ASC"
@@ -185,8 +185,9 @@ pub async fn replace_fields_in_tx(
     for (i, def) in fields.iter().enumerate() {
         let row = FieldRow::from_definition(def, collection_name, i as i32 + 1);
         let inline_parent_str = match &row.inline_parent_fields {
-            Some(v) => serde_json::to_string(v)
-                .map_err(|e| AppError::Internal(format!("Failed to serialize inline_parent_fields: {}", e)))?,
+            Some(v) => serde_json::to_string(v).map_err(|e| {
+                AppError::Internal(format!("Failed to serialize inline_parent_fields: {}", e))
+            })?,
             None => "[]".to_string(),
         };
         let options_str = match &row.options {
@@ -195,8 +196,9 @@ pub async fn replace_fields_in_tx(
             None => "[]".to_string(),
         };
         let default_str = match &row.default_value {
-            Some(v) => serde_json::to_string(v)
-                .map_err(|e| AppError::Internal(format!("Failed to serialize default_value: {}", e)))?,
+            Some(v) => serde_json::to_string(v).map_err(|e| {
+                AppError::Internal(format!("Failed to serialize default_value: {}", e))
+            })?,
             None => "null".to_string(),
         };
 
@@ -205,13 +207,13 @@ pub async fn replace_fields_in_tx(
              (collection_name, name, display_name, field_type, required, unique_constraint, \
               default_value, display_type, input_component, display_component, ordinal_position, related_collection, \
               relationship_type, display_field, inline_parent_fields, options, \
-              is_system, hidden, full_width) \
+              is_system, hidden) \
              VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16::jsonb, \
-                     $17, $18, $19) \
+                     $17, $18) \
              RETURNING id, collection_name, name, display_name, field_type, required, \
                        unique_constraint, default_value, display_type, input_component, display_component, ordinal_position, \
                        related_collection, relationship_type, display_field, inline_parent_fields, \
-                       options, is_system, hidden, full_width, created_at, updated_at"
+                       options, is_system, hidden, created_at, updated_at"
         )
         .bind(&row.collection_name)
         .bind(&row.name)
@@ -231,7 +233,6 @@ pub async fn replace_fields_in_tx(
         .bind(&options_str)
         .bind(row.is_system)
         .bind(row.hidden)
-        .bind(row.full_width)
         .fetch_one(&mut **tx)
         .await
         .map_err(|e| AppError::DatabaseError {
@@ -243,15 +244,20 @@ pub async fn replace_fields_in_tx(
     Ok(results)
 }
 
-pub async fn delete_field(pool: &Pool, collection_name: &str, field_name: &str) -> Result<bool, AppError> {
-    let result = sqlx::query("DELETE FROM collection_fields WHERE collection_name = $1 AND name = $2")
-        .bind(collection_name)
-        .bind(field_name)
-        .execute(pool)
-        .await
-        .map_err(|e| AppError::DatabaseError {
-            details: format!("Failed to delete field '{}': {}", field_name, e),
-        })?;
+pub async fn delete_field(
+    pool: &Pool,
+    collection_name: &str,
+    field_name: &str,
+) -> Result<bool, AppError> {
+    let result =
+        sqlx::query("DELETE FROM collection_fields WHERE collection_name = $1 AND name = $2")
+            .bind(collection_name)
+            .bind(field_name)
+            .execute(pool)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Failed to delete field '{}': {}", field_name, e),
+            })?;
 
     sqlx::query("UPDATE collection_definitions SET updated_at = NOW() WHERE name = $1")
         .bind(collection_name)

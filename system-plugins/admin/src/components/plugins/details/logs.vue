@@ -9,6 +9,7 @@ import {
 import { formatLogTime } from "@/utils/formatters";
 import { withAsyncHandlingVoid } from "@/utils/asyncUtils";
 import LogDetailPopup from "@/components/LogDetailPopup.vue";
+import { Select } from "primevue";
 
 const route = useRoute(),
     store = usePluginsStore();
