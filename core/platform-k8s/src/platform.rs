@@ -14,11 +14,11 @@ use kube::{Api, Client};
 use std::collections::{BTreeMap, HashMap};
 use tokio::sync::mpsc;
 
-use pcl::container::{
+use alcedo_container::container::{
     ContainerDetails, ContainerInfo, ContainerStatsSnapshot, DeploymentEvent, DeploymentId,
     ImageInfo, InstanceInfo, PluginPlatform,
 };
-use pcl::AppError;
+use alcedo_common::AppError;
 
 const MANAGED_BY_LABEL: &str = "app.kubernetes.io/managed-by";
 const MANAGED_BY_VALUE: &str = "alcedo-core";

@@ -44,7 +44,7 @@ SELECT
     f.value->>'display_field',
     COALESCE(f.value->'inline_parent_fields', '[]'::jsonb),
     COALESCE((f.value->>'is_system')::boolean, false),
-    COALESCE((f.value->>'hidden')::boolean, false),
+    COALESCE((f.value->>'hidden')::boolean, false)
 FROM collection_definitions cd,
 LATERAL jsonb_array_elements(cd.fields) WITH ORDINALITY AS f(value, ordinality);
 

@@ -8,7 +8,8 @@ name = "platform_k8s"
 path = "src/lib.rs"
 
 [dependencies]
-pcl = { package = "alcedocore", path = "../core" }
+alcedo-common = { path = "../alcedo-common" }
+alcedo-container = { path = "../alcedo-container" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

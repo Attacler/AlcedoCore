@@ -9,52 +9,21 @@ path = "src/lib.rs"
 
 [features]
 default = []
-docker = ["bollard"]
-
+docker = ["alcedo-common/docker"]
 
 [dependencies]
-axum = { version = "0.7", features = ["multipart"] }
-tokio = { version = "1", features = ["full"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
-config = "0.14"
-thiserror = "1"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
-once_cell = "1"
-futures-util = "0.3"
-tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
-chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
-mime_guess = "2"
-flate2 = "1"
-tar = "0.4"
-async-trait = "0.1"
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
-deadpool = { version = "0.12", features = ["managed"] }
-sqlparser = "0.55"
-sea-query = { version = "0.32", features = ["thread-safe"] }
-sea-query-binder = { version = "0.7", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
-regex = "1"
-utoipa = { version = "5", features = ["axum_extras"] }
-argon2 = "0.5"
-rand = "0.8"
-tower-sessions = { version = "0.13", features = ["axum-core"] }
-rmp-serde = "1"
-time = { version = "0.3", features = ["serde"] }
-aes-gcm = "0.10"
-base64 = "0.22"
-bollard = { version = "0.20", optional = true }
-sha2 = "0.10"
-bytes = "1"
-hex = "0.4"
-file-storage = { path = "../file-storage" }
-walkdir = "2.5.0"
-
-[dependencies.reqwest]
-version = "0.12"
-features = ["json"]
+alcedo-common = { path = "../alcedo-common" }
+alcedo-container = { path = "../alcedo-container" }
+alcedo-infra = { path = "../alcedo-infra" }
+alcedo-db = { path = "../alcedo-db" }
+alcedo-events = { path = "../alcedo-events" }
+alcedo-dev = { path = "../alcedo-dev" }
+alcedo-proxy = { path = "../alcedo-proxy" }
+alcedo-services = { path = "../alcedo-services" }
+alcedo-providers = { path = "../alcedo-providers" }
+alcedo-plugins = { path = "../alcedo-plugins" }
+alcedo-middleware = { path = "../alcedo-middleware" }
+alcedo-api = { path = "../alcedo-api" }
 
 [dev-dependencies]
 axum-test = "15"
@@ -66,3 +35,14 @@ testcontainers-modules = { version = "0.15.0", features = ["postgres", "redis"] 
 tokio-test = "0.4"
 tower = "0.5.3"
 file-storage-local = { path = "../file-storage-local" }
+file-storage = { path = "../file-storage" }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
+tower-sessions = { version = "0.13", features = ["axum-core"] }
+time = { version = "0.3", features = ["serde"] }
+deadpool = { version = "0.12", features = ["managed"] }
+axum = { version = "0.7", features = ["multipart"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+reqwest = { version = "0.12", features = ["json"] }

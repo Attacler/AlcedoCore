@@ -1,0 +1,24 @@
+[package]
+name = "alcedo-providers"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "alcedo_providers"
+path = "src/lib.rs"
+
+[dependencies]
+alcedo-common = { path = "../alcedo-common" }
+alcedo-container = { path = "../alcedo-container" }
+alcedo-db = { path = "../alcedo-db" }
+alcedo-services = { path = "../alcedo-services" }
+alcedo-infra = { path = "../alcedo-infra" }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+tracing = "0.1"

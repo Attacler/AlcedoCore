@@ -4,13 +4,13 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::client::DockerClient;
-use pcl::config::AppConfig;
-use pcl::container::{
+use alcedo_common::config::AppConfig;
+use alcedo_container::container::{
     ContainerDetails, ContainerInfo, ContainerRuntime, ContainerStatsSnapshot, DeploymentEvent,
     DeploymentId, ImageInfo, InstanceInfo, PluginPlatform,
 };
-use pcl::db::{queries::PluginVersion, Pool};
-use pcl::AppError;
+use alcedo_db::db::{queries::PluginVersion, Pool};
+use alcedo_common::AppError;
 
 pub struct DockerPlatform {
     db_pool: Option<Pool>,
@@ -80,7 +80,7 @@ impl PluginPlatform for DockerPlatform {
                             slug,
                             migrations_dir_str,
                         );
-                        pcl::db::run_plugin_migrations(pool, slug, &migrations_dir_str).await?;
+                        alcedo_db::db::run_plugin_migrations(pool, slug, &migrations_dir_str).await?;
                     } else {
                         tracing::info!("No migration files found for plugin {}", slug);
                         let _ = std::fs::remove_dir_all(&migrations_dir);

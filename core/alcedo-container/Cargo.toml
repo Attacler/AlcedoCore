@@ -1,0 +1,14 @@
+[package]
+name = "alcedo-container"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "alcedo_container"
+path = "src/lib.rs"
+
+[dependencies]
+alcedo-common = { path = "../alcedo-common" }
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync"] }

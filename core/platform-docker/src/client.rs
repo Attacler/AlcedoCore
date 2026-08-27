@@ -9,16 +9,16 @@ use bollard::query_parameters::{
 };
 use bollard_stubs::query_parameters::CreateImageOptions;
 use futures_util::StreamExt;
-use pcl::db::Pool;
-use pcl::plugins::resilience::{
+use alcedo_db::db::Pool;
+use alcedo_db::db::resilience::{
     find_slug_by_container_id, get_backoff_delay, record_restart, should_restart,
 };
-use pcl::AppError;
+use alcedo_common::AppError;
 use std::collections::HashMap;
 use std::io::Read;
 use std::time::Duration;
 
-use pcl::container::{ContainerDetails, ContainerInfo, ImageInfo};
+use alcedo_container::container::{ContainerDetails, ContainerInfo, ImageInfo};
 
 #[derive(Clone)]
 pub struct DockerClient;
@@ -237,7 +237,7 @@ impl DockerClient {
             }
         };
 
-        let max_attempts = pcl::config::AppConfig::from_env()
+        let max_attempts = alcedo_common::config::AppConfig::from_env()
             .map(|c| c.max_restart_attempts as i32)
             .unwrap_or(3);
 
@@ -271,12 +271,12 @@ impl DockerClient {
                 }
             };
 
-            let max_attempts = pcl::config::AppConfig::from_env()
+            let max_attempts = alcedo_common::config::AppConfig::from_env()
                 .map(|c| c.max_restart_attempts as i32)
                 .unwrap_or(3);
 
             if should_restart(db, &slug, max_attempts).await? {
-                let recovery = pcl::db::queries::PluginRecovery::find_by_slug(db, &slug).await?;
+                let recovery = alcedo_db::db::queries::PluginRecovery::find_by_slug(db, &slug).await?;
                 let backoff =
                     get_backoff_delay(recovery.map(|r| r.restart_count as u8).unwrap_or(0));
                 self.restart_container_with_backoff(db, container_id, backoff)

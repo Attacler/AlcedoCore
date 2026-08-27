@@ -1,6 +1,6 @@
 use async_trait::async_trait;
-use pcl::container::{ContainerDetails, ContainerInfo, ImageInfo};
-use pcl::AppError;
+use alcedo_container::container::{ContainerDetails, ContainerInfo, ImageInfo};
+use alcedo_common::AppError;
 use std::collections::HashMap;
 
 pub struct K8sRuntime;
@@ -12,7 +12,7 @@ impl K8sRuntime {
 }
 
 #[async_trait]
-impl pcl::container::ContainerRuntime for K8sRuntime {
+impl alcedo_container::container::ContainerRuntime for K8sRuntime {
     async fn pull_image(&self, _image: &str) -> Result<(), AppError> {
         Ok(())
     }

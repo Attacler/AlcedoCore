@@ -1,0 +1,53 @@
+[package]
+name = "alcedo-api"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "alcedo_api"
+path = "src/lib.rs"
+
+[dependencies]
+alcedo-common = { path = "../alcedo-common" }
+alcedo-container = { path = "../alcedo-container" }
+alcedo-db = { path = "../alcedo-db" }
+alcedo-infra = { path = "../alcedo-infra" }
+alcedo-events = { path = "../alcedo-events" }
+alcedo-services = { path = "../alcedo-services" }
+alcedo-providers = { path = "../alcedo-providers" }
+alcedo-plugins = { path = "../alcedo-plugins" }
+alcedo-middleware = { path = "../alcedo-middleware" }
+file-storage = { path = "../file-storage" }
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "limit"] }
+tower-sessions = { version = "0.13", features = ["axum-core"] }
+tower = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+walkdir = "2.5.0"
+reqwest = { version = "0.12", features = ["json"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+async-trait = "0.1"
+utoipa = { version = "5", features = ["axum_extras"] }
+mime_guess = "2"
+flate2 = "1"
+tar = "0.4"
+sea-query = { version = "0.32", features = ["thread-safe"] }
+sea-query-binder = { version = "0.7", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+bytes = "1"
+hex = "0.4"
+sha2 = "0.10"
+base64 = "0.22"
+argon2 = "0.5"
+rand = "0.8"
+aes-gcm = "0.10"
+time = { version = "0.3", features = ["serde"] }
+tracing = "0.1"
+sqlparser = "0.55"
+futures-util = "0.3"
+once_cell = "1"

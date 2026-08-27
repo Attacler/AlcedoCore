@@ -1,3 +1,23 @@
 [workspace]
-members = ["core", "platform-docker", "platform-k8s", "bins", "file-storage", "file-storage-s3", "file-storage-local"]
+members = [
+    "core",
+    "platform-docker",
+    "platform-k8s",
+    "bins",
+    "file-storage",
+    "file-storage-s3",
+    "file-storage-local",
+    "alcedo-common",
+    "alcedo-container",
+    "alcedo-infra",
+    "alcedo-db",
+    "alcedo-events",
+    "alcedo-dev",
+    "alcedo-proxy",
+    "alcedo-services",
+    "alcedo-providers",
+    "alcedo-plugins",
+    "alcedo-middleware",
+    "alcedo-api",
+]
 resolver = "2"

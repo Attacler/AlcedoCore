@@ -88,10 +88,23 @@ impl TestDb {
             ("031_add_registry_pull_url", include_str!("../../../core-migrations/031_add_registry_pull_url.up.sql")),
             ("032_create_file_metadata", include_str!("../../../core-migrations/032_create_file_metadata.up.sql")),
             ("033_create_item_files", include_str!("../../../core-migrations/033_create_item_files.up.sql")),
+            ("034_menus", include_str!("../../../core-migrations/034_menus.up.sql")),
+            ("035_create_plugin_recovery", include_str!("../../../core-migrations/035_create_plugin_recovery.up.sql")),
+            ("036_add_last_login_at", include_str!("../../../core-migrations/036_add_last_login_at.up.sql")),
+            ("037_add_dev_key_prefix_index", include_str!("../../../core-migrations/037_add_dev_key_prefix_index.up.sql")),
+            ("038_add_sections_fk", include_str!("../../../core-migrations/038_add_sections_fk.up.sql")),
+            ("039_create_collection_layouts", include_str!("../../../core-migrations/039_create_collection_layouts.up.sql")),
+            ("040_add_layout_id_to_sections", include_str!("../../../core-migrations/040_add_layout_id_to_sections.up.sql")),
+            ("041_create_file_folders", include_str!("../../../core-migrations/041_create_file_folders.up.sql")),
+            ("042_add_input_component", include_str!("../../../core-migrations/042_add_input_component.up.sql")),
+            ("043_add_display_component", include_str!("../../../core-migrations/043_add_display_component.up.sql")),
+            ("044_drop_saved_views_fk", include_str!("../../../core-migrations/044_drop_saved_views_fk.up.sql")),
+            ("045_seed_users_sections", include_str!("../../../core-migrations/045_seed_users_sections.up.sql")),
+            ("046_seed_users_collection_fields", include_str!("../../../core-migrations/046_seed_users_collection_fields.up.sql")),
         ];
 
         for (_name, sql) in &migration_files {
-            for statement in sql.split(';') {
+            for statement in split_sql_statements(sql) {
                 let trimmed = statement.trim();
                 if !trimmed.is_empty() {
                     sqlx::query(trimmed).execute(pool).await?;
@@ -105,6 +118,73 @@ impl TestDb {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
+}
+
+/// Split SQL on `;` while respecting single-quoted strings, `--` comments,
+/// and `$$...$$` dollar-quoted blocks (e.g. `DO $$ ... END $$;`).
+/// Byte-based scanner: multi-byte UTF-8 sequences never collide with the
+/// ASCII delimiters (`'`, `-`, `$`, `;`, `\n`), so slicing is index-safe.
+fn split_sql_statements(sql: &str) -> Vec<&str> {
+    let mut statements = Vec::new();
+    let mut start = 0;
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_dollar = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_dollar {
+            if b == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+                in_dollar = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if in_single_quote {
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' => {
+                in_single_quote = true;
+                i += 1;
+            }
+            b'-' if i + 1 < bytes.len() && bytes[i + 1] == b'-' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'$' if i + 1 < bytes.len() && bytes[i + 1] == b'$' => {
+                in_dollar = true;
+                i += 2;
+            }
+            b';' => {
+                let stmt = &sql[start..i];
+                if !stmt.trim().is_empty() {
+                    statements.push(stmt.trim());
+                }
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    if start < bytes.len() {
+        let stmt = &sql[start..];
+        if !stmt.trim().is_empty() {
+            statements.push(stmt.trim());
+        }
+    }
+    statements
 }
 
 pub struct TestRedis {
