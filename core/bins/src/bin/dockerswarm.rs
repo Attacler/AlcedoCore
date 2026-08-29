@@ -5,7 +5,6 @@ use pcl::api;
 use pcl::config::AppConfig;
 use pcl::container::PluginPlatform;
 use pcl::db::{core_migrations::CoreMigrationRunner, Pool};
-use pcl::dev::{spawn_ttl_cleanup, DevSessionRegistry};
 use pcl::error::AppError;
 use pcl::events::{
     spawn_cache_invalidator, spawn_collection_log_writer, spawn_event_forwarder,
@@ -22,7 +21,7 @@ use pcl::services::file_sync::{FileSyncService, FileSyncServiceImpl};
 use platform_docker::docker_service::{DockerService, DockerServiceImpl};
 use platform_docker::platform::DockerPlatform;
 use platform_docker::runtime::DockerRuntime;
-use platform_docker::swarm::{detect_swarm, SwarmState};
+use platform_docker::swarm::detect_swarm;
 use platform_docker::{init_docker, DOCKER};
 use std::net::SocketAddr;
 use std::path::Path;
@@ -296,7 +295,7 @@ async fn main() -> Result<(), AppError> {
     use pcl::services::redis_session::RedisPoolManager;
     let redis_connection: Option<pcl::services::redis_session::RedisPool> =
         if !config.redis_url.is_empty() {
-            match deadpool::managed::Pool::builder(RedisPoolManager)
+            match deadpool::managed::Pool::builder(RedisPoolManager::default())
                 .max_size(4)
                 .build()
             {
@@ -358,13 +357,6 @@ async fn main() -> Result<(), AppError> {
 
     let event_bus = EventBus::new();
 
-    let dev_registry: Option<Arc<DevSessionRegistry>> = {
-        let registry = Arc::new(DevSessionRegistry::new());
-        spawn_ttl_cleanup(registry.clone());
-        tracing::info!("[DEV] Dev session registry initialized with TTL cleanup task");
-        Some(registry)
-    };
-
     // Detect Docker Swarm mode
     let swarm_state = detect_swarm(&DOCKER).await;
     if !swarm_state.enabled {
@@ -385,7 +377,7 @@ async fn main() -> Result<(), AppError> {
         let conn: redis::aio::ConnectionManager = redis_conn.lock().await.clone();
         Arc::new(KvStore::new(conn))
     } else if let Some(ref pool) = redis_connection {
-        if let Ok(mut conn) = pool.get().await {
+        if let Ok(conn) = pool.get().await {
             Arc::new(KvStore::new(conn.clone()))
         } else {
             tracing::warn!(
@@ -459,7 +451,6 @@ async fn main() -> Result<(), AppError> {
         logging_channel,
         host_call_channel,
         event_bus,
-        dev_registry,
         capture_body: config.capture_body,
         capture_body_max_size: config.capture_body_max_size,
         nested_field_depth_limit: config.nested_field_depth_limit,

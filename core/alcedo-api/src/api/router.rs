@@ -119,6 +119,8 @@ pub fn make_router(
         .route("/:slug/*path", get(crate::api::static_files::serve_index_or_static).with_state(state.clone()))
         // Redirect trailing slashes to non-trailing (e.g., /admin/ -> /admin)
         .route("/:slug/", get(redirect_trailing_slash).with_state(state.clone()))
+        // Redirect /p/:slug/ -> /p/:slug (matches the /:slug/ pattern)
+        .route("/p/:slug/", get(redirect_p_trailing_slash).with_state(state.clone()))
         // Health and test endpoints
         .route("/health", axum::routing::get(crate::plugins::health::health_check).with_state(state.clone()))
         .route("/test", get(test_handler))
@@ -264,4 +266,10 @@ async fn redirect_trailing_slash(
     axum::extract::Path(path): axum::extract::Path<String>,
 ) -> impl IntoResponse {
     Redirect::permanent(&format!("/{}", path))
+}
+
+async fn redirect_p_trailing_slash(
+    axum::extract::Path(slug): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    Redirect::permanent(&format!("/p/{}", slug))
 }

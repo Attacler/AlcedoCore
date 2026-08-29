@@ -4,8 +4,7 @@ use axum::{
     response::Response,
     Json,
 };
-use std::{fs::DirEntry, io::Error, sync::Arc};
-use tokio::fs::read_dir;
+use std::sync::Arc;
 use walkdir::WalkDir;
 
 use crate::api::permission_check;

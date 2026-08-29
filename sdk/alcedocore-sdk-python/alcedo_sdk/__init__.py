@@ -11,7 +11,6 @@ from .resources import (
     MigrationsResource,
     SchemaResource,
     LogsResource,
-    DevResource,
     FilesResource,
     HealthResource,
 )
@@ -42,7 +41,6 @@ __all__ = [
     "MigrationsResource",
     "SchemaResource",
     "LogsResource",
-    "DevResource",
     "FilesResource",
     "HealthResource",
     # Exceptions

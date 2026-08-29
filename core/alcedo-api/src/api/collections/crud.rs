@@ -88,8 +88,8 @@ pub(crate) async fn list_collections(
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    // Dev mode: developer API key sees all collections
-    if state.dev_mode {
+    // Developer API keys are root — they see all collections
+    if crate::api::permission_check::is_valid_dev_key(&headers) {
         let collections = collections::list_collections(db_pool).await?;
         return Ok(Json(json!({ "collections": collections })));
     }

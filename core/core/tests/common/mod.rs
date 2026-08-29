@@ -190,6 +190,7 @@ fn split_sql_statements(sql: &str) -> Vec<&str> {
 pub struct TestRedis {
     _container: ContainerAsync<Redis>,
     pub conn_manager: ConnectionManager,
+    pub url: String,
 }
 
 impl TestRedis {
@@ -204,6 +205,7 @@ impl TestRedis {
         Ok(Self {
             _container: container,
             conn_manager,
+            url,
         })
     }
 }
@@ -253,7 +255,6 @@ fn base_state(
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
-        dev_registry: None,
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,
@@ -290,7 +291,7 @@ pub async fn create_test_state_no_db() -> AppState {
 
 pub async fn create_test_state_full(pool: PgPool, redis_conn_manager: ConnectionManager) -> AppState {
     use deadpool::managed;
-    let mgr = plugin_core::services::redis_session::RedisPoolManager;
+    let mgr = plugin_core::services::redis_session::RedisPoolManager::default();
     let deadpool = managed::Pool::builder(mgr).max_size(2).build().unwrap();
     AppState {
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
@@ -308,7 +309,6 @@ pub async fn create_test_state_full(pool: PgPool, redis_conn_manager: Connection
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
-        dev_registry: None,
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,
@@ -337,9 +337,8 @@ pub async fn create_test_state_with_host_calls(pool: PgPool) -> AppState {
         rate_limit_redis: None,
         kv_redis: None,
         logging_channel: None,
-        host_call_channel: Some(host_channel),
+host_call_channel: Some(host_channel),
         event_bus: Default::default(),
-        dev_registry: None,
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,

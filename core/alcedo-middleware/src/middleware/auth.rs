@@ -145,20 +145,16 @@ pub async fn auth_middleware(
     mut request: Request<Body>,
     next: Next,
 ) -> Result<Response, AppError> {
+    // Internal root marker — only set by this middleware after a verified
+    // developer API key. Strip any client-supplied value to prevent forgery.
+    request.headers_mut().remove("x-alcedo-root");
+
     let path = request_path(&request);
     let method = request.method().clone();
 
-    if is_public_path(&path) {
-        request.extensions_mut().insert(crate::error::AuthLevel::Public);
-        return Ok(next.run(request).await);
-    }
-
-    if !path.starts_with("/api/") {
-        request.extensions_mut().insert(crate::error::AuthLevel::Public);
-        return Ok(next.run(request).await);
-    }
-
-    // Check developer API key (Authorization: Bearer <key>) — bypasses session auth
+    // Check developer API key (Authorization: Bearer <key>) — bypasses session auth.
+    // Must run before the public-path early returns so the x-alcedo-root marker is
+    // set for public-exempt paths (e.g. /api/plugins/{slug}/pages) too.
     if let Some(auth_header) = request.headers().get("authorization").and_then(|v| v.to_str().ok()) {
         if let Some(token) = auth_header.strip_prefix("Bearer ") {
             if let Some(ref db_pool) = state.db_pool {
@@ -168,12 +164,26 @@ pub async fn auth_middleware(
                         if let Ok(true) = crate::services::auth::verify_password(token, &key.key_hash).await {
                             let _ = crate::db::queries::DeveloperApiKey::touch_last_used(db_pool, key.id).await;
                             request.extensions_mut().insert(crate::error::AuthLevel::DeveloperApiKey);
+                            request.headers_mut().insert(
+                                "x-alcedo-root",
+                                axum::http::HeaderValue::from_static("1"),
+                            );
                             return Ok(next.run(request).await);
                         }
                     }
                 }
             }
         }
+    }
+
+    if is_public_path(&path) {
+        request.extensions_mut().insert(crate::error::AuthLevel::Public);
+        return Ok(next.run(request).await);
+    }
+
+    if !path.starts_with("/api/") {
+        request.extensions_mut().insert(crate::error::AuthLevel::Public);
+        return Ok(next.run(request).await);
     }
 
     let session_id = extract_session_id(&request)

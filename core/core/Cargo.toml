@@ -17,8 +17,6 @@ alcedo-container = { path = "../alcedo-container" }
 alcedo-infra = { path = "../alcedo-infra" }
 alcedo-db = { path = "../alcedo-db" }
 alcedo-events = { path = "../alcedo-events" }
-alcedo-dev = { path = "../alcedo-dev" }
-alcedo-proxy = { path = "../alcedo-proxy" }
 alcedo-services = { path = "../alcedo-services" }
 alcedo-providers = { path = "../alcedo-providers" }
 alcedo-plugins = { path = "../alcedo-plugins" }

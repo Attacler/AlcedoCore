@@ -350,7 +350,7 @@ async fn test_query_items() {
 
     // Filter by name via POST query
     let filter_payload = serde_json::json!({
-        "filters": {
+        "filter": {
             "field": "name",
             "operator": "eq",
             "value": "Alice"
@@ -360,11 +360,12 @@ async fn test_query_items() {
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&filter_payload)
         .await;
-    assert_eq!(filter_resp.status_code(), axum::http::StatusCode::OK);
+    assert_eq!(filter_resp.status_code(), axum::http::StatusCode::OK,
+        "Filter query failed: {}", filter_resp.text());
     let filter_body: serde_json::Value = serde_json::from_str(&filter_resp.text())
         .expect("Invalid JSON");
-    let filter_items = filter_body.get("rows").and_then(|v| v.as_array())
-        .expect("rows should be array");
+    let filter_items = filter_body.get("data").and_then(|v| v.as_array())
+        .expect("data should be array");
     assert!(filter_items.len() >= 1, "Should return at least Alice");
     assert!(filter_items.iter().any(|item| item.get("name").and_then(|v| v.as_str()) == Some("Alice")), "Alice should be in results");
 }
@@ -778,26 +779,28 @@ async fn test_ddl_reconciliation_after_create() {
     assert_eq!(create_resp.status_code(), axum::http::StatusCode::CREATED,
         "Create failed: {}", create_resp.text());
 
-    // 1. Query JSONB fields from collection_definitions
-    let (fields_jsonb,): (serde_json::Value,) = sqlx::query_as(
-        "SELECT fields FROM collection_definitions WHERE name = $1"
+    // 1. Query fields from collection_fields
+    let field_rows: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT name, field_type, required FROM collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
     )
     .bind(&name)
-    .fetch_one(test_db.pool())
+    .fetch_all(test_db.pool())
     .await
-    .expect("Failed to query collection_definitions");
+    .expect("Failed to query collection_fields");
 
-    let jsonb_fields: Vec<serde_json::Value> = fields_jsonb.as_array()
-        .expect("fields should be array").clone();
-    assert_eq!(jsonb_fields.len(), 3, "JSONB should have 3 fields");
+    assert_eq!(field_rows.len(), 3, "collection_fields should have 3 rows");
 
-    // Build a set of field names from JSONB
-    let jsonb_names: std::collections::HashSet<String> = jsonb_fields.iter()
-        .filter_map(|f| f.get("name").and_then(|n| n.as_str()).map(String::from))
-        .collect();
-    assert!(jsonb_names.contains("title"));
-    assert!(jsonb_names.contains("views"));
-    assert!(jsonb_names.contains("rating"));
+    let field_names: Vec<&str> = field_rows.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(field_names, vec!["title", "views", "rating"],
+        "field order should follow ordinal_position");
+
+    let field_types: Vec<&str> = field_rows.iter().map(|(_, t, _)| t.as_str()).collect();
+    assert_eq!(field_types, vec!["string", "int", "float"],
+        "field types should be stored as string/int/float");
+
+    let required_flags: Vec<bool> = field_rows.iter().map(|(_, _, r)| *r).collect();
+    assert_eq!(required_flags, vec![true, false, false],
+        "required flags should match creation");
 
     // 2. Query information_schema.columns (exclude system columns)
     let info_rows: Vec<(String, String)> = sqlx::query_as(
@@ -847,17 +850,17 @@ async fn test_ddl_reconciliation_after_update() {
     assert_eq!(create_resp.status_code(), axum::http::StatusCode::CREATED,
         "Create failed: {}", create_resp.text());
 
-    // Verify JSONB has 2 fields
-    let (fields_jsonb,): (serde_json::Value,) = sqlx::query_as(
-        "SELECT fields FROM collection_definitions WHERE name = $1"
+    // Verify collection_fields has 2 fields
+    let field_rows: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT name, field_type, required FROM collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
     )
     .bind(&name)
-    .fetch_one(test_db.pool())
+    .fetch_all(test_db.pool())
     .await
-    .expect("Failed to query collection_definitions");
-    let jsonb_fields: Vec<serde_json::Value> = fields_jsonb.as_array()
-        .expect("fields should be array").clone();
-    assert_eq!(jsonb_fields.len(), 2, "JSONB should have 2 fields initially");
+    .expect("Failed to query collection_fields");
+    assert_eq!(field_rows.len(), 2, "collection_fields should have 2 rows initially");
+    let field_names: Vec<&str> = field_rows.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert!(!field_names.contains(&"rating"), "rating should not exist initially");
 
     // Verify information_schema has 2 user columns
     let info_rows: Vec<(String,)> = sqlx::query_as(
@@ -883,16 +886,17 @@ async fn test_ddl_reconciliation_after_update() {
     assert_eq!(put_resp.status_code(), axum::http::StatusCode::OK,
         "PUT add field failed: {}", put_resp.text());
 
-    // Verify JSONB has 3 fields
-    let (fields_jsonb2,): (serde_json::Value,) = sqlx::query_as(
-        "SELECT fields FROM collection_definitions WHERE name = $1"
+    // Verify collection_fields has 3 fields
+    let field_rows2: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT name, field_type, required FROM collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
     )
     .bind(&name)
-    .fetch_one(test_db.pool())
+    .fetch_all(test_db.pool())
     .await
-    .expect("Failed to query collection_definitions");
-    assert_eq!(fields_jsonb2.as_array().expect("fields should be array").len(), 3,
-        "JSONB should have 3 fields after add");
+    .expect("Failed to query collection_fields");
+    assert_eq!(field_rows2.len(), 3, "collection_fields should have 3 rows after add");
+    let field_names2: Vec<&str> = field_rows2.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert!(field_names2.contains(&"rating"), "rating should exist after add");
 
     // Verify information_schema has 3 user columns
     let info_rows2: Vec<(String,)> = sqlx::query_as(
@@ -920,16 +924,18 @@ async fn test_ddl_reconciliation_after_update() {
     assert_eq!(put_resp2.status_code(), axum::http::StatusCode::OK,
         "PUT remove field failed: {}", put_resp2.text());
 
-    // Verify JSONB has 2 fields
-    let (fields_jsonb3,): (serde_json::Value,) = sqlx::query_as(
-        "SELECT fields FROM collection_definitions WHERE name = $1"
+    // Verify collection_fields has 2 fields
+    let field_rows3: Vec<(String, String, bool)> = sqlx::query_as(
+        "SELECT name, field_type, required FROM collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
     )
     .bind(&name)
-    .fetch_one(test_db.pool())
+    .fetch_all(test_db.pool())
     .await
-    .expect("Failed to query collection_definitions");
-    assert_eq!(fields_jsonb3.as_array().expect("fields should be array").len(), 2,
-        "JSONB should have 2 fields after removal");
+    .expect("Failed to query collection_fields");
+    assert_eq!(field_rows3.len(), 2, "collection_fields should have 2 rows after removal");
+    let field_names3: Vec<&str> = field_rows3.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert!(field_names3.contains(&"rating"), "rating should exist after removal");
+    assert!(!field_names3.contains(&"views"), "views should have been removed");
 
     // Verify information_schema has 2 user columns (views removed)
     let info_rows3: Vec<(String,)> = sqlx::query_as(
@@ -1166,7 +1172,7 @@ async fn test_create_items_with_relationship() {
     // Query items by publisher_id filter
     let filter_resp = server.get(&format!(
         "/api/items/{}?publisher_id={}", mags_name, pub_id
-    )).await;
+    )).add_header("Authorization", "Bearer dev_test-key-for-tests-12345").await;
     assert_eq!(filter_resp.status_code(), axum::http::StatusCode::OK,
         "Filter by publisher_id failed: {}", filter_resp.text());
     let filter_body: serde_json::Value = serde_json::from_str(&filter_resp.text())
@@ -1227,7 +1233,7 @@ async fn test_reverse_lookup() {
 
     // GET reverse lookup endpoint
     let rev_url = format!("/api/items/{}/{}/references", pubs_name, pub_id);
-    let rev_resp = server.get(&rev_url).await;
+    let rev_resp = server.get(&rev_url).add_header("Authorization", "Bearer dev_test-key-for-tests-12345").await;
     assert_eq!(rev_resp.status_code(), axum::http::StatusCode::OK,
         "Reverse lookup failed: {}", rev_resp.text());
 

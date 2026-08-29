@@ -2,18 +2,19 @@
 
 ## Development vs Release Mode
 
-alcedocore supports two build modes with different networking behaviors:
+alcedocore supports two networking modes, controlled by the `DEV_MODE` environment
+variable (read in `core/alcedo-common/src/config.rs`), not by the build type:
 
-### Development Mode (debug build)
+### Development Mode (DEV_MODE=true)
 
-Used when running `cargo build` (without `--release` flag).
+Enabled by setting `DEV_MODE=true`. Used for local plugin development.
 
 | Aspect              | Behavior                                |
 | ------------------- | --------------------------------------- |
 | **Network Mode**    | Host network (`network=host`)           |
 | **alcedocore Port** | Auto-detected (8081+ if 8080 is in use) |
 | **Plugins**         | Run with host network mode              |
-| **Proxy Target**    | `localhost:<port>`                      |
+| **Proxy Target**    | `localhost:<DEV_PLUGIN_PORT>` (default 8000) |
 | **Plugin DNS**      | Direct localhost access                 |
 
 **Characteristics:**
@@ -22,10 +23,12 @@ Used when running `cargo build` (without `--release` flag).
 - No Docker network isolation
 - Faster iteration for local testing
 - Auto port detection prevents conflicts
+- `DEV_CORE_IP` is required (injected as `CORE_URL` so plugins can reach the core)
+- Event callbacks go to `http://localhost:.../__events__`
 
-### Release Mode (release build)
+### Release Mode (DEV_MODE unset)
 
-Used when running `cargo build --release`.
+The default when `DEV_MODE` is not set to `true`. Used for Docker Compose / K8s deployments.
 
 | Aspect              | Behavior                            |
 | ------------------- | ----------------------------------- |
@@ -49,8 +52,8 @@ Used when running `cargo build --release`.
 ```bash
 cd core
 cargo build
-# Automatically uses available port and host network mode
-./target/debug/core
+DEV_MODE=true ./target/debug/core
+# Host network mode; plugins run locally on localhost:<DEV_PLUGIN_PORT>
 ```
 
 ### Release Mode (Docker Compose)
@@ -103,6 +106,9 @@ Both "docker" and "dynamic" plugin types now correctly map to "user".
 | -------------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------ |
 | `DATABASE_URL`                   | PostgreSQL connection string                                            | (required)                                       |
 | `CORE_PORT`                      | Port for alcedocore                                                     | 8080                                             |
+| `DEV_MODE`                       | Enable dev networking mode (host network, localhost proxy)              | false                                            |
+| `DEV_CORE_IP`                    | Host IP injected as `CORE_URL` for plugins in dev mode                  | (required in dev mode)                           |
+| `DEV_PLUGIN_PORT`                | Port plugins listen on in dev mode (proxy target)                       | 8000                                             |
 | `PLUGINS_DIR`                    | Directory for static plugin files                                       | /plugins                                         |
 | `PLUGINS_DIR`                    | PVC mount path for plugin file storage (K8s)                            | /var/lib/plugin-public                           |
 | `LOCAL_REGISTRY_URL`             | Docker registry URL                                                     | localhost:5000                                   |
@@ -161,20 +167,39 @@ auth middleware only gates `/api/*` paths.
 
 ## Architecture Notes
 
-- In **dev mode**: plugins use `network=host`, accessible directly at `localhost:8080`
-- In **release mode**: plugins are on Docker network, accessed via container IPs
-- The mode is auto-detected via Rust's `cfg!(debug_assertions)` compile-time flag
-- No runtime configuration needed - determined at compile time
+- The mode is controlled by the `DEV_MODE` env var (`core/alcedo-common/src/config.rs`), not the build type
+- `DEV_MODE` only affects **networking** — it never changes permission behavior:
+  - Host network (`network=host`) vs the Docker `alcedocore_plugins` network
+  - Proxy target `localhost:<DEV_PLUGIN_PORT>` (default 8000) vs container IP:8080
+  - `PORT`/`CORE_URL` plugin env injection (`DEV_CORE_IP` is required in dev mode)
+  - Event callback URL `http://localhost:.../__events__` vs `http://plugin_{slug}:.../__events__`
+- In **dev mode**: plugins run with host network, reachable directly at `localhost:8000`
+- In **release mode**: plugins are on the Docker network, accessed via container IPs
+- The dev session registry and `/api/dev/start`, `/api/dev/stop`, `/api/dev/complete-request`
+  were removed. Only `/api/dev/request-id` remains — the CLI dev-proxy uses it to mint plugin
+  auth tokens for a locally-run plugin.
+
+## Developer API Keys (root credentials)
+
+Developer API keys are admin-created tokens (`POST /api/settings/developer/keys`) sent as
+`Authorization: Bearer <key>`. They are **root credentials**: a valid dev key bypasses scope
+checks AND collection/item permission checks in ALL modes (dev and release).
+
+- Bypass `scope_matches()` and all collection/item policy enforcement
+  (`check_permission`, `$permissions`, row/field filters)
+- Treat them like root service-account tokens — keep them secret
+- Collection/item policy enforcement applies to session users and plugins (via `X-Request-ID`);
+  dev keys bypass it
 
 ## Building & Deploying a System Plugin
 
 System plugins have both a Rust backend and Vue frontend pages. Deploying involves:
 
 ```bash
-# 0. Prerequisite: build the page-compiler CLI (one-time)
-cd cli/page-compiler
+# 0. Prerequisite: build the CLI (one-time)
+cd cli
 npm run build
-cd ../..
+cd ..
 
 # 1. Build Rust backend (release)
 cd system-plugins/<plugin>
@@ -550,23 +575,27 @@ agent-browser eval '
 
 ## Permission Rules ($permissions)
 
-Each item in collection API responses includes a `$permissions` object:
+Each item in collection API responses includes a record-level `$permissions` object:
 
 ```json
 {
-    "read": true,
-    "create": true,
     "update": true,
     "delete": true,
     "fields": ["field1", "field2"]
 }
 ```
 
+`$permissions` is **record-level**: it reports `update`, `delete`, and (when restricted)
+`fields` for that specific item. `create` and `read` are **collection-level**, not
+per-record: `create` is exposed by `GET /api/collections/:name/$create` as
+`$permissions.create`, and `read` is granted through collection list/get access
+(`list_accessible_collections`).
+
 ### Behavior in UI
 
 | Permission      | Collection Data            | Record Detail                           |
 | --------------- | -------------------------- | --------------------------------------- |
-| `create: false` | Add button **hidden**      | —                                       |
+| `create: false` (collection-level) | Add button **hidden**      | —                                       |
 | `update: false` | Edit icon **hidden**       | Edit button **hidden**                  |
 | `delete: false` | Trash icon **hidden**      | Delete button **hidden**                |
 | `fields: [...]` | Only listed fields visible | Non-listed fields rendered **readonly** |
@@ -575,9 +604,9 @@ Each item in collection API responses includes a `$permissions` object:
 
 `compute_item_permissions()` in `permission_check.rs`:
 
-1. If user has `users.all` scope → all 4 permissions are `true` (admin bypass)
+1. If user has `users.all` scope → `update`/`delete` are `true` (admin bypass)
 2. Otherwise, checks policy rules matching the collection + item filters
-3. `can_create`, `can_update`, `can_delete` set based on matching rules
+3. `can_update`, `can_delete` set based on matching rules
 4. `fields` set to the union of all matching rules' field restrictions (`null` = all unrestricted)
 
 ---

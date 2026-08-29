@@ -113,34 +113,15 @@ pub fn resolve_nested_fields(
 
     let mut fragments = Vec::new();
     for (first_segment, paths) in groups {
-        // Cycle detection
-        if options
-            .visited
-            .contains(&(base_collection.to_string(), first_segment.clone()))
-        {
-            return Err(AppError::BadRequest(format!(
-                "Circular reference detected at path segment '{}' on collection '{}'",
-                first_segment, base_collection
-            )));
-        }
-        options
-            .visited
-            .insert((base_collection.to_string(), first_segment.clone()));
-
-        // Depth limit
-        if options.visited.len() > options.depth_limit {
-            return Err(AppError::BadRequest(format!(
-                "Depth limit of {} exceeded",
-                options.depth_limit
-            )));
-        }
-
+        // Cycle and depth checks run inside `resolve_group` at every recursion
+        // level (including the top level here), so nested paths are covered too.
         let fragment = resolve_group(
             &first_segment,
             &paths,
             base_collection,
             all_collections,
             options,
+            &quote(base_collection),
         )?;
         fragments.push(fragment);
     }
@@ -159,7 +140,32 @@ fn resolve_group(
     current_collection: &str,
     all_collections: &[CollectionDefinition],
     options: &mut FieldResolverOptions,
+    base_table_ref: &str,
 ) -> Result<SelectClauseFragment, AppError> {
+    // Cycle detection — checked at every recursion level, keyed by
+    // (collection, segment) so a genuine A→B→A cycle is caught when the
+    // second visit to a segment on a collection sees the first visit's key.
+    if options
+        .visited
+        .contains(&(current_collection.to_string(), first_segment.to_string()))
+    {
+        return Err(AppError::BadRequest(format!(
+            "Circular reference detected at path segment '{}' on collection '{}'",
+            first_segment, current_collection
+        )));
+    }
+    options
+        .visited
+        .insert((current_collection.to_string(), first_segment.to_string()));
+
+    // Depth limit
+    if options.visited.len() > options.depth_limit {
+        return Err(AppError::BadRequest(format!(
+            "Depth limit of {} exceeded",
+            options.depth_limit
+        )));
+    }
+
     // Get current collection definition
     let current_def = all_collections
         .iter()
@@ -237,14 +243,14 @@ fn resolve_group(
             &entries,
             &target_collection,
             &fk_column,
-            current_collection,
+            base_table_ref,
             first_segment,
         )),
         Direction::OneToMany { .. } => Ok(build_o2m_subquery(
             &entries,
             &target_collection,
             &fk_column,
-            current_collection,
+            base_table_ref,
             first_segment,
         )),
     }
@@ -301,13 +307,17 @@ fn collect_json_entries(
                 })
                 .collect();
 
-            // Recursive resolution — cycle/depth checked inside resolve_group
+            // Recursive resolution — cycle/depth checked inside resolve_group.
+            // The nested subquery is embedded in the parent's `_rel_*` subquery,
+            // so its WHERE clause must reference the parent's table alias
+            // (`alias_prefix`) rather than the base collection's real name.
             let nested_fragment = resolve_group(
                 key,
                 &nested_paths,
                 target_collection,
                 all_collections,
                 options,
+                &quote(alias_prefix),
             )?;
 
             // Extract just the subquery expression (strip "AS alias" suffix).
@@ -418,17 +428,20 @@ fn detect_direction(
 
 /// Build a scalar subquery for M:1 forward relationships.
 ///
+/// `base_table_ref` is the SQL identifier (table name or `_rel_*` alias) of the
+/// table that holds the FK column, referenced from the enclosing query.
+///
 /// SQL pattern:
 /// ```sql
 /// (SELECT json_build_object('field1', "_rel_X"."field1", ...)
 ///  FROM "target" AS "_rel_X"
-///  WHERE "_rel_X"."id" = "base"."fk_column") AS "alias"
+///  WHERE "_rel_X"."id" = <base_table_ref>."fk_column") AS "alias"
 /// ```
 fn build_m2o_subquery(
     entries: &[JsonEntry],
     target_collection: &str,
     fk_column: &str,
-    base_collection: &str,
+    base_table_ref: &str,
     alias: &str,
 ) -> SelectClauseFragment {
     let table_alias = format!("_rel_{}", alias);
@@ -443,7 +456,7 @@ fn build_m2o_subquery(
         quote(target_collection),
         quote(&table_alias),
         quote(&table_alias),
-        quote(base_collection),
+        base_table_ref,
         quote(fk_column),
         alias,
     );
@@ -460,12 +473,15 @@ fn build_m2o_subquery(
 
 /// Build an aggregate subquery for 1:M reverse relationships.
 ///
+/// `base_table_ref` is the SQL identifier (table name or `_rel_*` alias) of the
+/// table whose PK the FK column references, from the enclosing query.
+///
 /// SQL pattern:
 /// ```sql
 /// COALESCE(
 ///   (SELECT json_agg("_sub") FROM (
 ///     SELECT "field1", "field2" FROM "target"
-///     WHERE "target"."fk_column" = "base"."id"
+///     WHERE "target"."fk_column" = <base_table_ref>."id"
 ///   ) AS "_sub"),
 ///   '[]'::json
 /// ) AS "alias"
@@ -474,7 +490,7 @@ fn build_o2m_subquery(
     entries: &[JsonEntry],
     target_collection: &str,
     fk_column: &str,
-    base_collection: &str,
+    base_table_ref: &str,
     alias: &str,
 ) -> SelectClauseFragment {
     // Use the same _rel_{alias} table alias convention as build_m2o_subquery.
@@ -508,7 +524,7 @@ fn build_o2m_subquery(
         quote(&table_alias),
         quote(&table_alias),
         fk_column,
-        quote(base_collection),
+        base_table_ref,
         alias,
     );
 

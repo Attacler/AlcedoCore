@@ -45,6 +45,7 @@ fn collection_matches(trigger: &serde_json::Map<String, serde_json::Value>, even
 /// Check if the given item matches the FilterBuilder conditions by querying
 /// the public schema via the query proxy (which system plugins can access).
 async fn item_matches_filter(
+    request_id: &str,
     client: &reqwest::Client,
     core_url: &str,
     collection: &str,
@@ -106,7 +107,7 @@ async fn item_matches_filter(
         "max_rows": 1,
     });
 
-    match client.post(&url).json(&body).send().await {
+    match client.post(&url).header("X-Request-ID", request_id).json(&body).send().await {
         Ok(resp) => {
             if let Ok(data) = resp.json::<Value>().await {
                 let rows = data.get("rows").and_then(|r| r.as_array());
@@ -168,6 +169,7 @@ pub async fn receive_event(
 
     let triggers_sql = format!("{} WHERE event_type = $1 AND enabled = true", triggers_select_sql());
     let triggers_result = db::query_sql(
+        &request_id,
         &state.client,
         &state.config.core_url,
         &triggers_sql,
@@ -207,7 +209,7 @@ pub async fn receive_event(
                     let item_id = event_data.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
                     if !coll.is_empty() && !item_id.is_empty() {
                         let matches = item_matches_filter(
-                            &state.client, &state.config.core_url,
+                            &request_id, &state.client, &state.config.core_url,
                             coll, item_id, &parsed,
                         ).await;
                         if !matches { continue; }
@@ -239,7 +241,7 @@ pub async fn receive_event(
 
         // Fetch all function_ids for this trigger
         let fn_sql = "SELECT function_id::text FROM plugin_automation.trigger_functions WHERE trigger_id = $1::uuid";
-        let fn_ids: Vec<String> = match db::query_sql(&client, &core_url, fn_sql, vec![serde_json::Value::String(trigger_id.clone())]).await {
+        let fn_ids: Vec<String> = match db::query_sql(&request_id, &client, &core_url, fn_sql, vec![serde_json::Value::String(trigger_id.clone())]).await {
             Ok(val) => {
                 let (columns, rows) = parse_response(&val);
                 rows.iter().map(|r| {
@@ -267,7 +269,7 @@ pub async fn receive_event(
             .map(|id| serde_json::Value::String(id.clone()))
             .collect();
 
-        let functions: Vec<(String, String)> = match db::query_sql(&client, &core_url, &funcs_sql, fn_params).await {
+        let functions: Vec<(String, String)> = match db::query_sql(&request_id, &client, &core_url, &funcs_sql, fn_params).await {
             Ok(val) => {
                 let (columns, rows) = parse_response(&val);
                 rows.iter().map(|r| {
@@ -323,7 +325,7 @@ pub async fn receive_event(
 
                         let log_sql = "INSERT INTO plugin_automation.execution_logs (trigger_id, function_id, event_data, status, output) \
                                       VALUES ($1::uuid, $2::uuid, $3::jsonb, 'success', $4)";
-                        let _ = db::execute_sql(&client, &core_url_clone, log_sql, vec![
+                        let _ = db::execute_sql(&request_id_clone, &client, &core_url_clone, log_sql, vec![
                             serde_json::Value::String(trigger_id_clone.clone()),
                             serde_json::Value::String(function_id.clone()),
                             event_data_for_log.clone(),
@@ -336,7 +338,7 @@ pub async fn receive_event(
                                                WHERE trigger_id = $2::uuid AND function_id = $3::uuid \
                                                AND executed_at = (SELECT MAX(executed_at) FROM plugin_automation.execution_logs \
                                                WHERE trigger_id = $2::uuid AND function_id = $3::uuid)";
-                                let _ = db::execute_sql(&client, &core_url_clone, logs_sql, vec![
+                                let _ = db::execute_sql(&request_id_clone, &client, &core_url_clone, logs_sql, vec![
                                     serde_json::Value::String(logs_json),
                                     serde_json::Value::String(trigger_id_clone.clone()),
                                     serde_json::Value::String(function_id.clone()),
@@ -348,7 +350,7 @@ pub async fn receive_event(
                     Err(e) => {
                         let log_sql = "INSERT INTO plugin_automation.execution_logs (trigger_id, function_id, event_data, status, error_message) \
                                       VALUES ($1::uuid, $2::uuid, $3::jsonb, 'error', $4)";
-                        let _ = db::execute_sql(&client, &core_url_clone, log_sql, vec![
+                        let _ = db::execute_sql(&request_id_clone, &client, &core_url_clone, log_sql, vec![
                             serde_json::Value::String(trigger_id_clone.clone()),
                             serde_json::Value::String(function_id.clone()),
                             event_data_for_log.clone(),

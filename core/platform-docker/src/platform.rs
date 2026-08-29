@@ -135,7 +135,11 @@ impl PluginPlatform for DockerPlatform {
 
         if !self.config.dev_mode && !self.config.plugin_network.is_empty() {
             self.runtime
-                .connect_container_to_network(&container_id, &self.config.plugin_network)
+                .connect_container_to_network(
+                    &container_id,
+                    &self.config.plugin_network,
+                    Some(&format!("plugin_{}", slug)),
+                )
                 .await?;
         }
 

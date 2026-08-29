@@ -10,8 +10,6 @@
 //! | `alcedo-infra`        | Redis session store, KV store, cache, encryption                     |
 //! | `alcedo-db`           | SQL/data layer, queries, permissions, migrations, resilience         |
 //! | `alcedo-events`       | `EventBus`, background writers, event forwarder                      |
-//! | `alcedo-dev`          | Dev session registry + TTL cleanup                                   |
-//! | `alcedo-proxy`        | Plugin proxy routing                                                 |
 //! | `alcedo-services`     | Auth, scopes, rate limiting, collection builder, file sync           |
 //! | `alcedo-providers`    | Plugin container + registry providers                                |
 //! | `alcedo-plugins`      | Plugin health/lifecycle/static/system deployer                       |
@@ -26,12 +24,10 @@ pub use alcedo_common::{config, error, macros};
 pub use alcedo_common::{AppConfig, AppError};
 pub use alcedo_container::container;
 pub use alcedo_db::db;
-pub use alcedo_dev::dev;
 pub use alcedo_events::events;
 pub use alcedo_infra::kv;
 pub use alcedo_middleware::middleware;
 pub use alcedo_providers::providers;
-pub use alcedo_proxy::proxy;
 
 pub mod plugins {
     pub use alcedo_plugins::plugins::*;

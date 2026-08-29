@@ -34,6 +34,7 @@ pub struct UpdateTriggerRequest {
 }
 
 async fn db_request(
+    request_id: &str,
     client: &reqwest::Client,
     core_url: &str,
     endpoint: &str,
@@ -55,6 +56,7 @@ async fn db_request(
         }
     }
     let resp = client.post(&url)
+        .header("X-Request-ID", request_id)
         .json(&body)
         .send()
         .await
@@ -70,12 +72,13 @@ async fn db_request(
 
 /// Execute a SQL query (SELECT) against the plugin schema.
 pub async fn query_sql(
+    request_id: &str,
     client: &reqwest::Client,
     core_url: &str,
     sql: &str,
     params: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    db_request(client, core_url, "query", "Query", sql, params, Some(serde_json::json!({
+    db_request(request_id, client, core_url, "query", "Query", sql, params, Some(serde_json::json!({
         "timeout_secs": 30,
         "max_rows": 10000,
     }))).await
@@ -83,12 +86,13 @@ pub async fn query_sql(
 
 /// Execute a write SQL statement (INSERT/UPDATE/DELETE) against the plugin schema.
 pub async fn execute_sql(
+    request_id: &str,
     client: &reqwest::Client,
     core_url: &str,
     sql: &str,
     params: Vec<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    db_request(client, core_url, "execute", "Execute", sql, params, None).await
+    db_request(request_id, client, core_url, "execute", "Execute", sql, params, None).await
 }
 
 

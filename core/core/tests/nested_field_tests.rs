@@ -8,71 +8,40 @@
 
 use plugin_core::plugins::health::AppState;
 use plugin_core::services::redis_session::RedisSessionStore;
-use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 use std::sync::Arc;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
 use serde_json::json;
 use time::Duration;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::SessionManagerLayer;
 
 // ---------------------------------------------------------------------------
-// Shared test infrastructure (local — integration test crates are isolated)
+// Shared test infrastructure (from the common test module — full migrations +
+// dev API key provisioning so the current /api/* routes authenticate).
 // ---------------------------------------------------------------------------
 
-/// Ephemeral PostgreSQL container with core migrations applied.
-struct TestDb {
-    pool: PgPool,
-    _container: ContainerAsync<Postgres>,
+#[path = "common/mod.rs"]
+mod common;
+use common::{DEV_API_KEY, TestDb};
+
+/// Creates the test server backed by a fresh TestDb (full migrations applied),
+/// provisioning the dev API key so authenticated requests succeed.
+async fn create_server() -> (axum_test::TestServer, TestDb) {
+    let test_db = TestDb::new().await.expect("Failed to create test DB");
+    let _ = plugin_core::services::auth::provision_dev_api_key(
+        test_db.pool(),
+        Some(DEV_API_KEY.to_string()),
+    )
+    .await;
+    let state = create_test_state(test_db.pool().clone()).await;
+    let session_layer = create_session_layer().await;
+    let app = plugin_core::api::make_router(Arc::new(state), session_layer);
+    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    (server, test_db)
 }
 
-impl TestDb {
-    async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let node = Postgres::default();
-        let container = node.start().await?;
-        let connection_string = format!(
-            "postgres://postgres:postgres@{}:{}/postgres",
-            container.get_host().await?,
-            container.get_host_port_ipv4(5432).await?
-        );
-        let pool = PgPool::connect(&connection_string).await?;
-        Self::run_migrations(&pool).await?;
-        Ok(Self { pool, _container: container })
-    }
-
-    async fn run_migrations(pool: &PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto")
-            .execute(pool).await?;
-        let migration_files: Vec<(&str, &str)> = vec![
-            ("001_create_plugins", include_str!("../../core-migrations/001_create_plugins.up.sql")),
-            ("002_create_plugin_versions", include_str!("../../core-migrations/002_create_plugin_versions.up.sql")),
-            ("003_create_schema_migrations", include_str!("../../core-migrations/003_create_schema_migrations.up.sql")),
-            ("004_create_request_logs", include_str!("../../core-migrations/004_create_request_logs.up.sql")),
-            ("005_create_registries", include_str!("../../core-migrations/005_create_registries.up.sql")),
-            ("006_create_collection_definitions", include_str!("../../core-migrations/006_create_collection_definitions.up.sql")),
-            ("007_create_saved_views", include_str!("../../core-migrations/007_create_saved_views.up.sql")),
-            ("008_create_system_settings", include_str!("../../core-migrations/008_create_system_settings.up.sql")),
-            ("009_add_request_body_capture", include_str!("../../core-migrations/009_add_request_body_capture.up.sql")),
-            ("010_create_host_calls", include_str!("../../core-migrations/010_create_host_calls.up.sql")),
-        ];
-        for (_name, sql) in &migration_files {
-            for statement in sql.split(';') {
-                let trimmed = statement.trim();
-                if !trimmed.is_empty() {
-                    sqlx::query(trimmed).execute(pool).await?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn pool(&self) -> &PgPool {
-        &self.pool
-    }
-}
+/// Authorization header value for the dev API key.
+const AUTH_HEADER: &str = "Bearer dev_test-key-for-tests-12345";
 
 async fn create_session_layer() -> SessionManagerLayer<RedisSessionStore> {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
@@ -117,7 +86,6 @@ async fn create_test_state(pool: PgPool) -> AppState {
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
-        dev_registry: None,
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,
@@ -155,15 +123,12 @@ async fn create_test_state_with_depth_limit(pool: PgPool, depth_limit: usize) ->
 ///
 /// Returns (server, test_db, authors_name, articles_name).
 async fn setup_m2o_fixture() -> (axum_test::TestServer, TestDb, String, String) {
-    let test_db = TestDb::new().await.expect("Failed to create test DB");
-    let state = create_test_state(test_db.pool().clone()).await;
-    let session_layer = create_session_layer().await;
-    let app = plugin_core::api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let (server, test_db) = create_server().await;
 
     // Create authors collection with a single string field
     let authors_fields = json!([{"name": "name", "type": "string", "required": true}]);
     let resp = server.post("/api/collections")
+        .add_header("Authorization", AUTH_HEADER)
         .json(&json!({"name": "authors", "fields": authors_fields}))
         .await;
     assert_eq!(resp.status_code(), 201, "Failed to create authors: {}", resp.text());
@@ -180,6 +145,7 @@ async fn setup_m2o_fixture() -> (axum_test::TestServer, TestDb, String, String) 
         }
     ]);
     let resp = server.post("/api/collections")
+        .add_header("Authorization", AUTH_HEADER)
         .json(&json!({"name": "articles", "fields": articles_fields}))
         .await;
     assert_eq!(resp.status_code(), 201, "Failed to create articles: {}", resp.text());
@@ -209,6 +175,7 @@ async fn setup_o2m_fixture() -> (axum_test::TestServer, TestDb, String, String, 
         }
     ]);
     let resp = server.post("/api/collections")
+        .add_header("Authorization", AUTH_HEADER)
         .json(&json!({"name": "posts", "fields": posts_fields}))
         .await;
     assert_eq!(resp.status_code(), 201, "Failed to create posts: {}", resp.text());
@@ -222,11 +189,12 @@ async fn create_items(
     collection: &str,
     items: serde_json::Value,
 ) -> Vec<serde_json::Value> {
-    let resp = server.post(&format!("/api/collections/{}/items", collection))
+    let resp = server.post(&format!("/api/items/{}", collection))
+        .add_header("Authorization", AUTH_HEADER)
         .json(&items)
         .await;
     assert_eq!(
-        resp.status_code(), 201,
+        resp.status_code(), 200,
         "Failed to create items in {}: {}", collection, resp.text()
     );
     let body: serde_json::Value = serde_json::from_str(&resp.text())
@@ -242,7 +210,8 @@ async fn query_items(
     collection: &str,
     body: serde_json::Value,
 ) -> serde_json::Value {
-    let resp = server.post(&format!("/api/collections/{}/items/query", collection))
+    let resp = server.post(&format!("/api/items/{}/query", collection))
+        .add_header("Authorization", AUTH_HEADER)
         .json(&body)
         .await;
     let json_body: serde_json::Value = serde_json::from_str(&resp.text())
@@ -263,7 +232,8 @@ async fn query_items_status(
     collection: &str,
     body: serde_json::Value,
 ) -> axum::http::StatusCode {
-    let resp = server.post(&format!("/api/collections/{}/items/query", collection))
+    let resp = server.post(&format!("/api/items/{}/query", collection))
+        .add_header("Authorization", AUTH_HEADER)
         .json(&body)
         .await;
     resp.status_code()
@@ -328,6 +298,7 @@ async fn test_nested_multi_field_grouping() {
         {"name": "email", "type": "string"}
     ]);
     let resp = server.put(&format!("/api/collections/{}", authors_name))
+        .add_header("Authorization", AUTH_HEADER)
         .json(&json!({"fields": fields}))
         .await;
     assert_eq!(resp.status_code(), 200, "Failed to update authors: {}", resp.text());
@@ -389,6 +360,7 @@ async fn test_nested_o2m_query() {
     // Query articles with reverse 1:M field selection
     let response = query_items(&server, &articles_name, json!({
         "fields": ["title", "author.name", "posts.title", "posts.body"],
+        "backlink": true,
         "limit": 10
     })).await;
 
@@ -437,6 +409,7 @@ async fn test_nested_o2m_empty_array() {
     // Query with reverse 1:M field — should return empty array, not [null]
     let response = query_items(&server, &articles_name, json!({
         "fields": ["title", "posts.title"],
+        "backlink": true,
         "limit": 10
     })).await;
 
@@ -563,24 +536,28 @@ async fn test_nested_backlink_false() {
 // ===========================================================================
 
 #[tokio::test]
-async fn test_nested_cycle_detection() {
-    // Create two collections A and B where A → B and B → A, forming a cycle.
-    // Querying with a path that traverses the cycle should return 400 Bad Request.
+async fn test_nested_cyclic_path_returns_bad_request() {
+    // Create two collections A and B where A → B and B → A, forming a cycle,
+    // then request a path that recurses through the cycle: A → b_rel → B →
+    // a_rel → A → b_rel → B.
+    //
+    // Intended behavior: `resolve_group` tracks visited (collection, segment)
+    // pairs at every recursion level and should abort cyclic recursion with a
+    // 400 Bad Request ("Circular reference detected...").
+    //
+    // A non-cyclic two-hop M:1 path (b_rel.a_rel.name) is valid and must
+    // succeed (200) with correctly nested data — the nested subquery references
+    // its parent via the "_rel_*" table alias, not the base collection's real
+    // name (which would be out of scope and fail with a DB error).
 
-    let test_db = TestDb::new().await.expect("Failed to create test DB");
-    let state = create_test_state(test_db.pool().clone()).await;
-    let session_layer = create_session_layer().await;
-    let app = plugin_core::api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
-
-    // Collection A and B each have unique names but we keep them simple.
-    // Each test runs in its own container, so no collision risk.
+    let (server, _test_db) = create_server().await;
 
     // Create collection A first WITHOUT the b_rel FK (B doesn't exist yet)
     let a_fields = json!([
         {"name": "name", "type": "string", "required": true},
     ]);
     let resp = server.post("/api/collections")
+        .add_header("Authorization", AUTH_HEADER)
         .json(&json!({"name": "coll_a", "fields": a_fields}))
         .await;
     assert_eq!(resp.status_code(), 201, "Failed to create coll_a: {}", resp.text());
@@ -596,6 +573,7 @@ async fn test_nested_cycle_detection() {
         }
     ]);
     let resp = server.post("/api/collections")
+        .add_header("Authorization", AUTH_HEADER)
         .json(&json!({"name": "coll_b", "fields": b_fields}))
         .await;
     assert_eq!(resp.status_code(), 201, "Failed to create coll_b: {}", resp.text());
@@ -611,6 +589,7 @@ async fn test_nested_cycle_detection() {
         }
     ]);
     let resp = server.put(&format!("/api/collections/{}", "coll_a"))
+        .add_header("Authorization", AUTH_HEADER)
         .json(&json!({"fields": a_updated_fields}))
         .await;
     assert_eq!(resp.status_code(), 200,
@@ -628,7 +607,8 @@ async fn test_nested_cycle_detection() {
     let b_id = get_item_id(&b_items);
 
     // Update A's b_rel to point to B via PATCH
-    let resp = server.patch(&format!("/api/collections/{}/items/{}", "coll_a", a_id))
+    let resp = server.patch(&format!("/api/items/{}/{}", "coll_a", a_id))
+        .add_header("Authorization", AUTH_HEADER)
         .json(&json!({"b_rel": b_id}))
         .await;
     assert!(resp.status_code() == 200, "Failed to update A's b_rel: {}", resp.text());
@@ -642,12 +622,48 @@ async fn test_nested_cycle_detection() {
         "Invalid field path should return 422, got status {:?}", resp);
 
     // Test: single-hop path b_rel.name is allowed (M:1 at depth 1)
-    let ok_status = query_items_status(&server, "coll_a", json!({
-        "fields": ["b_rel.name"],
+    let resp = query_items_status(&server, "coll_a", json!({
+        "fields": ["name", "b_rel.name"],
         "limit": 10
     })).await;
-    assert_eq!(ok_status, axum::http::StatusCode::OK,
-        "Single-hop nested path should succeed, got status {:?}", ok_status);
+    assert_eq!(resp, axum::http::StatusCode::OK,
+        "Single-hop nested path should succeed, got status {:?}", resp);
+
+    // Test: a non-cyclic two-hop M:1 path b_rel.a_rel.name succeeds and
+    // returns correctly nested data (b_rel → { a_rel → { name } }).
+    let resp = query_items(&server, "coll_a", json!({
+        "fields": ["name", "b_rel.a_rel.name"],
+        "limit": 10
+    })).await;
+    assert_eq!(
+        resp.get("error").map(|v| v.as_str().unwrap_or("")),
+        None,
+        "Two-hop nested path should not error, got: {}",
+        resp
+    );
+    let data = resp.get("data").and_then(|v| v.as_array())
+        .expect("data should be an array");
+    assert_eq!(data.len(), 1);
+    let b_rel = data[0].get("b_rel").expect("b_rel should be present");
+    let a_rel = b_rel.get("a_rel").expect("b_rel.a_rel should be present");
+    assert_eq!(
+        a_rel.get("name").and_then(|v| v.as_str()),
+        Some("Item A"),
+        "b_rel.a_rel.name should resolve to 'Item A', got: {}",
+        a_rel
+    );
+
+    // Test: a path that loops A→B→A→B must trigger the documented 400 cycle
+    // error (cycle guard is now reachable at every recursion level).
+    let resp = query_items_status(&server, "coll_a", json!({
+        "fields": ["name", "b_rel.a_rel.b_rel.name"],
+        "limit": 10
+    })).await;
+    assert_eq!(
+        resp, axum::http::StatusCode::BAD_REQUEST,
+        "Cyclic path should return 400 Bad Request (circular reference), got status {:?}",
+        resp
+    );
 }
 
 // ===========================================================================
@@ -655,14 +671,18 @@ async fn test_nested_cycle_detection() {
 // ===========================================================================
 
 #[tokio::test]
-async fn test_nested_query_timeout_transaction() {
-    // NESTED-07: Nested field queries run within an explicit transaction
-    // with SET LOCAL statement_timeout. We verify by successfully executing
-    // a nested query — if the timeout/transaction code was broken, the
-    // query would fail with a SQL error.
+async fn test_nested_query_executes_nested_fields() {
+    // NESTED-07 claimed nested field queries run inside an explicit transaction
+    // with SET LOCAL statement_timeout. Neither exists in the collection query
+    // handler: `query_collection_items` in handlers.rs issues a plain
+    // `fetch_one` with no transaction and no statement_timeout. The only
+    // timeout in the codebase is a hardcoded 60s `tokio::time::timeout` in the
+    // plugin-schema `execute_query` (query_builder.rs) — not realistically
+    // triggerable in an integration test.
     //
-    // This test is structural: it confirms the SET LOCAL + transaction
-    // wrapping works by running a real nested query through the handler.
+    // So this test verifies what it actually can: a nested field query runs to
+    // completion through the collection handler and returns correctly shaped
+    // nested data (both the data query and the count query succeed).
 
     let (server, _test_db, authors_name, articles_name) = setup_m2o_fixture().await;
 
@@ -676,22 +696,25 @@ async fn test_nested_query_timeout_transaction() {
         {"title": "Timeout Test", "author": author_id}
     ])).await;
 
-    // Execute nested field query (triggers timeout wrapping in handler)
+    // Execute nested field query through the collection handler
     let response = query_items(&server, &articles_name, json!({
         "fields": ["title", "author.name"],
         "limit": 10
     })).await;
 
-    // Verify the query succeeded — if timeout/transaction was broken,
-    // the handler would return an error status or malformed data
+    // Verify the nested query succeeded and returned the expected shape
     let data = response.get("data").and_then(|v| v.as_array())
         .expect("data should be an array");
-    assert_eq!(data.len(), 1, "Query wrapped in transaction should return results");
+    assert_eq!(data.len(), 1, "Nested query should return 1 result");
 
     let article = &data[0];
     assert_eq!(article.get("title").and_then(|v| v.as_str()), Some("Timeout Test"));
     assert!(article.get("author").and_then(|v| v.as_object()).is_some(),
-        "author should be nested object after transaction-wrapped query");
+        "author should be a nested object");
+
+    // The handler also runs the COUNT query — verify it completed too
+    assert_eq!(response.get("total").and_then(|v| v.as_i64()), Some(1),
+        "total should report 1 matching row");
 }
 
 // ===========================================================================
@@ -700,7 +723,7 @@ async fn test_nested_query_timeout_transaction() {
 
 #[tokio::test]
 async fn test_nested_get_single_item_with_fields() {
-    // GET /api/collections/:name/items/:id?fields=author.name returns nested JSON
+    // GET /api/items/:slug/:id?fields=author.name returns nested JSON
     let (server, _test_db, authors_name, articles_name) = setup_m2o_fixture().await;
 
     // Create test data
@@ -716,10 +739,10 @@ async fn test_nested_get_single_item_with_fields() {
 
     // GET single item with nested fields query param
     let url = format!(
-        "/api/collections/{}/items/{}?fields=title,author.name",
+        "/api/items/{}/{}?fields=title,author.name",
         articles_name, article_id
     );
-    let resp = server.get(&url).await;
+    let resp = server.get(&url).add_header("Authorization", AUTH_HEADER).await;
     assert_eq!(resp.status_code(), 200,
         "GET single item with fields should succeed: {}", resp.text());
 
@@ -755,8 +778,8 @@ async fn test_nested_get_single_item_without_fields() {
     let article_id = get_item_id(&articles);
 
     // GET without fields param
-    let url = format!("/api/collections/{}/items/{}", articles_name, article_id);
-    let resp = server.get(&url).await;
+    let url = format!("/api/items/{}/{}", articles_name, article_id);
+    let resp = server.get(&url).add_header("Authorization", AUTH_HEADER).await;
     assert_eq!(resp.status_code(), 200,
         "GET without fields should succeed: {}", resp.text());
 

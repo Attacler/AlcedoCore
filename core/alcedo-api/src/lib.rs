@@ -1,6 +1,6 @@
 pub mod api;
 
-pub use api::{make_internal_router, make_router};
+pub use api::make_router;
 
 pub use alcedo_common::{config, error, macros};
 pub use alcedo_common::{AppConfig, AppError};

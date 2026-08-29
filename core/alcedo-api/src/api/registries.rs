@@ -489,7 +489,6 @@ pub async fn list_registry_images_handler(
 
                                             let mut tag_futures = Vec::new();
                                             for tag in tag_list {
-                                                let base_url = base_url.clone();
                                                 let repo_name = repo_name.clone();
                                                 tag_futures.push(async move {
                                                     ImageListItem {

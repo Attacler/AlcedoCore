@@ -187,7 +187,7 @@ impl PluginPlatform for K8sPlatform {
     async fn deploy(
         &self,
         slug: &str,
-        version: &str,
+        _version: &str,
         image: &str,
         env: HashMap<String, String>,
     ) -> Result<DeploymentId, AppError> {

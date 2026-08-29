@@ -159,7 +159,7 @@ pub(crate) async fn update_layout(
         parts.push(format!("is_default = ${}", param_idx));
         param_idx += 1;
     }
-    if let Some(o) = body.ordinal_position {
+    if let Some(_o) = body.ordinal_position {
         parts.push(format!("ordinal_position = ${}", param_idx));
         param_idx += 1;
     }

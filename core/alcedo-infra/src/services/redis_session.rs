@@ -10,7 +10,26 @@ use tower_sessions::session_store::{self, SessionStore};
 
 /// A `deadpool::Manager` that creates `ConnectionManager` instances.
 /// Gives us a multi-connection pool without the `deadpool-redis` version conflict.
-pub struct RedisPoolManager;
+///
+/// When no explicit URL is provided, connections fall back to `REDIS_URL`
+/// (or `redis://127.0.0.1:6379`).
+pub struct RedisPoolManager {
+    url: Option<String>,
+}
+
+impl RedisPoolManager {
+    /// Build a manager that connects to `REDIS_URL` (or the localhost default).
+    pub fn default() -> Self {
+        Self { url: None }
+    }
+
+    /// Build a manager that connects to a specific Redis URL.
+    pub fn with_url(url: impl Into<String>) -> Self {
+        Self {
+            url: Some(url.into()),
+        }
+    }
+}
 
 impl managed::Manager for RedisPoolManager {
     type Type = ConnectionManager;
@@ -18,8 +37,12 @@ impl managed::Manager for RedisPoolManager {
 
     fn create(&self) -> impl Future<Output = Result<Self::Type, Self::Error>> + Send {
         async {
-            let url = std::env::var("REDIS_URL")
-                .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+            let url = self
+                .url
+                .clone()
+                .unwrap_or_else(|| {
+                    std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string())
+                });
             let client = redis::Client::open(url)?;
             let conn = ConnectionManager::new(client).await?;
             Ok(conn)

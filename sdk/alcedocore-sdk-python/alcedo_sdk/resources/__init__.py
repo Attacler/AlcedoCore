@@ -5,7 +5,6 @@ from .settings import SettingsResource
 from .migrations import MigrationsResource
 from .schema import SchemaResource
 from .logs import LogsResource
-from .dev import DevResource
 from .files import FilesResource
 from .health import HealthResource
 
@@ -17,7 +16,6 @@ __all__ = [
     "MigrationsResource",
     "SchemaResource",
     "LogsResource",
-    "DevResource",
     "FilesResource",
     "HealthResource",
 ]

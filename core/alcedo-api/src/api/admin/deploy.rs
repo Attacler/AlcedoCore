@@ -296,6 +296,12 @@ pub async fn deploy_plugin_handler(
     env.insert("PORT".to_string(), port.to_string());
     env.insert("CORE_URL".to_string(), default_core_url);
 
+    // Give plugins access to the same Redis the core uses (e.g. automation's
+    // X-Request-ID validation) unless the caller explicitly overrides it.
+    if let Ok(redis_url) = std::env::var("REDIS_URL") {
+        env.entry("REDIS_URL".to_string()).or_insert(redis_url);
+    }
+
     let container_id = if payload.start_container {
         let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
 

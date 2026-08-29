@@ -208,12 +208,7 @@ impl PluginMigrationEngine {
                 .map_err(|e| AppError::DatabaseError {
                     details: format!("Failed to set search_path: {}", e),
                 })?;
-            let statements: Vec<&str> = file
-                .up_content
-                .split(';')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .collect();
+            let statements = super::split_sql_statements(&file.up_content);
             for stmt in &statements {
                 sqlx::query(stmt).execute(&mut *tx).await.map_err(|e| {
                     let err_msg = format!(
@@ -427,7 +422,7 @@ impl PluginMigrationEngine {
                 );
 
                 let mut tx = self.pool.begin().await?;
-                for query in query_str.split(';').filter(|s| !s.trim().is_empty()) {
+                for query in super::split_sql_statements(&query_str) {
                     sqlx::query(query).execute(&mut *tx).await?;
                 }
                 tx.commit().await.map_err(|e| AppError::DatabaseError {

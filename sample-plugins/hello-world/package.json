@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "type": "module",
     "scripts": {
-        "build:pages": "node ../../cli/dist/index.js --plugin=./pages --output=./pages/dist",
+        "build:pages": "node ../../cli/dist/index.js dev build-frontend",
         "build:pages-docker": "npm run build:pages && cp -r pages/* ../../.docker-plugins/hello-world/pages"
     },
     "dependencies": {

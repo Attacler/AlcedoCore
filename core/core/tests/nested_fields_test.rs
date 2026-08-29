@@ -145,6 +145,15 @@ async fn test_nested_field_get_single_item() {
 
 #[tokio::test]
 async fn test_nested_field_backlink_suppression() {
+    // A backlink-only nested field is the reverse (1:M) direction: querying an
+    // author for its articles, where articles reference the author via the
+    // `author_id` M:1 field.
+    //
+    // Real behavior: on /api/items/:slug/query, `backlink` defaults to false
+    // (handlers.rs `#[serde(default)]`). When false, `resolve_group` emits
+    // `NULL AS "<segment>"` for reverse relations, so the field is present but
+    // null (not populated). When `backlink: true`, the reverse relation is
+    // resolved as a JSON array (json_agg) of the related rows.
     let (server, _test_db, base_name) = setup().await;
     let authors_name = format!("nf3_authors_{}", base_name);
     let articles_name = format!("nf3_articles_{}", base_name);
@@ -170,23 +179,53 @@ async fn test_nested_field_backlink_suppression() {
         "author_id": author_id
     })).await;
 
-    let query_payload = serde_json::json!({
-        "fields": ["name"],
-        "backlink": false
-    });
+    let backlink_field = format!("{}.title", articles_name);
+
+    // 1. backlink NOT set (defaults to false) — reverse field must be suppressed
     let query_resp = server.post(&format!("/api/items/{}/query", authors_name))
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
-        .json(&query_payload)
+        .json(&serde_json::json!({
+            "fields": ["name", backlink_field],
+        }))
         .await;
-
     assert_eq!(query_resp.status_code(), axum::http::StatusCode::OK,
-        "Query with backlink=false failed: {}", query_resp.text());
+        "Query with default backlink=false failed: {}", query_resp.text());
 
     let body: serde_json::Value = serde_json::from_str(&query_resp.text())
         .expect("Invalid JSON");
     let data = body.get("data").and_then(|v| v.as_array())
         .expect("data should be array");
     assert_eq!(data.len(), 1, "Should have 1 author");
+
+    let suppressed = data[0].get(articles_name.as_str())
+        .expect("reverse field should be present (as null)");
+    assert_eq!(suppressed, &serde_json::Value::Null,
+        "backlink-only reverse field must NOT be populated when backlink=false, got: {}", suppressed);
+
+    // 2. backlink=true — reverse field must be populated as a JSON array
+    let query_resp = server.post(&format!("/api/items/{}/query", authors_name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({
+            "fields": ["name", backlink_field],
+            "backlink": true,
+        }))
+        .await;
+    assert_eq!(query_resp.status_code(), axum::http::StatusCode::OK,
+        "Query with backlink=true failed: {}", query_resp.text());
+
+    let body: serde_json::Value = serde_json::from_str(&query_resp.text())
+        .expect("Invalid JSON");
+    let data = body.get("data").and_then(|v| v.as_array())
+        .expect("data should be array");
+    assert_eq!(data.len(), 1, "Should have 1 author");
+
+    let populated = data[0].get(articles_name.as_str())
+        .expect("reverse field should be present with backlink=true");
+    let arr = populated.as_array()
+        .unwrap_or_else(|| panic!("reverse field should be an array with backlink=true, got: {}", populated));
+    assert_eq!(arr.len(), 1, "Should have 1 related article");
+    assert_eq!(arr[0].get("title").and_then(|v| v.as_str()), Some("Backlink Test"),
+        "related article title should be populated");
 }
 
 #[tokio::test]

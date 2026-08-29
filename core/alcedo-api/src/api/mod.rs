@@ -2,7 +2,6 @@ pub mod admin;
 pub mod responses;
 pub mod auth;
 pub mod users;
-pub mod internal;
 pub mod saved_views;
 pub mod items;
 pub mod kv;
@@ -24,7 +23,6 @@ pub mod files;
 pub mod menus;
 pub mod router;
 
-pub use internal::make_internal_router;
 pub use router::make_router;
 
 #[derive(Debug, Clone, serde::Deserialize)]

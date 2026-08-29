@@ -13,7 +13,6 @@ alcedo-container = { path = "../alcedo-container" }
 alcedo-db = { path = "../alcedo-db" }
 alcedo-infra = { path = "../alcedo-infra" }
 alcedo-events = { path = "../alcedo-events" }
-alcedo-dev = { path = "../alcedo-dev" }
 alcedo-providers = { path = "../alcedo-providers" }
 file-storage = { path = "../file-storage" }
 axum = { version = "0.7" }

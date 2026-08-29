@@ -1,7 +1,6 @@
 use pcl::api;
 use pcl::config::AppConfig;
 use pcl::db::{Pool, core_migrations::CoreMigrationRunner};
-use pcl::dev::{DevSessionRegistry, spawn_ttl_cleanup};
 use pcl::error::AppError;
 use pcl::kv::store::KvStore;
 use pcl::middleware::logging::spawn_log_writer;
@@ -216,7 +215,7 @@ async fn main() -> Result<(), AppError> {
     // Main Redis connection pool
     use pcl::services::redis_session::RedisPoolManager;
     let redis_connection: Option<pcl::services::redis_session::RedisPool> = if !config.redis_url.is_empty() {
-        match deadpool::managed::Pool::builder(RedisPoolManager)
+        match deadpool::managed::Pool::builder(RedisPoolManager::default())
             .max_size(4)
             .build()
         {
@@ -273,13 +272,6 @@ async fn main() -> Result<(), AppError> {
     let host_call_channel = db_pool.as_ref().map(|pool| spawn_host_call_writer(pool.clone()));
 
     let event_bus = EventBus::new();
-
-    let dev_registry: Option<Arc<DevSessionRegistry>> = {
-        let registry = Arc::new(DevSessionRegistry::new());
-        spawn_ttl_cleanup(registry.clone());
-        tracing::info!("[DEV] Dev session registry initialized with TTL cleanup task");
-        Some(registry)
-    };
 
     // Network management is handled by K8s
 
@@ -354,7 +346,6 @@ async fn main() -> Result<(), AppError> {
         logging_channel,
         host_call_channel,
         event_bus,
-        dev_registry,
         capture_body: config.capture_body,
         capture_body_max_size: config.capture_body_max_size,
         nested_field_depth_limit: config.nested_field_depth_limit,

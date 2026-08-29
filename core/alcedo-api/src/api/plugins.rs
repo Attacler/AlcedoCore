@@ -10,7 +10,7 @@ use crate::api::responses::ResponseEnvelope;
 use crate::db::queries::{Plugin, PluginVersion, Registry};
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
-use crate::{api::permission_check, container::InstanceInfo};
+use crate::api::permission_check;
 
 fn version_status(active_version: &Option<PluginVersion>) -> (String, String) {
     let version = active_version
@@ -856,6 +856,12 @@ pub async fn deploy_plugin_handler(
     env.insert("PORT".to_string(), port.to_string());
     env.insert("CORE_URL".to_string(), default_core_url);
 
+    // Give plugins access to the same Redis the core uses (e.g. automation's
+    // X-Request-ID validation) unless the caller explicitly overrides it.
+    if let Ok(redis_url) = std::env::var("REDIS_URL") {
+        env.entry("REDIS_URL".to_string()).or_insert(redis_url);
+    }
+
     // Deploy through platform or Docker fallback
     let container_id = platform.deploy(&slug, &tag, &deploy_image, env).await?;
     let prev_active = PluginVersion::find_active(db_pool, &slug).await?;
@@ -1069,7 +1075,7 @@ pub async fn preview_plugin_handler(
             .await
         {
             Ok(content) => serde_json::from_str::<serde_json::Value>(&content).ok(),
-            Err(e) => None,
+            Err(_e) => None,
         }
     } else {
         None

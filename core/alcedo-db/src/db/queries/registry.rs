@@ -1,6 +1,5 @@
 use crate::{delete_by, error::AppError, find_all};
 use serde::{Deserialize, Serialize};
-use sqlx::Execute;
 use sqlx::PgPool;
 
 #[derive(Debug, Serialize, Deserialize, Clone, sqlx::FromRow)]

@@ -1,7 +1,6 @@
 use crate::DOCKER;
 use bollard::models::{
-    ContainerCreateBody, HostConfig, Mount, NetworkConnectRequest, NetworkCreateRequest,
-    PortBinding, RestartPolicy, RestartPolicyNameEnum,
+    ContainerCreateBody, HostConfig, NetworkConnectRequest, NetworkCreateRequest, RestartPolicy, RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateContainerOptions, DownloadFromContainerOptions, ListContainersOptions, ListImagesOptions,
@@ -290,10 +289,18 @@ impl DockerClient {
         &self,
         container_id: &str,
         network_name: &str,
+        alias: Option<&str>,
     ) -> Result<(), AppError> {
+        let endpoint_config = match alias {
+            Some(a) => bollard_stubs::models::EndpointSettings {
+                aliases: Some(vec![a.to_string()]),
+                ..Default::default()
+            },
+            None => bollard_stubs::models::EndpointSettings::default(),
+        };
         let config = NetworkConnectRequest {
             container: container_id.to_string(),
-            endpoint_config: Some(bollard_stubs::models::EndpointSettings::default()),
+            endpoint_config: Some(endpoint_config),
         };
         DOCKER.connect_network(network_name, config).await?;
         Ok(())

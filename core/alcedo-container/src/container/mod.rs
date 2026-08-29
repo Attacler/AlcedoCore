@@ -141,6 +141,7 @@ pub trait ContainerRuntime: Send + Sync {
         &self,
         container_id: &str,
         network_name: &str,
+        alias: Option<&str>,
     ) -> Result<(), AppError>;
 }
 

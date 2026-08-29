@@ -206,7 +206,7 @@ pub async fn delete_items(
 
     let table_ref = format!("\"{}\".\"{}\"", schema_name, table_name);
     let sql = format!(
-        "DELETE FROM {} WHERE {} RETURNING row_to_json({}) AS deleted_item",
+        "DELETE FROM {} WHERE {} RETURNING row_to_json({}.*) AS deleted_item",
         table_ref, where_clause, table_ref
     );
 

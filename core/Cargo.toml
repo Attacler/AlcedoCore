@@ -12,8 +12,6 @@ members = [
     "alcedo-infra",
     "alcedo-db",
     "alcedo-events",
-    "alcedo-dev",
-    "alcedo-proxy",
     "alcedo-services",
     "alcedo-providers",
     "alcedo-plugins",

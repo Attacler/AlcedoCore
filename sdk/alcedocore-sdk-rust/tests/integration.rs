@@ -400,53 +400,6 @@ async fn test_logs_list() {
 }
 
 #[tokio::test]
-async fn test_dev_start() {
-    let server = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/api/dev/start"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "slug": "test-plugin",
-            "url": "http://localhost:3000",
-            "expires_at": "2026-01-01T01:00:00Z",
-            "status": "active"
-        })))
-        .mount(&server)
-        .await;
-
-    let client = test_client(&server).await;
-    let result = client.dev.start("http://localhost:3000", None).await.unwrap();
-    assert_eq!(result.get("status"), Some(&json!("active")));
-}
-
-#[tokio::test]
-async fn test_dev_start_invalid_url() {
-    let client = test_client(&MockServer::start().await).await;
-    let result = client.dev.start("ftp://bad", None).await;
-    assert!(result.is_err());
-    match result {
-        Err(AlcedoError::Validation { .. }) => {} // expected
-        _ => panic!("Expected Validation error for invalid URL, got {:?}", result),
-    }
-}
-
-#[tokio::test]
-async fn test_dev_stop() {
-    let server = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/api/dev/stop"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "status": "stopped"
-        })))
-        .mount(&server)
-        .await;
-
-    let client = test_client(&server).await;
-    client.dev.stop().await.unwrap();
-}
-
-#[tokio::test]
 async fn test_error_authentication() {
     let server = MockServer::start().await;
 

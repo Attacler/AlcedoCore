@@ -421,10 +421,52 @@ async fn test_e2e_relational_sections() {
     let td = common::TestDb::new().await.unwrap();
     let p = td.pool();
 
+    create_coll(
+        p,
+        "e2e_test_coll",
+        vec![FieldDefinition {
+            name: "name".into(),
+            field_type: FieldType::String,
+            required: true,
+            unique: false,
+            default: None,
+            display_name: None,
+            display_type: None,
+            input_component: None,
+            display_component: None,
+            options: None,
+            is_system: false,
+            hidden: false,
+            related_collection: None,
+            relationship_type: None,
+            display_field: None,
+            inline_parent_fields: None,
+        }],
+    )
+    .await;
+
+    let (layout_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO collection_layouts (collection_name, name, is_default, ordinal_position)
+         VALUES ('e2e_test_coll', 'Default', true, 0) RETURNING id"
+    )
+    .fetch_one(p)
+    .await
+    .unwrap();
+
     sqlx::query(
-        "INSERT INTO collection_sections (collection_name, name, relation_field, view_type, item_limit, ordinal_position) VALUES ($1, $2, $3, $4, $5, $6)"
-    ).bind("e2e_test_coll").bind("Test Section").bind("children.parent").bind("table").bind(25).bind(1)
-    .execute(p).await.unwrap();
+        "INSERT INTO collection_sections (collection_name, name, relation_field, view_type, item_limit, ordinal_position, layout_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)"
+    )
+    .bind("e2e_test_coll")
+    .bind("Test Section")
+    .bind("children.parent")
+    .bind("table")
+    .bind(25)
+    .bind(1)
+    .bind(layout_id)
+    .execute(p)
+    .await
+    .unwrap();
 
     let rows: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT name, relation_field, view_type FROM collection_sections WHERE collection_name = $1"

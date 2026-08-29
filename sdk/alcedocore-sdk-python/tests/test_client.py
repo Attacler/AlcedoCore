@@ -56,7 +56,7 @@ class TestAlcedoClientHeaderInjection:
 
     @pytest.mark.asyncio
     async def test_resource_modules_available(self):
-        """AlcedoClient exposes all 8 resource modules."""
+        """AlcedoClient exposes all 7 resource modules."""
         async with AlcedoClient(plugin_slug="test") as client:
             assert hasattr(client, "kv")
             assert hasattr(client, "db")
@@ -64,7 +64,6 @@ class TestAlcedoClientHeaderInjection:
             assert hasattr(client, "migrations")
             assert hasattr(client, "schema")
             assert hasattr(client, "logs")
-            assert hasattr(client, "dev")
             assert hasattr(client, "health")
 
 

@@ -21,6 +21,8 @@ pub struct CreateMenuRequest {
     pub name: String,
     #[serde(default = "default_menu_icon")]
     pub icon: String,
+    #[serde(default)]
+    pub role_ids: Vec<Uuid>,
 }
 fn default_menu_icon() -> String { "menu".to_string() }
 
@@ -139,6 +141,9 @@ pub async fn create_menu(
     permission_check::require_scope(&state, &headers, "settings.write.all").await?;
     let pool = state.db()?;
     let row = MenuRow::create(pool, &payload.name, &payload.icon).await?;
+    if !payload.role_ids.is_empty() {
+        set_menu_roles(pool, row.id, &payload.role_ids).await?;
+    }
     let menu = load_menu_tree(pool, row.id).await?;
     let menu = menu.ok_or_else(|| AppError::Internal("Failed to load created menu".to_string()))?;
     Ok(Json(MenuResponse { data: menu }))

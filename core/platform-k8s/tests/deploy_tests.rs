@@ -4,7 +4,7 @@ use std::time::Duration;
 use kube::Api;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::Service;
-use pcl::container::{DeploymentId, PluginPlatform};
+use alcedo_container::container::{DeploymentId, PluginPlatform};
 use platform_k8s::platform::K8sPlatform;
 
 fn k8s_available() -> bool {

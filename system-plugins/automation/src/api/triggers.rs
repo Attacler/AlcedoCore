@@ -5,9 +5,9 @@ use crate::AppState;
 use std::sync::Arc;
 
 /// Fetch function_ids for a trigger from the join table
-async fn get_function_ids(client: &reqwest::Client, core_url: &str, trigger_id: &str) -> Vec<String> {
+async fn get_function_ids(client: &reqwest::Client, core_url: &str, request_id: &str, trigger_id: &str) -> Vec<String> {
     let sql = "SELECT function_id::text FROM plugin_automation.trigger_functions WHERE trigger_id = $1::uuid";
-    match db::query_sql(client, core_url, sql, vec![serde_json::Value::String(trigger_id.to_string())]).await {
+    match db::query_sql(request_id, client, core_url, sql, vec![serde_json::Value::String(trigger_id.to_string())]).await {
         Ok(val) => {
             let (columns, rows) = parse_response(&val);
             rows.iter().filter_map(|r| {
@@ -39,9 +39,10 @@ pub async fn list_triggers(
     req: HttpRequest,
     state: web::Data<Arc<AppState>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let sql = format!("{} ORDER BY created_at DESC", get_trigger_sql());
     let result = db::query_sql(
+        &request_id,
         &state.client,
         &state.config.core_url,
         &sql,
@@ -54,7 +55,7 @@ pub async fn list_triggers(
             for row in rows {
                 let map = row_to_map(&columns, &row);
                 let tid = map.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let fn_ids = get_function_ids(&state.client, &state.config.core_url, tid).await;
+                let fn_ids = get_function_ids(&state.client, &state.config.core_url, &request_id, tid).await;
                 triggers.push(build_trigger_json(&map, &fn_ids));
             }
             Ok(HttpResponse::Ok().json(triggers))
@@ -68,10 +69,10 @@ pub async fn get_trigger(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let id = path.into_inner();
     let sql = format!("{} WHERE id = $1::uuid", get_trigger_sql());
-    let result = db::query_sql(&state.client, &state.config.core_url, &sql, vec![serde_json::Value::String(id.clone())]).await;
+    let result = db::query_sql(&request_id, &state.client, &state.config.core_url, &sql, vec![serde_json::Value::String(id.clone())]).await;
     match result {
         Ok(val) => {
             let (columns, rows) = parse_response(&val);
@@ -79,7 +80,7 @@ pub async fn get_trigger(
                 return Ok(HttpResponse::NotFound().json(serde_json::json!({"error": "Trigger not found"})));
             }
             let map = row_to_map(&columns, &rows[0]);
-            let fn_ids = get_function_ids(&state.client, &state.config.core_url, &id).await;
+            let fn_ids = get_function_ids(&state.client, &state.config.core_url, &request_id, &id).await;
             Ok(HttpResponse::Ok().json(build_trigger_json(&map, &fn_ids)))
         }
         Err(e) => Ok(json_error(e)),
@@ -91,7 +92,7 @@ pub async fn create_trigger(
     state: web::Data<Arc<AppState>>,
     body: web::Json<CreateTriggerRequest>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let valid_events = ["ItemCreated", "ItemUpdated", "ItemDeleted"];
     if !valid_events.contains(&body.event_type.as_str()) {
         return Ok(HttpResponse::BadRequest().json(serde_json::json!({
@@ -119,7 +120,7 @@ pub async fn create_trigger(
         cond.map(serde_json::Value::String).unwrap_or(serde_json::Value::Null),
     ];
 
-    let result = db::execute_sql(&state.client, &state.config.core_url, insert_sql, params).await;
+    let result = db::execute_sql(&request_id, &state.client, &state.config.core_url, insert_sql, params).await;
     let trigger_id = match result {
         Ok(val) => {
             if let Some(arr) = val.as_array() {
@@ -142,7 +143,7 @@ pub async fn create_trigger(
     // Insert trigger_functions
     for fn_id in &body.function_ids {
         let _ = db::execute_sql(
-            &state.client, &state.config.core_url,
+            &request_id, &state.client, &state.config.core_url,
             "INSERT INTO plugin_automation.trigger_functions (trigger_id, function_id) VALUES ($1::uuid, $2::uuid) ON CONFLICT DO NOTHING",
             vec![
                 serde_json::Value::String(trigger_id.clone()),
@@ -153,11 +154,11 @@ pub async fn create_trigger(
 
     // Return the created trigger
     let get_sql = format!("{} WHERE id = $1::uuid", get_trigger_sql());
-    if let Ok(val) = db::query_sql(&state.client, &state.config.core_url, &get_sql, vec![serde_json::Value::String(trigger_id.clone())]).await {
+    if let Ok(val) = db::query_sql(&request_id, &state.client, &state.config.core_url, &get_sql, vec![serde_json::Value::String(trigger_id.clone())]).await {
         let (columns, rows) = parse_response(&val);
         if let Some(row) = rows.into_iter().next() {
             let map = row_to_map(&columns, &row);
-            let fn_ids = get_function_ids(&state.client, &state.config.core_url, &trigger_id).await;
+            let fn_ids = get_function_ids(&state.client, &state.config.core_url, &request_id, &trigger_id).await;
             return Ok(HttpResponse::Created().json(build_trigger_json(&map, &fn_ids)));
         }
     }
@@ -170,7 +171,7 @@ pub async fn update_trigger(
     path: web::Path<String>,
     body: web::Json<UpdateTriggerRequest>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let id = path.into_inner();
 
     if let Some(ref event_type) = body.event_type {
@@ -233,18 +234,18 @@ pub async fn update_trigger(
         param_idx,
     );
     params.push(serde_json::Value::String(id.clone()));
-    let _ = db::execute_sql(&state.client, &state.config.core_url, &update_sql, params).await;
+    let _ = db::execute_sql(&request_id, &state.client, &state.config.core_url, &update_sql, params).await;
 
     // Update trigger_functions if provided
     if let Some(ref fn_ids) = body.function_ids {
         let _ = db::execute_sql(
-            &state.client, &state.config.core_url,
+            &request_id, &state.client, &state.config.core_url,
             "DELETE FROM plugin_automation.trigger_functions WHERE trigger_id = $1::uuid",
             vec![serde_json::Value::String(id.clone())],
         ).await;
         for fn_id in fn_ids {
             let _ = db::execute_sql(
-                &state.client, &state.config.core_url,
+                &request_id, &state.client, &state.config.core_url,
                 "INSERT INTO plugin_automation.trigger_functions (trigger_id, function_id) VALUES ($1::uuid, $2::uuid)",
                 vec![
                     serde_json::Value::String(id.clone()),
@@ -256,12 +257,12 @@ pub async fn update_trigger(
 
     // Return updated trigger
     let get_sql = format!("{} WHERE id = $1::uuid", get_trigger_sql());
-    match db::query_sql(&state.client, &state.config.core_url, &get_sql, vec![serde_json::Value::String(id.clone())]).await {
+    match db::query_sql(&request_id, &state.client, &state.config.core_url, &get_sql, vec![serde_json::Value::String(id.clone())]).await {
         Ok(val) => {
             let (columns, rows) = parse_response(&val);
             if let Some(row) = rows.into_iter().next() {
                 let map = row_to_map(&columns, &row);
-                let fn_ids = get_function_ids(&state.client, &state.config.core_url, &id).await;
+                let fn_ids = get_function_ids(&state.client, &state.config.core_url, &request_id, &id).await;
                 Ok(HttpResponse::Ok().json(build_trigger_json(&map, &fn_ids)))
             } else {
                 Ok(HttpResponse::NotFound().json(serde_json::json!({"error": "Trigger not found"})))
@@ -276,10 +277,10 @@ pub async fn delete_trigger(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let id = path.into_inner();
     let sql = "DELETE FROM plugin_automation.triggers WHERE id = $1::uuid";
-    let result = db::execute_sql(&state.client, &state.config.core_url, sql, vec![serde_json::Value::String(id)]).await;
+    let result = db::execute_sql(&request_id, &state.client, &state.config.core_url, sql, vec![serde_json::Value::String(id)]).await;
     match result {
         Ok(val) => {
             let rows_affected = val.get("rows_affected").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -298,10 +299,10 @@ pub async fn toggle_trigger(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let id = path.into_inner();
     let current_sql = "SELECT enabled FROM plugin_automation.triggers WHERE id = $1::uuid";
-    let current = db::query_sql(&state.client, &state.config.core_url, current_sql, vec![serde_json::Value::String(id.clone())]).await;
+    let current = db::query_sql(&request_id, &state.client, &state.config.core_url, current_sql, vec![serde_json::Value::String(id.clone())]).await;
     let current_enabled = match current {
         Ok(val) => {
             let (columns, rows) = parse_response(&val);
@@ -318,7 +319,7 @@ pub async fn toggle_trigger(
         "UPDATE plugin_automation.triggers SET enabled = $1, updated_at = NOW() WHERE id = $2::uuid \
          RETURNING id::text, name, event_type, collection_filter, field_filter, conditions::text, enabled, created_at::text, updated_at::text"
     );
-    let result = db::execute_sql(&state.client, &state.config.core_url, &sql, vec![
+    let result = db::execute_sql(&request_id, &state.client, &state.config.core_url, &sql, vec![
         serde_json::Value::Bool(!current_enabled),
         serde_json::Value::String(id.clone()),
     ]).await;
@@ -327,7 +328,7 @@ pub async fn toggle_trigger(
             let (columns, rows) = parse_response(&val);
             if let Some(row) = rows.into_iter().next() {
                 let map = row_to_map(&columns, &row);
-                let fn_ids = get_function_ids(&state.client, &state.config.core_url, &id).await;
+                let fn_ids = get_function_ids(&state.client, &state.config.core_url, &request_id, &id).await;
                 Ok(HttpResponse::Ok().json(build_trigger_json(&map, &fn_ids)))
             } else {
                 Ok(HttpResponse::Ok().json(val))

@@ -12,7 +12,6 @@ macro_rules! impl_new {
 }
 
 pub mod db;
-pub mod dev;
 pub mod health;
 pub mod kv;
 pub mod logs;

@@ -8,8 +8,9 @@ pub async fn list_functions(
     req: HttpRequest,
     state: web::Data<Arc<AppState>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let result = db::query_sql(
+        &request_id,
         &state.client,
         &state.config.core_url,
         "SELECT id::text, name, code, created_at::text, updated_at::text FROM plugin_automation.functions ORDER BY created_at DESC",
@@ -26,8 +27,9 @@ pub async fn create_function(
     state: web::Data<Arc<AppState>>,
     body: web::Json<CreateFunctionRequest>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let result = db::execute_sql(
+        &request_id,
         &state.client,
         &state.config.core_url,
         "INSERT INTO plugin_automation.functions (name, code) VALUES ($1, $2) RETURNING id::text, name, code, created_at::text, updated_at::text",
@@ -54,9 +56,10 @@ pub async fn get_function(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let id = path.into_inner();
     let result = db::query_sql(
+        &request_id,
         &state.client,
         &state.config.core_url,
         "SELECT id::text, name, code, created_at::text, updated_at::text FROM plugin_automation.functions WHERE id = $1::uuid",
@@ -84,10 +87,11 @@ pub async fn update_function(
     path: web::Path<String>,
     body: web::Json<UpdateFunctionRequest>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let id = path.into_inner();
 
     let existing = db::query_sql(
+        &request_id,
         &state.client,
         &state.config.core_url,
         "SELECT id::text, name, code, created_at::text, updated_at::text FROM plugin_automation.functions WHERE id = $1::uuid",
@@ -113,6 +117,7 @@ pub async fn update_function(
     let new_code = body.code.as_deref().unwrap_or(old_code).to_string();
 
     let result = db::execute_sql(
+        &request_id,
         &state.client,
         &state.config.core_url,
         "UPDATE plugin_automation.functions SET name = $1, code = $2, updated_at = NOW() WHERE id = $3::uuid RETURNING id::text, name, code, created_at::text, updated_at::text",
@@ -140,9 +145,10 @@ pub async fn delete_function(
     state: web::Data<Arc<AppState>>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let id = path.into_inner();
     let result = db::execute_sql(
+        &request_id,
         &state.client,
         &state.config.core_url,
         "DELETE FROM plugin_automation.functions WHERE id = $1::uuid",
@@ -167,7 +173,7 @@ pub async fn test_function(
     path: web::Path<String>,
     body: web::Json<serde_json::Value>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let id = path.into_inner();
 
     // Use inline code if provided, otherwise fetch from DB
@@ -175,6 +181,7 @@ pub async fn test_function(
         inline_code.to_string()
     } else {
         let func_result = db::query_sql(
+            &request_id,
             &state.client,
             &state.config.core_url,
             "SELECT code FROM plugin_automation.functions WHERE id = $1::uuid",
@@ -199,14 +206,14 @@ pub async fn test_function(
 
     let mock_event = body.get("event").cloned().unwrap_or(serde_json::Value::Null);
     let core_url = state.config.core_url.clone();
-    let request_id = req.headers()
+    let exec_request_id = req.headers()
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
 
     let start = std::time::Instant::now();
-    match crate::engine::execute_function(&code, mock_event, &core_url, &request_id) {
+    match crate::engine::execute_function(&code, mock_event, &core_url, &exec_request_id) {
         Ok(mut result) => {
             let duration_ms = start.elapsed().as_millis();
             result["duration_ms"] = serde_json::json!(duration_ms);

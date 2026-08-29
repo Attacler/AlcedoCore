@@ -11,7 +11,6 @@ from .resources.settings import SettingsResource
 from .resources.migrations import MigrationsResource
 from .resources.schema import SchemaResource
 from .resources.logs import LogsResource
-from .resources.dev import DevResource
 from .resources.files import FilesResource
 from .resources.health import HealthResource
 from .resources.items import ItemsResource
@@ -27,7 +26,7 @@ class AlcedoClient:
             settings = await client.settings.get()
 
     All resource modules (.kv, .db, .settings, .migrations, .schema,
-    .logs, .dev, .health) share a single httpx.AsyncClient with
+    .logs, .health) share a single httpx.AsyncClient with
     connection pooling and auto-header injection.
     """
 
@@ -59,7 +58,6 @@ class AlcedoClient:
         self.migrations: MigrationsResource
         self.schema: SchemaResource
         self.logs: LogsResource
-        self.dev: DevResource
         self.files: FilesResource
         self.health: HealthResource
 
@@ -89,7 +87,6 @@ class AlcedoClient:
         self.migrations = MigrationsResource(client, slug)
         self.schema = SchemaResource(client, slug)
         self.logs = LogsResource(client, slug)
-        self.dev = DevResource(client, slug)
         self.files = FilesResource(client, slug)
         self.health = HealthResource(client)
         self._resources_initialized = True

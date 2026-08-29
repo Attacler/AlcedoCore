@@ -86,7 +86,12 @@ impl alcedo_container::container::ContainerRuntime for K8sRuntime {
     async fn get_file_from_image(&self, _name: &str, _path: &str) -> Result<String, AppError> {
         Err(AppError::Internal("Not implemented".to_string()))
     }
-    async fn connect_container_to_network(&self, _id: &str, _net: &str) -> Result<(), AppError> {
+    async fn connect_container_to_network(
+        &self,
+        _id: &str,
+        _net: &str,
+        _alias: Option<&str>,
+    ) -> Result<(), AppError> {
         Ok(())
     }
 }

@@ -3,7 +3,6 @@ import { createKvResource } from "./kv.js";
 import { createDbResource } from "./db.js";
 import { createSchemaResource } from "./schema.js";
 import { createLogsResource } from "./logs.js";
-import { createDevResource } from "./dev.js";
 import { createHealthResource } from "./health.js";
 import { createPluginsResource } from "./plugins.js";
 import { createMigrationsResource } from "./migrations.js";
@@ -236,53 +235,6 @@ describe("Logs Resource", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Dev Resource
-// ---------------------------------------------------------------------------
-
-describe("Dev Resource", () => {
-    it("start sends slug, url, ttl", async () => {
-        const ky = mockKy({ status: "started" });
-        const dev = createDevResource(ky);
-        const result = await dev.start(
-            "my-plugin",
-            "http://localhost:3000",
-            7200,
-        );
-        expect(getLastUrl(ky)).toBe("dev/start");
-        expect(getLastBody(ky)).toEqual({
-            slug: "my-plugin",
-            url: "http://localhost:3000",
-            ttl_secs: 7200,
-        });
-        expect(result).toEqual({ status: "started" });
-    });
-
-    it("start uses default ttl when not provided", async () => {
-        const ky = mockKy({ status: "started" });
-        const dev = createDevResource(ky);
-        await dev.start("my-plugin", "http://localhost:3000");
-        expect(getLastBody(ky)?.ttl_secs).toBe(3600);
-    });
-
-    it("start rejects invalid URL schemes", async () => {
-        const ky = mockKy({ status: "started" });
-        const dev = createDevResource(ky);
-        await expect(dev.start("my-plugin", "ftp://bad")).rejects.toThrow(
-            "Invalid URL scheme",
-        );
-    });
-
-    it("stop sends slug in body", async () => {
-        const ky = mockKy({ status: "stopped" });
-        const dev = createDevResource(ky);
-        const result = await dev.stop("my-plugin");
-        expect(getLastUrl(ky)).toBe("dev/stop");
-        expect(getLastBody(ky)).toEqual({ slug: "my-plugin" });
-        expect(result).toEqual({ status: "stopped" });
-    });
-});
-
-// ---------------------------------------------------------------------------
 // Health Resource
 // ---------------------------------------------------------------------------
 
@@ -479,7 +431,6 @@ describe("createClient", () => {
         expect(client).toHaveProperty("db");
         expect(client).toHaveProperty("schema");
         expect(client).toHaveProperty("logs");
-        expect(client).toHaveProperty("dev");
         expect(client).toHaveProperty("request");
     });
 

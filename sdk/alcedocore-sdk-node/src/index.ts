@@ -10,7 +10,6 @@ export { createKvResource } from "./kv";
 export { createDbResource } from "./db";
 export { createSchemaResource } from "./schema";
 export { createLogsResource } from "./logs";
-export { createDevResource } from "./dev";
 export { createAuthResource } from "./auth";
 export { createUsersResource } from "./users";
 export { createRolesResource } from "./roles";

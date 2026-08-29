@@ -20,6 +20,10 @@ use plugin_core::api::make_router;
 use plugin_core::plugins::health::AppState;
 use plugin_core::services::redis_session::RedisSessionStore;
 
+#[path = "common/mod.rs"]
+mod common;
+use common::DEV_API_KEY;
+
 // ---------------------------------------------------------------------------
 // Shared test context
 // ---------------------------------------------------------------------------
@@ -55,14 +59,25 @@ async fn get_ctx() -> &'static TestContext {
             .await
             .unwrap();
 
-        // Run the activity-logs migration (split on `;` because sqlx does not support
+        // Run the migrations (split on `;` because sqlx does not support
         // multiple statements in a single `query()` call with PostgreSQL).
-        for statement in
-            include_str!("../../core-migrations/011_activity_logs.up.sql").split(';')
-        {
-            let trimmed = statement.trim();
-            if !trimmed.is_empty() {
-                sqlx::query(trimmed).execute(&setup_pool).await.unwrap();
+        // `pgcrypto` is required by migration 026 (`gen_random_uuid()`).
+        sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+            .execute(&setup_pool)
+            .await
+            .unwrap();
+        let migrations = [
+            include_str!("../../core-migrations/011_activity_logs.up.sql"),
+            include_str!("../../core-migrations/026_create_developer_api_keys.up.sql"),
+            include_str!("../../core-migrations/029_add_request_id_to_logs.up.sql"),
+            include_str!("../../core-migrations/030_add_actor_to_system_logs.up.sql"),
+        ];
+        for migration in migrations {
+            for statement in migration.split(';') {
+                let trimmed = statement.trim();
+                if !trimmed.is_empty() {
+                    sqlx::query(trimmed).execute(&setup_pool).await.unwrap();
+                }
             }
         }
 
@@ -168,7 +183,6 @@ async fn make_test_state(pool: PgPool) -> AppState {
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
-        dev_registry: None,
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,
@@ -191,9 +205,21 @@ fn parse_body(response: &axum_test::TestResponse) -> Value {
 
 async fn setup_log_server(ctx: &TestContext) -> TestServer {
     let pool = make_test_pool(&ctx.conn_str).await;
-    let state = make_test_state(pool).await;
+    let state = make_test_state(pool.clone()).await;
+    let _ = plugin_core::services::auth::provision_dev_api_key(
+        &pool,
+        Some(DEV_API_KEY.to_string()),
+    ).await;
     let session_layer = make_session_layer().await;
     TestServer::new(make_router(Arc::new(state), session_layer)).unwrap()
+}
+
+/// GET with the dev API key auth header attached.
+async fn authed_get(server: &TestServer, path: &str) -> axum_test::TestResponse {
+    server
+        .get(path)
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .await
 }
 
 // ===========================================================================
@@ -207,7 +233,7 @@ mod system_logs_tests {
     async fn test_system_logs_list_all() {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
-        let response = server.get("/api/logs/system").await;
+        let response = authed_get(&server, "/api/logs/system").await;
         assert_eq!(response.status_code(), 200, "status is 200 OK");
 
         let body = parse_body(&response);
@@ -223,9 +249,7 @@ mod system_logs_tests {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
 
-        let response = server
-            .get("/api/logs/system?operation_type=setting_changed")
-            .await;
+        let response = authed_get(&server, "/api/logs/system?operation_type=setting_changed").await;
         assert_eq!(response.status_code(), 200);
 
         let body = parse_body(&response);
@@ -248,7 +272,7 @@ mod system_logs_tests {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
 
-        let response = server.get("/api/logs/system?target=articles").await;
+        let response = authed_get(&server, "/api/logs/system?target=articles").await;
         assert_eq!(response.status_code(), 200);
 
         let body = parse_body(&response);
@@ -270,7 +294,7 @@ mod system_logs_tests {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
 
-        let response = server.get("/api/logs/system?limit=2&offset=0").await;
+        let response = authed_get(&server, "/api/logs/system?limit=2&offset=0").await;
         assert_eq!(response.status_code(), 200);
 
         let body = parse_body(&response);
@@ -288,9 +312,7 @@ mod system_logs_tests {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
 
-        let response = server
-            .get("/api/logs/system?target=nonexistent")
-            .await;
+        let response = authed_get(&server, "/api/logs/system?target=nonexistent").await;
         assert_eq!(response.status_code(), 200);
 
         let body = parse_body(&response);
@@ -311,9 +333,7 @@ mod system_logs_tests {
         //   - articles upd  (2026-05-28 10:00:00Z)
         //   - language      (2026-05-28 08:00:00Z)
         // = 3 rows
-        let response = server
-            .get("/api/logs/system?start_date=2026-05-27T00:00:00Z&end_date=2026-05-28T23:59:59Z")
-            .await;
+        let response = authed_get(&server, "/api/logs/system?start_date=2026-05-27T00:00:00Z&end_date=2026-05-28T23:59:59Z").await;
         assert_eq!(response.status_code(), 200);
 
         let body = parse_body(&response);
@@ -337,7 +357,7 @@ mod collection_logs_tests {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
 
-        let response = server.get("/api/logs/collections").await;
+        let response = authed_get(&server, "/api/logs/collections").await;
         assert_eq!(response.status_code(), 200, "status is 200 OK");
 
         let body = parse_body(&response);
@@ -353,9 +373,7 @@ mod collection_logs_tests {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
 
-        let response = server
-            .get("/api/logs/collections?operation_type=item_created")
-            .await;
+        let response = authed_get(&server, "/api/logs/collections?operation_type=item_created").await;
         assert_eq!(response.status_code(), 200);
 
         let body = parse_body(&response);
@@ -377,7 +395,7 @@ mod collection_logs_tests {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
 
-        let response = server.get("/api/logs/collections?target=articles").await;
+        let response = authed_get(&server, "/api/logs/collections?target=articles").await;
         assert_eq!(response.status_code(), 200);
 
         let body = parse_body(&response);
@@ -401,9 +419,7 @@ mod collection_logs_tests {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
 
-        let response = server
-            .get("/api/logs/collections?limit=2&offset=0")
-            .await;
+        let response = authed_get(&server, "/api/logs/collections?limit=2&offset=0").await;
         assert_eq!(response.status_code(), 200);
 
         let body = parse_body(&response);
@@ -421,9 +437,7 @@ mod collection_logs_tests {
         let ctx = get_ctx().await;
         let server = setup_log_server(ctx).await;
 
-        let response = server
-            .get("/api/logs/collections?target=nonexistent_collection")
-            .await;
+        let response = authed_get(&server, "/api/logs/collections?target=nonexistent_collection").await;
         assert_eq!(response.status_code(), 200);
 
         let body = parse_body(&response);
@@ -441,9 +455,7 @@ mod collection_logs_tests {
 
         // target=deleted_collection tests LOGAPI-04: deleted collection references
         // must be returned as plain text names without JOIN errors (no 500).
-        let response = server
-            .get("/api/logs/collections?target=deleted_collection")
-            .await;
+        let response = authed_get(&server, "/api/logs/collections?target=deleted_collection").await;
         assert_eq!(response.status_code(), 200, "no 500 error for deleted collection");
 
         let body = parse_body(&response);

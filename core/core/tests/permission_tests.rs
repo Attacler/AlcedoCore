@@ -13,6 +13,10 @@ use tower_sessions::SessionManagerLayer;
 
 #[path = "common/mod.rs"]
 mod common;
+use common::DEV_API_KEY;
+
+/// Authorization header value used for authenticated setup requests.
+const AUTH: &str = "Bearer dev_test-key-for-tests-12345";
 
 struct TestDb {
     pool: PgPool,
@@ -50,9 +54,39 @@ impl TestDb {
             ("014_add_collection_display_name", include_str!("../../core-migrations/014_add_collection_display_name.up.sql")),
             ("015_create_policies", include_str!("../../core-migrations/015_create_policies.up.sql")),
             ("016_permission_action_single", include_str!("../../core-migrations/016_permission_action_single.up.sql")),
+            ("017_plugin_scopes", include_str!("../../core-migrations/017_plugin_scopes.up.sql")),
+            ("018_users", include_str!("../../core-migrations/018_users.up.sql")),
+            ("019_roles_permissions", include_str!("../../core-migrations/019_roles_permissions.up.sql")),
+            ("020_rename_role_permissions_to_role_scopes", include_str!("../../core-migrations/020_rename_role_permissions_to_role_scopes.up.sql")),
+            ("021_role_policies", include_str!("../../core-migrations/021_role_policies.up.sql")),
+            ("022_update_scope_names", include_str!("../../core-migrations/022_update_scope_names.up.sql")),
+            ("023_seed_system_collections", include_str!("../../core-migrations/023_seed_system_collections.up.sql")),
+            ("024_seed_users_fields", include_str!("../../core-migrations/024_seed_users_fields.up.sql")),
+            ("025_add_request_log_source", include_str!("../../core-migrations/025_add_request_log_source.up.sql")),
+            ("026_create_developer_api_keys", include_str!("../../core-migrations/026_create_developer_api_keys.up.sql")),
+            ("027_create_collection_fields", include_str!("../../core-migrations/027_create_collection_fields.up.sql")),
+            ("028_event_subscriptions", include_str!("../../core-migrations/028_event_subscriptions.up.sql")),
+            ("029_add_request_id_to_logs", include_str!("../../core-migrations/029_add_request_id_to_logs.up.sql")),
+            ("030_add_actor_to_system_logs", include_str!("../../core-migrations/030_add_actor_to_system_logs.up.sql")),
+            ("031_add_registry_pull_url", include_str!("../../core-migrations/031_add_registry_pull_url.up.sql")),
+            ("032_create_file_metadata", include_str!("../../core-migrations/032_create_file_metadata.up.sql")),
+            ("033_create_item_files", include_str!("../../core-migrations/033_create_item_files.up.sql")),
+            ("034_menus", include_str!("../../core-migrations/034_menus.up.sql")),
+            ("035_create_plugin_recovery", include_str!("../../core-migrations/035_create_plugin_recovery.up.sql")),
+            ("036_add_last_login_at", include_str!("../../core-migrations/036_add_last_login_at.up.sql")),
+            ("037_add_dev_key_prefix_index", include_str!("../../core-migrations/037_add_dev_key_prefix_index.up.sql")),
+            ("038_add_sections_fk", include_str!("../../core-migrations/038_add_sections_fk.up.sql")),
+            ("039_create_collection_layouts", include_str!("../../core-migrations/039_create_collection_layouts.up.sql")),
+            ("040_add_layout_id_to_sections", include_str!("../../core-migrations/040_add_layout_id_to_sections.up.sql")),
+            ("041_create_file_folders", include_str!("../../core-migrations/041_create_file_folders.up.sql")),
+            ("042_add_input_component", include_str!("../../core-migrations/042_add_input_component.up.sql")),
+            ("043_add_display_component", include_str!("../../core-migrations/043_add_display_component.up.sql")),
+            ("044_drop_saved_views_fk", include_str!("../../core-migrations/044_drop_saved_views_fk.up.sql")),
+            ("045_seed_users_sections", include_str!("../../core-migrations/045_seed_users_sections.up.sql")),
+            ("046_seed_users_collection_fields", include_str!("../../core-migrations/046_seed_users_collection_fields.up.sql")),
         ];
         for (_name, sql) in &migration_files {
-            for statement in sql.split(';') {
+            for statement in split_sql_statements(sql) {
                 let trimmed = statement.trim();
                 if !trimmed.is_empty() {
                     sqlx::query(trimmed).execute(pool).await?;
@@ -67,6 +101,71 @@ impl TestDb {
     }
 }
 
+/// Split SQL on `;` while respecting single-quoted strings, `--` comments,
+/// and `$$...$$` dollar-quoted blocks (e.g. `DO $$ ... END $$;` in migration 044).
+fn split_sql_statements(sql: &str) -> Vec<&str> {
+    let mut statements = Vec::new();
+    let mut start = 0;
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    let mut in_single_quote = false;
+    let mut in_dollar = false;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_dollar {
+            if b == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+                in_dollar = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if in_single_quote {
+            if b == b'\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2;
+                    continue;
+                }
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' => {
+                in_single_quote = true;
+                i += 1;
+            }
+            b'-' if i + 1 < bytes.len() && bytes[i + 1] == b'-' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'$' if i + 1 < bytes.len() && bytes[i + 1] == b'$' => {
+                in_dollar = true;
+                i += 2;
+            }
+            b';' => {
+                let stmt = &sql[start..i];
+                if !stmt.trim().is_empty() {
+                    statements.push(stmt.trim());
+                }
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    if start < bytes.len() {
+        let stmt = &sql[start..];
+        if !stmt.trim().is_empty() {
+            statements.push(stmt.trim());
+        }
+    }
+    statements
+}
+
 fn create_session_layer(store: RedisSessionStore) -> SessionManagerLayer<RedisSessionStore> {
     SessionManagerLayer::new(store)
         .with_name("alcedo_session")
@@ -76,9 +175,13 @@ fn create_session_layer(store: RedisSessionStore) -> SessionManagerLayer<RedisSe
         .with_expiry(tower_sessions::Expiry::OnInactivity(Duration::seconds(3600)))
 }
 
-fn create_full_state(pool: PgPool, redis_conn_manager: ConnectionManager) -> AppState {
+fn create_full_state(
+    pool: PgPool,
+    redis_conn_manager: ConnectionManager,
+    redis_url: String,
+) -> AppState {
     use deadpool::managed;
-    let mgr = plugin_core::services::redis_session::RedisPoolManager;
+    let mgr = plugin_core::services::redis_session::RedisPoolManager::with_url(redis_url);
     let redis_pool = managed::Pool::builder(mgr).max_size(2).build().unwrap();
     let dir = std::env::temp_dir().join("test-files");
     AppState {
@@ -99,7 +202,6 @@ fn create_full_state(pool: PgPool, redis_conn_manager: ConnectionManager) -> App
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
-        dev_registry: None,
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,
@@ -110,6 +212,14 @@ fn create_full_state(pool: PgPool, redis_conn_manager: ConnectionManager) -> App
         rate_limit_api_requests: 100,
         rate_limit_api_window: 60,
     }
+}
+
+async fn provision_dev_key(pool: &PgPool) {
+    let _ = plugin_core::services::auth::provision_dev_api_key(
+        pool,
+        Some(DEV_API_KEY.to_string()),
+    )
+    .await;
 }
 
 async fn insert_test_plugin(pool: &PgPool, slug: &str) {
@@ -164,9 +274,10 @@ fn unique_slug(prefix: &str) -> String {
 #[tokio::test]
 async fn test_read_enforcement_filters_by_permission() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
+    provision_dev_key(test_db.pool()).await;
     let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
     let mut redis_conn = test_redis.conn_manager.clone();
-    let state = create_full_state(test_db.pool().clone(), redis_conn.clone());
+    let state = create_full_state(test_db.pool().clone(), redis_conn.clone(), test_redis.url.clone());
     let session_layer = create_session_layer(RedisSessionStore::new(redis_conn.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
@@ -177,6 +288,7 @@ async fn test_read_enforcement_filters_by_permission() {
 
     let resp = server
         .post("/api/collections")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": "test_items",
             "fields": [
@@ -197,12 +309,14 @@ async fn test_read_enforcement_filters_by_permission() {
     ];
     let resp = server
         .post("/api/items/test_items")
+        .add_header("Authorization", AUTH)
         .json(&json!(items))
         .await;
     assert_eq!(resp.status_code(), 200, "Create items: {}", resp.text());
 
     let resp = server
         .post("/api/policies")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": format!("policy-{}", plugin_slug),
             "description": "Test policy"
@@ -218,6 +332,7 @@ async fn test_read_enforcement_filters_by_permission() {
 
     let resp = server
         .post(&format!("/api/policies/{}/permissions", policy_id))
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "collection_name": "test_items",
             "action": "read",
@@ -228,6 +343,7 @@ async fn test_read_enforcement_filters_by_permission() {
 
     let resp = server
         .post(&format!("/api/plugins/{}/policies", plugin_slug))
+        .add_header("Authorization", AUTH)
         .json(&json!({"policy_id": policy_id}))
         .await;
     assert_eq!(resp.status_code(), 200, "Assign policy: {}", resp.text());
@@ -260,9 +376,10 @@ async fn test_read_enforcement_filters_by_permission() {
 #[tokio::test]
 async fn test_read_bypass_without_request_id() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
+    provision_dev_key(test_db.pool()).await;
     let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
     let mut redis_conn = test_redis.conn_manager.clone();
-    let state = create_full_state(test_db.pool().clone(), redis_conn.clone());
+    let state = create_full_state(test_db.pool().clone(), redis_conn.clone(), test_redis.url.clone());
     let session_layer = create_session_layer(RedisSessionStore::new(redis_conn.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
@@ -273,6 +390,7 @@ async fn test_read_bypass_without_request_id() {
 
     let resp = server
         .post("/api/collections")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": "test_items",
             "fields": [
@@ -293,12 +411,14 @@ async fn test_read_bypass_without_request_id() {
     ];
     let resp = server
         .post("/api/items/test_items")
+        .add_header("Authorization", AUTH)
         .json(&json!(items))
         .await;
     assert_eq!(resp.status_code(), 200, "Create items: {}", resp.text());
 
     let resp = server
         .post("/api/policies")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": format!("policy-{}", plugin_slug),
             "description": "Test policy"
@@ -314,6 +434,7 @@ async fn test_read_bypass_without_request_id() {
 
     let resp = server
         .post(&format!("/api/policies/{}/permissions", policy_id))
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "collection_name": "test_items",
             "action": "read",
@@ -324,6 +445,7 @@ async fn test_read_bypass_without_request_id() {
 
     let resp = server
         .post(&format!("/api/plugins/{}/policies", plugin_slug))
+        .add_header("Authorization", AUTH)
         .json(&json!({"policy_id": policy_id}))
         .await;
     assert_eq!(resp.status_code(), 200, "Assign policy: {}", resp.text());
@@ -356,8 +478,9 @@ async fn test_read_bypass_without_request_id() {
 #[tokio::test]
 async fn test_create_denied_when_no_create_permission() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
+    provision_dev_key(test_db.pool()).await;
     let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
-    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone());
+    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone(), test_redis.url.clone());
     let session_layer = create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
@@ -368,6 +491,7 @@ async fn test_create_denied_when_no_create_permission() {
 
     let resp = server
         .post("/api/collections")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": "test_items",
             "fields": [
@@ -380,6 +504,7 @@ async fn test_create_denied_when_no_create_permission() {
 
     let resp = server
         .post("/api/policies")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": format!("policy-{}", plugin_slug),
             "description": "Read-only policy"
@@ -395,6 +520,7 @@ async fn test_create_denied_when_no_create_permission() {
 
     let resp = server
         .post(&format!("/api/policies/{}/permissions", policy_id))
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "collection_name": "test_items",
             "action": "read",
@@ -405,6 +531,7 @@ async fn test_create_denied_when_no_create_permission() {
 
     let resp = server
         .post(&format!("/api/plugins/{}/policies", plugin_slug))
+        .add_header("Authorization", AUTH)
         .json(&json!({"policy_id": policy_id}))
         .await;
     assert_eq!(resp.status_code(), 200, "Assign policy: {}", resp.text());
@@ -432,8 +559,9 @@ async fn test_create_denied_when_no_create_permission() {
 #[tokio::test]
 async fn test_additive_policy_merging() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
+    provision_dev_key(test_db.pool()).await;
     let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
-    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone());
+    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone(), test_redis.url.clone());
     let session_layer = create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
@@ -444,6 +572,7 @@ async fn test_additive_policy_merging() {
 
     let resp = server
         .post("/api/collections")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": "test_items",
             "fields": [
@@ -464,12 +593,14 @@ async fn test_additive_policy_merging() {
     ];
     let resp = server
         .post("/api/items/test_items")
+        .add_header("Authorization", AUTH)
         .json(&json!(items))
         .await;
     assert_eq!(resp.status_code(), 200, "Create items: {}", resp.text());
 
     let resp = server
         .post("/api/policies")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": format!("policy-active-{}", plugin_slug),
             "description": "Active items policy"
@@ -485,6 +616,7 @@ async fn test_additive_policy_merging() {
 
     let resp = server
         .post(&format!("/api/policies/{}/permissions", policy1_id))
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "collection_name": "test_items",
             "action": "read",
@@ -495,12 +627,14 @@ async fn test_additive_policy_merging() {
 
     let resp = server
         .post(&format!("/api/plugins/{}/policies", plugin_slug))
+        .add_header("Authorization", AUTH)
         .json(&json!({"policy_id": policy1_id}))
         .await;
     assert_eq!(resp.status_code(), 200, "Assign policy 1: {}", resp.text());
 
     let resp = server
         .post("/api/policies")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": format!("policy-archived-{}", plugin_slug),
             "description": "Archived items policy"
@@ -516,6 +650,7 @@ async fn test_additive_policy_merging() {
 
     let resp = server
         .post(&format!("/api/policies/{}/permissions", policy2_id))
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "collection_name": "test_items",
             "action": "read",
@@ -526,6 +661,7 @@ async fn test_additive_policy_merging() {
 
     let resp = server
         .post(&format!("/api/plugins/{}/policies", plugin_slug))
+        .add_header("Authorization", AUTH)
         .json(&json!({"policy_id": policy2_id}))
         .await;
     assert_eq!(resp.status_code(), 200, "Assign policy 2: {}", resp.text());
@@ -556,8 +692,9 @@ async fn test_additive_policy_merging() {
 #[tokio::test]
 async fn test_update_enforcement_restricts_rows() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
+    provision_dev_key(test_db.pool()).await;
     let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
-    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone());
+    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone(), test_redis.url.clone());
     let session_layer = create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
@@ -568,6 +705,7 @@ async fn test_update_enforcement_restricts_rows() {
 
     let resp = server
         .post("/api/collections")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": "test_items",
             "fields": [
@@ -584,12 +722,14 @@ async fn test_update_enforcement_restricts_rows() {
     ];
     let resp = server
         .post("/api/items/test_items")
+        .add_header("Authorization", AUTH)
         .json(&json!(items))
         .await;
     assert_eq!(resp.status_code(), 200, "Create items: {}", resp.text());
 
     let resp = server
         .post("/api/policies")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": format!("policy-{}", plugin_slug),
             "description": "Update policy"
@@ -605,6 +745,7 @@ async fn test_update_enforcement_restricts_rows() {
 
     let resp = server
         .post(&format!("/api/policies/{}/permissions", policy_id))
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "collection_name": "test_items",
             "action": "update",
@@ -615,6 +756,7 @@ async fn test_update_enforcement_restricts_rows() {
 
     let resp = server
         .post(&format!("/api/plugins/{}/policies", plugin_slug))
+        .add_header("Authorization", AUTH)
         .json(&json!({"policy_id": policy_id}))
         .await;
     assert_eq!(resp.status_code(), 200, "Assign policy: {}", resp.text());
@@ -664,8 +806,9 @@ async fn test_update_enforcement_restricts_rows() {
 #[tokio::test]
 async fn test_delete_enforcement_restricts_rows() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
+    provision_dev_key(test_db.pool()).await;
     let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
-    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone());
+    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone(), test_redis.url.clone());
     let session_layer = create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
@@ -676,6 +819,7 @@ async fn test_delete_enforcement_restricts_rows() {
 
     let resp = server
         .post("/api/collections")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": "test_items",
             "fields": [
@@ -695,12 +839,14 @@ async fn test_delete_enforcement_restricts_rows() {
     ];
     let resp = server
         .post("/api/items/test_items")
+        .add_header("Authorization", AUTH)
         .json(&json!(items))
         .await;
     assert_eq!(resp.status_code(), 200, "Create items: {}", resp.text());
 
     let resp = server
         .post("/api/policies")
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "name": format!("policy-{}", plugin_slug),
             "description": "Test policy"
@@ -716,6 +862,7 @@ async fn test_delete_enforcement_restricts_rows() {
 
     let resp = server
         .post(&format!("/api/policies/{}/permissions", policy_id))
+        .add_header("Authorization", AUTH)
         .json(&json!({
             "collection_name": "test_items",
             "action": "delete",
@@ -726,6 +873,7 @@ async fn test_delete_enforcement_restricts_rows() {
 
     let resp = server
         .post(&format!("/api/plugins/{}/policies", plugin_slug))
+        .add_header("Authorization", AUTH)
         .json(&json!({"policy_id": policy_id}))
         .await;
     assert_eq!(resp.status_code(), 200, "Assign policy: {}", resp.text());

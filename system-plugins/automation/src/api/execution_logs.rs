@@ -9,7 +9,7 @@ pub async fn list_execution_logs(
     state: web::Data<Arc<AppState>>,
     query: web::Query<std::collections::HashMap<String, String>>,
 ) -> Result<HttpResponse, actix_web::Error> {
-    let _request_id = crate::api::validate_auth(&req, &state).await?;
+    let request_id = crate::api::validate_auth(&req, &state).await?;
     let limit = query.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(50);
     let offset = query.get("offset").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
 
@@ -19,6 +19,7 @@ pub async fn list_execution_logs(
         limit, offset,
     );
     let result = db::query_sql(
+        &request_id,
         &state.client,
         &state.config.core_url,
         &sql,

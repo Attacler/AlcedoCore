@@ -52,13 +52,13 @@ function addRole() {
     if (newRoleId.value && !assignedRoles.value.includes(newRoleId.value)) {
         assignedRoles.value.push(newRoleId.value);
         newRoleId.value = "";
-        saveRoles();
+        if (props.selectedMenuId != "+") saveRoles();
     }
 }
 
 function removeRole(roleId: string) {
     assignedRoles.value = assignedRoles.value.filter((r) => r !== roleId);
-    saveRoles();
+    if (props.selectedMenuId != "+") saveRoles();
 }
 
 async function loadMenuForEditing(id: string) {
@@ -77,6 +77,7 @@ async function createNewMenu() {
             body: JSON.stringify({
                 name: store.editMenuName,
                 icon: store.editMenuIcon,
+                role_ids: assignedRoles.value,
             }),
         }).then((e) => e.json());
 
@@ -108,6 +109,8 @@ watch(
             if (props.selectedMenuId == "+") {
                 store.editMenuName = "";
                 store.editMenuIcon = "menu";
+                assignedRoles.value = [];
+                newRoleId.value = "";
             }
         }
     },
@@ -153,55 +156,51 @@ async function handleDeleteMenu() {
             <label class="block text-sm font-medium text-gray-700 mb-2"
                 >Assigned Roles</label
             >
-            <div v-if="props.selectedMenuId == '+'">
-                <Message>Please save the menu before attaching roles</Message>
+            <div class="flex flex-wrap gap-2 mb-2">
+                <span
+                    v-for="roleId in assignedRoles"
+                    :key="roleId"
+                    class="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 rounded-full text-sm border border-blue-200"
+                >
+                    {{
+                        rolesStore.getRoleName(roleId) || roleId.slice(0, 8)
+                    }}
+                    <button
+                        @click="removeRole(roleId)"
+                        class="text-blue-500 hover:text-blue-700 text-lg leading-none"
+                    >
+                        &times;
+                    </button>
+                </span>
+                <span
+                    v-if="assignedRoles.length === 0"
+                    class="text-sm text-gray-400 italic"
+                    >No roles assigned — menu won't be visible to
+                    anyone</span
+                >
             </div>
-            <template v-else>
-                <div class="flex flex-wrap gap-2 mb-2">
-                    <span
-                        v-for="roleId in assignedRoles"
-                        :key="roleId"
-                        class="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 rounded-full text-sm border border-blue-200"
+            <div class="flex gap-2">
+                <select
+                    v-model="newRoleId"
+                    class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm"
+                >
+                    <option value="">+ Add Role</option>
+                    <option
+                        v-for="role in rolesStore.roles"
+                        :key="role.id"
+                        :value="role.id"
                     >
-                        {{
-                            rolesStore.getRoleName(roleId) || roleId.slice(0, 8)
-                        }}
-                        <button
-                            @click="removeRole(roleId)"
-                            class="text-blue-500 hover:text-blue-700 text-lg leading-none"
-                        >
-                            &times;
-                        </button>
-                    </span>
-                    <span
-                        v-if="assignedRoles.length === 0"
-                        class="text-sm text-gray-400 italic"
-                        >No roles assigned — menu won't be visible to
-                        anyone</span
-                    >
-                </div>
-                <div class="flex gap-2">
-                    <select
-                        v-model="newRoleId"
-                        class="border border-gray-300 rounded-lg px-3 py-1.5 text-sm"
-                    >
-                        <option value="">+ Add Role</option>
-                        <option
-                            v-for="role in rolesStore.roles"
-                            :key="role.id"
-                            :value="role.id"
-                        >
-                            {{ role.name }}
-                        </option>
-                    </select>
-                    <Button
-                        label="Add"
-                        severity="secondary"
-                        text
-                        @click="addRole"
-                        :disabled="!newRoleId"
-                    /></div
-            ></template>
+                        {{ role.name }}
+                    </option>
+                </select>
+                <Button
+                    label="Add"
+                    severity="secondary"
+                    text
+                    @click="addRole"
+                    :disabled="!newRoleId"
+                /></div
+        >
         </div>
 
         <template #footer>

@@ -67,6 +67,7 @@ pub trait PluginContainerProvider: Send + Sync {
         &self,
         container_id: &str,
         network_name: &str,
+        alias: Option<&str>,
     ) -> Result<(), AppError>;
 }
 
@@ -276,7 +277,11 @@ impl PluginContainerProvider for PluginContainerProviderImpl {
 
         if !self.config.dev_mode && !self.config.plugin_network.is_empty() {
             self.runtime
-                .connect_container_to_network(&container_id, &self.config.plugin_network)
+                .connect_container_to_network(
+                    &container_id,
+                    &self.config.plugin_network,
+                    Some(&format!("plugin_{}", slug)),
+                )
                 .await?;
         }
 
@@ -416,9 +421,10 @@ impl PluginContainerProvider for PluginContainerProviderImpl {
         &self,
         container_id: &str,
         network_name: &str,
+        alias: Option<&str>,
     ) -> Result<(), AppError> {
         self.runtime
-            .connect_container_to_network(container_id, network_name)
+            .connect_container_to_network(container_id, network_name, alias)
             .await
     }
 }

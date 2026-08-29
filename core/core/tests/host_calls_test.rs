@@ -4,17 +4,42 @@ use common::*;
 use plugin_core::api;
 use plugin_core::db::queries::HostCallLog;
 use plugin_core::middleware::host_calls::spawn_host_call_writer;
+use plugin_core::plugins::health::AppState;
 use std::sync::Arc;
 use std::time::Duration;
+use sqlx::PgPool;
+
+/// Insert a plugin row (plus active version) and grant it the given scopes.
+async fn setup_plugin_with_scopes(pool: &PgPool, slug: &str, scopes: &[&str]) {
+    setup_test_plugin(pool, slug).await;
+    sqlx::query("UPDATE plugins SET granted_scopes = $2::jsonb WHERE slug = $1")
+        .bind(slug)
+        .bind(serde_json::json!(scopes))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Build an AppState whose `redis_connection` points at the SAME Redis the test
+/// writes `plugin_req:{id}` mappings into (the TestRedis container). The KV
+/// handlers' `resolve_slug()` reads `state.redis_connection`, so without this the
+/// mapping written by `set_plugin_req` would be invisible to them. Also spawns a
+/// host call writer so KV operations are recorded as host call entries.
+async fn create_kv_state(pool: PgPool, redis: &TestRedis) -> AppState {
+    use deadpool::managed;
+    let mut state = create_test_state_full(pool.clone(), redis.conn_manager.clone()).await;
+    let mgr = plugin_core::services::redis_session::RedisPoolManager::with_url(redis.url.clone());
+    state.redis_connection = Some(managed::Pool::builder(mgr).max_size(2).build().unwrap());
+    state.host_call_channel = Some(spawn_host_call_writer(pool));
+    state
+}
 
 /// Helper to set up test server with Redis-backed KV store and host call channel.
 async fn setup_kv() -> (axum_test::TestServer, TestDb, TestRedis) {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     let test_redis = TestRedis::new().await.expect("Failed to create test Redis");
-    let state = create_test_state_full(
-        test_db.pool().clone(),
-        test_redis.conn_manager.clone(),
-    ).await;
+    setup_plugin_with_scopes(test_db.pool(), "test-plugin", &["kv.get", "kv.put", "kv.delete"]).await;
+    let state = create_kv_state(test_db.pool().clone(), &test_redis).await;
 
     let _ = plugin_core::services::auth::provision_dev_api_key(
         test_db.pool(),
@@ -28,13 +53,13 @@ async fn setup_kv() -> (axum_test::TestServer, TestDb, TestRedis) {
 }
 
 /// Pre-set a Redis mapping so x-request-id resolves to a plugin slug.
-async fn set_plugin_req(redis: &TestRedis, request_id: &str) {
+async fn set_plugin_req(redis: &TestRedis, request_id: &str, slug: &str) {
     let mut conn = redis.conn_manager.clone();
     let key = format!("plugin_req:{}", request_id);
     let _: Result<(), _> = redis::cmd("SETEX")
         .arg(&key)
         .arg(600u64)
-        .arg("test-plugin")
+        .arg(slug)
         .query_async(&mut conn)
         .await;
 }
@@ -46,7 +71,7 @@ async fn test_kv_get_records_host_call() {
 
     // First, PUT a key so GET can find it
     let put_rid = uuid::Uuid::new_v4().to_string();
-    set_plugin_req(&redis, &put_rid).await;
+    set_plugin_req(&redis, &put_rid, "test-plugin").await;
     let put_resp = server.put("/api/kv/test-key")
         .add_header("x-request-id", put_rid.as_str())
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&serde_json::json!({"value": "test-value"}))
@@ -55,7 +80,7 @@ async fn test_kv_get_records_host_call() {
         "PUT failed: {}", put_resp.text());
 
     let request_id = uuid::Uuid::new_v4().to_string();
-    set_plugin_req(&redis, &request_id).await;
+    set_plugin_req(&redis, &request_id, "test-plugin").await;
     let get_resp = server.get("/api/kv/test-key")
         .add_header("x-request-id", request_id.as_str())
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345").await;
@@ -81,7 +106,7 @@ async fn test_kv_put_records_host_call() {
     let pool = test_db.pool();
 
     let request_id = uuid::Uuid::new_v4().to_string();
-    set_plugin_req(&redis, &request_id).await;
+    set_plugin_req(&redis, &request_id, "test-plugin").await;
     let put_resp = server.put("/api/kv/test-put-key")
         .add_header("x-request-id", request_id.as_str())
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&serde_json::json!({"value": "put-value"}))
@@ -107,7 +132,7 @@ async fn test_kv_delete_records_host_call() {
 
     // First PUT so there's something to DELETE
     let put_rid = uuid::Uuid::new_v4().to_string();
-    set_plugin_req(&redis, &put_rid).await;
+    set_plugin_req(&redis, &put_rid, "test-plugin").await;
     let put_resp = server.put("/api/kv/test-del-key")
         .add_header("x-request-id", put_rid.as_str())
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&serde_json::json!({"value": "del-value"}))
@@ -115,11 +140,11 @@ async fn test_kv_delete_records_host_call() {
     assert_eq!(put_resp.status_code(), axum::http::StatusCode::OK);
 
     let request_id = uuid::Uuid::new_v4().to_string();
-    set_plugin_req(&redis, &request_id).await;
+    set_plugin_req(&redis, &request_id, "test-plugin").await;
     let del_resp = server.delete("/api/kv/test-del-key")
         .add_header("x-request-id", request_id.as_str())
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345").await;
-    assert_eq!(del_resp.status_code(), axum::http::StatusCode::NO_CONTENT,
+assert_eq!(del_resp.status_code(), axum::http::StatusCode::OK,
         "DELETE failed: {}", del_resp.text());
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -140,8 +165,21 @@ async fn test_db_query_records_host_call_with_truncated_sql_and_row_count() {
 
     let slug = format!("query-host-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..8].to_string());
     setup_test_plugin(pool, &slug).await;
+    sqlx::query("UPDATE plugins SET granted_scopes = $2::jsonb WHERE slug = $1")
+        .bind(&slug)
+        .bind(serde_json::json!(["db.query"]))
+        .execute(pool)
+        .await
+        .unwrap();
 
-    let state = create_test_state_with_host_calls(pool.clone()).await;
+    let test_redis = TestRedis::new().await.expect("Failed to create test Redis");
+
+    let mut state = create_test_state_with_host_calls(pool.clone()).await;
+    {
+        use deadpool::managed;
+        let mgr = plugin_core::services::redis_session::RedisPoolManager::with_url(test_redis.url.clone());
+        state.redis_connection = Some(managed::Pool::builder(mgr).max_size(2).build().unwrap());
+    }
 
     let _ = plugin_core::services::auth::provision_dev_api_key(
         pool,
@@ -153,6 +191,7 @@ async fn test_db_query_records_host_call_with_truncated_sql_and_row_count() {
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
 
     let request_id = uuid::Uuid::new_v4().to_string();
+    set_plugin_req(&test_redis, &request_id, &slug).await;
     let query_payload = serde_json::json!({
         "query": "SELECT 1 AS number",
         "params": [],

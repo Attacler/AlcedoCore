@@ -8,7 +8,6 @@ import { createKvResource } from "./kv.js";
 import { createDbResource } from "./db.js";
 import { createSchemaResource } from "./schema.js";
 import { createLogsResource } from "./logs.js";
-import { createDevResource } from "./dev.js";
 import { createAuthResource } from "./auth.js";
 import { createUsersResource } from "./users.js";
 import { createRolesResource } from "./roles.js";
@@ -81,7 +80,6 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
         db: createDbResource(kyInstance),
         schema: createSchemaResource(kyInstance),
         logs: createLogsResource(kyInstance),
-        dev: createDevResource(kyInstance),
         auth: createAuthResource(kyInstance),
         users: createUsersResource(kyInstance),
         roles: createRolesResource(kyInstance),

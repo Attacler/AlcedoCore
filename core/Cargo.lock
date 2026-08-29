@@ -165,14 +165,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alcedo-dev"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "tokio",
-]
-
-[[package]]
 name = "alcedo-events"
 version = "0.1.0"
 dependencies = [
@@ -239,7 +231,6 @@ dependencies = [
  "alcedo-common",
  "alcedo-container",
  "alcedo-db",
- "alcedo-dev",
  "alcedo-events",
  "alcedo-infra",
  "alcedo-providers",
@@ -277,16 +268,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "alcedo-proxy"
-version = "0.1.0"
-dependencies = [
- "alcedo-common",
- "alcedo-db",
- "axum 0.7.9",
- "serde_json",
-]
-
-[[package]]
 name = "alcedo-services"
 version = "0.1.0"
 dependencies = [
@@ -316,13 +297,11 @@ dependencies = [
  "alcedo-common",
  "alcedo-container",
  "alcedo-db",
- "alcedo-dev",
  "alcedo-events",
  "alcedo-infra",
  "alcedo-middleware",
  "alcedo-plugins",
  "alcedo-providers",
- "alcedo-proxy",
  "alcedo-services",
  "axum 0.7.9",
  "axum-test",
@@ -3828,22 +3807,33 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "platform-docker"
 version = "0.1.0"
 dependencies = [
+ "alcedo-api",
  "alcedo-common",
  "alcedo-container",
  "alcedo-db",
+ "alcedo-infra",
  "async-trait",
  "axum 0.7.9",
+ "axum-test",
  "bollard",
  "bollard-stubs",
  "chrono",
+ "deadpool",
+ "file-storage",
+ "file-storage-local",
  "flate2",
  "futures-util",
+ "redis",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
  "tar",
+ "testcontainers",
+ "testcontainers-modules",
  "thiserror 1.0.69",
  "tokio",
+ "tower-sessions",
  "tracing",
  "uuid",
 ]

@@ -107,15 +107,6 @@ export const proxyCommand = new Command("proxy")
                         `  ${statusCode} ${clientReq.method} ${duration}ms ${clientReq.url}`,
                     );
 
-                    completeRequest(coreUrl, apiKey || undefined, {
-                        request_id: requestId,
-                        slug,
-                        method: clientReq.method || "GET",
-                        path: clientReq.url || "/",
-                        status_code: statusCode,
-                        duration_ms: duration,
-                    });
-
                     const responseHeaders = { ...proxyRes.headers };
                     clientRes.writeHead(statusCode, responseHeaders);
                     clientRes.end(Buffer.concat(chunks));
@@ -205,14 +196,6 @@ async function registerRequest(
     } catch {
         return null;
     }
-}
-
-async function completeRequest(
-    coreUrl: string,
-    apiKey: string | undefined,
-    payload: Record<string, unknown>,
-): Promise<void> {
-    await coreFetch(coreUrl, apiKey, "/api/dev/complete-request", payload);
 }
 
 function parseTarget(target: string): { hostname: string; port: number } {

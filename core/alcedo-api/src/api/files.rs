@@ -639,12 +639,7 @@ pub async fn update_file_metadata(
     let resolved_folder_id = new_folder_id.unwrap_or(current_folder_id);
 
     let new_storage_path = if new_filename != current_filename || new_folder_id.is_some() {
-        let new_path = if let Some(fid) = resolved_folder_id {
-            let folder_path = build_folder_path(db_pool, fid).await?;
-            format!("{}/{}", folder_path, new_filename)
-        } else {
-            format!("{}-{}", Uuid::new_v4(), new_filename)
-        };
+        let mut actual_path = format!("{}-{}", Uuid::new_v4(), new_filename);
 
         let conflict_exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2 AND id != $3)",
@@ -671,15 +666,14 @@ pub async fn update_file_metadata(
             } else {
                 None
             };
-            state.file_storage.upload(
-                data,
-                &mime,
-                new_filename,
-                folder_path_for_storage.as_deref(),
-            ).await.map_err(|e| AppError::Internal(format!("File storage move failed: {}", e)))?;
+            actual_path = state
+                .file_storage
+                .upload(data, &mime, new_filename, folder_path_for_storage.as_deref())
+                .await
+                .map_err(|e| AppError::Internal(format!("File storage move failed: {}", e)))?;
         }
 
-        new_path
+        actual_path
     } else {
         current_storage_path
     };

@@ -48,6 +48,9 @@ delegate_impl!(ContainerRuntime, DockerRuntime, DockerClient, {
         container_path: &str,
         host_dest: &str,
     ) -> Result<(), AppError>;
-    fn connect_container_to_network(container_id: &str, network_name: &str)
-        -> Result<(), AppError>;
+    fn connect_container_to_network(
+        container_id: &str,
+        network_name: &str,
+        alias: Option<&str>,
+    ) -> Result<(), AppError>;
 });

@@ -31,7 +31,6 @@ pub use models::*;
 
 // Re-export resources so consumers can use type annotations
 pub use resources::db::DBResource;
-pub use resources::dev::DevResource;
 pub use resources::health::HealthResource;
 pub use resources::kv::KVResource;
 pub use resources::logs::{LogListParams, LogsResource};
@@ -130,8 +129,8 @@ impl Default for AlcedoClientBuilder {
 
 /// Unified typed client for the Alcedo Plugin Core API.
 ///
-/// All 8 resource modules (`.kv`, `.db`, `.settings`, `.migrations`,
-/// `.schema`, `.logs`, `.dev`, `.health`) share a single `reqwest::Client`
+/// All resource modules (`.kv`, `.db`, `.settings`, `.migrations`,
+/// `.schema`, `.logs`, `.health`) share a single `reqwest::Client`
 /// with rustls-tls and automatic `X-Request-ID` header injection.
 pub struct AlcedoClient {
     /// Key-Value store operations
@@ -146,8 +145,6 @@ pub struct AlcedoClient {
     pub schema: SchemaResource,
     /// Request log access
     pub logs: LogsResource,
-    /// Dev session management
-    pub dev: DevResource,
     /// Core health check
     pub health: HealthResource,
 }
@@ -165,7 +162,6 @@ impl AlcedoClient {
             migrations: MigrationsResource::new(base.clone()),
             schema: SchemaResource::new(base.clone()),
             logs: LogsResource::new(base.clone()),
-            dev: DevResource::new(base.clone()),
             health: HealthResource::new(base),
         }
     }

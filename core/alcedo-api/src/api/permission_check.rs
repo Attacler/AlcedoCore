@@ -46,13 +46,16 @@ pub async fn check_permission(
     collection_name: &str,
     action: &str,
 ) -> Result<PermissionCheck, AppError> {
-    // Dev mode: developer API key or session handles auth in the middleware
-    if state.dev_mode {
-        return Ok(PermissionCheck::Bypass);
-    }
     let request_id = extract_request_id_from_headers(headers);
 
     let plugin_slug = lookup_plugin_by_request_id(&state.redis_connection, &request_id).await;
+
+    // Developer API keys are root credentials: they bypass scope and
+    // collection-permission checks. But plugin callbacks (X-Request-ID
+    // identity) must still be permission-enforced.
+    if plugin_slug.is_none() && is_valid_dev_key(headers) {
+        return Ok(PermissionCheck::Bypass);
+    }
 
     if let Some(ref slug) = plugin_slug {
         let db_pool = state.db()?;
@@ -231,8 +234,8 @@ pub async fn load_all_user_permissions(
     headers: &HeaderMap,
     collection_name: &str,
 ) -> Result<Vec<PolicyPermission>, AppError> {
-    // Dev mode: return empty permissions (admin bypass)
-    if state.dev_mode {
+    // Developer API keys are root credentials — return empty permissions (admin bypass)
+    if is_valid_dev_key(headers) {
         return Ok(vec![]);
     }
     if let Some(user_id) = extract_user_id_from_session(state, headers).await? {
@@ -359,8 +362,8 @@ pub async fn require_permission(
 }
 
 pub async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<(), AppError> {
-    // Dev mode: developer API key or session handles auth in the middleware
-    if state.dev_mode {
+    // Developer API keys are root credentials — they bypass admin checks
+    if is_valid_dev_key(headers) {
         return Ok(());
     }
     let db_pool = state.db()?;
@@ -651,6 +654,13 @@ pub fn restrict_item_fields(item: &Value, permissions: &[PolicyPermission]) -> V
     }
 }
 
+/// True when the request was authenticated as a valid developer API key by
+/// the auth middleware (which sets the internal `x-alcedo-root` marker after
+/// verifying the Bearer key). Dev keys are root credentials.
+pub fn is_valid_dev_key(headers: &HeaderMap) -> bool {
+    headers.contains_key("x-alcedo-root")
+}
+
 /// Defence-in-depth helper: check the authenticated user (from session) has a given scope.
 /// Returns `Unauthorized` if no session, `Forbidden` if scope is missing.
 /// Skips all checks when `AuthLevel::Admin` or `AuthLevel::DeveloperApiKey` is present
@@ -660,8 +670,8 @@ pub async fn require_scope(
     headers: &HeaderMap,
     required_scope: &str,
 ) -> Result<(), AppError> {
-    // Dev mode: developer API key or session handles auth in the middleware
-    if state.dev_mode {
+    // Developer API keys are root credentials — they bypass scope checks
+    if is_valid_dev_key(headers) {
         return Ok(());
     }
 

@@ -223,12 +223,9 @@ impl CoreMigrationRunner {
             tracing::info!("Applying core migration {} ({})...", version, filename);
             let content = fs::read_to_string(path)?;
 
-            // Execute each statement separately (split by semicolons).
-            let statements: Vec<&str> = content
-                .split(';')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-                .collect();
+            // Execute each statement separately (split by semicolons,
+            // respecting dollar-quoted strings and comments).
+            let statements = super::split_sql_statements(&content);
 
             for stmt in &statements {
                 sqlx::query(stmt).execute(&self.pool).await?;

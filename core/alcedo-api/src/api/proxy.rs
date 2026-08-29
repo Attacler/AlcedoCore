@@ -62,74 +62,6 @@ pub async fn proxy_handler(
         path_info.path
     );
 
-    // Check for dev session first — if active, route directly to dev URL
-    // This skips all container/DB work, making dev sessions lightweight.
-    if let Some(ref dev_registry) = state.dev_registry {
-        if let Some(session) = dev_registry.get(&path_info.slug).await {
-            tracing::info!(
-                "[PROXY] Dev session active for {} → {}",
-                path_info.slug,
-                session.url
-            );
-            let url_str = format!(
-                "{}/{}",
-                session.url.trim_end_matches('/'),
-                path_info.path.trim_start_matches('/')
-            );
-            let method = request.method().clone();
-            let headers = request.headers().clone();
-            let client = reqwest::Client::builder()
-                .http1_only()
-                .build()
-                .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {}", e)))?;
-            let parsed_url = reqwest::Url::parse(&url_str)
-                .map_err(|e| AppError::Internal(format!("Invalid URI: {}", e)))?;
-            let mut req_builder = client.request(method, parsed_url);
-            for (name, value) in headers.iter() {
-                if let Ok(v) = value.to_str() {
-                    req_builder = req_builder.header(name.as_str(), v);
-                }
-            }
-            let body_bytes = axum::body::to_bytes(std::mem::take(request.body_mut()), 10_000_000)
-                .await
-                .map_err(|e| AppError::Internal(format!("Failed to read body: {}", e)))?;
-            if !body_bytes.is_empty() {
-                req_builder = req_builder.body(body_bytes.to_vec());
-            }
-            match req_builder.send().await {
-                Ok(response) => {
-                    let status = response.status();
-                    let headers = response.headers().clone();
-                    let body_bytes = response.bytes().await.map_err(|e| {
-                        AppError::Internal(format!("Failed to read response body: {}", e))
-                    })?;
-                    let mut builder = axum::response::Response::builder().status(status);
-                    for (name, value) in headers.iter() {
-                        if let Ok(v) = value.to_str() {
-                            builder = builder.header(name.as_str(), v);
-                        }
-                    }
-                    return Ok(builder
-                        .body(axum::body::Body::from(body_bytes.to_vec()))
-                        .map_err(|e| {
-                            AppError::Internal(format!("Failed to build response: {}", e))
-                        })?);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "[PROXY] Dev session proxy failed: {} (target: {})",
-                        e,
-                        url_str
-                    );
-                    return Err(AppError::Internal(format!(
-                        "Failed to proxy request to dev server: {}",
-                        e
-                    )));
-                }
-            }
-        }
-    }
-
     // Try Redis cache first — avoids two DB queries on the hot path
     let (container_id, _version, endpoint_count) = 'cache: {
         if let Some(ref pool) = state.redis_connection {
@@ -288,6 +220,17 @@ pub async fn proxy_handler(
     let mut req_builder = state.proxy_client.request(method, parsed_url);
 
     for (name, value) in headers.iter() {
+        // Skip the request_id_middleware's X-Request-ID: the proxy's own id below
+        // is the one stored in Redis (plugin_req:{id}) and returned in the response,
+        // so the plugin must see only that one to authenticate callbacks.
+        if name.as_str().eq_ignore_ascii_case("x-request-id") {
+            continue;
+        }
+        // Internal dev-key marker — set by the auth middleware only; never
+        // forward it to plugins.
+        if name.as_str().eq_ignore_ascii_case("x-alcedo-root") {
+            continue;
+        }
         if let Ok(v) = value.to_str() {
             req_builder = req_builder.header(name.as_str(), v);
         }

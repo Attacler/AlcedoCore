@@ -11,7 +11,6 @@ use crate::db::queries::PluginVersion;
 use crate::db::schema::get_table_schemas;
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
-use crate::services::scopes::{check_entity_scope, ScopeSource};
 
 pub async fn get_plugin_schema(
     headers: HeaderMap,

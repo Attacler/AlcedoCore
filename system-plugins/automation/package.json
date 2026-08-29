@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build:pages": "node ../../cli/page-compiler/dist/input.js --plugin=./pages --output=./pages/dist"
+    "build:pages": "node ../../cli/dist/index.js dev build-frontend"
   },
   "dependencies": {
     "@primevue/themes": "^4.5.4",

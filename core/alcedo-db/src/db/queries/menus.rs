@@ -372,8 +372,6 @@ pub async fn migrate_from_old_settings(db: &PgPool) -> Result<bool, AppError> {
 
     #[derive(Deserialize)]
     struct OldSection {
-        #[serde(default)]
-        id: String,
         label: String,
         #[serde(default)]
         icon: String,
@@ -384,8 +382,6 @@ pub async fn migrate_from_old_settings(db: &PgPool) -> Result<bool, AppError> {
     }
     #[derive(Deserialize)]
     struct OldItem {
-        #[serde(default)]
-        id: String,
         label: String,
         #[serde(default)]
         icon: String,

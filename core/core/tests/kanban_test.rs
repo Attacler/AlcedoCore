@@ -236,9 +236,8 @@ async fn test_grouped_query_with_filter() {
         .json(&serde_json::json!({
             "group_by": "status",
             "filter": {
-                "operator": "and",
-                "conditions": [
-                    { "field": "priority", "operator": "gte", "value": 3 }
+                "_and": [
+                    { "priority": { "_gte": 3 } }
                 ]
             }
         }))

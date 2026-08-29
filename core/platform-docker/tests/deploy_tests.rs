@@ -8,8 +8,8 @@ use std::sync::Arc;
 use std::sync::Once;
 use std::time::Duration;
 
-use pcl::config::AppConfig;
-use pcl::container::PluginPlatform;
+use alcedo_common::config::AppConfig;
+use alcedo_container::container::PluginPlatform;
 use platform_docker::platform::DockerPlatform;
 use platform_docker::runtime::DockerRuntime;
 
@@ -58,7 +58,7 @@ fn test_config(dev_mode: bool) -> AppConfig {
 
 fn create_platform(dev_mode: bool) -> DockerPlatform {
     ensure_docker();
-    let runtime = Arc::new(DockerRuntime::new()) as Arc<dyn pcl::container::ContainerRuntime>;
+    let runtime = Arc::new(DockerRuntime::new()) as Arc<dyn alcedo_container::container::ContainerRuntime>;
     let config = Arc::new(test_config(dev_mode));
     DockerPlatform::new(None, runtime, config)
 }
@@ -124,7 +124,7 @@ async fn test_deploy_remove_nonexistent() {
 
     let id = "nonexistent-container-id".to_string();
     let err = platform.remove(&id).await.unwrap_err();
-    assert!(matches!(err, pcl::AppError::DockerError { .. }), "Should be a Docker error");
+    assert!(matches!(err, alcedo_common::AppError::DockerError { .. }), "Should be a Docker error");
 }
 
 #[tokio::test]

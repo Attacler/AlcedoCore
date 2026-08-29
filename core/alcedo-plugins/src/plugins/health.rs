@@ -5,7 +5,6 @@ use tokio::sync::{Mutex, RwLock};
 use redis::aio::ConnectionManager;
 use std::collections::HashMap;
 use crate::AppError;
-use crate::dev::DevSessionRegistry;
 use crate::db::Pool;
 use crate::kv::store::KvStore;
 use crate::channels::logging::LoggingChannel;
@@ -257,8 +256,6 @@ pub struct AppState {
     /// Always available — no database dependency. Handlers emit events here
     /// after their DB transactions commit (EVNT-03 convention).
     pub event_bus: EventBus,
-    /// Per-plugin dev session registry. None in production — zero proxy overhead.
-    pub dev_registry: Option<Arc<DevSessionRegistry>>,
     /// Whether request body capture is enabled (BE-06, DEV-05).
     pub capture_body: bool,
     /// Maximum request body size to capture in bytes (default 10KB, max 1MB).
