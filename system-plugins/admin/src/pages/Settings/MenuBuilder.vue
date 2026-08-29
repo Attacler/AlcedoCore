@@ -210,6 +210,7 @@ async function save() {
     try {
         await store.saveEditMenu();
         await fetchAllMenus();
+        store.loadMyMenus();
         toast.show("Menu saved", "success");
     } catch (e) {
         toast.show(

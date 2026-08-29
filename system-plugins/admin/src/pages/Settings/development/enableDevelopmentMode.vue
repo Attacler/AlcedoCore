@@ -41,14 +41,16 @@ function disconnect() {
             <div v-if="devStore.connected" class="grow">
                 <Message severity="success">Connected</Message>
                 <table class="w-full">
-                    <tr>
-                        <th>Slug</th>
-                        <td>{{ devStore.pluginManifest.pluginSlug }}</td>
-                    </tr>
-                    <tr>
-                        <th>Version</th>
-                        <td>{{ devStore.pluginManifest.version }}</td>
-                    </tr>
+                    <tbody>
+                        <tr>
+                            <th>Slug</th>
+                            <td>{{ devStore.pluginManifest.pluginSlug }}</td>
+                        </tr>
+                        <tr>
+                            <th>Version</th>
+                            <td>{{ devStore.pluginManifest.version }}</td>
+                        </tr>
+                    </tbody>
                 </table>
                 <Button @click="disconnect" severity="warn" class="w-full">
                     Disconnect
