@@ -1,6 +1,6 @@
 {
-    "name": "alcedocore-sdk-node",
-    "version": "0.2.0",
+    "name": "@alcedocore/sdk",
+    "version": "0.0.1-rc.0",
     "type": "module",
     "files": [
         "dist"

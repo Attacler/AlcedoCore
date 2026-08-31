@@ -23,6 +23,7 @@ use platform_docker::platform::DockerPlatform;
 use platform_docker::runtime::DockerRuntime;
 use platform_docker::swarm::detect_swarm;
 use platform_docker::{init_docker, DOCKER};
+use std::env;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -41,6 +42,9 @@ async fn main() -> Result<(), AppError> {
         .init();
 
     let config = AppConfig::from_env()?;
+
+    env::var("CORE_ACTIVATION_KEY")
+        .expect("CORE_ACTIVATION_KEY is not set. Please set the environment variable or get your key at https://alcedocore.nl/apply.");
 
     tracing::info!(
         "Starting AlcedoCore on port {} (DEV_MODE={}, PLUGIN_NETWORK={})",

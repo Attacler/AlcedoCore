@@ -1,16 +1,28 @@
-FROM node:24-alpine AS sdk-builder
-WORKDIR /src
-COPY sdk/alcedocore-sdk-node/ ./
-RUN npm install && npm run build
-
 FROM node:24-alpine AS builder
 WORKDIR /build
-COPY --from=sdk-builder /src/ /sdk/alcedocore-sdk-node/
-COPY system-plugins/admin/package.json ./
+
+# Copy the SDK into the build context
+COPY sdk/alcedocore-sdk-node ./sdk/alcedocore-sdk-node
+
+# Copy the app files into the admin directory
+COPY system-plugins/admin/package.json ./system-plugins/admin/
+COPY system-plugins/admin/manifest.json ./system-plugins/admin/
+COPY system-plugins/admin/index.html ./system-plugins/admin/
+COPY system-plugins/admin/vite.config.ts ./system-plugins/admin/
+COPY system-plugins/admin/package-lock.json ./system-plugins/admin/
+COPY system-plugins/admin/src ./system-plugins/admin/src
+
+# Set the working directory to the admin folder
+WORKDIR /build/system-plugins/admin
+
+# Run npm install and build in the admin directory
 RUN npm install
-COPY system-plugins/admin/ .
 RUN npm run build
 
+# Final stage
 FROM scratch
-COPY --from=builder /build/public/ /app/public/
-COPY --from=builder /build/manifest.json /app/manifest.json
+WORKDIR /app
+
+# Copy the built app files from the admin directory
+COPY --from=builder /build/system-plugins/admin/public/ ./public/
+COPY --from=builder /build/system-plugins/admin/manifest.json ./manifest.json
