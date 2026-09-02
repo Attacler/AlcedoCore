@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use alcedo_common::RequestIdentity;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -31,11 +32,12 @@ pub struct SetLayoutRolesRequest {
 pub(crate) async fn list_layouts(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
     let _pc =
-        permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+        permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
 
     let rows = sqlx::query_as::<_, (String, String, String, bool, i32, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
         "SELECT id::text, collection_name, name, is_default, ordinal_position, created_at, updated_at FROM collection_layouts WHERE collection_name = $1 ORDER BY ordinal_position"
@@ -68,12 +70,13 @@ pub(crate) async fn list_layouts(
 pub(crate) async fn create_layout(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path(name): Path<String>,
     Json(body): Json<CreateLayoutRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let db_pool = state.db()?;
     let _pc =
-        permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+        permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
 
     if body.name.trim().is_empty() {
         return Err(AppError::BadRequest(
@@ -118,12 +121,13 @@ pub(crate) async fn create_layout(
 pub(crate) async fn update_layout(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path((name, layout_id)): Path<(String, String)>,
     Json(body): Json<UpdateLayoutRequest>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
     let _pc =
-        permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+        permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
 
     if body.name.as_ref().map_or(true, |n| n.trim().is_empty())
         && body.is_default.is_none()
@@ -208,11 +212,12 @@ pub(crate) async fn update_layout(
 pub(crate) async fn delete_layout(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path((name, layout_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
     let _pc =
-        permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+        permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
 
     // Don't allow deleting the last layout
     let count: (i64,) =
@@ -253,11 +258,12 @@ pub(crate) async fn delete_layout(
 pub(crate) async fn get_layout_roles(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path((name, layout_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
     let _pc =
-        permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+        permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
 
     let rows = sqlx::query_as::<_, (String, String)>(
         "SELECT r.id::text, r.name FROM roles r
@@ -285,12 +291,13 @@ pub(crate) async fn get_layout_roles(
 pub(crate) async fn set_layout_roles(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path((name, layout_id)): Path<(String, String)>,
     Json(body): Json<SetLayoutRolesRequest>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
     let _pc =
-        permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+        permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
 
     // Verify layout exists
     let exists: bool = sqlx::query_scalar(

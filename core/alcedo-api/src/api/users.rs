@@ -4,6 +4,7 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
+use alcedo_common::RequestIdentity;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -72,10 +73,11 @@ async fn resolve_user_variables(
 pub async fn list_users_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
 ) -> Result<Json<Value>, AppError> {
     let pool = state.db()?;
 
-    let pc = permission_check::check_permission(&state, &headers, "users", "read").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, "users", "read").await?;
     match pc {
         PermissionCheck::Denied { reason } => return Err(AppError::Forbidden(reason)),
         PermissionCheck::Bypass => {
@@ -126,11 +128,12 @@ pub async fn list_users_handler(
 pub async fn get_user_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
     let pool = state.db()?;
 
-    let pc = permission_check::check_permission(&state, &headers, "users", "read").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, "users", "read").await?;
     match pc {
         PermissionCheck::Denied { reason } => return Err(AppError::Forbidden(reason)),
         PermissionCheck::Bypass => {
@@ -177,6 +180,7 @@ pub async fn get_user_handler(
 pub async fn create_user_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<Value>, AppError> {
     if payload.password.len() < 8 {
@@ -188,7 +192,7 @@ pub async fn create_user_handler(
 
     let pool = state.db()?;
 
-    let pc = permission_check::check_permission(&state, &headers, "users", "create").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, "users", "create").await?;
     match pc {
         PermissionCheck::Denied { reason } => return Err(AppError::Forbidden(reason)),
         PermissionCheck::Bypass => {
@@ -314,12 +318,13 @@ pub async fn create_user_handler(
 pub async fn update_user_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateUserRequest>,
 ) -> Result<Json<Value>, AppError> {
     let pool = state.db()?;
 
-    let pc = permission_check::check_permission(&state, &headers, "users", "update").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, "users", "update").await?;
     match pc {
         PermissionCheck::Denied { reason } => return Err(AppError::Forbidden(reason)),
         PermissionCheck::Bypass => {
@@ -491,11 +496,12 @@ pub async fn update_user_handler(
 pub async fn delete_user_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
     let pool = state.db()?;
 
-    let pc = permission_check::check_permission(&state, &headers, "users", "delete").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, "users", "delete").await?;
     match pc {
         PermissionCheck::Denied { reason } => return Err(AppError::Forbidden(reason)),
         PermissionCheck::Bypass => {

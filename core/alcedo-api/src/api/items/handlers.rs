@@ -3,6 +3,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use alcedo_common::RequestIdentity;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -418,11 +419,12 @@ async fn grouped_handler(
     State(state): State<Arc<AppState>>,
     Path(collection_name): Path<String>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Json(request): Json<GroupedQueryRequest>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let pc = permission_check::check_permission(&state, &headers, &collection_name, "read").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, &collection_name, "read").await?;
     if let PermissionCheck::Denied { reason } = pc {
         return Err(AppError::Forbidden(reason));
     }
@@ -436,7 +438,7 @@ async fn grouped_handler(
         db_pool, &collection_name, request, extra_permissions,
     ).await?;
 
-    let all_perms = permission_check::load_all_user_permissions(&state, &headers, &collection_name).await?;
+    let all_perms = permission_check::load_all_user_permissions(&state, &identity, &headers, &collection_name).await?;
     let _is_admin = pc.permissions().is_none();
 
     let restricted = match &pc {
@@ -479,6 +481,7 @@ async fn query_handler(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     body: Json<Value>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
@@ -489,7 +492,7 @@ async fn query_handler(
     let start = Instant::now();
 
     // Permission check before query execution so we inject filters at the SQL level
-    let pc = permission_check::check_permission(&state, &headers, &slug, "read").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, &slug, "read").await?;
     if let PermissionCheck::Denied { reason } = pc {
         return Err(AppError::Forbidden(reason));
     }
@@ -510,7 +513,7 @@ async fn query_handler(
             query_collection_items(&state, &slug, collection_request, &pc).await?;
 
         let all_perms =
-            permission_check::load_all_user_permissions(&state, &headers, &slug).await?;
+            permission_check::load_all_user_permissions(&state, &identity, &headers, &slug).await?;
         let is_admin = pc.permissions().is_none();
         let rows: Vec<Value> = rows
             .into_iter()
@@ -569,7 +572,7 @@ async fn query_handler(
         let mut response = query_items(db_pool, &slug, request).await?;
 
         let all_perms =
-            permission_check::load_all_user_permissions(&state, &headers, &slug).await?;
+            permission_check::load_all_user_permissions(&state, &identity, &headers, &slug).await?;
         let is_admin = pc.permissions().is_none();
         response.rows = response
             .rows

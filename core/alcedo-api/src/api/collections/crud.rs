@@ -3,6 +3,7 @@ use axum::{
     routing::{delete, get, patch, post, put},
     Json, Router,
 };
+use alcedo_common::RequestIdentity;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -138,13 +139,14 @@ pub(crate) async fn list_collections(
 pub(crate) async fn get_collection(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
     // Check if user has policy permissions on this collection,
     // or if they're an admin (users.all scope).
-    let permissions = permission_check::load_all_user_permissions(&state, &headers, &name).await?;
+    let permissions = permission_check::load_all_user_permissions(&state, &identity, &headers, &name).await?;
     let is_admin = permissions.is_empty()
         && permission_check::require_scope(&state, &headers, "users.all")
             .await
@@ -234,12 +236,13 @@ pub(crate) async fn get_collection(
 pub(crate) async fn create_collection(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Json(req): Json<CreateCollectionRequest>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), AppError> {
     let db_pool = state.db()?;
 
     // Require admin access (users.all) for collection CRUD
-    permission_check::require_admin(&state, &headers).await?;
+    permission_check::require_admin(&state, &identity, &headers).await?;
 
     // Validate name per COLL-02
     validate_collection_name(&req.name)?;
@@ -377,12 +380,13 @@ pub(crate) async fn create_collection(
 pub(crate) async fn update_collection(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path(name): Path<String>,
     Json(req): Json<UpdateCollectionRequest>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &name, "update").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &name, "update").await?;
 
     // Validate fields
     validate_fields(&req.fields)?;
@@ -648,12 +652,13 @@ pub(crate) async fn update_collection(
 pub(crate) async fn delete_collection(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
     // Require admin access
-    permission_check::require_admin(&state, &headers).await?;
+    permission_check::require_admin(&state, &identity, &headers).await?;
 
     // System collection guard
     if let Ok(collection) = collections::get_collection(db_pool, &name).await {
@@ -725,11 +730,12 @@ pub(crate) async fn delete_collection(
 pub(crate) async fn get_create_policy(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let pc = permission_check::check_permission(&state, &headers, &name, "create").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, &name, "create").await?;
     match pc {
         PermissionCheck::Denied { reason } => {
             return Err(AppError::Forbidden(reason));
@@ -738,7 +744,7 @@ pub(crate) async fn get_create_policy(
     }
 
     let collection = collections::get_collection(db_pool, &name).await?;
-    let permissions = permission_check::load_all_user_permissions(&state, &headers, &name).await?;
+    let permissions = permission_check::load_all_user_permissions(&state, &identity, &headers, &name).await?;
     let is_admin = permissions.is_empty()
         && permission_check::require_scope(&state, &headers, "users.all")
             .await
@@ -811,6 +817,7 @@ pub(crate) async fn get_create_policy(
 /// Check that the caller has permission on TARGET collections for relational operations.
 pub(crate) async fn check_relational_permissions(
     state: &Arc<AppState>,
+    identity: &RequestIdentity,
     headers: &axum::http::HeaderMap,
     collection: &crate::db::collections::CollectionDefinition,
     all_collections: &[crate::db::collections::CollectionDefinition],
@@ -818,11 +825,12 @@ pub(crate) async fn check_relational_permissions(
 ) -> Result<(), AppError> {
     async fn require_target_permission(
         state: &Arc<AppState>,
+        identity: &RequestIdentity,
         headers: &axum::http::HeaderMap,
         target: &str,
         action: &str,
     ) -> Result<(), AppError> {
-        match permission_check::check_permission(state, headers, target, action).await? {
+        match permission_check::check_permission(state, identity, headers, target, action).await? {
             PermissionCheck::Denied { reason } => Err(AppError::Forbidden(reason)),
             _ => Ok(()),
         }
@@ -834,6 +842,7 @@ pub(crate) async fn check_relational_permissions(
     /// EXISTS (dot-notation filters requiring JOINs).
     async fn verify_reference_accessible(
         state: &Arc<AppState>,
+        identity: &RequestIdentity,
         headers: &axum::http::HeaderMap,
         target_collection: &str,
         ref_id: &str,
@@ -842,8 +851,13 @@ pub(crate) async fn check_relational_permissions(
 
         // Load user's permissions on the target collection.
         // Returns empty vec for admin (users.all scope) — skip check for admins.
-        let perms =
-            permission_check::load_all_user_permissions(state, headers, target_collection).await?;
+        let perms = permission_check::load_all_user_permissions(
+            state,
+            identity,
+            headers,
+            target_collection,
+        )
+        .await?;
         if perms.is_empty() {
             return Ok(());
         }
@@ -958,20 +972,20 @@ pub(crate) async fn check_relational_permissions(
                 ..
             } => match val {
                 Value::Object(obj) if obj.contains_key("id") => {
-                    require_target_permission(state, headers, target_collection, "update").await?;
+                    require_target_permission(state, identity, headers, target_collection, "update").await?;
                     if let Some(ref_id) = obj.get("id").and_then(|v| v.as_str()) {
                         if !ref_id.is_empty() {
-                            verify_reference_accessible(state, headers, target_collection, ref_id)
+                            verify_reference_accessible(state, identity, headers, target_collection, ref_id)
                                 .await?;
                         }
                     }
                 }
                 Value::Object(_) => {
-                    require_target_permission(state, headers, target_collection, "create").await?;
+                    require_target_permission(state, identity, headers, target_collection, "create").await?;
                 }
                 Value::String(ref_id) if !ref_id.is_empty() => {
-                    require_target_permission(state, headers, target_collection, "update").await?;
-                    verify_reference_accessible(state, headers, target_collection, ref_id).await?;
+                    require_target_permission(state, identity, headers, target_collection, "update").await?;
+                    verify_reference_accessible(state, identity, headers, target_collection, ref_id).await?;
                 }
                 _ => {}
             },
@@ -984,11 +998,11 @@ pub(crate) async fn check_relational_permissions(
                         let has_create = arr.iter().any(|e| e.is_object());
                         let has_assign = arr.iter().any(|e| e.is_string());
                         if has_create {
-                            require_target_permission(state, headers, target_collection, "create")
+                            require_target_permission(state, identity, headers, target_collection, "create")
                                 .await?;
                         }
                         if has_assign {
-                            require_target_permission(state, headers, target_collection, "update")
+                            require_target_permission(state, identity, headers, target_collection, "update")
                                 .await?;
                         }
                         // Verify each assigned (string) reference
@@ -997,6 +1011,7 @@ pub(crate) async fn check_relational_permissions(
                                 if !ref_id.is_empty() {
                                     verify_reference_accessible(
                                         state,
+                                        identity,
                                         headers,
                                         target_collection,
                                         ref_id,
@@ -1008,7 +1023,7 @@ pub(crate) async fn check_relational_permissions(
                     }
                     Value::Object(details) => {
                         if details.contains_key("create") {
-                            require_target_permission(state, headers, target_collection, "create")
+                            require_target_permission(state, identity, headers, target_collection, "create")
                                 .await?;
                             // For create items with pre-existing IDs (linking), verify each
                             if let Some(creates) = details.get("create").and_then(|v| v.as_array())
@@ -1018,6 +1033,7 @@ pub(crate) async fn check_relational_permissions(
                                         if !ref_id.is_empty() {
                                             verify_reference_accessible(
                                                 state,
+                                                identity,
                                                 headers,
                                                 target_collection,
                                                 ref_id,
@@ -1029,7 +1045,7 @@ pub(crate) async fn check_relational_permissions(
                             }
                         }
                         if details.contains_key("update") {
-                            require_target_permission(state, headers, target_collection, "update")
+                            require_target_permission(state, identity, headers, target_collection, "update")
                                 .await?;
                             if let Some(updates) = details.get("update").and_then(|v| v.as_array())
                             {
@@ -1038,6 +1054,7 @@ pub(crate) async fn check_relational_permissions(
                                         if !ref_id.is_empty() {
                                             verify_reference_accessible(
                                                 state,
+                                                identity,
                                                 headers,
                                                 target_collection,
                                                 ref_id,
@@ -1049,7 +1066,7 @@ pub(crate) async fn check_relational_permissions(
                             }
                         }
                         if details.contains_key("delete") {
-                            require_target_permission(state, headers, target_collection, "delete")
+                            require_target_permission(state, identity, headers, target_collection, "delete")
                                 .await?;
                             if let Some(deletes) = details.get("delete").and_then(|v| v.as_array())
                             {
@@ -1058,6 +1075,7 @@ pub(crate) async fn check_relational_permissions(
                                         if !ref_id.is_empty() {
                                             verify_reference_accessible(
                                                 state,
+                                                identity,
                                                 headers,
                                                 target_collection,
                                                 ref_id,
@@ -1070,7 +1088,7 @@ pub(crate) async fn check_relational_permissions(
                         }
                     }
                     Value::Null => {
-                        require_target_permission(state, headers, target_collection, "update")
+                        require_target_permission(state, identity, headers, target_collection, "update")
                             .await?;
                     }
                     _ => {}

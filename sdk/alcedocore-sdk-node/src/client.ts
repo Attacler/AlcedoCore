@@ -20,20 +20,6 @@ import { createActivityLogsResource } from "./activityLogs.js";
 import { createAppSettingsResource } from "./appSettings.js";
 import { createDeveloperApiKeysResource } from "./developerApiKeys.js";
 
-function generateUUID(): string {
-    if (
-        typeof crypto !== "undefined" &&
-        typeof crypto.randomUUID === "function"
-    ) {
-        return crypto.randomUUID();
-    }
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-        const r = (Math.random() * 16) | 0;
-        const v = c === "x" ? r : (r & 0x3) | 0x8;
-        return v.toString(16);
-    });
-}
-
 const DEFAULT_TIMEOUT = 30_000;
 
 export interface ClientOptions {
@@ -57,6 +43,15 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
                 ((attempt: number) => Math.pow(2, attempt) * 1000),
             methods: ["get", "post", "put", "delete", "patch"] as any,
             statusCodes: [408, 413, 429, 500, 502, 503, 504],
+        },
+        hooks: {
+            beforeRequest: [
+                ((state: any) => {
+                    const rid = state.options?.requestId ?? options.requestId;
+
+                    if (rid) state.request.headers.set("X-Request-ID", rid);
+                }) as BeforeRequestHook,
+            ],
         },
     });
 

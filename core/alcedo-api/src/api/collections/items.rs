@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use alcedo_common::RequestIdentity;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -18,11 +19,12 @@ pub(crate) async fn update_collection_item(
     State(state): State<Arc<AppState>>,
     Path((name, id)): Path<(String, String)>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Json(body): Json<serde_json::Map<String, Value>>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let pc = permission_check::check_permission(&state, &headers, &name, "update").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, &name, "update").await?;
     if let PermissionCheck::Denied { reason } = pc {
         return Err(AppError::Forbidden(reason));
     }
@@ -66,7 +68,7 @@ pub(crate) async fn update_collection_item(
     }
 
     // Check cross-collection permissions for relational write operations
-    check_relational_permissions(&state, &headers, &collection, &all_collections, &body).await?;
+    check_relational_permissions(&state, &identity, &headers, &collection, &all_collections, &body).await?;
 
     // Separate inline parent fields, relational fields, and scalar fields.
     // Inline parent fields use the format `__parent__{field_name}__{parent_field}`
@@ -302,7 +304,7 @@ pub(crate) async fn update_collection_item(
             if let Some(ref target) = rel_def.related_collection {
                 // Check cross-collection permission on the parent collection
                 if let PermissionCheck::Granted { .. } = pc {
-                    match permission_check::check_permission(&state, &headers, target, "update")
+                    match permission_check::check_permission(&state, &identity, &headers, target, "update")
                         .await?
                     {
                         PermissionCheck::Denied { reason } => {

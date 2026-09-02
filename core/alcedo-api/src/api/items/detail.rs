@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use alcedo_common::RequestIdentity;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,6 +56,7 @@ pub async fn get_item_handler(
     State(state): State<Arc<AppState>>,
     Path((collection_name, item_id)): Path<(String, String)>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
@@ -62,7 +64,7 @@ pub async fn get_item_handler(
     reject_system_collection(db_pool, &state.redis_connection, &collection_name).await?;
 
     // Permission check first (needed for display value resolution and field restrictions)
-    let pc = permission_check::check_permission(&state, &headers, &collection_name, "read").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, &collection_name, "read").await?;
     if let PermissionCheck::Denied { reason } = pc {
         return Err(AppError::Forbidden(reason));
     }
@@ -158,7 +160,7 @@ pub async fn get_item_handler(
         ))?;
 
     let granted_perms = pc.permissions().map(|p| p.to_vec()).unwrap_or_default();
-    let all_perms = permission_check::load_all_user_permissions(&state, &headers, &collection_name).await?;
+    let all_perms = permission_check::load_all_user_permissions(&state, &identity, &headers, &collection_name).await?;
     let is_admin = pc.permissions().is_none();
 
     // Apply field-level read restrictions FIRST, before display value augmentation
@@ -250,11 +252,12 @@ pub async fn references_handler(
     State(state): State<Arc<AppState>>,
     Path((collection_name, item_id)): Path<(String, String)>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
     // Check permission on source collection
-    let _pc = permission_check::require_permission(&state, &headers, &collection_name, "read").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &collection_name, "read").await?;
 
     // Find referencing pairs by listing all collections and their relationship fields
     let all_collections = collections::get_cached_collections(db_pool, &state.redis_connection).await?;
@@ -270,7 +273,7 @@ pub async fn references_handler(
     // Build per-collection permission filter objects for SQL-level row filtering
     let mut collection_filters: HashMap<String, Vec<crate::services::permissions::PolicyPermission>> = HashMap::new();
     for (collection, _field) in &referencing_pairs {
-        let ref_pc = permission_check::check_permission(&state, &headers, &collection.name, "read").await?;
+        let ref_pc = permission_check::check_permission(&state, &identity, &headers, &collection.name, "read").await?;
         match ref_pc {
             PermissionCheck::Denied { .. } => {}
             PermissionCheck::Bypass => {
@@ -289,7 +292,7 @@ pub async fn references_handler(
     // Apply field-level restrictions to each referencing group
     let mut filtered_references = Vec::new();
     for group in references {
-        let ref_pc = permission_check::check_permission(&state, &headers, &group.collection_name, "read").await?;
+        let ref_pc = permission_check::check_permission(&state, &identity, &headers, &group.collection_name, "read").await?;
         match ref_pc {
             PermissionCheck::Denied { .. } => continue,
             PermissionCheck::Bypass => {

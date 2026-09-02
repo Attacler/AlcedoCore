@@ -1,50 +1,50 @@
 services:
-    core:
-        build:
-            context: .
-            dockerfile: core/Dockerfile
-        depends_on:
-            postgres:
-                condition: service_healthy
-            redis:
-                condition: service_healthy
-            system-plugin-api:
-                condition: service_started
-            registry:
-                condition: service_started
-        ports:
-            - "8080:8080"
-        environment:
-            DATABASE_URL: postgres://postgres:postgres@postgres:5432/plugin_core
-            REDIS_URL: redis://redis:6379
-            CORE_PORT: 8080
-            DEV_MODE: "false"
-            RUST_LOG: info
-            LOCAL_REGISTRY_URL: localhost:5000
-            ADMIN_EMAIL: admin@alcedo.dev
-            ADMIN_PASSWORD: admin123!
-            PLUGIN_NETWORK: alcedocore-test_default
-            PLUGINS_DIR: /plugins
-            FILES_DIR: /app/files
-            SYSTEM_PLUGINS_URL: http://system-plugin-api:9090
-            REGISTRY_ENCRYPTION_KEY: "UuG5d1HEJuBH0tElr6R4I3deq/BabTiHhfByFS9xom4="
-            COLLECTION_LOG_FLUSH_MS: "100"
-            SECURITY_COOKIE_SECURE: "false"
-            SECURITY_COOKIE_SAMESITE: "lax"
-            SECURITY_COOKIE_HTTP_ONLY: "true"
-            SECURITY_CORS_ENABLED: "true"
-            SECURITY_CORS_ORIGINS: "*"
-            SECURITY_RATE_LIMIT_ENABLED: "true"
-            SECURITY_RATE_LIMIT_REQUESTS: "200"
-            SECURITY_RATE_LIMIT_WINDOW: "60"
-            SECURITY_PASSWORD_MIN_LENGTH: "8"
-            SECURITY_SESSION_FIXATION: "true"
-        extra_hosts:
-            - "host.docker.internal:host-gateway"
-        volumes:
-            - /var/run/docker.sock:/var/run/docker.sock
-            - ./.docker-plugins:/plugins
-            - ./.docker-plugins:/app/plugins
+    # core:
+    #     build:
+    #         context: .
+    #         dockerfile: core/Dockerfile
+    #     depends_on:
+    #         postgres:
+    #             condition: service_healthy
+    #         redis:
+    #             condition: service_healthy
+    #         system-plugin-api:
+    #             condition: service_started
+    #         registry:
+    #             condition: service_started
+    #     ports:
+    #         - "8080:8080"
+    #     environment:
+    #         DATABASE_URL: postgres://postgres:postgres@postgres:5432/plugin_core
+    #         REDIS_URL: redis://redis:6379
+    #         CORE_PORT: 8080
+    #         DEV_MODE: "false"
+    #         RUST_LOG: info
+    #         LOCAL_REGISTRY_URL: localhost:5000
+    #         ADMIN_EMAIL: admin@alcedo.dev
+    #         ADMIN_PASSWORD: admin123!
+    #         PLUGIN_NETWORK: alcedocore-test_default
+    #         PLUGINS_DIR: /plugins
+    #         FILES_DIR: /app/files
+    #         SYSTEM_PLUGINS_URL: http://system-plugin-api:9090
+    #         REGISTRY_ENCRYPTION_KEY: "UuG5d1HEJuBH0tElr6R4I3deq/BabTiHhfByFS9xom4="
+    #         COLLECTION_LOG_FLUSH_MS: "100"
+    #         SECURITY_COOKIE_SECURE: "false"
+    #         SECURITY_COOKIE_SAMESITE: "lax"
+    #         SECURITY_COOKIE_HTTP_ONLY: "true"
+    #         SECURITY_CORS_ENABLED: "true"
+    #         SECURITY_CORS_ORIGINS: "*"
+    #         SECURITY_RATE_LIMIT_ENABLED: "true"
+    #         SECURITY_RATE_LIMIT_REQUESTS: "200"
+    #         SECURITY_RATE_LIMIT_WINDOW: "60"
+    #         SECURITY_PASSWORD_MIN_LENGTH: "8"
+    #         SECURITY_SESSION_FIXATION: "true"
+    #     extra_hosts:
+    #         - "host.docker.internal:host-gateway"
+    #     volumes:
+    #         - /var/run/docker.sock:/var/run/docker.sock
+    #         - ./.docker-plugins:/plugins
+    #         - ./.docker-plugins:/app/plugins
 
     postgres:
         image: postgres:18

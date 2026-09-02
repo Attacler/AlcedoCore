@@ -1,14 +1,10 @@
-use axum::{
-    extract::State,
-    http::HeaderMap,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
+use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::error::AppError;
 use crate::api::permission_check;
+use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
 
 #[derive(Debug, Deserialize)]
@@ -42,18 +38,18 @@ async fn request_id_handler(
     if let Some(ref pool) = state.redis_connection {
         if let Ok(mut conn) = pool.get().await {
             let redis_key = format!("plugin_req:{}", request_id);
-            let _: Result<(), _> = redis::cmd("SETEX")
-                .arg(&redis_key)
-                .arg(900u64)
-                .arg(&payload.slug)
-                .query_async(&mut *conn)
-                .await;
+            let res = conn.set::<_, _, ()>(&redis_key, &payload.slug).await;
+
+            if let Err(e) = res {
+                tracing::error!("[DEV] Could not register dev requestID: {:?}", e);
+            }
         }
     }
 
     tracing::info!(
         "[DEV] Registered request ID: id={} slug={}",
-        request_id, payload.slug
+        request_id,
+        payload.slug
     );
 
     Ok(Json(RequestIdResponse { request_id }))

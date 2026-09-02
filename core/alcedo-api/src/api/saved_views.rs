@@ -5,6 +5,7 @@ use axum::{
     routing::{delete, get, post, put},
     Json, Router,
 };
+use alcedo_common::RequestIdentity;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -43,11 +44,12 @@ pub fn saved_views_router() -> Router<Arc<AppState>> {
 async fn list_views(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
     Path(collection): Path<CollectionNamePath>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &collection.name, "manage_views").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &collection.name, "manage_views").await?;
 
     let views = saved_views::list_views(db_pool, &collection.name).await?;
     Ok(Json(json!({ "views": views })))
@@ -57,12 +59,13 @@ async fn list_views(
 async fn create_view(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
     Path(collection): Path<CollectionNamePath>,
     Json(req): Json<CreateSavedViewRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &collection.name, "manage_views").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &collection.name, "manage_views").await?;
 
     // Validate name is not empty
     if req.name.trim().is_empty() {
@@ -77,12 +80,13 @@ async fn create_view(
 async fn update_view(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
     Path(path): Path<ViewPath>,
     Json(req): Json<UpdateSavedViewRequest>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &path.name, "manage_views").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &path.name, "manage_views").await?;
 
     let view = saved_views::update_view(db_pool, &path.id, &req).await?;
     Ok(Json(json!(view)))
@@ -92,11 +96,12 @@ async fn update_view(
 async fn delete_view(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
     Path(path): Path<ViewPath>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &path.name, "manage_views").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &path.name, "manage_views").await?;
 
     saved_views::delete_view(db_pool, &path.id).await?;
     Ok(Json(json!({ "deleted": true })))
@@ -106,11 +111,12 @@ async fn delete_view(
 async fn set_default_view(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    identity: RequestIdentity,
     Path(path): Path<ViewPath>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &path.name, "manage_views").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &path.name, "manage_views").await?;
 
     let view = saved_views::set_default_view(db_pool, &path.id).await?;
     Ok(Json(json!(view)))

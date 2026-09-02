@@ -1,18 +1,10 @@
-use axum::{
-    extract::Request,
-    http::HeaderValue,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, http::HeaderValue, middleware::Next, response::Response};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct RequestId(pub String);
 
-pub async fn request_id_middleware(
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn request_id_middleware(request: Request, next: Next) -> Response {
     let request_id = extract_or_generate_request_id(&request);
 
     let mut request = request;
@@ -24,7 +16,9 @@ pub async fn request_id_middleware(
             v,
         );
     }
-    request.extensions_mut().insert(RequestId(request_id.clone()));
+    request
+        .extensions_mut()
+        .insert(RequestId(request_id.clone()));
 
     tracing::info!(request_id = %request_id, method = %request.method(), uri = %request.uri(), "Incoming request");
 
@@ -40,7 +34,7 @@ pub async fn request_id_middleware(
 }
 
 fn extract_or_generate_request_id(request: &Request) -> String {
-    if let Some(header) = request.headers().get("X-Request-ID") {
+    if let Some(header) = request.headers().get("x-request-id") {
         if let Ok(value) = header.to_str() {
             return value.to_string();
         }

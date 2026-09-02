@@ -1,9 +1,37 @@
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 use thiserror::Error;
 use std::fmt;
 use tracing;
+use uuid::Uuid;
+
+/// Identity resolved by the auth middleware for the current request.
+/// Inserted into request extensions; extractable by handlers via
+/// `FromRequestParts`. Empty (default) for public / dev-key paths.
+#[derive(Debug, Clone, Default)]
+pub struct RequestIdentity {
+    pub user_id: Option<Uuid>,
+    pub plugin_slug: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl<S: Send + Sync> FromRequestParts<S> for RequestIdentity {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(parts
+            .extensions
+            .get::<RequestIdentity>()
+            .cloned()
+            .unwrap_or_default())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AuthLevel {

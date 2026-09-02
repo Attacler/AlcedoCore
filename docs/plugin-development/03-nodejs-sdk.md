@@ -52,12 +52,17 @@ const client = createClient(baseUrl: string, options?: ClientOptions);
 ```typescript
 interface ClientOptions {
     timeout?: number; // Request timeout in ms (default: 30000)
+    requestId?: string; // X-Request-ID header (default: auto-generated UUID)
     retry?: {
         limit?: number; // Max retries (default: 3)
         delay?: (attempt: number) => number; // Exponential backoff (default: 2^attempt * 1000ms)
     };
 }
 ```
+
+The `requestId` is sent as the `X-Request-ID` header on every call. It can also be
+overridden per call, e.g. `client.kv.get(key, { requestId })`. If omitted, a UUID is
+generated automatically.
 
 ### Returned Resources
 

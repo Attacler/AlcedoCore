@@ -1,3 +1,4 @@
+use alcedo_common::RequestIdentity;
 use axum::http::HeaderMap;
 use serde_json::{json, Value};
 use sqlx::PgPool;
@@ -42,13 +43,18 @@ impl PermissionCheck {
 
 pub async fn check_permission(
     state: &Arc<AppState>,
+    identity: &RequestIdentity,
     headers: &HeaderMap,
     collection_name: &str,
     action: &str,
 ) -> Result<PermissionCheck, AppError> {
-    let request_id = extract_request_id_from_headers(headers);
-
-    let plugin_slug = lookup_plugin_by_request_id(&state.redis_connection, &request_id).await;
+    let plugin_slug = if let Some(slug) = &identity.plugin_slug {
+        Some(slug.clone())
+    } else {
+        // Fallback: middleware didn't resolve the slug (e.g. dev-key/public paths)
+        let request_id = extract_request_id_from_headers(headers);
+        lookup_plugin_by_request_id(&state.redis_connection, &request_id).await
+    };
 
     // Developer API keys are root credentials: they bypass scope and
     // collection-permission checks. But plugin callbacks (X-Request-ID
@@ -91,7 +97,13 @@ pub async fn check_permission(
         });
     }
 
-    if let Some(user_id) = extract_user_id_from_session(state, headers).await? {
+    let user_id = if let Some(uid) = identity.user_id {
+        Some(uid)
+    } else {
+        extract_user_id_from_session(state, headers).await?
+    };
+
+    if let Some(user_id) = user_id {
         // Admin users bypass policy checks entirely
         let is_admin: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(
@@ -231,6 +243,7 @@ pub fn compute_item_permissions_sync(
 /// Variables like {user.id} are resolved. Returns empty vec for admin bypass.
 pub async fn load_all_user_permissions(
     state: &Arc<AppState>,
+    identity: &RequestIdentity,
     headers: &HeaderMap,
     collection_name: &str,
 ) -> Result<Vec<PolicyPermission>, AppError> {
@@ -238,7 +251,12 @@ pub async fn load_all_user_permissions(
     if is_valid_dev_key(headers) {
         return Ok(vec![]);
     }
-    if let Some(user_id) = extract_user_id_from_session(state, headers).await? {
+    let user_id = if let Some(uid) = identity.user_id {
+        Some(uid)
+    } else {
+        extract_user_id_from_session(state, headers).await?
+    };
+    if let Some(user_id) = user_id {
         let is_admin: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(
                 SELECT 1 FROM user_roles ur
@@ -350,26 +368,35 @@ pub async fn extract_user_id_from_session(
 
 pub async fn require_permission(
     state: &Arc<AppState>,
+    identity: &RequestIdentity,
     headers: &HeaderMap,
     collection_name: &str,
     action: &str,
 ) -> Result<PermissionCheck, AppError> {
-    let pc = check_permission(state, headers, collection_name, action).await?;
+    let pc = check_permission(state, identity, headers, collection_name, action).await?;
     if let PermissionCheck::Denied { reason } = &pc {
         return Err(AppError::Forbidden(reason.clone()));
     }
     Ok(pc)
 }
 
-pub async fn require_admin(state: &Arc<AppState>, headers: &HeaderMap) -> Result<(), AppError> {
+pub async fn require_admin(
+    state: &Arc<AppState>,
+    identity: &RequestIdentity,
+    headers: &HeaderMap,
+) -> Result<(), AppError> {
     // Developer API keys are root credentials — they bypass admin checks
     if is_valid_dev_key(headers) {
         return Ok(());
     }
     let db_pool = state.db()?;
-    let uid = extract_user_id_from_session(state, headers)
-        .await?
-        .ok_or_else(|| AppError::Unauthorized("Authentication required".to_string()))?;
+    let uid = if let Some(uid) = identity.user_id {
+        uid
+    } else {
+        extract_user_id_from_session(state, headers)
+            .await?
+            .ok_or_else(|| AppError::Unauthorized("Authentication required".to_string()))?
+    };
     let is_admin: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN role_scopes rs ON rs.role_id = ur.role_id WHERE ur.user_id = $1 AND rs.scope = 'users.all')"#
     )
@@ -674,19 +701,49 @@ pub async fn require_scope(
     if is_valid_dev_key(headers) {
         return Ok(());
     }
-
     let db_pool = state.db()?;
 
-    let user_id = extract_user_id_from_session(state, headers)
-        .await?
-        .ok_or_else(|| AppError::Unauthorized("Authentication required".to_string()))?;
+    // Session users are scoped through their roles.
+    if let Some(user_id) = extract_user_id_from_session(state, headers).await? {
+        return check_entity_scope(
+            db_pool,
+            ScopeSource::User { user_id: &user_id },
+            required_scope,
+        )
+        .await;
+    }
 
-    check_entity_scope(
-        db_pool,
-        ScopeSource::User { user_id: &user_id },
-        required_scope,
-    )
-    .await
+    // Plugin callbacks carry identity via X-Request-ID → Redis slug mapping.
+    if let Some(request_id) = headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(slug) =
+            lookup_plugin_by_request_id(&state.redis_connection, request_id).await
+        {
+            let plugin_authorized = if let Ok(Some(plugin)) =
+                crate::db::queries::Plugin::find_by_slug(db_pool, &slug).await
+            {
+                let granted: Vec<String> =
+                    serde_json::from_value(plugin.granted_scopes).unwrap_or_default();
+                granted
+                    .iter()
+                    .any(|s| crate::services::scopes::scope_matches(s, required_scope))
+            } else {
+                false
+            };
+
+            if plugin_authorized {
+                return Ok(());
+            }
+
+            return Err(AppError::Unauthorized(
+                "Plugin does not have enough permissions.".to_string(),
+            ));
+        }
+    }
+
+    Err(AppError::Unauthorized("Authentication required".to_string()))
 }
 
 /// Scan permission filters for `{user.*}` variable references and build a context

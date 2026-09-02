@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use alcedo_common::RequestIdentity;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -53,11 +54,16 @@ pub struct BatchDeleteFilesBody {
 
 async fn check_file_permission(
     state: &Arc<AppState>,
+    identity: &RequestIdentity,
     headers: &axum::http::HeaderMap,
     file_id: &Uuid,
     required_action: &str,
 ) -> Result<(), AppError> {
-    let uid = extract_user_id_from_session(state, headers).await?;
+    let uid = if let Some(uid) = identity.user_id {
+        Some(uid)
+    } else {
+        extract_user_id_from_session(state, headers).await?
+    };
     if let Some(uid) = uid {
         let is_admin: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN role_scopes rs ON rs.role_id = ur.role_id WHERE ur.user_id = $1 AND rs.scope = 'users.all')"#,
@@ -79,7 +85,7 @@ async fn check_file_permission(
     .await?;
 
     if let Some((_item_id, collection_name, _field_name)) = link {
-        require_permission(state, headers, &collection_name, required_action).await?;
+        require_permission(state, identity, headers, &collection_name, required_action).await?;
     } else {
         return Err(AppError::Forbidden("File is not linked to any collection".to_string()));
     }
@@ -174,6 +180,7 @@ async fn validate_no_circular_ref(
 pub async fn upload_file(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let db_pool = state.db()?;
@@ -236,7 +243,7 @@ pub async fn upload_file(
     }
 
     if let Some(ref coll) = collection_name {
-        require_permission(&state, &headers, coll, "update").await?;
+        require_permission(&state, &identity, &headers, coll, "update").await?;
     }
 
     let file_data =
@@ -362,6 +369,7 @@ pub async fn upload_file(
 pub async fn download_file(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path(id): Path<Uuid>,
 ) -> Result<
     (
@@ -373,7 +381,7 @@ pub async fn download_file(
 > {
     let db_pool = state.db()?;
 
-    check_file_permission(&state, &headers, &id, "read").await?;
+    check_file_permission(&state, &identity, &headers, &id, "read").await?;
 
     let row = sqlx::query_as::<_, (String, String, String)>(
         r#"SELECT storage_path, mime_type, filename FROM file_metadata WHERE id = $1"#,
@@ -555,11 +563,12 @@ pub async fn list_files(
 pub async fn delete_file(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
     let db_pool = state.db()?;
 
-    check_file_permission(&state, &headers, &id, "update").await?;
+    check_file_permission(&state, &identity, &headers, &id, "update").await?;
 
     let row = sqlx::query_as::<_, (String, String)>(
         r#"SELECT storage_path, filename FROM file_metadata WHERE id = $1"#,

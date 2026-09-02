@@ -3,6 +3,7 @@ use axum::{
     http::StatusCode,
     Json,
 };
+use alcedo_common::RequestIdentity;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -123,11 +124,12 @@ async fn validate_relational_relation_field(
 pub(crate) async fn list_layout_sections(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path((name, layout_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
     verify_layout_belongs_to_collection(db_pool, &layout_id, &name).await?;
 
     let mut rows = sqlx::query_as::<_, (String, String, String, String, Option<String>, Option<String>, Option<Value>, Option<Vec<String>>, i32, i32, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
@@ -194,12 +196,13 @@ pub(crate) async fn list_layout_sections(
 pub(crate) async fn create_layout_section(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path((name, layout_id)): Path<(String, String)>,
     Json(body): Json<CollectionSection>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
     verify_layout_belongs_to_collection(db_pool, &layout_id, &name).await?;
 
     let section_type = if body.section_type.is_empty() { "relational".to_string() } else { body.section_type.clone() };
@@ -246,12 +249,13 @@ pub(crate) async fn create_layout_section(
 pub(crate) async fn update_layout_section(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path((name, layout_id, section_id)): Path<(String, String, String)>,
     Json(body): Json<CollectionSection>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
     verify_layout_belongs_to_collection(db_pool, &layout_id, &name).await?;
 
     let section_type = if body.section_type.is_empty() { "relational".to_string() } else { body.section_type.clone() };
@@ -288,11 +292,12 @@ pub(crate) async fn update_layout_section(
 pub(crate) async fn delete_layout_section(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path((name, layout_id, section_id)): Path<(String, String, String)>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
     verify_layout_belongs_to_collection(db_pool, &layout_id, &name).await?;
 
     let result = sqlx::query(
@@ -318,12 +323,13 @@ pub(crate) async fn delete_layout_section(
 pub(crate) async fn batch_reorder_sections(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Path((name, layout_id)): Path<(String, String)>,
     Json(body): Json<BatchReorderRequest>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
-    let _pc = permission_check::require_permission(&state, &headers, &name, "manage_sections").await?;
+    let _pc = permission_check::require_permission(&state, &identity, &headers, &name, "manage_sections").await?;
     verify_layout_belongs_to_collection(db_pool, &layout_id, &name).await?;
 
     for item in &body.sections {

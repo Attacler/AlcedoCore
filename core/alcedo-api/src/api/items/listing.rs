@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, Query, State},
     Json,
 };
+use alcedo_common::RequestIdentity;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub async fn list_items_handler(
     State(state): State<Arc<AppState>>,
     Path(collection_name): Path<String>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
@@ -50,7 +52,7 @@ pub async fn list_items_handler(
             .collect();
 
     // Permission check before SQL building so we can inject filters at the DB level
-    let pc = permission_check::check_permission(&state, &headers, &collection_name, "read").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, &collection_name, "read").await?;
     if let PermissionCheck::Denied { reason } = pc {
         return Err(AppError::Forbidden(reason));
     }
@@ -307,7 +309,7 @@ pub async fn list_items_handler(
     };
 
     // Load all permissions for $permissions computation (not just the current action)
-    let all_perms = permission_check::load_all_user_permissions(&state, &headers, &collection_name).await?;
+    let all_perms = permission_check::load_all_user_permissions(&state, &identity, &headers, &collection_name).await?;
     let is_admin = pc.permissions().is_none();
     let mut items_with_perms: Vec<Value> = Vec::new();
     for item in items {

@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use alcedo_common::RequestIdentity;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Instant;
@@ -22,13 +23,14 @@ pub async fn create_handler(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
     reject_system_collection(db_pool, &state.redis_connection, &slug).await?;
 
-    let pc = permission_check::check_permission(&state, &headers, &slug, "create").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, &slug, "create").await?;
     if let PermissionCheck::Denied { reason } = pc {
         return Err(AppError::Forbidden(reason));
     }
@@ -67,7 +69,7 @@ pub async fn create_handler(
             if let Some(ref body_map) = body.as_object() {
                 let all_cols = collections::list_collections(db_pool).await?;
                 api_collections::check_relational_permissions(
-                    &state, &headers, &collection, &all_cols, body_map,
+                    &state, &identity, &headers, &collection, &all_cols, body_map,
                 ).await?;
             }
             // Resolve {user.id} defaults in field definitions
@@ -150,13 +152,14 @@ pub async fn update_handler(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
     reject_system_collection(db_pool, &state.redis_connection, &slug).await?;
 
-    let pc = permission_check::check_permission(&state, &headers, &slug, "update").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, &slug, "update").await?;
     if let PermissionCheck::Denied { reason } = pc {
         return Err(AppError::Forbidden(reason));
     }
@@ -304,13 +307,14 @@ pub async fn delete_handler(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
     headers: axum::http::HeaderMap,
+    identity: RequestIdentity,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
     let db_pool = state.db()?;
 
     reject_system_collection(db_pool, &state.redis_connection, &slug).await?;
 
-    let pc = permission_check::check_permission(&state, &headers, &slug, "delete").await?;
+    let pc = permission_check::check_permission(&state, &identity, &headers, &slug, "delete").await?;
     if let PermissionCheck::Denied { reason } = pc {
         return Err(AppError::Forbidden(reason));
     }
