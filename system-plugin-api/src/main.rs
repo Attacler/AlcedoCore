@@ -97,7 +97,7 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(9090);
 
-    let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "./".to_string());
+    let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "./plugins".to_string());
     let manifest_path = format!("{}/plugins.json", plugins_dir.trim_end_matches('/'));
 
     info!("System Plugin API starting on port {}", port);

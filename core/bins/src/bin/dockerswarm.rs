@@ -228,7 +228,7 @@ async fn main() -> Result<(), AppError> {
 
     let static_registry = pcl::plugins::StaticPluginRegistry::new();
     let static_reg = Arc::new(static_registry);
-    let plugins_dir = std::env::var("PLUGINS_DIR").expect("PLUGINS_DIR should be set");
+    let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
     match static_reg
         .load_system_plugins(db_pool.as_ref(), Path::new(&plugins_dir))
         .await

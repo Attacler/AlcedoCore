@@ -22,8 +22,7 @@ pub async fn list_plugin_docs(
 
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
-    let mount_base =
-        std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+    let mount_base = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
     if let Ok(Some(active_version)) = PluginVersion::find_active(db_pool, &slug).await {
         let version = &active_version.version;
         let docs_path = std::path::Path::new(&mount_base)
@@ -207,8 +206,7 @@ pub async fn fetch_plugin_doc(
     let normalized_path = path.trim_end_matches('/');
     let docs_subpath = format!("docs/{}", normalized_path);
 
-    let mount_base =
-        std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+    let mount_base = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
     let version = &active_version.version;
     let file_path = std::path::Path::new(&mount_base)
         .join(&slug)

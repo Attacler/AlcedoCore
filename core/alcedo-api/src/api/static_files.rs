@@ -521,7 +521,7 @@ fn try_read_from_mount(
         ));
     }
     let mount_base =
-        std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+        std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
 
     let file_path = Path::new(&mount_base)
         .join(slug)

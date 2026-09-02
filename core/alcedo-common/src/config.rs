@@ -88,8 +88,7 @@ impl AppConfig {
             plugin_network: cfg
                 .get_string("PLUGIN_NETWORK")
                 .unwrap_or_else(|_| "alcedocore_plugins".to_string()),
-            plugins_dir: std::env::var("PLUGINS_DIR")
-                .unwrap_or_else(|_| "/var/lib/plugin-public".to_string()),
+            plugins_dir: std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string()),
             health_check_interval: Duration::from_secs(
                 cfg.get::<u64>("HEALTH_CHECK_INTERVAL").unwrap_or(5),
             ),
@@ -133,15 +132,16 @@ impl AppConfig {
     }
 
     fn registry_seed_from_env() -> Option<RegistrySeed> {
-        let name = std::env::var("REGISTRY_NAME").ok().filter(|s| !s.is_empty());
+        let name = std::env::var("REGISTRY_NAME")
+            .ok()
+            .filter(|s| !s.is_empty());
         let url = std::env::var("REGISTRY_URL").ok().filter(|s| !s.is_empty());
         let (name, url) = match (name, url) {
             (Some(name), Some(url)) => (name, url),
             _ => return None,
         };
 
-        let auth_type = std::env::var("REGISTRY_AUTH_TYPE")
-            .unwrap_or_else(|_| "none".to_string());
+        let auth_type = std::env::var("REGISTRY_AUTH_TYPE").unwrap_or_else(|_| "none".to_string());
         let auth_type = if matches!(auth_type.as_str(), "none" | "basic" | "bearer") {
             auth_type
         } else {

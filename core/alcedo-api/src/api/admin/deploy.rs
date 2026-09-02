@@ -306,7 +306,7 @@ pub async fn deploy_plugin_handler(
         let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
 
         let mount_base =
-            std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+            std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
         let has_explicit_pvc = mount_base != "/var/lib/plugin-public";
 
         if has_explicit_pvc {

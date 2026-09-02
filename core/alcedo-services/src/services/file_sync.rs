@@ -39,8 +39,7 @@ impl FileSyncService for FileSyncServiceImpl {
         version: &str,
         container_id: &str,
     ) -> Result<String, AppError> {
-        let mount_base =
-            std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+        let mount_base = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
 
         let dest_path = format!("{}/{}/{}/public", mount_base, slug, version);
 
@@ -97,8 +96,7 @@ impl FileSyncService for FileSyncServiceImpl {
         version: &str,
         container_id: &str,
     ) -> Result<String, AppError> {
-        let mount_base =
-            std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+        let mount_base = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
 
         let dest_path = format!("{}/{}/{}/pages", mount_base, slug, version);
 
@@ -147,8 +145,7 @@ impl FileSyncService for FileSyncServiceImpl {
     }
 
     async fn remove_files(&self, slug: &str, version: &str) -> Result<(), AppError> {
-        let mount_base =
-            std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/var/lib/plugin-public".to_string());
+        let mount_base = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
 
         let version_path = format!("{}/{}/{}", mount_base, slug, version);
 

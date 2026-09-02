@@ -48,28 +48,25 @@ pub async fn get_plugin_schema(
 }
 
 pub fn plugin_file_dir(slug: &str, version: &str, subdir: &str) -> Option<std::path::PathBuf> {
-    if let Ok(mount) = std::env::var("PLUGINS_DIR") {
-        let path = std::path::Path::new(&mount)
-            .join(slug)
-            .join(version)
-            .join(subdir);
+    let plugin_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
+    let path = std::path::Path::new(&plugin_dir)
+        .join(slug)
+        .join(version)
+        .join(subdir);
 
-        if path.exists() {
-            return Some(path);
-        }
+    if path.exists() {
+        return Some(path);
     }
-    if let Ok(dir) = std::env::var("PLUGINS_DIR") {
-        let path = std::path::Path::new(&dir).join(slug).join(subdir);
-        if path.exists() {
-            return Some(path);
-        }
-        if subdir == "migrations" {
-            let old_path = std::path::Path::new(&dir)
-                .join("plugin-migrations")
-                .join(slug);
-            if old_path.exists() {
-                return Some(old_path);
-            }
+    let path = std::path::Path::new(&plugin_dir).join(slug).join(subdir);
+    if path.exists() {
+        return Some(path);
+    }
+    if subdir == "migrations" {
+        let old_path = std::path::Path::new(&plugin_dir)
+            .join("plugin-migrations")
+            .join(slug);
+        if old_path.exists() {
+            return Some(old_path);
         }
     }
 
