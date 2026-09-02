@@ -249,10 +249,7 @@ async fn main() -> Result<(), AppError> {
     if let (Some(ref pool), Some(seed)) = (db_pool.as_ref(), config.registry_seed.as_ref()) {
         match pcl::db::queries::Registry::seed_from_config(pool, seed).await {
             Ok(true) => {
-                tracing::info!(
-                    "[REGISTRY] Seeded registry '{}' from env config",
-                    seed.name
-                );
+                tracing::info!("[REGISTRY] Seeded registry '{}' from env config", seed.name);
             }
             Ok(false) => {
                 tracing::info!(
@@ -448,8 +445,7 @@ async fn main() -> Result<(), AppError> {
             Arc::new(storage)
         }
         "local" | _ => {
-            let base_path = std::env::var("FILES_DIR")
-                .unwrap_or_else(|_| "/var/lib/opencode/files".to_string());
+            let base_path = std::env::var("FILES_DIR").unwrap_or_else(|_| "/app/files".to_string());
             let storage =
                 LocalFileStorage::new(&base_path).expect("Failed to initialize local file storage");
             Arc::new(storage)
