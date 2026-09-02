@@ -1,8 +1,8 @@
 services:
     core:
         build:
-            context: ./core
-            dockerfile: Dockerfile
+            context: .
+            dockerfile: core/Dockerfile
         depends_on:
             postgres:
                 condition: service_healthy
@@ -47,7 +47,7 @@ services:
             - ./.docker-plugins:/app/plugins
 
     postgres:
-        image: postgres:16
+        image: postgres:18
         ports:
             - "5432:5432"
         environment:
@@ -80,7 +80,7 @@ services:
             retries: 3
 
     redis:
-        image: redis:7-alpine
+        image: redis:8-alpine
         container_name: redis
         restart: unless-stopped
         ports:

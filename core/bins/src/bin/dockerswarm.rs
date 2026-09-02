@@ -245,6 +245,27 @@ async fn main() -> Result<(), AppError> {
         }
     }
 
+    // Seed a registry from env config (only when the registries table is empty)
+    if let (Some(ref pool), Some(seed)) = (db_pool.as_ref(), config.registry_seed.as_ref()) {
+        match pcl::db::queries::Registry::seed_from_config(pool, seed).await {
+            Ok(true) => {
+                tracing::info!(
+                    "[REGISTRY] Seeded registry '{}' from env config",
+                    seed.name
+                );
+            }
+            Ok(false) => {
+                tracing::info!(
+                    "[REGISTRY] Registries already present, skipping env seed for '{}'",
+                    seed.name
+                );
+            }
+            Err(e) => {
+                tracing::warn!("[REGISTRY] Failed to seed registry from env: {}", e);
+            }
+        }
+    }
+
     let registries_provider = db_pool.as_ref().map(|pool| {
         Arc::new(RegistriesProviderImpl::new(pool.clone())) as Arc<dyn RegistriesProvider>
     });

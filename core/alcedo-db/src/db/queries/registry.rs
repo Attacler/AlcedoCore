@@ -144,4 +144,38 @@ impl Registry {
     }
 
     delete_by!(delete_by_id, "registries", "id", i32);
+
+    /// Insert a registry from env config on startup, but only when the
+    /// registries table is currently empty (idempotent across restarts).
+    pub async fn seed_from_config(
+        db: &PgPool,
+        seed: &alcedo_common::config::RegistrySeed,
+    ) -> Result<bool, AppError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM registries")
+            .fetch_one(db)
+            .await?;
+
+        if count > 0 {
+            return Ok(false);
+        }
+
+        let now = chrono::Utc::now();
+        Registry::insert(
+            db,
+            &Registry {
+                id: 0,
+                name: seed.name.clone(),
+                url: seed.url.clone(),
+                pull_url: seed.pull_url.clone(),
+                auth_type: seed.auth_type.clone(),
+                username: seed.username.clone(),
+                password: seed.password.clone(),
+                created_at: Some(now),
+                updated_at: Some(now),
+            },
+        )
+        .await?;
+
+        Ok(true)
+    }
 }

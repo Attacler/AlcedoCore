@@ -1,23 +1,38 @@
-FROM ubuntu:22.04
+# syntax=docker/dockerfile:1
+
+FROM rust:1.97.1-slim-bookworm AS builder
+WORKDIR /workspace
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY core/ /workspace/core/
+
+WORKDIR /workspace/core
+RUN cargo build --release -p bins --bins --features k8s
+
+FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
-    curl \
-    docker.io \
     tini \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -r app && useradd -r -g app -d /app -s /sbin/nologin app \
     && mkdir -p /app /plugins /var/lib/plugin-public \
     && chown -R app:app /app /plugins /var/lib/plugin-public
 
-COPY target/release/dockerswarm /usr/local/bin/
-COPY core-migrations /app/core-migrations/
+COPY --from=builder /workspace/core/target/release/dockerswarm /usr/local/bin/
+COPY core/core-migrations /app/core-migrations/
 
 ENV RUST_LOG=info
-
+ 
 EXPOSE 8080
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
-USER app
+# USER app
 CMD ["dockerswarm"]

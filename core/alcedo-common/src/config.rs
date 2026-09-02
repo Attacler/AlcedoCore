@@ -44,6 +44,21 @@ pub struct AppConfig {
     pub rate_limit_api_window: u64,
     /// Max concurrent HTTP deliveries for event forwarding (default 50).
     pub event_forwarder_max_concurrent: u32,
+    /// Optional registry to seed into the `registries` table on startup.
+    /// Populated from REGISTRY_NAME + REGISTRY_URL (and optional detail vars).
+    /// Seeding only happens when the registries table is empty.
+    pub registry_seed: Option<RegistrySeed>,
+}
+
+/// A registry to automatically create in the database on startup.
+#[derive(Debug, Clone)]
+pub struct RegistrySeed {
+    pub name: String,
+    pub url: String,
+    pub pull_url: Option<String>,
+    pub auth_type: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
 }
 
 impl AppConfig {
@@ -113,6 +128,39 @@ impl AppConfig {
             event_forwarder_max_concurrent: cfg
                 .get::<u32>("EVENT_FORWARDER_MAX_CONCURRENT")
                 .unwrap_or(50),
+            registry_seed: Self::registry_seed_from_env(),
+        })
+    }
+
+    fn registry_seed_from_env() -> Option<RegistrySeed> {
+        let name = std::env::var("REGISTRY_NAME").ok().filter(|s| !s.is_empty());
+        let url = std::env::var("REGISTRY_URL").ok().filter(|s| !s.is_empty());
+        let (name, url) = match (name, url) {
+            (Some(name), Some(url)) => (name, url),
+            _ => return None,
+        };
+
+        let auth_type = std::env::var("REGISTRY_AUTH_TYPE")
+            .unwrap_or_else(|_| "none".to_string());
+        let auth_type = if matches!(auth_type.as_str(), "none" | "basic" | "bearer") {
+            auth_type
+        } else {
+            "none".to_string()
+        };
+
+        Some(RegistrySeed {
+            name,
+            url,
+            pull_url: std::env::var("REGISTRY_PULL_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            auth_type,
+            username: std::env::var("REGISTRY_USERNAME")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            password: std::env::var("REGISTRY_PASSWORD")
+                .ok()
+                .filter(|s| !s.is_empty()),
         })
     }
 }

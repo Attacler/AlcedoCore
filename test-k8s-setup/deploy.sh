@@ -14,10 +14,8 @@ kubectl config use-context "k3d-${CLUSTER_NAME}" 2>/dev/null || true
 
 echo ""
 echo "=== Building and pushing K8s Docker image ==="
-cd "${SCRIPT_DIR}/../alcedocore"
-cargo build --release -p bins --bin k8s 2>&1 | tail -1
 cd "${SCRIPT_DIR}/.."
-docker build --no-cache -f alcedocore/Dockerfile.k8s -t "${REGISTRY_NAME}:5000/alcedocore/core:k8s" . 2>&1 | tail -1
+docker build --no-cache -f core/Dockerfile.k8s -t "${REGISTRY_NAME}:5000/alcedocore/core:k8s" . 2>&1 | tail -1
 docker push "${REGISTRY_NAME}:5000/alcedocore/core:k8s" 2>&1 | tail -2
 
 # Update image references in manifests
