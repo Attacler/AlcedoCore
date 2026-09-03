@@ -1,13 +1,9 @@
-FROM node:20-slim
+FROM node:24-slim
 
 WORKDIR /app
 
-COPY server.js .
-COPY endpoints/ ./endpoints/
-COPY public/ ./public/
-COPY migrations/ ./migrations/
-COPY pages/dist/ ./pages/dist/
-COPY manifest.json .
+COPY . . 
+RUN npm ci
 
 EXPOSE 8080
 

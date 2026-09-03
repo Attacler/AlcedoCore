@@ -10,6 +10,7 @@ import {
 import { renderAndWrite } from "../utils/ejs-renderer";
 import { loadConfig } from "../config";
 import readline from "node:readline";
+import { exec, execSync } from "node:child_process";
 
 export const initCommand = new Command("init")
     .argument("<name>", "Plugin project name (e.g., my-plugin)")
@@ -41,6 +42,8 @@ export const initCommand = new Command("init")
                 description: `A new AlcedoCore plugin`,
                 language,
                 registryUrl,
+                startCMD:
+                    language == "node" ? "npm run dev" : "python server.py",
             };
 
             const spinner = createSpinner(`Scaffolding plugin: ${name}`);
@@ -70,12 +73,12 @@ export const initCommand = new Command("init")
 
                 // Server stub (language-specific)
                 const serverTemplate =
-                    language === "python" ? "server.py.ejs" : "server.js.ejs";
+                    language === "python" ? "server.py" : "server.ts";
                 renderAndWrite(
                     path.join(templatesDir, "plugin", serverTemplate),
                     path.join(
                         targetDir,
-                        `server.${language === "python" ? "py" : "js"}`,
+                        `server.${language === "python" ? "py" : "ts"}`,
                     ),
                     data,
                 );
@@ -89,7 +92,7 @@ export const initCommand = new Command("init")
 
                 // README.md
                 renderAndWrite(
-                    path.join(templatesDir, "plugin", "README.md.ejs"),
+                    path.join(templatesDir, "plugin", "README.md"),
                     path.join(targetDir, "README.md"),
                     data,
                 );
@@ -98,13 +101,28 @@ export const initCommand = new Command("init")
                 copyGitkeep(templatesDir, targetDir, "pages");
                 copyGitkeep(templatesDir, targetDir, "public");
 
-                spinner.succeed();
+                if (language == "node") {
+                    copyFile(
+                        path.join(templatesDir, "plugin", "tsconfig.json"),
+                        path.join(targetDir, "tsconfig.json"),
+                    );
+                    copyFile(
+                        path.join(templatesDir, "plugin", "package.json"),
+                        path.join(targetDir, "package.json"),
+                    );
 
+                    spinner.text = "Installing NPM packages...";
+                    execSync("npm install", { cwd: targetDir });
+                }
+
+                spinner.succeed();
                 success(`Plugin scaffolded: ${targetDir}`);
+
                 info(`Next steps:
-      cd ${name}
-      # Edit server.${language === "python" ? "py" : "js"} and manifest.json
-      # Build with: docker build -t ${registryUrl}/${slug}:1.0.0 .`);
+- cd ${name}
+- You can now edit the server.${language === "python" ? "py" : "ts"} and manifest.json
+- See the README.md for getting started!
+      `);
             } catch (err: any) {
                 spinner.fail();
                 logError(`Failed to scaffold plugin: ${err.message}`);
@@ -159,6 +177,12 @@ function copyGitkeep(
     if (fs.existsSync(src)) {
         fs.mkdirSync(path.dirname(dest), { recursive: true });
         fs.writeFileSync(dest, "");
+    }
+}
+
+function copyFile(sourceDir: string, targetDir: string) {
+    if (fs.existsSync(sourceDir)) {
+        fs.copyFileSync(sourceDir, targetDir);
     }
 }
 

@@ -63,19 +63,6 @@ export const proxyCommand = new Command("proxy")
         const server = http.createServer(async (clientReq, clientRes) => {
             const startTime = Date.now();
 
-            const requestId = await registerRequest(
-                coreUrl,
-                apiKey || undefined,
-                slug,
-            );
-            if (!requestId) {
-                logError("Failed to register request ID with core");
-                clientRes.statusCode = 502;
-                clientRes.setHeader("Content-Type", "text/plain");
-                clientRes.end("Bad Gateway: core unavailable");
-                return;
-            }
-
             // Clone headers and inject X-Request-ID
             const headers: Record<string, string> = {};
             for (const [key, value] of Object.entries(clientReq.headers)) {
@@ -85,7 +72,23 @@ export const proxyCommand = new Command("proxy")
                         : value;
                 }
             }
-            headers["X-Request-ID"] = requestId;
+
+            if (!clientReq.url || !clientReq.url.includes(".")) {
+                const requestId = await registerRequest(
+                    coreUrl,
+                    apiKey || undefined,
+                    slug,
+                );
+                if (!requestId) {
+                    logError("Failed to register request ID with core");
+                    clientRes.statusCode = 502;
+                    clientRes.setHeader("Content-Type", "text/plain");
+                    clientRes.end("Bad Gateway: core unavailable");
+                    return;
+                }
+
+                headers["X-Request-ID"] = requestId;
+            }
             headers["host"] = `${parsedTarget.hostname}:${parsedTarget.port}`;
 
             const options: http.RequestOptions = {

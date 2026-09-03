@@ -1,0 +1,19 @@
+{
+    "name": "<%= slug %>",
+    "version": "1.0.0",
+    "description": "A plugin for Alcedo.",
+    "main": "index.js",
+    "scripts": {
+        "dev": "npx tsx server.ts"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "type": "module",
+    "devDependencies": {
+        "typescript": "^7.0.2"
+    },
+    "dependencies": {
+        "@alcedocore/sdk": "^0.0.1-rc.0"
+    }
+}

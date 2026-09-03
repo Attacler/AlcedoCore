@@ -49,8 +49,7 @@ export const publishCommand = new Command("publish")
                 manifest.name,
                 manifest.version,
             );
-            success(`Plugin has been build`);
-            spinner.text = "Pushing Docker image...";
+            spinner.text = "Building complete, pushing Docker image...";
             await pushDockerImage(
                 config.registryUrl,
                 manifest.name,
