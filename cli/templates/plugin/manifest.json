@@ -1,0 +1,21 @@
+{
+    "name": "<%= name %>",
+    "version": "<%= version || '1.0.0' %>",
+    "plugin_type": "docker",
+    "env": {},
+    "resources": {},
+    "scopes": [
+        {
+            "name": "plugins.read",
+            "description": "For reading the plugin settings!"
+        }
+    ],
+    "endpoints": [
+        {
+            "method": "GET",
+            "path": "/settings",
+            "description": "Gets the system settings",
+            "group": "system"
+        }
+    ]
+}

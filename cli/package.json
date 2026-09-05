@@ -1,6 +1,6 @@
 {
     "name": "@alcedocore/cli",
-    "version": "0.0.1-rc.4",
+    "version": "0.0.1-rc.5",
     "description": "Alcedo plugin development CLI - scaffold, develop, and test plugins",
     "main": "dist/index.js",
     "bin": {

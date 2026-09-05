@@ -55,7 +55,7 @@ export const initCommand = new Command("init")
                 // Generate files from templates
                 // manifest.json
                 renderAndWrite(
-                    path.join(templatesDir, "plugin", "manifest.json.ejs"),
+                    path.join(templatesDir, "plugin", "manifest.json"),
                     path.join(targetDir, "manifest.json"),
                     data,
                 );
@@ -106,9 +106,10 @@ export const initCommand = new Command("init")
                         path.join(templatesDir, "plugin", "tsconfig.json"),
                         path.join(targetDir, "tsconfig.json"),
                     );
-                    copyFile(
+                    renderAndWrite(
                         path.join(templatesDir, "plugin", "package.json"),
                         path.join(targetDir, "package.json"),
+                        data,
                     );
 
                     spinner.text = "Installing NPM packages...";
