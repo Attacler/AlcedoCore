@@ -3,8 +3,8 @@ use axum::http::request::Parts;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
-use thiserror::Error;
 use std::fmt;
+use thiserror::Error;
 use tracing;
 use uuid::Uuid;
 
@@ -21,10 +21,7 @@ pub struct RequestIdentity {
 impl<S: Send + Sync> FromRequestParts<S> for RequestIdentity {
     type Rejection = std::convert::Infallible;
 
-    async fn from_request_parts(
-        parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         Ok(parts
             .extensions
             .get::<RequestIdentity>()
@@ -44,7 +41,10 @@ pub enum AuthLevel {
 
 impl AuthLevel {
     pub fn is_privileged(&self) -> bool {
-        matches!(self, AuthLevel::Admin | AuthLevel::DeveloperApiKey | AuthLevel::Plugin)
+        matches!(
+            self,
+            AuthLevel::Admin | AuthLevel::DeveloperApiKey | AuthLevel::Plugin
+        )
     }
 }
 
@@ -63,16 +63,14 @@ impl fmt::Display for AuthLevel {
 /// Classify a `sqlx::Error` into the appropriate HTTP status and error code.
 fn classify_db_error(err: &sqlx::Error) -> (axum::http::StatusCode, &'static str) {
     match err {
-        sqlx::Error::RowNotFound => {
-            (axum::http::StatusCode::NOT_FOUND, "NOT_FOUND")
-        }
+        sqlx::Error::RowNotFound => (axum::http::StatusCode::NOT_FOUND, "NOT_FOUND"),
         sqlx::Error::Database(db_err) => {
             match db_err.code().as_deref() {
                 // Class 23 — Integrity constraint violation
-                Some("23505") => (axum::http::StatusCode::CONFLICT, "CONFLICT"),         // unique_violation
-                Some("23503") => (axum::http::StatusCode::CONFLICT, "CONFLICT"),          // foreign_key_violation
-                Some("23502") => (axum::http::StatusCode::BAD_REQUEST, "BAD_REQUEST"),    // not_null_violation
-                Some("23514") => (axum::http::StatusCode::BAD_REQUEST, "BAD_REQUEST"),    // check_violation
+                Some("23505") => (axum::http::StatusCode::CONFLICT, "CONFLICT"), // unique_violation
+                Some("23503") => (axum::http::StatusCode::CONFLICT, "CONFLICT"), // foreign_key_violation
+                Some("23502") => (axum::http::StatusCode::BAD_REQUEST, "BAD_REQUEST"), // not_null_violation
+                Some("23514") => (axum::http::StatusCode::BAD_REQUEST, "BAD_REQUEST"), // check_violation
                 // Class 42 — Syntax / access rule violation
                 Some(code) if code.starts_with("42") => {
                     (axum::http::StatusCode::BAD_REQUEST, "BAD_REQUEST")
@@ -171,7 +169,9 @@ pub enum AppError {
 #[cfg(feature = "docker")]
 impl From<bollard::errors::Error> for AppError {
     fn from(e: bollard::errors::Error) -> Self {
-        AppError::DockerError { details: e.to_string() }
+        AppError::DockerError {
+            details: e.to_string(),
+        }
     }
 }
 
@@ -206,7 +206,10 @@ impl IntoResponse for AppError {
                     (axum::http::StatusCode::CONFLICT, "CONFLICT")
                 } else if lower.contains("not null") || lower.contains("null value") {
                     (axum::http::StatusCode::BAD_REQUEST, "BAD_REQUEST")
-                } else if lower.contains("syntax error") || lower.contains("does not exist") || lower.contains("relation") {
+                } else if lower.contains("syntax error")
+                    || lower.contains("does not exist")
+                    || lower.contains("relation")
+                {
                     (axum::http::StatusCode::BAD_REQUEST, "BAD_REQUEST")
                 } else if lower.contains("check constraint") {
                     (axum::http::StatusCode::BAD_REQUEST, "BAD_REQUEST")
@@ -218,33 +221,27 @@ impl IntoResponse for AppError {
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "MIGRATION_ERROR",
             ),
-            AppError::DockerError { .. } => {
-                (axum::http::StatusCode::BAD_GATEWAY, "DOCKER_ERROR")
-            }
+            AppError::DockerError { .. } => (axum::http::StatusCode::BAD_GATEWAY, "DOCKER_ERROR"),
             AppError::Io(_) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "IO_ERROR"),
             AppError::NotFound(_) => (axum::http::StatusCode::NOT_FOUND, "NOT_FOUND"),
             AppError::Internal(_) => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
             ),
-            AppError::BadRequest(_) => (
-                axum::http::StatusCode::BAD_REQUEST,
-                "BAD_REQUEST",
-            ),
-            AppError::Conflict(_) => (
-                axum::http::StatusCode::CONFLICT,
-                "CONFLICT",
-            ),
-            AppError::Forbidden(_) => (
-                axum::http::StatusCode::FORBIDDEN,
-                "FORBIDDEN",
-            ),
+            AppError::BadRequest(_) => (axum::http::StatusCode::BAD_REQUEST, "BAD_REQUEST"),
+            AppError::Conflict(_) => (axum::http::StatusCode::CONFLICT, "CONFLICT"),
+            AppError::Forbidden(_) => (axum::http::StatusCode::FORBIDDEN, "FORBIDDEN"),
             AppError::Unauthorized(_) => {
                 let body = Json(json!({
                     "error": self.to_string(),
                     "code": "UNAUTHORIZED"
                 }));
-                return (axum::http::StatusCode::UNAUTHORIZED, [("WWW-Authenticate", "session")], body).into_response();
+                return (
+                    axum::http::StatusCode::UNAUTHORIZED,
+                    [("WWW-Authenticate", "session")],
+                    body,
+                )
+                    .into_response();
             }
             AppError::UnprocessableEntity(_) => (
                 axum::http::StatusCode::UNPROCESSABLE_ENTITY,
@@ -265,10 +262,7 @@ impl IntoResponse for AppError {
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
                 "PLUGIN_UNHEALTHY",
             ),
-            AppError::RedisError(_) => (
-                axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                "REDIS_ERROR",
-            ),
+            AppError::RedisError(_) => (axum::http::StatusCode::SERVICE_UNAVAILABLE, "REDIS_ERROR"),
             AppError::TooManyRequests(_) => (
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
                 "TOO_MANY_REQUESTS",

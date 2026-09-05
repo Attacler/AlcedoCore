@@ -11,12 +11,16 @@ import { Button, Drawer, MultiSelect, RadioButton, Select } from "primevue";
 import { watch } from "vue";
 import { computed, ref } from "vue";
 import FilterBuilder from "../FilterBuilder.vue";
+import {
+    SYSTEM_FIELD_LABELS,
+    SYSTEM_FIELD_NAMES,
+} from "@/composables/useSystemFields.ts";
 
 const props = defineProps<{
         permissions: PolicyPermission[];
         policy: PolicyWithPermissions;
     }>(),
-    emit = defineEmits(["setPermissions"]);
+    emit = defineEmits(["reload"]);
 
 const store = usePoliciesStore(),
     toast = useToast(),
@@ -98,17 +102,30 @@ const availableFields = computed(() => {
         (c) => c.name === ruleForm.value.collection_name,
     );
     if (!collection) return [];
-    return collection.fields.map((f) => ({
-        label: `${f.display_name || f.name} (${f.type})`,
-        value: f.name,
-    }));
+
+    return [
+        ...collection.fields.map((f) => ({
+            label: `${f.display_name || f.name} (${f.type})`,
+            value: f.name,
+        })),
+        ...SYSTEM_FIELD_NAMES.map((e) => ({
+            label: SYSTEM_FIELD_LABELS[e],
+            value: e,
+        })),
+    ];
 });
 
 const collectionOptions = computed(() => {
-    return collectionsStore.collections.map((c) => ({
-        label: c.display_name || c.name,
-        value: c.name,
-    }));
+    return [
+        ...collectionsStore.collections.map((c) => ({
+            label: c.display_name || c.name,
+            value: c.name,
+        })),
+        ...SYSTEM_FIELD_NAMES.map((e) => ({
+            label: SYSTEM_FIELD_LABELS[e],
+            value: e,
+        })),
+    ];
 });
 
 function onCollectionChange() {
@@ -136,6 +153,7 @@ async function saveRule() {
                 f.field.trim(),
             ),
         };
+
         if (editingRule.value && editingRuleId.value) {
             await store.updatePermission(props.policy.id, editingRuleId.value, {
                 action: data.action,
@@ -146,8 +164,7 @@ async function saveRule() {
         } else {
             await store.createPermission(props.policy.id, data);
         }
-        const perms = await store.fetchPermissions(props.policy.id);
-        emit("setPermissions", perms);
+        emit("reload");
         closeRuleDialog();
         toast.show(
             editingRule.value ? "Rule updated" : "Rule added",
@@ -158,6 +175,7 @@ async function saveRule() {
             `Failed to save rule: ${e instanceof Error ? e.message : "Unknown error"}`,
             "error",
         );
+        console.error(e);
     } finally {
         savingRule.value = false;
     }

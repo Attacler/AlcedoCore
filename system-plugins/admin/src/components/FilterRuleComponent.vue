@@ -1,28 +1,32 @@
 <script setup lang="ts">
 import { computed, ref, watch, onErrorCaptured } from "vue";
-import type { FieldDefinition } from "@/stores/collections";
+import {
+    useCollectionsStore,
+    type FieldDefinition,
+} from "@/stores/collections";
 import type { FilterRule, OperatorMeta } from "@/types/filters";
 import { OPERATORS_BY_TYPE } from "@/types/filters";
-import FilterValueInput from "./FilterValueInput.vue";
 import Select from "primevue/select";
 import TreeSelect from "primevue/treeselect";
 import Button from "primevue/button";
+import FormFieldRenderer from "./FormFieldRenderer.vue";
 
 const props = defineProps<{
-    condition: FilterRule;
-    fields: FieldDefinition[];
-    collectionName: string;
-}>();
+        condition: FilterRule;
+        fields: FieldDefinition[];
+        collectionName: string;
+    }>(),
+    emit = defineEmits<{
+        "update:condition": [value: FilterRule];
+        remove: [];
+    }>();
+
+const collectionStore = useCollectionsStore();
 
 onErrorCaptured((err: any) => {
     console.error("[FilterRuleComponent] Error:", err?.message, err?.stack);
     return false;
 });
-
-const emit = defineEmits<{
-    "update:condition": [value: FilterRule];
-    remove: [];
-}>();
 
 interface FieldTreeNode {
     key: string;
@@ -32,17 +36,11 @@ interface FieldTreeNode {
     children?: FieldTreeNode[];
 }
 
-/** Map from full dot-notation key to field type */
-const keyTypeMap = new Map<string, string>();
-
-/** Root tree nodes */
-const fieldTree = ref<FieldTreeNode[]>([]);
-
-/** Whether the complete tree (with relationship children) is ready */
-const treeReady = ref(false);
-
-/** Two-way binding for TreeSelect — stores { key: true } */
-const selectedKeys = ref<Record<string, boolean> | null>(null);
+const keyTypeMap = new Map<string, string>(),
+    fieldTree = ref<FieldTreeNode[]>([]),
+    treeReady = ref(false),
+    selectedKeys = ref<Record<string, boolean> | null>(null),
+    rawValue = ref(false);
 
 /** Recursively find a tree node by key */
 function findNodeByKey(
@@ -94,32 +92,10 @@ watch(
     { deep: true },
 );
 
-async function buildFullTree(): Promise<void> {
+function buildFullTree(fields: FieldDefinition[]): FieldTreeNode[] {
     const tree: FieldTreeNode[] = [];
 
-    // Pre-fetch all related collection schemas
-    const relFields = props.fields.filter(
-        (f) => f.type === "relationship" && f.related_collection,
-    );
-    const cache = new Map<string, FieldDefinition[]>();
-    if (relFields.length > 0) {
-        await Promise.all(
-            relFields.map((f) =>
-                fetch(
-                    `/api/collections/${encodeURIComponent(f.related_collection!)}`,
-                )
-                    .then((r) => r.json())
-                    .then((response: any) => {
-                        const data = response.data || response;
-                        if (data?.fields)
-                            cache.set(f.related_collection!, data.fields);
-                    })
-                    .catch(() => {}),
-            ),
-        );
-    }
-
-    for (const f of props.fields) {
+    for (const f of fields) {
         if (f.type !== "relationship") {
             keyTypeMap.set(f.name, f.type);
             tree.push({
@@ -129,37 +105,56 @@ async function buildFullTree(): Promise<void> {
                 leaf: true,
             });
         } else if (f.related_collection) {
-            const childFields = cache.get(f.related_collection) || [];
-            const children: FieldTreeNode[] = childFields
-                .filter((cf) => cf.type !== "relationship")
-                .map((cf) => {
+            const childFields = collectionStore.collections.find(
+                (e) => e.name == f.related_collection,
+            )?.fields;
+
+            if (childFields) {
+                const children: FieldTreeNode[] = childFields.map((cf) => {
                     const key = `${f.name}.${cf.name}`;
                     keyTypeMap.set(key, cf.type);
+
+                    const children = cf.related_collection
+                        ? buildFullTree(
+                              collectionStore.collections.find(
+                                  (e) => e.name == cf.related_collection,
+                              )?.fields || [],
+                          ).map((e) => ({
+                              ...e,
+                              key: key + "." + e.key,
+                          }))
+                        : [];
+
                     return {
                         key,
-                        label: `${f.display_name || f.name}.${cf.display_name || cf.name}`,
+                        label: `${f.display_name || f.name} > ${cf.display_name || cf.name}`,
                         type: cf.type,
                         leaf: true,
+                        children,
                     };
                 });
-            tree.push({
-                key: f.name,
-                label: `${f.display_name || f.name} (${f.related_collection})`,
-                leaf: false,
-                children,
-            });
+                tree.push({
+                    key: f.name,
+                    label: `${f.display_name || f.name} (${f.related_collection})`,
+                    leaf: false,
+                    children,
+                });
+            }
         }
     }
 
     fieldTree.value = tree;
     treeReady.value = true;
+
+    return tree;
 }
 
-if (props.fields.length > 0) buildFullTree();
+if (props.fields.length > 0) buildFullTree(props.fields);
 
-// ---------------------------------------------------------------------------
-// Operator handling
-// ---------------------------------------------------------------------------
+const currentKey = computed(() => {
+    if (!selectedKeys.value) return null;
+    return Object.keys(selectedKeys.value)[0];
+});
 
 const selectedFieldType = computed<string>(() => {
     const fieldName = props.condition.field;
@@ -201,6 +196,33 @@ function onValueChange(newValue: unknown) {
     clone.value = newValue;
     emitUpdate(clone);
 }
+
+function getCollectionName(key: string) {
+    if (!key.includes(".")) {
+        return props.collectionName;
+    }
+
+    let lastCollectionName = props.collectionName;
+    const keys = key.split(".");
+    keys.pop();
+
+    for (const k of keys) {
+        const findCollection = collectionStore.collections.find(
+            (e) => e.name == lastCollectionName,
+        );
+
+        const findField = findCollection?.fields.find((e) => e.name == k);
+
+        if (findField?.related_collection) {
+            lastCollectionName = findField.related_collection;
+            continue;
+        }
+
+        return lastCollectionName;
+    }
+
+    return lastCollectionName;
+}
 </script>
 
 <template>
@@ -210,8 +232,9 @@ function onValueChange(newValue: unknown) {
         <div class="w-full sm:flex-1 min-w-0">
             <label
                 class="block text-xs text-gray-500 mb-0.5 sm:mb-1 font-medium"
-                >Field</label
             >
+                Field
+            </label>
 
             <TreeSelect
                 v-if="treeReady"
@@ -222,7 +245,6 @@ function onValueChange(newValue: unknown) {
                 class="w-full"
                 scrollHeight="300px"
                 filter
-                size="small"
             >
                 <template #value="slotProps">
                     <span v-if="selectedLabel">{{ selectedLabel }}</span>
@@ -243,22 +265,42 @@ function onValueChange(newValue: unknown) {
                 optionValue="operator"
                 placeholder="Select operator..."
                 class="w-full"
-                size="small"
                 @change="onOperatorChange"
             />
         </div>
 
-        <div v-if="requiresValue" class="w-full sm:flex-2 min-w-0">
+        <div
+            v-if="requiresValue && currentKey"
+            class="w-full sm:flex-2 min-w-0"
+        >
             <label
                 class="block text-xs text-gray-500 mb-0.5 sm:mb-1 font-medium"
-                >Value</label
             >
-            <FilterValueInput
-                :modelValue="condition.value"
-                :fieldType="selectedFieldType"
-                @update:modelValue="onValueChange"
-                class="w-full"
-            />
+                Value
+            </label>
+            <div class="flex items-center mb-1 gap-2">
+                <FormFieldRenderer
+                    v-if="!rawValue"
+                    :collectionName="getCollectionName(currentKey)"
+                    :fieldName="currentKey.split('.').reverse()[0]"
+                    :modelValue="condition.value"
+                    @update:modelValue="onValueChange"
+                    class="grow"
+                />
+                <InputText
+                    v-else
+                    :modelValue="condition.value as string"
+                    @update:modelValue="onValueChange"
+                    fluid
+                />
+                <ToggleButton
+                    onLabel="Raw value"
+                    offLabel="Display"
+                    size="small"
+                    v-model="rawValue"
+                    class="shrink-0"
+                />
+            </div>
         </div>
 
         <div class="filter-remove self-end sm:self-auto sm:pt-5 -mt-1 sm:mt-0">

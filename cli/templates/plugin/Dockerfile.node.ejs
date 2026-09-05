@@ -1,10 +1,16 @@
-FROM node:24-slim
+FROM node:24-slim AS builder
 
 WORKDIR /app
 
-COPY . . 
+# Copy the rest of the files
+COPY . .
 RUN npm ci
 
+# Build the TypeScript project
+RUN npm run build
+
+# Expose the port your app runs on
 EXPOSE 8080
 
+# Run the compiled JavaScript file
 CMD ["node", "server.js"]

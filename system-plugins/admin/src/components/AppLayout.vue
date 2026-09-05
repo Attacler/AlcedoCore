@@ -511,7 +511,18 @@ onUnmounted(() => {
             </div>
 
             <!-- Bottom Section Switcher (always visible, outside scrollable nav) -->
-            <div class="border-t border-slate-700 p-2">
+            <div
+                class="border-t border-slate-700 p-2"
+                v-if="
+                    authStore.scopes.some(
+                        (s) =>
+                            s === 'users.all' ||
+                            s === 'settings.all' ||
+                            s === 'settings.read.all' ||
+                            s === 'settings.write.all',
+                    )
+                "
+            >
                 <div :class="collapsed ? 'flex flex-col gap-1' : 'flex gap-1'">
                     <button
                         @click="switchSection('content')"
@@ -528,15 +539,6 @@ onUnmounted(() => {
                         <span v-if="!collapsed || isMobile">Browse</span>
                     </button>
                     <button
-                        v-if="
-                            authStore.scopes.some(
-                                (s) =>
-                                    s === 'users.all' ||
-                                    s === 'settings.all' ||
-                                    s === 'settings.read.all' ||
-                                    s === 'settings.write.all',
-                            )
-                        "
                         @click="switchSection('settings')"
                         class="flex-1 flex items-center justify-center gap-1 px-2 py-2 rounded-lg text-xs transition-colors cursor-pointer"
                         :class="

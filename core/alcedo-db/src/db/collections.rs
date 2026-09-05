@@ -132,6 +132,11 @@ pub struct CreateCollectionRequest {
 
 pub struct UpdateCollectionRequest {
     pub fields: Vec<FieldDefinition>,
+    /// Field names to DROP from the collection. Fields present in the current
+    /// definition but omitted from `fields` AND not listed here are preserved
+    /// (merge semantics). This makes a save-only-update never remove columns.
+    #[serde(default)]
+    pub removed_fields: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
 }

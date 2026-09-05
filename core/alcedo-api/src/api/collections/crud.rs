@@ -165,7 +165,8 @@ pub(crate) async fn get_collection(
     }
 
     // Compute the union of allowed field names from all permissions
-    let any_all_fields = permissions.iter().any(|p| p.fields.is_none());
+    let any_all_fields = permissions.iter().any(|p| p.fields.is_none() && p.action == "read".to_string());
+    
     let allowed_fields: Vec<String> = if any_all_fields {
         // No field restrictions — include all fields
         collection.fields.iter().map(|f| f.name.clone()).collect()
@@ -188,7 +189,6 @@ pub(crate) async fn get_collection(
         field_set.insert("updated_at".to_string());
         field_set.into_iter().collect()
     };
-
     // Filter collection fields to only include allowed ones
     let mut result = serde_json::to_value(&collection).unwrap_or(json!({}));
     if let Some(obj) = result.as_object_mut() {
@@ -219,7 +219,7 @@ pub(crate) async fn get_collection(
                     {"name": "assignee", "type": "string"}
                 ]
             })))
-        )
+        ) 
     ),
     responses(
         (status = 201, description = "Collection created", body = Value),
@@ -412,8 +412,35 @@ pub(crate) async fn update_collection(
         }
     }
 
+    // Merge semantics: a field is only removed when explicitly named in
+    // `removed_fields`. Fields present in the current definition but omitted
+    // from the request payload (e.g. a layout-only save) are preserved so a
+    // "Save Changes" never drops columns.
+    let desired_fields: Vec<FieldDefinition> = {
+        let mut desired = req.fields.clone();
+        let requested: std::collections::HashSet<String> =
+            desired.iter().map(|f| f.name.clone()).collect();
+        let removed: std::collections::HashSet<String> =
+            req.removed_fields.iter().cloned().collect();
+        for field in &current.fields {
+            if !requested.contains(&field.name) && !removed.contains(&field.name) {
+                desired.push(field.clone());
+            }
+        }
+        desired
+    };
+
     let (renamed_fields, added_fields, removed_field_names) =
-        CollectionBuilder::compute_field_changes(&current.fields, &req.fields);
+        CollectionBuilder::compute_field_changes(&current.fields, &desired_fields);
+
+    // Fields whose name/type are unchanged (or renamed) but whose
+    // unique/required/default properties changed — these need constraint sync
+    // (ALTER COLUMN / ADD-DROP CONSTRAINT), not ADD/DROP COLUMN.
+    let constraint_changed_fields = CollectionBuilder::compute_constraint_property_changes(
+        &current.fields,
+        &desired_fields,
+        &renamed_fields,
+    );
 
     // Generate ALTER TABLE SQL for drops and adds (renames handled separately)
     let mut alter_sqls: Vec<String> = Vec::new();
@@ -546,7 +573,7 @@ pub(crate) async fn update_collection(
         let rename_o2m_sqls = CollectionBuilder::build_rename_o2m_fk_sqls(
             &name,
             &renamed_o2m,
-            &req.fields.iter().collect::<Vec<_>>(),
+            &desired_fields.iter().collect::<Vec<_>>(),
         )?;
         for sql in &rename_o2m_sqls {
             sqlx::query(sql)
@@ -566,6 +593,59 @@ pub(crate) async fn update_collection(
             .map_err(|e| AppError::DatabaseError {
                 details: format!("ALTER TABLE failed: {}", e),
             })?;
+    }
+
+    // Sync constraint-level properties (unique/required/default) for fields
+    // whose name and type are unchanged. These run AFTER rename + column
+    // changes so column names reference the final schema.
+    for (old_field, new_field) in &constraint_changed_fields {
+        // Virtual 1:M fields have no column on this table — nothing to sync
+        if CollectionBuilder::is_virtual_field(new_field) {
+            continue;
+        }
+
+        // unique toggle — drop stale constraints by actual name, then re-add
+        if old_field.unique != new_field.unique {
+            crate::db::fields::drop_unique_constraints_on_column(&mut tx, &name, &new_field.name)
+                .await?;
+            if new_field.unique {
+                sqlx::query(&CollectionBuilder::build_add_unique_stmt(&name, &new_field.name))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| AppError::DatabaseError {
+                        details: format!(
+                            "Failed to add unique constraint on '{}': {}",
+                            new_field.name, e
+                        ),
+                    })?;
+            }
+        }
+
+        // required (NOT NULL) toggle
+        if old_field.required != new_field.required {
+            let sql = CollectionBuilder::build_not_null_stmt(&name, &new_field.name, new_field.required);
+            sqlx::query(&sql)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    details: format!("Failed to alter NOT NULL on '{}': {}", new_field.name, e),
+                })?;
+        }
+
+        // default toggle
+        if old_field.default != new_field.default {
+            let sql = if new_field.default.is_some() {
+                CollectionBuilder::build_set_default_stmt(&name, new_field)?
+            } else {
+                CollectionBuilder::build_drop_default_stmt(&name, &new_field.name)
+            };
+            sqlx::query(&sql)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    details: format!("Failed to alter default on '{}': {}", new_field.name, e),
+                })?;
+        }
     }
 
     // Phase 27b: Add FK constraints after RENAME/ADD COLUMN
@@ -604,7 +684,7 @@ pub(crate) async fn update_collection(
     }
 
     // Replace fields in collection_fields table
-    crate::db::fields::replace_fields_in_tx(&mut tx, &name, &req.fields).await?;
+    crate::db::fields::replace_fields_in_tx(&mut tx, &name, &desired_fields).await?;
 
     sqlx::query("UPDATE collection_definitions SET updated_at = NOW() WHERE name = $1")
         .bind(&name)
@@ -627,6 +707,12 @@ pub(crate) async fn update_collection(
             "added_fields": added_fields.iter().map(|f| serde_json::to_value(f).unwrap_or_default()).collect::<Vec<_>>(),
             "removed_fields": removed_field_names,
             "renamed_fields": renamed_fields.iter().map(|(o, n)| json!({"old_name": o, "new_name": n})).collect::<Vec<_>>(),
+            "constraint_changes": constraint_changed_fields.iter().map(|(o, n)| json!({
+                "field": n.name,
+                "unique": {"from": o.unique, "to": n.unique},
+                "required": {"from": o.required, "to": n.required},
+                "default": {"from": o.default, "to": n.default},
+            })).collect::<Vec<_>>(),
         }),
         request_id: None,
     });
@@ -754,7 +840,7 @@ pub(crate) async fn get_create_policy(
         .into_iter()
         .filter(|p| p.action == "create")
         .collect();
-
+    
     // Determine allowed fields
     let allowed_fields: Vec<&crate::db::collections::FieldDefinition> = if is_admin {
         collection.fields.iter().collect()

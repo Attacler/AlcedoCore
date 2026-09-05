@@ -1,20 +1,11 @@
-use axum::{
-    body::Body,
-    extract::Request,
-    http::header,
-    middleware::Next,
-    response::Response,
-};
+use axum::{body::Body, extract::Request, http::header, middleware::Next, response::Response};
 
 /// Sanitizes error responses by removing the `detail` field for non-privileged users.
 ///
 /// The auth middleware inserts an `AuthLevel` into request extensions.
 /// This middleware reads it and strips detailed error messages from
 /// error responses when the user is not admin or a developer API key holder.
-pub async fn sanitize_error_middleware(
-    request: Request<Body>,
-    next: Next,
-) -> Response {
+pub async fn sanitize_error_middleware(request: Request<Body>, next: Next) -> Response {
     let is_privileged = request
         .extensions()
         .get::<crate::error::AuthLevel>()
@@ -54,11 +45,9 @@ pub async fn sanitize_error_middleware(
     };
 
     let mut new_resp = Response::from_parts(parts, axum::body::Body::from(new_bytes.clone()));
-    new_resp
-        .headers_mut()
-        .insert(
-            header::CONTENT_LENGTH,
-            new_bytes.len().to_string().parse().unwrap(),
-        );
+    new_resp.headers_mut().insert(
+        header::CONTENT_LENGTH,
+        new_bytes.len().to_string().parse().unwrap(),
+    );
     new_resp
 }

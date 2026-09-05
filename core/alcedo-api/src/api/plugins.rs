@@ -6,11 +6,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use crate::api::permission_check;
 use crate::api::responses::ResponseEnvelope;
 use crate::db::queries::{Plugin, PluginVersion, Registry};
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
-use crate::api::permission_check;
 
 fn version_status(active_version: &Option<PluginVersion>) -> (String, String) {
     let version = active_version
@@ -316,10 +316,7 @@ pub struct LifecycleResponse {
 ///
 /// Prefers the plugin's `registry_id` FK; falls back to deriving the registry
 /// host from the image string (e.g. "localhost:5000/hello-world:1.0.0").
-async fn resolve_plugin_registry(
-    db_pool: &sqlx::PgPool,
-    plugin: &Plugin,
-) -> Option<String> {
+async fn resolve_plugin_registry(db_pool: &sqlx::PgPool, plugin: &Plugin) -> Option<String> {
     if let Some(registry_id) = plugin.registry_id {
         if let Ok(Some(registry)) = Registry::find_by_id(db_pool, registry_id).await {
             return Some(registry.name);
@@ -570,9 +567,21 @@ pub async fn enable_plugin_handler(
         AppError::BadRequest(format!("Plugin {} has no container. Deploy first.", slug))
     })?;
 
-    if active_version.status == "running" {
-        // For plugins with a platform (Docker/K8s), verify actual container state
-        if let Some(ref platform) = state.platform {
+    if let Some(ref platform) = state.platform {
+        let inspect: Result<alcedo_plugins::container::ContainerDetails, AppError> =
+            platform.inspect(&container_id).await;
+
+        if inspect.is_err() {
+            PluginVersion::update_status(db_pool, &slug, &active_version.version, "stopped")
+                .await?;
+
+            return Err(AppError::BadRequest(format!(
+                "Plugin {} has no container. Deploy first.",
+                slug
+            )));
+        }
+        if active_version.status == "running" {
+            // For plugins with a platform (Docker/K8s), verify actual container state
             let container_running = platform
                 .inspect(&container_id)
                 .await
@@ -588,11 +597,9 @@ pub async fn enable_plugin_handler(
             );
             PluginVersion::update_status(db_pool, &slug, &active_version.version, "stopped")
                 .await?;
+            // Static plugins (no platform) don't have containers — just proceed
         }
-        // Static plugins (no platform) don't have containers — just proceed
-    }
 
-    if let Some(ref platform) = state.platform {
         if platform.is_replicated_service(&container_id).await {
             platform.scale(&container_id, 1).await?;
         } else {

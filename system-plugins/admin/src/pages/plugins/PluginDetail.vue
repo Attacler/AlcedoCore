@@ -164,14 +164,15 @@ async function confirmDelete() {
                         :disabled="togglingEnable"
                         @click="toggleEnable"
                     />
-                    <Button
+                    <!-- TODO: not working trough the API -->
+                    <!-- <Button
                         v-if="plugin.status === 'disabled'"
                         :label="togglingEnable ? 'Enabling...' : 'Enable'"
                         severity="success"
                         size="small"
                         :disabled="togglingEnable"
                         @click="toggleEnable"
-                    />
+                    /> -->
                     <Button
                         v-if="plugin.plugin_type === 'user'"
                         label="Uninstall"

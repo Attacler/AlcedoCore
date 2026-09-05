@@ -101,6 +101,15 @@ impl CollectionBuilder {
             || old.relationship_type != new.relationship_type
     }
 
+    /// Check if a field's constraint-relevant properties changed between old and new.
+    /// Detects changes to unique/required/default that require ALTER COLUMN /
+    /// ADD-DROP CONSTRAINT statements rather than ADD/DROP COLUMN.
+    fn constraint_props_changed(old: &FieldDefinition, new: &FieldDefinition) -> bool {
+        old.unique != new.unique
+            || old.required != new.required
+            || old.default != new.default
+    }
+
     /// Compute field changes between old and new field definitions.
     /// Returns (renamed_pairs, added_fields, removed_field_names).
     ///
@@ -183,6 +192,51 @@ impl CollectionBuilder {
             .collect();
 
         (renamed, added, removed)
+    }
+
+    /// Compute fields whose name and type are unchanged (or only renamed) but
+    /// whose constraint-relevant properties (unique/required/default) changed.
+    ///
+    /// These require ALTER TABLE constraint sync (SET/DROP NOT NULL,
+    /// SET/DROP DEFAULT, ADD/DROP UNIQUE), not ADD/DROP COLUMN. Returns
+    /// (old_field, new_field) pairs — callers must apply DDL using the NEW
+    /// field definition (column name matches the new definition).
+    pub fn compute_constraint_property_changes<'a>(
+        old_fields: &'a [FieldDefinition],
+        new_fields: &'a [FieldDefinition],
+        renamed_fields: &[(&'a str, &'a str)],
+    ) -> Vec<(&'a FieldDefinition, &'a FieldDefinition)> {
+        let mut changes = Vec::new();
+        let renamed_new_names: HashSet<&str> = renamed_fields.iter().map(|(_, n)| *n).collect();
+
+        // Same-name fields: name + type props unchanged, constraint props differ
+        for new_field in new_fields.iter().filter(|f| !f.is_system) {
+            if renamed_new_names.contains(new_field.name.as_str()) {
+                continue;
+            }
+            if let Some(old_field) = old_fields.iter().find(|o| {
+                !o.is_system
+                    && o.name == new_field.name
+                    && !Self::field_props_changed(o, new_field)
+                    && Self::constraint_props_changed(o, new_field)
+            }) {
+                changes.push((old_field, new_field));
+            }
+        }
+
+        // Renamed fields: type props already match (guaranteed by rename
+        // detection in compute_field_changes), only check constraint props.
+        for (old_name, new_name) in renamed_fields {
+            let old_field = old_fields.iter().find(|o| !o.is_system && o.name == *old_name);
+            let new_field = new_fields.iter().find(|f| !f.is_system && f.name == *new_name);
+            if let (Some(old_field), Some(new_field)) = (old_field, new_field) {
+                if Self::constraint_props_changed(old_field, new_field) {
+                    changes.push((old_field, new_field));
+                }
+            }
+        }
+
+        changes
     }
 
     /// Generate ALTER TABLE RENAME COLUMN for each renamed field.
@@ -412,6 +466,64 @@ impl CollectionBuilder {
         statements
     }
 
+    /// Generate ALTER TABLE ADD UNIQUE for a single existing column.
+    ///
+    /// Rendered as an unnamed UNIQUE constraint (auto-named by PostgreSQL as
+    /// `{table}_{column}_key`, consistent with the CREATE TABLE inline
+    /// `unique_key()` path). Callers should drop any stale unique constraints
+    /// first via `drop_unique_constraints_on_column()`.
+    pub fn build_add_unique_stmt(table_name: &str, field_name: &str) -> String {
+        let mut col = ColumnDef::new(Alias::new(field_name));
+        col.unique_key();
+        Table::alter()
+            .table(Alias::new(table_name))
+            .modify_column(col)
+            .to_string(PostgresQueryBuilder)
+    }
+
+    /// Generate ALTER TABLE SET/DROP NOT NULL for a single existing column.
+    pub fn build_not_null_stmt(table_name: &str, field_name: &str, set_not_null: bool) -> String {
+        let mut col = ColumnDef::new(Alias::new(field_name));
+        if set_not_null {
+            col.not_null();
+        } else {
+            col.null();
+        }
+        Table::alter()
+            .table(Alias::new(table_name))
+            .modify_column(col)
+            .to_string(PostgresQueryBuilder)
+    }
+
+    /// Generate ALTER TABLE SET DEFAULT for a single existing column.
+    pub fn build_set_default_stmt(
+        table_name: &str,
+        field: &FieldDefinition,
+    ) -> Result<String, AppError> {
+        let default_val = field.default.as_ref().ok_or_else(|| {
+            AppError::Internal(format!(
+                "Field '{}' has no default value to set",
+                field.name
+            ))
+        })?;
+        let expr = Self::build_default_expr(field, default_val)?;
+        let mut col = ColumnDef::new(Alias::new(&field.name));
+        col.default(expr);
+        Ok(Table::alter()
+            .table(Alias::new(table_name))
+            .modify_column(col)
+            .to_string(PostgresQueryBuilder))
+    }
+
+    /// Generate ALTER TABLE DROP DEFAULT for a single existing column.
+    pub fn build_drop_default_stmt(table_name: &str, field_name: &str) -> String {
+        format!(
+            "ALTER TABLE {} ALTER COLUMN {} DROP DEFAULT",
+            crate::db::quote_identifier(table_name),
+            crate::db::quote_identifier(field_name),
+        )
+    }
+
     /// Convert a FieldDefinition to a sea-query ColumnDef with proper type and constraints.
     ///
     /// Type mapping per COLL-07:
@@ -519,5 +631,92 @@ impl CollectionBuilder {
                 field.name, field.field_type
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn field(name: &str, unique: bool, required: bool, default: Option<Value>) -> FieldDefinition {
+        FieldDefinition {
+            name: name.to_string(),
+            display_name: None,
+            field_type: FieldType::String,
+            required,
+            unique,
+            default,
+            display_type: None,
+            input_component: None,
+            display_component: None,
+            related_collection: None,
+            relationship_type: None,
+            display_field: None,
+            inline_parent_fields: None,
+            options: None,
+            is_system: false,
+            hidden: false,
+        }
+    }
+
+    #[test]
+    fn detects_unique_required_default_toggles_on_existing_field() {
+        let old = vec![field("email", false, false, None)];
+        let new = vec![field("email", true, true, Some(json!("a@b.c")))];
+        let changes =
+            CollectionBuilder::compute_constraint_property_changes(&old, &new, &[]);
+        assert_eq!(changes.len(), 1);
+        let (o, n) = changes[0];
+        assert_eq!(o.name, "email");
+        assert!(!o.unique && n.unique);
+        assert!(!o.required && n.required);
+        assert!(o.default.is_none() && n.default.is_some());
+    }
+
+    #[test]
+    fn ignores_unchanged_and_type_changed_fields() {
+        let old = vec![field("a", false, false, None), field("b", false, false, None)];
+        let mut new_b = field("b", false, false, None);
+        new_b.field_type = FieldType::Text; // type change → handled by add/drop column
+        let new = vec![field("a", false, false, None), new_b];
+        let changes =
+            CollectionBuilder::compute_constraint_property_changes(&old, &new, &[]);
+        assert_eq!(changes.len(), 0);
+    }
+
+    #[test]
+    fn detects_toggle_on_renamed_field() {
+        let old = vec![field("email", false, false, None)];
+        let new = vec![field("email_address", true, false, None)];
+        let changes = CollectionBuilder::compute_constraint_property_changes(
+            &old,
+            &new,
+            &[("email", "email_address")],
+        );
+        assert_eq!(changes.len(), 1);
+        let (o, n) = changes[0];
+        assert_eq!(o.name, "email");
+        assert_eq!(n.name, "email_address");
+        assert!(!o.unique && n.unique);
+    }
+
+    #[test]
+    fn generates_constraint_sql() {
+        let sql = CollectionBuilder::build_add_unique_stmt("t", "email");
+        assert_eq!(sql, r#"ALTER TABLE "t" ADD UNIQUE ("email")"#);
+
+        let sql = CollectionBuilder::build_not_null_stmt("t", "email", true);
+        assert_eq!(sql, r#"ALTER TABLE "t" ALTER COLUMN "email" SET NOT NULL"#);
+
+        let sql = CollectionBuilder::build_not_null_stmt("t", "email", false);
+        assert_eq!(sql, r#"ALTER TABLE "t" ALTER COLUMN "email" DROP NOT NULL"#);
+
+        let sql = CollectionBuilder::build_drop_default_stmt("t", "email");
+        assert_eq!(sql, r#"ALTER TABLE "t" ALTER COLUMN "email" DROP DEFAULT"#);
+
+        let f = field("status", false, false, Some(json!("todo")));
+        let sql = CollectionBuilder::build_set_default_stmt("t", &f).unwrap();
+        assert_eq!(sql, r#"ALTER TABLE "t" ALTER COLUMN "status" SET DEFAULT 'todo'"#);
     }
 }

@@ -30,7 +30,8 @@ async function handleSave() {
     const validFields = fields.value.filter(
         (f) => f.name && /^[a-z][a-z0-9_]*$/.test(f.name),
     );
-    if (validFields.length === 0) {
+    const hasDeletions = store.deletedFieldNames.length > 0;
+    if (validFields.length === 0 && !hasDeletions) {
         toast.show("No valid fields to save", "error");
         return;
     }
@@ -39,40 +40,46 @@ async function handleSave() {
         const payload = validFields
             .filter((f) => !f.is_system)
             .map((f, i) => {
-            const p: any = {
-                name: f.name,
-                display_name: f.display_name || null,
-                type: f.type,
-                required: f.required,
-                unique: f.unique,
-                default_value: f.default_value,
-                display_type: f.display_type,
-                input_component: f.input_component,
-                display_component: f.display_component,
-                ordinal_position: i + 1,
-            };
-            const a = f as any;
+                const p: any = {
+                    name: f.name,
+                    display_name: f.display_name || null,
+                    type: f.type,
+                    required: f.required,
+                    unique: f.unique,
+                    default_value: f.default_value,
+                    display_type: f.display_type,
+                    input_component: f.input_component,
+                    display_component: f.display_component,
+                    ordinal_position: i + 1,
+                };
+                const a = f as any;
 
-            if (a.related_collection) {
-                p.related_collection = a.related_collection;
-                p.relationship_type = a.relationship_type;
-            }
-            if (a.display_field) {
-                p.display_field = a.display_field;
-            }
-            if (a.inline_parent_fields?.length > 0) {
-                p.inline_parent_fields = a.inline_parent_fields;
-            }
-            if (
-                a.options &&
-                (Array.isArray(a.options) ? a.options.length > 0 : true)
-            ) {
-                p.options = a.options;
-            }
-            return p;
-        });
-        await store.updateCollection(props.collectionName, { fields: payload });
-
+                if (a.related_collection) {
+                    p.related_collection = a.related_collection;
+                    p.relationship_type = a.relationship_type;
+                }
+                if (a.display_field) {
+                    p.display_field = a.display_field;
+                }
+                if (a.inline_parent_fields?.length > 0) {
+                    p.inline_parent_fields = a.inline_parent_fields;
+                }
+                if (
+                    a.options &&
+                    (Array.isArray(a.options) ? a.options.length > 0 : true)
+                ) {
+                    p.options = a.options;
+                }
+                return p;
+            });
+        if (payload.length > 0 || hasDeletions) {
+            await store.updateCollection(props.collectionName, {
+                fields: payload,
+                removed_fields: store.deletedFieldNames,
+            });
+            store.clearDeletedFields();
+            await store.getCollection(props.collectionName, true);
+        }
         // Persist section display_fields so newly added fields appear in their sections
         if (!props.activeLayoutId) {
             saving.value = false;
@@ -98,16 +105,14 @@ async function handleSave() {
                         (section._columns ?? 0) > 1
                             ? {
                                   _columns: section._columns,
-                                  _field_columns:
-                                      section._field_columns || {},
+                                  _field_columns: section._field_columns || {},
                               }
                             : null;
                 } else {
                     sectionPayload.display_fields = null;
                     sectionPayload.relation_field =
                         section.relation_field || "";
-                    sectionPayload.view_type =
-                        section.view_type || "table";
+                    sectionPayload.view_type = section.view_type || "table";
                     sectionPayload.item_limit = section.item_limit || 25;
                     sectionPayload.default_filter =
                         section.default_filter || null;
@@ -131,9 +136,9 @@ async function handleSave() {
 
         fields.value = validFields.map((f) => ({ ...f, _key: nextKey() }));
         toast.show("Collection saved successfully", "success");
-    } catch (e) {
+    } catch (e: any) {
         toast.show(
-            `Failed to save: ${e instanceof Error ? e.message : "Unknown error"}`,
+            `Failed to save: ${e.data?.detail || e.message || "Unknown error"}`,
             "error",
         );
     } finally {

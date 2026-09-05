@@ -67,6 +67,5 @@ export interface ViewTypeSDK {
     navigate: (path: string) => void;
 }
 
-export const ALCEDO_SDK_KEY: InjectionKey<AlcedoSDK> = Symbol(
-    "alcedocore-sdk-node",
-);
+export const ALCEDO_SDK_KEY: InjectionKey<AlcedoSDK> =
+    Symbol("@alcedocore/sdk");

@@ -14,6 +14,7 @@ import { normalizeSection } from "@/composables/useSectionLayout";
 import { withSystemFields } from "@/composables/useSystemFields";
 import { onUnmounted } from "vue";
 import RelationalSection from "@/components/RelationalSection.vue";
+import FormFieldRenderer from "@/components/FormFieldRenderer.vue";
 
 const route = useRoute(),
     router = useRouter(),
@@ -277,7 +278,7 @@ async function handleDeleteConfirmed() {
     deletingItem.value = true;
     try {
         await client.items.delete(collectionName.value, {
-            filter: { id: { _eq: item.value.id } },
+            pk_values: [item.value.id],
         });
         toast.show("Item deleted", "success");
         router.back();
@@ -325,6 +326,7 @@ const showParentConfirm = ref(false);
 
 async function doSave() {
     if (!item.value) return;
+    debugger;
     saving.value = true;
     showParentConfirm.value = false;
     try {
@@ -338,12 +340,6 @@ async function doSave() {
         }
         // Only send changed scalar fields so untouched values aren't clobbered
         for (const field of formFields.value) {
-            if (field.related_collection) {
-                const v = payload[field.name];
-                if (!(v && typeof v === "object" && !Array.isArray(v)))
-                    delete payload[field.name];
-                continue;
-            }
             if (!(field.name in payload)) continue;
             const original = item.value?.[field.name];
             if (!fieldChanged(payload[field.name], original))
@@ -720,22 +716,20 @@ onUnmounted(() => {
                                                 {{ parentField.name }}
                                             </dt>
                                             <dd class="text-sm">
-                                                <template v-if="!isEditing">
-                                                    <span>{{
-                                                        parentField.value ?? "—"
-                                                    }}</span>
-                                                </template>
-                                                <template v-else>
-                                                    <InputText
-                                                        v-model="
-                                                            inlineParentEditValues[
-                                                                `__parent__${pf.fieldName}__${parentField.name}`
-                                                            ]
-                                                        "
-                                                        class="w-full"
-                                                        fluid
-                                                    />
-                                                </template>
+                                                <FormFieldRenderer
+                                                    :collection-name="
+                                                        pf.relatedCollection
+                                                    "
+                                                    :field-name="
+                                                        parentField.name
+                                                    "
+                                                    v-model="
+                                                        inlineParentEditValues[
+                                                            `__parent__${pf.fieldName}__${parentField.name}`
+                                                        ]
+                                                    "
+                                                    :readonly="!isEditing"
+                                                />
                                             </dd>
                                         </div>
                                     </div>
@@ -937,25 +931,20 @@ onUnmounted(() => {
         <!-- Floating Action Buttons -->
         <div class="fixed bottom-6 right-6 flex gap-3 z-50">
             <!-- View mode: Edit + Delete buttons -->
-            <template
-                v-if="
-                    !isEditing &&
-                    !saving &&
-                    item &&
-                    item.$permissions?.update !== false
-                "
-            >
+            <template v-if="!isEditing && !saving && item">
                 <Button
                     label="Edit"
                     icon="pi pi-pencil"
                     severity="info"
                     @click="enterEditMode"
+                    v-if="item.$permissions?.update !== false"
                 />
                 <Button
                     label="Delete"
                     icon="pi pi-trash"
                     severity="danger"
                     @click="confirmDelete"
+                    v-if="item.$permissions?.delete !== false"
                 />
             </template>
             <!-- Edit mode: Cancel + Save buttons -->

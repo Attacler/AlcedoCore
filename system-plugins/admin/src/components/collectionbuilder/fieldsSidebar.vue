@@ -152,8 +152,10 @@ async function saveCollectionDetails() {
         });
         await store.updateCollection(props.collectionMeta.name, {
             fields: payload,
+            removed_fields: store.deletedFieldNames,
             display_name: collectionDisplayName.value || null,
         });
+        store.clearDeletedFields();
         props.collectionMeta.display_name =
             collectionDisplayName.value || undefined;
         toast.show("Collection details saved", "success");
@@ -224,7 +226,10 @@ function saveFieldEditor(field: FieldDefinition) {
 function deleteEditingField() {
     if (!editingField.value) return;
     const idx = props.fields.findIndex((f) => f === editingField.value);
-    if (idx !== -1) props.fields.splice(idx, 1);
+    if (idx !== -1) {
+        store.markFieldDeleted(editingField.value.name);
+        props.fields.splice(idx, 1);
+    }
     closeFieldEditor();
 }
 </script>

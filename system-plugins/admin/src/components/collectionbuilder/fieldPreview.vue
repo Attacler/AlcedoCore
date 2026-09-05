@@ -62,7 +62,7 @@ const emit = defineEmits([
                     lock
                 </div>
             </div>
-            <div class="flex items-center gap-0.5" v-if="!field.is_system">
+            <div class="flex items-center gap-0.5">
                 <Button
                     v-if="props.showRemove.value"
                     icon="pi pi-times"
@@ -74,6 +74,7 @@ const emit = defineEmits([
                     class="opacity-0 group-hover:opacity-100"
                 />
                 <Button
+                    v-if="!field.is_system"
                     icon="pi pi-cog"
                     text
                     severity="secondary"

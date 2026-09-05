@@ -279,15 +279,6 @@ export const useSettingsStore = defineStore("settings", () => {
         localEdits.value = {};
     }
 
-    async function resetToDefaults() {
-        const defaults: Record<string, any> = {};
-        for (const [key, meta] of Object.entries(SETTING_META)) {
-            defaults[key] = meta.defaultValue;
-        }
-        await client.appSettings.batch(defaults);
-        await fetchSettings();
-    }
-
     function getCategorySettings(categoryId: string): string[] {
         const allKeys = Object.keys(SETTING_META);
         const categoryKeys = allKeys.filter(
@@ -322,7 +313,6 @@ export const useSettingsStore = defineStore("settings", () => {
         getLocalValue,
         saveSetting,
         cancelAll,
-        resetToDefaults,
         getCategorySettings,
         // Helpers
         validateValue,

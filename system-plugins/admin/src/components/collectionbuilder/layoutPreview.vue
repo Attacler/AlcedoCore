@@ -64,8 +64,6 @@ const loading = ref(true),
     dropBeforeKey = ref<string | null>(null),
     showSectionEditor = ref(false),
     editingSection = ref<any>(null),
-    sectionTypeChoice = ref<"field_group" | "relational" | null>(null),
-    showSectionTypeDialog = ref(false),
     sectionFormData = ref<any>(null);
 
 const collectionName = computed(() => route.params.name as string),
@@ -524,7 +522,10 @@ function saveFieldEditor(field: FieldDefinition) {
 function deleteEditingField() {
     if (!editingField.value) return;
     const idx = fields.value.findIndex((f) => f === editingField.value);
-    if (idx !== -1) fields.value.splice(idx, 1);
+    if (idx !== -1) {
+        store.markFieldDeleted(editingField.value.name);
+        fields.value.splice(idx, 1);
+    }
     closeFieldEditor();
 }
 
@@ -532,7 +533,7 @@ async function loadCollection(name: string) {
     loading.value = true;
     loadError.value = null;
     try {
-        const c = await store.getCollection(name);
+        const c = await store.getCollection(name, true);
         collectionMeta.value = c;
         collectionDisplayName.value = c.display_name || "";
         fields.value = withSystemFields(c.fields || []).map(
@@ -626,7 +627,7 @@ watch(
             return;
         }
         try {
-            const coll = await store.getCollection(childName);
+            const coll = await store.getCollection(childName, true);
             childCollectionFields.value = coll.fields || [];
         } catch (e) {
             console.warn(
@@ -748,9 +749,7 @@ async function loadLayouts() {
     }
 }
 
-function openNewSectionEditor() {
-    if (!sectionTypeChoice.value) return;
-    showSectionTypeDialog.value = false;
+function openNewSectionEditor(type: string) {
     const maxPos = sections.value.reduce(
         (m: number, s: any) => Math.max(m, s.ordinal_position || 0),
         0,
@@ -758,7 +757,7 @@ function openNewSectionEditor() {
     sectionFormData.value = {
         _key: `new_${Date.now()}`,
         name: "",
-        section_type: sectionTypeChoice.value,
+        section_type: type,
         relation_field: null,
         view_type: "table",
         display_fields: [],
@@ -771,8 +770,6 @@ function openNewSectionEditor() {
         visibility_parent: null,
         visibility_child: null,
     };
-    sectionTypeChoice.value = null;
-    showSectionEditor.value = true;
 }
 
 function editSection(section: any) {
@@ -791,7 +788,7 @@ function editSection(section: any) {
         const childName = getSectionChildCollectionName(section.relation_field);
         if (childName) {
             store
-                .getCollection(childName)
+                .getCollection(childName, true)
                 .then((coll) => {
                     childCollectionFields.value = coll.fields || [];
                 })
@@ -1165,34 +1162,24 @@ watch(
             icon="pi pi-plus"
             severity="secondary"
             size="small"
-            @click="showSectionTypeDialog = true"
+            @click="showSectionEditor = true"
         />
     </div>
 
-    <!-- Section Type Selection Dialog -->
+    <!-- Section Editor Dialog -->
     <Drawer
-        :visible="showSectionTypeDialog"
-        @update:visible="
-            (v) => {
-                if (!v) showSectionTypeDialog = false;
-            }
-        "
-        header="New Section"
-        :modal="true"
+        v-model:visible="showSectionEditor"
+        :header="editingSection?.id ? 'Edit Section' : 'New Section'"
         position="right"
     >
-        <div class="space-y-3">
+        <div class="space-y-3" v-if="!sectionFormData?.section_type">
             <p class="text-sm text-gray-600">
                 Choose the type of section to add:
             </p>
             <div class="grid gap-3">
                 <div
                     class="border rounded-lg p-4 cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors text-center"
-                    :class="{
-                        'border-blue-400 bg-blue-50':
-                            sectionTypeChoice === 'field_group',
-                    }"
-                    @click="sectionTypeChoice = 'field_group'"
+                    @click="openNewSectionEditor('field_group')"
                 >
                     <div class="text-lg font-bold text-gray-700 mb-1">
                         Field Group
@@ -1203,11 +1190,7 @@ watch(
                 </div>
                 <div
                     class="border rounded-lg p-4 cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors text-center"
-                    :class="{
-                        'border-blue-400 bg-blue-50':
-                            sectionTypeChoice === 'relational',
-                    }"
-                    @click="sectionTypeChoice = 'relational'"
+                    @click="openNewSectionEditor('relational')"
                 >
                     <div class="text-lg font-bold text-gray-700 mb-1">
                         Relational
@@ -1218,32 +1201,7 @@ watch(
                 </div>
             </div>
         </div>
-        <template #footer>
-            <Button
-                label="Cancel"
-                severity="secondary"
-                outlined
-                @click="
-                    showSectionTypeDialog = false;
-                    sectionTypeChoice = null;
-                "
-            />
-            <Button
-                label="Next"
-                severity="primary"
-                :disabled="!sectionTypeChoice"
-                @click="openNewSectionEditor"
-            />
-        </template>
-    </Drawer>
-
-    <!-- Section Editor Dialog -->
-    <Drawer
-        v-model:visible="showSectionEditor"
-        :header="editingSection?.id ? 'Edit Section' : 'New Section'"
-        position="right"
-    >
-        <div v-if="sectionFormData" class="space-y-4">
+        <div v-else-if="sectionFormData" class="space-y-4">
             <div>
                 <label class="block text-xs font-medium text-gray-600 mb-1"
                     >Section Name</label
@@ -1363,6 +1321,7 @@ watch(
                 @click="closeSectionEditor"
             />
             <Button
+                v-if="sectionFormData?.section_type"
                 label="Save Section"
                 severity="primary"
                 @click="saveSection"

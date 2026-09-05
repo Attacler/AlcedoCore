@@ -8,7 +8,7 @@ import type {
     FileFolder,
     MediaFile,
     ListFilesParameters,
-} from "alcedocore-sdk-node";
+} from "@alcedocore/sdk";
 import FileUpload from "@/components/inputs/FileUpload.vue";
 import { useRouter } from "vue-router";
 
@@ -144,6 +144,7 @@ async function handleDelete() {
         const id = selectedFile.value.id;
         files.value = files.value.filter((f) => f.id !== id);
         total.value = Math.max(0, total.value - 1);
+        showSidebar.value = false;
     } catch (e) {
         toast.show(
             `Failed to delete: ${e instanceof Error ? e.message : "Unknown error"}`,
@@ -250,9 +251,9 @@ async function createFolder() {
         showCreateFolderDialog.value = false;
         newFolderName.value = "";
         await loadCurrentFolders();
-    } catch (e) {
+    } catch (e: any) {
         toast.show(
-            `Failed to create folder: ${e instanceof Error ? e.message : "Unknown error"}`,
+            `Failed to create folder: ${e.data.detail || e.message || "Unknown error"}`,
             "error",
         );
     } finally {
@@ -367,7 +368,7 @@ function closeDetailSidebar() {
                     >
                         <i class="pi pi-home"></i>
                     </button>
-                    <div v-if="folderPath.length == 0">All files</div>
+                    <div v-if="folderPath.length == 0">Root files</div>
                     <template v-for="(f, i) in folderPath" :key="f.id">
                         <i class="pi pi-chevron-right text-xs"></i>
                         <button
@@ -384,19 +385,6 @@ function closeDetailSidebar() {
                     </template>
                 </div>
                 <Divider />
-                <!-- Root (All Files) -->
-                <div
-                    class="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors"
-                    :class="
-                        currentFolderId === null
-                            ? 'bg-primary/10 text-primary font-medium'
-                            : 'hover:bg-gray-100 text-gray-700'
-                    "
-                    @click="navigateToRoot()"
-                >
-                    <i class="pi pi-inbox text-base"></i>
-                    <span>All Files</span>
-                </div>
 
                 <!-- Folder list -->
                 <div v-if="folders.length > 0" class="mt-1 space-y-0.5">
@@ -441,7 +429,7 @@ function closeDetailSidebar() {
                     v-if="folders.length === 0 && currentFolderId !== null"
                     class="px-3 py-4 text-center text-xs text-gray-400"
                 >
-                    This folder is empty
+                    No subfolders found
                 </div>
             </div>
 

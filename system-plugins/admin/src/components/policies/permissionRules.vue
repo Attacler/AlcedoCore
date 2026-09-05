@@ -149,14 +149,23 @@ const ruleMenuItems = computed(() => [
     },
 ]);
 
-onMounted(async () => {
+onMounted(() => {
+    fetchPermissions();
+});
+
+async function fetchPermissions() {
     const perms = await store.fetchPermissions(props.policy.id);
     permissions.value = perms;
-});
+}
 </script>
 
 <template>
-    <PermissionRuleDrawer ref="permissionRuleDrawer" />
+    <PermissionRuleDrawer
+        ref="permissionRuleDrawer"
+        :policy="policy"
+        :permissions="permissions"
+        @reload="fetchPermissions"
+    />
     <div class="bg-white p-2 rounded-lg shadow-sm mb-6">
         <div class="flex justify-between items-center">
             <h3

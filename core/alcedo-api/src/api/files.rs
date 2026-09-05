@@ -1,9 +1,9 @@
+use alcedo_common::RequestIdentity;
 use axum::{
     extract::{Multipart, Path, Query, State},
     http::StatusCode,
     Json,
 };
-use alcedo_common::RequestIdentity;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -87,7 +87,9 @@ async fn check_file_permission(
     if let Some((_item_id, collection_name, _field_name)) = link {
         require_permission(state, identity, headers, &collection_name, required_action).await?;
     } else {
-        return Err(AppError::Forbidden("File is not linked to any collection".to_string()));
+        return Err(AppError::Forbidden(
+            "File is not linked to any collection".to_string(),
+        ));
     }
 
     Ok(())
@@ -155,12 +157,16 @@ async fn validate_no_circular_ref(
 ) -> Result<(), AppError> {
     if let Some(parent) = new_parent_id {
         if parent == folder_id {
-            return Err(AppError::BadRequest("A folder cannot be its own parent".to_string()));
+            return Err(AppError::BadRequest(
+                "A folder cannot be its own parent".to_string(),
+            ));
         }
         let mut current = Some(parent);
         while let Some(cid) = current {
             if cid == folder_id {
-                return Err(AppError::BadRequest("Circular folder reference detected".to_string()));
+                return Err(AppError::BadRequest(
+                    "Circular folder reference detected".to_string(),
+                ));
             }
             current = sqlx::query_scalar::<_, Option<Uuid>>(
                 "SELECT parent_id FROM file_folders WHERE id = $1",
@@ -206,12 +212,7 @@ pub async fn upload_file(
                         .unwrap_or("application/octet-stream")
                         .to_string(),
                 );
-                filename = Some(
-                    field
-                        .file_name()
-                        .unwrap_or("unnamed")
-                        .to_string(),
-                );
+                filename = Some(field.file_name().unwrap_or("unnamed").to_string());
                 let bytes = field.bytes().await.map_err(|e| {
                     AppError::BadRequest(format!("Failed to read file bytes: {}", e))
                 })?;
@@ -227,9 +228,10 @@ pub async fn upload_file(
                     AppError::BadRequest(format!("Failed to read folder_id: {}", e))
                 })?;
                 if !text.is_empty() {
-                    folder_id = Some(Uuid::parse_str(&text).map_err(|_| {
-                        AppError::BadRequest("Invalid folder_id UUID".to_string())
-                    })?);
+                    folder_id =
+                        Some(Uuid::parse_str(&text).map_err(|_| {
+                            AppError::BadRequest("Invalid folder_id UUID".to_string())
+                        })?);
                 }
             }
             "overwrite" => {
@@ -371,14 +373,7 @@ pub async fn download_file(
     headers: axum::http::HeaderMap,
     identity: RequestIdentity,
     Path(id): Path<Uuid>,
-) -> Result<
-    (
-        StatusCode,
-        [(&'static str, String); 2],
-        Vec<u8>,
-    ),
-    AppError,
-> {
+) -> Result<(StatusCode, [(&'static str, String); 2], Vec<u8>), AppError> {
     let db_pool = state.db()?;
 
     check_file_permission(&state, &identity, &headers, &id, "read").await?;
@@ -483,9 +478,8 @@ pub async fn list_files(
         if folder_id.is_empty() {
             where_conditions.push("fm.folder_id IS NULL".to_string());
         } else {
-            let fid = Uuid::parse_str(folder_id).map_err(|_| {
-                AppError::BadRequest("Invalid folder_id UUID".to_string())
-            })?;
+            let fid = Uuid::parse_str(folder_id)
+                .map_err(|_| AppError::BadRequest("Invalid folder_id UUID".to_string()))?;
             where_conditions.push(format!("fm.folder_id = ${}::uuid", bind_idx));
             bind_values.push(serde_json::Value::String(fid.to_string()));
             bind_idx += 1;
@@ -522,10 +516,23 @@ pub async fn list_files(
     bind_values.push(serde_json::Value::Number(serde_json::Number::from(limit)));
     bind_values.push(serde_json::Value::Number(serde_json::Number::from(offset)));
 
-    let mut data_q = sqlx::query_as::<_, (
-        Uuid, String, String, i64, String, String, Option<String>, Option<String>, Option<Uuid>, Option<Uuid>,
-        chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>,
-    )>(&data_sql);
+    let mut data_q = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            String,
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<Uuid>,
+            Option<Uuid>,
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(&data_sql);
     for val in &bind_values {
         data_q = crate::bind_json_value!(data_q, val);
     }
@@ -565,7 +572,7 @@ pub async fn delete_file(
     headers: axum::http::HeaderMap,
     identity: RequestIdentity,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, AppError> {
+) -> Result<Json<serde_json::Value>, AppError> {
     let db_pool = state.db()?;
 
     check_file_permission(&state, &identity, &headers, &id, "update").await?;
@@ -600,7 +607,7 @@ pub async fn delete_file(
         filename: row.1.clone(),
     });
 
-    Ok(StatusCode::NO_CONTENT)
+    Ok(Json(json!({ "status":"success" })))
 }
 
 pub async fn update_file_metadata(
@@ -627,7 +634,8 @@ pub async fn update_file_metadata(
     let new_folder_id: Option<Option<Uuid>> = match body.folder_id {
         Some(serde_json::Value::Null) => Some(None),
         Some(serde_json::Value::String(ref s)) if !s.is_empty() => {
-            let fid = Uuid::parse_str(s).map_err(|_| AppError::BadRequest("Invalid folder_id UUID".to_string()))?;
+            let fid = Uuid::parse_str(s)
+                .map_err(|_| AppError::BadRequest("Invalid folder_id UUID".to_string()))?;
             let exists = sqlx::query_scalar::<_, bool>(
                 "SELECT EXISTS(SELECT 1 FROM file_folders WHERE id = $1)",
             )
@@ -664,7 +672,8 @@ pub async fn update_file_metadata(
 
         if conflict_exists {
             return Err(AppError::BadRequest(format!(
-                "A file named '{}' already exists in the target location", new_filename
+                "A file named '{}' already exists in the target location",
+                new_filename
             )));
         }
 
@@ -677,7 +686,12 @@ pub async fn update_file_metadata(
             };
             actual_path = state
                 .file_storage
-                .upload(data, &mime, new_filename, folder_path_for_storage.as_deref())
+                .upload(
+                    data,
+                    &mime,
+                    new_filename,
+                    folder_path_for_storage.as_deref(),
+                )
                 .await
                 .map_err(|e| AppError::Internal(format!("File storage move failed: {}", e)))?;
         }
@@ -840,10 +854,20 @@ pub async fn create_folder(
         )));
     }
 
-    let row = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, Option<Uuid>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
+    let row = sqlx::query_as::<
+        _,
+        (
+            Uuid,
+            String,
+            Option<Uuid>,
+            Option<Uuid>,
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(
         r#"INSERT INTO file_folders (name, parent_id, created_by)
            VALUES ($1, $2, $3)
-           RETURNING id, name, parent_id, created_by, created_at, updated_at"#
+           RETURNING id, name, parent_id, created_by, created_at, updated_at"#,
     )
     .bind(&body.name)
     .bind(body.parent_id)
@@ -869,7 +893,10 @@ pub async fn list_folders(
     Query(params): Query<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let db_pool = state.db()?;
-    let parent_id = params.get("parent_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+    let parent_id = params
+        .get("parent_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
 
     let rows = if let Some(pid) = parent_id {
         let pid = Uuid::parse_str(pid).map_err(|_| AppError::BadRequest("Invalid parent_id UUID".to_string()))?;
@@ -926,21 +953,19 @@ pub async fn get_folder(
 
     let path = build_folder_path(db_pool, id).await?;
 
-    let subfolder_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM file_folders WHERE parent_id = $1",
-    )
-    .bind(id)
-    .fetch_one(db_pool)
-    .await
-    .unwrap_or(0);
+    let subfolder_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM file_folders WHERE parent_id = $1")
+            .bind(id)
+            .fetch_one(db_pool)
+            .await
+            .unwrap_or(0);
 
-    let file_count = sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM file_metadata WHERE folder_id = $1",
-    )
-    .bind(id)
-    .fetch_one(db_pool)
-    .await
-    .unwrap_or(0);
+    let file_count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM file_metadata WHERE folder_id = $1")
+            .bind(id)
+            .fetch_one(db_pool)
+            .await
+            .unwrap_or(0);
 
     Ok(Json(json!({
         "id": folder.0,
@@ -997,7 +1022,8 @@ pub async fn update_folder(
 
         if sibling_conflict {
             return Err(AppError::BadRequest(format!(
-                "A folder named '{}' already exists in the target location", new_name
+                "A folder named '{}' already exists in the target location",
+                new_name
             )));
         }
     }
@@ -1017,7 +1043,8 @@ pub async fn update_folder(
 
         if sibling_conflict {
             return Err(AppError::BadRequest(format!(
-                "A folder named '{}' already exists in this location", new_name
+                "A folder named '{}' already exists in this location",
+                new_name
             )));
         }
     }
@@ -1040,15 +1067,14 @@ pub async fn update_folder(
         let mut all_folder_ids = vec![id];
         let mut queue = vec![id];
         while let Some(fid) = queue.pop() {
-            let children: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT id FROM file_folders WHERE parent_id = $1",
-            )
-            .bind(fid)
-            .fetch_all(db_pool)
-            .await
-            .map_err(|e| AppError::DatabaseError {
-                details: format!("Failed to query folder children: {}", e),
-            })?;
+            let children: Vec<Uuid> =
+                sqlx::query_scalar("SELECT id FROM file_folders WHERE parent_id = $1")
+                    .bind(fid)
+                    .fetch_all(db_pool)
+                    .await
+                    .map_err(|e| AppError::DatabaseError {
+                        details: format!("Failed to query folder children: {}", e),
+                    })?;
 
             for child in children {
                 all_folder_ids.push(child);
@@ -1059,15 +1085,14 @@ pub async fn update_folder(
         for &fid in &all_folder_ids {
             let folder_path = build_folder_path(db_pool, fid).await?;
 
-            let files: Vec<(Uuid, String)> = sqlx::query_as(
-                "SELECT id, filename FROM file_metadata WHERE folder_id = $1",
-            )
-            .bind(fid)
-            .fetch_all(db_pool)
-            .await
-            .map_err(|e| AppError::DatabaseError {
-                details: format!("Failed to query folder files: {}", e),
-            })?;
+            let files: Vec<(Uuid, String)> =
+                sqlx::query_as("SELECT id, filename FROM file_metadata WHERE folder_id = $1")
+                    .bind(fid)
+                    .fetch_all(db_pool)
+                    .await
+                    .map_err(|e| AppError::DatabaseError {
+                        details: format!("Failed to query folder files: {}", e),
+                    })?;
 
             for (file_id, file_name) in files {
                 let new_storage_path = if folder_path.is_empty() {
@@ -1076,35 +1101,44 @@ pub async fn update_folder(
                     format!("{}/{}", folder_path, file_name)
                 };
 
-                let old_storage_path: String = sqlx::query_scalar(
-                    "SELECT storage_path FROM file_metadata WHERE id = $1",
-                )
-                .bind(file_id)
-                .fetch_optional(db_pool)
-                .await
-                .map_err(|e| AppError::DatabaseError {
-                    details: format!("Failed to query file storage_path: {}", e),
-                })?
-                .unwrap_or_default();
+                let old_storage_path: String =
+                    sqlx::query_scalar("SELECT storage_path FROM file_metadata WHERE id = $1")
+                        .bind(file_id)
+                        .fetch_optional(db_pool)
+                        .await
+                        .map_err(|e| AppError::DatabaseError {
+                            details: format!("Failed to query file storage_path: {}", e),
+                        })?
+                        .unwrap_or_default();
 
-                if let Ok(Some((mime, data))) = state.file_storage.download(&old_storage_path).await {
+                if let Ok(Some((mime, data))) = state.file_storage.download(&old_storage_path).await
+                {
                     let _ = state.file_storage.delete(&old_storage_path).await;
-                    let _ = state.file_storage.upload(
-                        data,
-                        &mime,
-                        &file_name,
-                        if folder_path.is_empty() { None } else { Some(&folder_path) },
-                    ).await;
+                    let _ = state
+                        .file_storage
+                        .upload(
+                            data,
+                            &mime,
+                            &file_name,
+                            if folder_path.is_empty() {
+                                None
+                            } else {
+                                Some(&folder_path)
+                            },
+                        )
+                        .await;
                 }
 
-                sqlx::query("UPDATE file_metadata SET storage_path = $1, updated_at = NOW() WHERE id = $2")
-                    .bind(&new_storage_path)
-                    .bind(file_id)
-                    .execute(db_pool)
-                    .await
-                    .map_err(|e| AppError::DatabaseError {
-                        details: format!("Failed to update file storage_path: {}", e),
-                    })?;
+                sqlx::query(
+                    "UPDATE file_metadata SET storage_path = $1, updated_at = NOW() WHERE id = $2",
+                )
+                .bind(&new_storage_path)
+                .bind(file_id)
+                .execute(db_pool)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    details: format!("Failed to update file storage_path: {}", e),
+                })?;
             }
         }
     }
@@ -1138,15 +1172,14 @@ pub async fn delete_folder(
     let db_pool = state.db()?;
     let recursive = params.recursive.unwrap_or(false);
 
-    let folder_exists = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM file_folders WHERE id = $1)",
-    )
-    .bind(id)
-    .fetch_one(db_pool)
-    .await
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Failed to check folder: {}", e),
-    })?;
+    let folder_exists =
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM file_folders WHERE id = $1)")
+            .bind(id)
+            .fetch_one(db_pool)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Failed to check folder: {}", e),
+            })?;
 
     if !folder_exists {
         return Err(AppError::NotFound("Folder not found".to_string()));
@@ -1155,15 +1188,14 @@ pub async fn delete_folder(
     let mut all_folder_ids = vec![id];
     let mut queue = vec![id];
     while let Some(fid) = queue.pop() {
-        let children: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM file_folders WHERE parent_id = $1",
-        )
-        .bind(fid)
-        .fetch_all(db_pool)
-        .await
-        .map_err(|e| AppError::DatabaseError {
-            details: format!("Failed to query children: {}", e),
-        })?;
+        let children: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM file_folders WHERE parent_id = $1")
+                .bind(fid)
+                .fetch_all(db_pool)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    details: format!("Failed to query children: {}", e),
+                })?;
 
         for child in children {
             all_folder_ids.push(child);
@@ -1171,31 +1203,30 @@ pub async fn delete_folder(
         }
     }
 
-    let file_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM file_metadata WHERE folder_id = ANY($1)",
-    )
-    .bind(&all_folder_ids)
-    .fetch_one(db_pool)
-    .await
-    .unwrap_or(0);
+    let file_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM file_metadata WHERE folder_id = ANY($1)")
+            .bind(&all_folder_ids)
+            .fetch_one(db_pool)
+            .await
+            .unwrap_or(0);
 
     if file_count > 0 && !recursive {
-        return Err(AppError::BadRequest(
-            format!("Folder is not empty ({} files). Use recursive=true to delete.", file_count)
-        ));
+        return Err(AppError::BadRequest(format!(
+            "Folder is not empty ({} files). Use recursive=true to delete.",
+            file_count
+        )));
     }
 
     if recursive {
         for &fid in &all_folder_ids {
-            let files: Vec<(Uuid, String)> = sqlx::query_as(
-                "SELECT id, storage_path FROM file_metadata WHERE folder_id = $1",
-            )
-            .bind(fid)
-            .fetch_all(db_pool)
-            .await
-            .map_err(|e| AppError::DatabaseError {
-                details: format!("Failed to query files in folder: {}", e),
-            })?;
+            let files: Vec<(Uuid, String)> =
+                sqlx::query_as("SELECT id, storage_path FROM file_metadata WHERE folder_id = $1")
+                    .bind(fid)
+                    .fetch_all(db_pool)
+                    .await
+                    .map_err(|e| AppError::DatabaseError {
+                        details: format!("Failed to query files in folder: {}", e),
+                    })?;
 
             for (file_id, storage_path) in files {
                 let _ = state.file_storage.delete(&storage_path).await;

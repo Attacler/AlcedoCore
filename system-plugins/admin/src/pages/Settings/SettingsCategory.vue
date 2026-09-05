@@ -14,7 +14,7 @@ import MenuBuilder from "./MenuBuilder.vue";
 import SettingsSession from "./SettingsSession.vue";
 import DeveloperKeysDrawer from "@/components/developerSettings/keysDrawer.vue";
 import FileUpload from "@/components/inputs/FileUpload.vue";
-import { MediaFile } from "alcedocore-sdk-node";
+import { MediaFile } from "@alcedocore/sdk";
 import EnableDevelopmentMode from "./development/enableDevelopmentMode.vue";
 
 const props = defineProps<{ category: string }>();
@@ -24,7 +24,6 @@ const router = useRouter(),
     { devMode: devModeEnabled, toggle: toggleDevMode } = useDevMode();
 
 const savingKey = ref<string | null>(null),
-    showResetConfirm = ref(false),
     showUnsavedDialog = ref(false),
     pendingNavigation = ref<((value?: any) => void) | null>(null),
     uploadingKey = ref<string | null>(null);
@@ -64,19 +63,6 @@ async function handleSave(key: string) {
 function handleCancel() {
     store.cancelAll();
     toast.show("Changes reverted", "info");
-}
-
-async function handleReset() {
-    showResetConfirm.value = false;
-    try {
-        await store.resetToDefaults();
-        toast.show("Settings restored to defaults", "success");
-    } catch (e) {
-        toast.show(
-            `Failed to reset: ${e instanceof Error ? e.message : "Unknown error"}`,
-            "error",
-        );
-    }
 }
 
 onBeforeRouteLeave((_to, _from, next) => {
@@ -431,33 +417,7 @@ function fileUploaded(key: string, uploadResponse: MediaFile) {
                 :disabled="!store.isDirty"
                 @click="handleCancel"
             />
-            <Button
-                label="Reset to Defaults"
-                severity="danger"
-                @click="showResetConfirm = true"
-            />
         </div>
-
-        <Dialog
-            v-model:visible="showResetConfirm"
-            header="Reset to Defaults"
-            :modal="true"
-            :style="{ width: '450px' }"
-            :draggable="false"
-        >
-            <p class="text-gray-600 mb-4">
-                Reset all settings to defaults? This cannot be undone.
-            </p>
-            <template #footer>
-                <Button
-                    label="Cancel"
-                    severity="secondary"
-                    outlined
-                    @click="showResetConfirm = false"
-                />
-                <Button label="Reset" severity="danger" @click="handleReset" />
-            </template>
-        </Dialog>
 
         <Dialog
             v-model:visible="showUnsavedDialog"

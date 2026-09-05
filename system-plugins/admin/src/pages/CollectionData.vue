@@ -338,6 +338,7 @@ async function fetchRelatedFieldOptions() {
         const relName = rf.related_collection!;
         try {
             const relCollection = await collectionsStore.getCollection(relName);
+
             if (relCollection && relCollection.fields) {
                 for (const field of relCollection.fields) {
                     if (field.type === "relationship") continue;
@@ -476,6 +477,20 @@ watch(
     (newVal) => {
         if (newVal !== undefined && newVal !== null) {
             perPage.value = Number(newVal);
+        }
+    },
+);
+
+watch(
+    () => showFilterPanel.value,
+    (val) => {
+        if (val) {
+            if (!filterCondition.value) {
+                filterCondition.value = {
+                    operator: "and",
+                    conditions: [{ field: "", operator: "eq", value: "" }],
+                };
+            }
         }
     },
 );

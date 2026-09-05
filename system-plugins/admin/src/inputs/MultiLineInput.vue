@@ -15,8 +15,8 @@ const { options } = props.field;
         :placeholder="field?.default_value || 'Multi-Line'"
         :invalid="!!invalid"
         :readonly="readonly"
-        :rows="options.rows || undefined"
-        :maxlength="options.max_length || undefined"
+        :rows="options?.rows || undefined"
+        :maxlength="options?.max_length || undefined"
         :autoResize="!options.rows"
         fluid
         class="text-sm"

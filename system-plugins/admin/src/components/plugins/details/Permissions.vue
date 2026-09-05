@@ -68,13 +68,9 @@ function removeCustomScope(name: string) {
 
 const pendingScopes = computed(() => {
     if (!scopesData.value) return [];
-    const granted = new Set();
-    console.log(
-        scopesData.value.requested_scopes.filter((s) => !granted.has(s.name)),
-        granted,
-    );
+
     return scopesData.value.requested_scopes.filter(
-        (s) => scopesData.value?.granted_scopes.indexOf(s.name) != -1,
+        (s) => scopesData.value?.granted_scopes.indexOf(s.name) == -1,
     );
 });
 

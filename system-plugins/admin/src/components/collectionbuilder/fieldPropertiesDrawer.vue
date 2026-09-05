@@ -185,7 +185,7 @@ watch(
     <!-- Field Properties Drawer -->
     <Drawer
         :visible="field !== null"
-        @hide="emit('close')"
+        :showCloseIcon="false"
         header="Field Properties"
         position="right"
         :style="{ width: '500px' }"

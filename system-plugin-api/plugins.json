@@ -2,7 +2,7 @@
     "plugins": [
         {
             "slug": "admin",
-            "image": "alcedocore/sp-admin-ui:rc0.0.1",
+            "image": "alcedocore/sp-admin-ui:rc0.0.2",
             "version": "0.0.1",
             "min_core_version": "0.0.1",
             "env": {},

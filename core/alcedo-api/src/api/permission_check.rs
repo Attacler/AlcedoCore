@@ -714,13 +714,8 @@ pub async fn require_scope(
     }
 
     // Plugin callbacks carry identity via X-Request-ID → Redis slug mapping.
-    if let Some(request_id) = headers
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-    {
-        if let Some(slug) =
-            lookup_plugin_by_request_id(&state.redis_connection, request_id).await
-        {
+    if let Some(request_id) = headers.get("x-request-id").and_then(|v| v.to_str().ok()) {
+        if let Some(slug) = lookup_plugin_by_request_id(&state.redis_connection, request_id).await {
             let plugin_authorized = if let Ok(Some(plugin)) =
                 crate::db::queries::Plugin::find_by_slug(db_pool, &slug).await
             {
@@ -743,7 +738,9 @@ pub async fn require_scope(
         }
     }
 
-    Err(AppError::Unauthorized("Authentication required".to_string()))
+    Err(AppError::Unauthorized(
+        "Authentication required".to_string(),
+    ))
 }
 
 /// Scan permission filters for `{user.*}` variable references and build a context

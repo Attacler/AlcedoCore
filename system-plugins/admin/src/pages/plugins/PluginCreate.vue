@@ -605,7 +605,7 @@ onMounted(async () => {
                                 <div class="space-y-2">
                                     <div
                                         v-for="(prop, key) in previewManifest
-                                            .settings_schema.properties"
+                                            .settings_schema?.properties"
                                         :key="key + ''"
                                         class="text-sm"
                                     >

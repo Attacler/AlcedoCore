@@ -2,10 +2,7 @@
 import SchemaErDiagram from "./SchemaErDiagram.vue";
 import { withAsyncHandlingVoid } from "@/utils/asyncUtils";
 import { formatDate } from "@/utils/formatters";
-import type {
-    PluginSchemaResponse,
-    MigrationStatus,
-} from "alcedocore-sdk-node";
+import type { PluginSchemaResponse, MigrationStatus } from "@alcedocore/sdk";
 import { onMounted } from "vue";
 import { ref } from "vue";
 import { useRoute } from "vue-router";

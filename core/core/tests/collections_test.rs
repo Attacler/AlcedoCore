@@ -193,12 +193,12 @@ async fn test_update_collection_add_remove_fields() {
     assert!(col_names.contains(&"name"), "name column should exist");
     assert!(col_names.contains(&"email"), "email column should exist");
 
-    // Remove "name" field
+    // Remove "name" field (must be explicit via removed_fields)
     let reduced_fields = serde_json::json!([
         {"name": "email", "type": "string", "required": true, "unique": true}
     ]);
     let put_resp2 = server.put(&format!("/api/collections/{}", name))
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&serde_json::json!({"fields": reduced_fields}))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&serde_json::json!({"fields": reduced_fields, "removed_fields": ["name"]}))
         .await;
     assert_eq!(put_resp2.status_code(), axum::http::StatusCode::OK,
         "Second PUT failed: {}", put_resp2.text());
@@ -215,6 +215,110 @@ async fn test_update_collection_add_remove_fields() {
     let col_names2: Vec<&str> = rows2.iter().map(|(n,)| n.as_str()).collect();
     assert!(col_names2.contains(&"email"), "email column should still exist");
     assert!(!col_names2.contains(&"name"), "name column should have been removed");
+}
+
+#[tokio::test]
+async fn test_update_collection_toggles_unique_required_on_existing_field() {
+    let (server, test_db, name) = setup().await;
+
+    // Create with a single unconstrained field
+    let initial_fields = serde_json::json!([{"name": "code", "type": "string"}]);
+    let create_resp = create_collection(&server, &name, initial_fields).await;
+    assert_eq!(create_resp.status_code(), axum::http::StatusCode::CREATED,
+        "Create failed: {}", create_resp.text());
+
+    // Insert two rows with distinct codes
+    let post1 = server.post(&format!("/api/items/{}", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({"code": "alpha"}))
+        .await;
+    assert_eq!(post1.status_code(), axum::http::StatusCode::OK,
+        "Insert alpha failed: {}", post1.text());
+    let post2 = server.post(&format!("/api/items/{}", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({"code": "beta"}))
+        .await;
+    assert_eq!(post2.status_code(), axum::http::StatusCode::OK,
+        "Insert beta failed: {}", post2.text());
+
+    // Toggle unique=true + required=true on the existing "code" field
+    let updated_fields = serde_json::json!([{"name": "code", "type": "string", "unique": true, "required": true}]);
+    let put_resp = server.put(&format!("/api/collections/{}", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({"fields": updated_fields}))
+        .await;
+    assert_eq!(put_resp.status_code(), axum::http::StatusCode::OK,
+        "PUT update failed: {}", put_resp.text());
+
+    // Verify a unique constraint now exists on the column via pg_constraint
+    let unique_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM pg_constraint con
+           JOIN pg_class cls ON cls.oid = con.conrelid
+           JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+          WHERE cls.relname = $1 AND att.attname = 'code' AND con.contype = 'u'",
+    )
+    .bind(&name)
+    .fetch_one(test_db.pool())
+    .await
+    .expect("Failed to check pg_constraint");
+    assert_eq!(unique_count, 1, "Expected exactly one unique constraint on code");
+
+    // Verify is_nullable = NO (required toggled on)
+    let nullable: String = sqlx::query_scalar(
+        "SELECT is_nullable FROM information_schema.columns
+          WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'code'",
+    )
+    .bind(&name)
+    .fetch_one(test_db.pool())
+    .await
+    .expect("Failed to check is_nullable");
+    assert_eq!(nullable, "NO", "code should be NOT NULL after required=true");
+
+    // Duplicate code must now fail with 409 CONFLICT
+    let dup = server.post(&format!("/api/items/{}", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({"code": "alpha"}))
+        .await;
+    assert_eq!(dup.status_code(), axum::http::StatusCode::CONFLICT,
+        "Duplicate code should conflict, got: {}", dup.text());
+
+    // Missing required field must now fail with 400
+    let missing = server.post(&format!("/api/items/{}", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(missing.status_code(), axum::http::StatusCode::BAD_REQUEST,
+        "Missing required field should be rejected, got: {}", missing.text());
+
+    // Toggle unique back off — duplicates allowed again
+    let reverted_fields = serde_json::json!([{"name": "code", "type": "string", "required": true}]);
+    let put_resp2 = server.put(&format!("/api/collections/{}", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({"fields": reverted_fields}))
+        .await;
+    assert_eq!(put_resp2.status_code(), axum::http::StatusCode::OK,
+        "Revert PUT failed: {}", put_resp2.text());
+
+    let unique_count_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+           FROM pg_constraint con
+           JOIN pg_class cls ON cls.oid = con.conrelid
+           JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = ANY(con.conkey)
+          WHERE cls.relname = $1 AND att.attname = 'code' AND con.contype = 'u'",
+    )
+    .bind(&name)
+    .fetch_one(test_db.pool())
+    .await
+    .expect("Failed to check pg_constraint after revert");
+    assert_eq!(unique_count_after, 0, "Unique constraint should be dropped after revert");
+
+    let dup_after = server.post(&format!("/api/items/{}", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({"code": "alpha"}))
+        .await;
+    assert_eq!(dup_after.status_code(), axum::http::StatusCode::OK,
+        "Duplicate should be allowed after unique removed, got: {}", dup_after.text());
 }
 
 #[tokio::test]
@@ -913,13 +1017,13 @@ async fn test_ddl_reconciliation_after_update() {
     let col_names2: Vec<&str> = info_rows2.iter().map(|(n,)| n.as_str()).collect();
     assert!(col_names2.contains(&"rating"), "rating column should exist after add");
 
-    // === Step 3: Remove "views" field ===
+    // === Step 3: Remove "views" field (must be explicit via removed_fields) ===
     let reduced_fields = serde_json::json!([
         {"name": "title", "type": "string"},
         {"name": "rating", "type": "float"}
     ]);
     let put_resp2 = server.put(&format!("/api/collections/{}", name))
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&serde_json::json!({"fields": reduced_fields}))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&serde_json::json!({"fields": reduced_fields, "removed_fields": ["views"]}))
         .await;
     assert_eq!(put_resp2.status_code(), axum::http::StatusCode::OK,
         "PUT remove field failed: {}", put_resp2.text());
@@ -953,6 +1057,60 @@ async fn test_ddl_reconciliation_after_update() {
     assert!(col_names3.contains(&"title"), "title column should still exist");
     assert!(col_names3.contains(&"rating"), "rating column should still exist");
     assert!(!col_names3.contains(&"views"), "views column should have been removed");
+}
+
+#[tokio::test]
+async fn test_update_collection_preserves_omitted_fields_unless_removed() {
+    let (server, test_db, name) = setup().await;
+
+    // Create with two fields
+    let fields = serde_json::json!([
+        {"name": "alpha", "type": "string"},
+        {"name": "beta", "type": "string"}
+    ]);
+    let create_resp = create_collection(&server, &name, fields).await;
+    assert_eq!(create_resp.status_code(), axum::http::StatusCode::CREATED,
+        "Create failed: {}", create_resp.text());
+
+    // Update sending ONLY "alpha" with NO removed_fields — "beta" must be preserved
+    let put_resp = server.put(&format!("/api/collections/{}", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({"fields": [{"name": "alpha", "type": "string"}]}))
+        .await;
+    assert_eq!(put_resp.status_code(), axum::http::StatusCode::OK,
+        "PUT update failed: {}", put_resp.text());
+
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name NOT IN ('id', 'created_at', 'updated_at')"
+    )
+    .bind(&name)
+    .fetch_all(test_db.pool())
+    .await
+    .expect("Failed to query information_schema");
+    let col_names: Vec<&str> = rows.iter().map(|(n,)| n.as_str()).collect();
+    assert!(col_names.contains(&"alpha"), "alpha column should exist");
+    assert!(col_names.contains(&"beta"), "beta column should be PRESERVED when omitted (merge semantics)");
+
+    // Now explicitly remove "beta" via removed_fields
+    let put_resp2 = server.put(&format!("/api/collections/{}", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&serde_json::json!({"fields": [{"name": "alpha", "type": "string"}], "removed_fields": ["beta"]}))
+        .await;
+    assert_eq!(put_resp2.status_code(), axum::http::StatusCode::OK,
+        "PUT remove failed: {}", put_resp2.text());
+
+    let rows2: Vec<(String,)> = sqlx::query_as(
+        "SELECT column_name FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name NOT IN ('id', 'created_at', 'updated_at')"
+    )
+    .bind(&name)
+    .fetch_all(test_db.pool())
+    .await
+    .expect("Failed to query information_schema");
+    let col_names2: Vec<&str> = rows2.iter().map(|(n,)| n.as_str()).collect();
+    assert!(col_names2.contains(&"alpha"), "alpha column should still exist");
+    assert!(!col_names2.contains(&"beta"), "beta column should be removed when listed in removed_fields");
 }
 
 #[tokio::test]
@@ -1049,7 +1207,9 @@ async fn test_concurrent_ddl_serialization() {
     assert_eq!(resp2.status_code(), axum::http::StatusCode::OK,
         "Concurrent DDL task 2 failed: {}", resp2.text());
 
-    // Verify final state — should match one of the two expected sets
+    // Verify final state — merge semantics mean both concurrent payloads are
+    // preserved (no field is dropped, since neither listed the other's fields
+    // in removed_fields), and the initial field survives too.
     let get_resp = server.get(&format!("/api/collections/{}", name)).add_header("Authorization", "Bearer dev_test-key-for-tests-12345").await;
     assert_eq!(get_resp.status_code(), axum::http::StatusCode::OK);
     let get_body: serde_json::Value = serde_json::from_str(&get_resp.text())
@@ -1061,13 +1221,13 @@ async fn test_concurrent_ddl_serialization() {
         .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
         .collect();
 
-    let expected1 = vec!["a", "b"];
-    let expected2 = vec!["c", "d"];
-    assert!(
-        field_names == expected1 || field_names == expected2,
-        "Final fields {:?} should match one of the expected sets {:?} or {:?}",
-        field_names, expected1, expected2
-    );
+    for expected in ["a", "b", "c", "d", "initial"] {
+        assert!(
+            field_names.contains(&expected),
+            "Expected field '{}' to be present after concurrent merge-style updates, got {:?}",
+            expected, field_names
+        );
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════

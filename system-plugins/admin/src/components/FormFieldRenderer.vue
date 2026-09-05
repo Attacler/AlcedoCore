@@ -40,31 +40,22 @@ const collectionsStore = useCollectionsStore(),
     devStore = useDevServerStore();
 
 const loadingField = ref(false),
-    fields = ref<FieldDefinition[] | null>(null);
+    fields = computed(() => {
+        return (
+            collectionsStore.collections.find(
+                (c) => c.name == props.collectionName,
+            )?.fields || []
+        );
+    });
 
 const field = computed<FieldDefinition | undefined>(() => {
     if (!fields.value) return undefined;
+
     const found = fields.value.find((f) => f.name === props.fieldName);
     if (found) return found;
     return isSystemFieldName(props.fieldName)
         ? makeSystemField(props.fieldName)
         : undefined;
-});
-
-async function loadCollection(name: string) {
-    loadingField.value = true;
-    try {
-        const coll = await collectionsStore.getCollection(name);
-        fields.value = coll.fields || [];
-    } catch {
-        fields.value = [];
-    } finally {
-        loadingField.value = false;
-    }
-}
-
-watchEffect(() => {
-    if (props.collectionName) loadCollection(props.collectionName);
 });
 
 const inputComponent = computed(() => {

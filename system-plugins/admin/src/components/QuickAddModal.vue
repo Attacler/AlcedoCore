@@ -117,9 +117,9 @@ async function save() {
         emit("created", created);
         visibleInner.value = false;
         emit("update:visible", false);
-    } catch (e) {
+    } catch (e: any) {
         toast.show(
-            e instanceof Error ? e.message : "Failed to create item",
+            e.data?.detail || e.message || "Failed to create item",
             "error",
         );
     } finally {

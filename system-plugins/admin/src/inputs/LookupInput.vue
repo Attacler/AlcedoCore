@@ -64,9 +64,11 @@ async function loadRelatedOptions() {
     relatedLoading.value = true;
     try {
         const displayField = await resolveDisplayField();
+
         const res = (await client.items.list(relatedCollection, {
             limit: "50",
         })) as any;
+
         const data = res.data || res;
         const items: any[] = data.data || data.items || data || [];
         relatedOptions.value = items.map((item: any) => ({

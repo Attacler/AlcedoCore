@@ -199,7 +199,7 @@ async function loadData() {
     if (props.fieldsOverride) {
         fields.value = props.fieldsOverride;
     } else {
-        const coll = await store.getCollection(props.collectionName);
+        const coll = await store.getCollection(props.collectionName, true);
         fields.value = coll.fields || [];
     }
 

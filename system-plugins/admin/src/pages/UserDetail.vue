@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useUsersStore } from "@/stores/usersStore";
 import { useAuthStore } from "@/stores/authStore";
@@ -58,8 +58,17 @@ onMounted(async () => {
     await rolesStore.fetchRoles();
 
     if (!isNew.value) {
-        const id = route.params.id as string;
-        const fetched = await usersStore.fetchUser(id);
+    } else {
+        editValues.value = { display_name: "", email: "", is_admin: false };
+    }
+    loading.value = false;
+});
+
+watch(
+    () => route.params.id,
+    async (id) => {
+        if (id == "new" || !id) return;
+        const fetched = await usersStore.fetchUser(id + "");
         if (fetched) {
             user.value = fetched;
             editValues.value = {
@@ -71,11 +80,11 @@ onMounted(async () => {
         } else {
             loadError.value = "User not found";
         }
-    } else {
-        editValues.value = { display_name: "", email: "", is_admin: false };
-    }
-    loading.value = false;
-});
+    },
+    {
+        immediate: true,
+    },
+);
 
 async function loadUserRoles() {
     if (!user.value) return;
@@ -183,9 +192,11 @@ async function handleSave() {
                     ...payload,
                     password: editPassword.value,
                 })) as any;
+
                 router.push(`/users/${result.data.id}`);
             } catch (e: any) {
-                saveError.value = e?.message || "Failed to create user";
+                saveError.value =
+                    e.data?.detail || e?.message || "Failed to create user";
             }
         } else if (user.value) {
             const ok = await usersStore.updateUser(user.value.id, payload);

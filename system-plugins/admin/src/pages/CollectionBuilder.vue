@@ -51,7 +51,7 @@ async function loadCollection(name: string) {
     loading.value = true;
     loadError.value = null;
     try {
-        const c = await store.getCollection(name);
+        const c = await store.getCollection(name, true);
         collectionMeta.value = c;
         collectionDisplayName.value = c.display_name || "";
         fields.value = withSystemFields(c.fields || []).map(

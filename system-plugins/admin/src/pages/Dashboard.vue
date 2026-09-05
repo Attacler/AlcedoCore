@@ -37,13 +37,26 @@ const collectionsStore = useCollectionsStore();
     <h2 class="text-lg font-bold py-2">Collections</h2>
     <div class="grid md:grid-cols-3 gap-5">
         <RouterLink
-            v-for="collection of collectionsStore.collections"
+            v-for="collection of collectionsStore.collections.filter(
+                (e) => !e.is_system,
+            )"
             :to="'/collections/' + collection.name + '/data'"
         >
             <div
                 class="bg-white p-2 rounded-md border border-gray-200 flex place-content-between items-center hover:text-gray-600 hover:border-gray-600 cursor-pointer"
             >
                 <div>{{ collection.display_name || collection.name }}</div>
+                <span
+                    class="pi pi-external-link text-xs text-gray-400"
+                    title="Open collection"
+                ></span>
+            </div>
+        </RouterLink>
+        <RouterLink to="/users">
+            <div
+                class="bg-white p-2 rounded-md border border-gray-200 flex place-content-between items-center hover:text-gray-600 hover:border-gray-600 cursor-pointer"
+            >
+                <div>Users</div>
                 <span
                     class="pi pi-external-link text-xs text-gray-400"
                     title="Open collection"

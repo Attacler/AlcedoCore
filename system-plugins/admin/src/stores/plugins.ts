@@ -6,7 +6,7 @@ import type {
     PluginSchemaResponse,
     MigrationStatus as SdkMigrationStatus,
     PluginPage as SdkPluginPage,
-} from "alcedocore-sdk-node";
+} from "@alcedocore/sdk";
 import { useAlcedoClient } from "../composables/useAlcedoClient";
 import { withAsyncHandlingVoid } from "../utils/asyncUtils";
 import TableViewSettings from "@/views/TableViewSettings.vue";
@@ -20,7 +20,7 @@ export type {
     Plugin,
     PluginSchemaResponse,
     MigrationStatus,
-} from "alcedocore-sdk-node";
+} from "@alcedocore/sdk";
 
 export interface PluginStore extends Omit<Plugin, "type"> {
     plugin_type: "system" | "user";

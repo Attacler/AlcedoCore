@@ -4,7 +4,6 @@ import tailwindcss from "@tailwindcss/vite";
 import Components from "unplugin-vue-components/vite";
 import { PrimeVueResolver } from "unplugin-vue-components/resolvers";
 import { fileURLToPath, URL } from "node:url";
-import { resolve } from "node:path";
 
 export default defineConfig({
     plugins: [
@@ -43,10 +42,6 @@ export default defineConfig({
     resolve: {
         alias: {
             "@": fileURLToPath(new URL("./src", import.meta.url)),
-            "alcedocore-sdk-node": resolve(
-                __dirname,
-                "../../sdk/alcedocore-sdk-node/src",
-            ),
         },
     },
 });

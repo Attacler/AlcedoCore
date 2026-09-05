@@ -5,7 +5,6 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-
 /// A single permission rule from a policy, as stored in the DB
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, sqlx::FromRow)]
 pub struct PolicyPermission {
@@ -65,7 +64,8 @@ pub fn build_filter_clause(permissions: &[PolicyPermission]) -> (String, Vec<Val
 /// `customer.region` → `"customer"."region"`
 fn quote_ident(field: &str, table_prefix: Option<&str>) -> String {
     let parts: Vec<&str> = field.split('.').collect();
-    let field_parts: Vec<String> = parts.iter()
+    let field_parts: Vec<String> = parts
+        .iter()
         .map(|p| crate::db::filter_compiler::quote(p))
         .collect();
     let joined = field_parts.join(".");
@@ -121,10 +121,7 @@ pub fn build_filter_clause_with_offset(
             let cond_clauses: Vec<String> = filters
                 .iter()
                 .map(|cond| {
-                    let field = cond
-                        .get("field")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let field = cond.get("field").and_then(|v| v.as_str()).unwrap_or("");
                     let operator = cond
                         .get("operator")
                         .and_then(|v| v.as_str())
@@ -244,7 +241,10 @@ pub fn build_filter_clause_with_joins(
                 .iter()
                 .map(|cond| {
                     let field = cond.get("field").and_then(|v| v.as_str()).unwrap_or("");
-                    let operator = cond.get("operator").and_then(|v| v.as_str()).unwrap_or("eq");
+                    let operator = cond
+                        .get("operator")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("eq");
                     let value = cond.get("value");
 
                     // Resolve the quoted field reference — handles dot-notation via JOINs
@@ -298,7 +298,10 @@ pub fn build_filter_clause_with_joins(
                             format!("{} < ${}{}", quoted, idx, cast)
                         }
                         "in" => {
-                            let arr = value.and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                            let arr = value
+                                .and_then(|v| v.as_array())
+                                .cloned()
+                                .unwrap_or_default();
                             if arr.is_empty() {
                                 "FALSE".to_string()
                             } else {
@@ -314,7 +317,10 @@ pub fn build_filter_clause_with_joins(
                             }
                         }
                         "not_in" => {
-                            let arr = value.and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                            let arr = value
+                                .and_then(|v| v.as_array())
+                                .cloned()
+                                .unwrap_or_default();
                             if arr.is_empty() {
                                 "TRUE".to_string()
                             } else {
@@ -339,7 +345,6 @@ pub fn build_filter_clause_with_joins(
 
     (rule_clauses.join(" OR "), bind_values, joins)
 }
-
 
 /// Build CASE WHEN expressions for field-level SELECT.
 /// Returns a tuple of:
@@ -410,10 +415,7 @@ pub fn build_field_expressions(
 
 /// Check if a specific item (as JSON) matches any rule's filter.
 /// Used for per-item field resolution after querying.
-pub fn item_matches_any_filter(
-    permissions: &[PolicyPermission],
-    item: &Value,
-) -> Vec<Uuid> {
+pub fn item_matches_any_filter(permissions: &[PolicyPermission], item: &Value) -> Vec<Uuid> {
     permissions
         .iter()
         .filter_map(|perm| {
@@ -507,10 +509,7 @@ fn build_rule_filter_sql(
     let conditions: Vec<String> = filters
         .iter()
         .map(|cond| {
-            let field = cond
-                .get("field")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let field = cond.get("field").and_then(|v| v.as_str()).unwrap_or("");
             let operator = cond
                 .get("operator")
                 .and_then(|v| v.as_str())
@@ -525,7 +524,12 @@ fn build_rule_filter_sql(
 
 /// Convert a filter condition operator/value to a SQL fragment with parameterized
 /// `$N` placeholders. Bind values are pushed to `binds`.
-fn value_to_sql_condition(operator: &str, value: Option<&Value>, quoted_field: &str, binds: &mut Vec<Value>) -> String {
+fn value_to_sql_condition(
+    operator: &str,
+    value: Option<&Value>,
+    quoted_field: &str,
+    binds: &mut Vec<Value>,
+) -> String {
     match operator {
         "eq" => match value {
             Some(v) if !v.is_null() => {
@@ -567,11 +571,14 @@ fn value_to_sql_condition(operator: &str, value: Option<&Value>, quoted_field: &
         },
         "in" => match value.and_then(|v| v.as_array()) {
             Some(arr) if !arr.is_empty() => {
-                let placeholders: Vec<String> = arr.iter().map(|_| {
-                    let idx = binds.len() + 1;
-                    // Must push before each placeholder to track position
-                    format!("${}", idx)
-                }).collect();
+                let placeholders: Vec<String> = arr
+                    .iter()
+                    .map(|_| {
+                        let idx = binds.len() + 1;
+                        // Must push before each placeholder to track position
+                        format!("${}", idx)
+                    })
+                    .collect();
                 for v in arr {
                     binds.push(v.clone());
                 }
@@ -581,10 +588,13 @@ fn value_to_sql_condition(operator: &str, value: Option<&Value>, quoted_field: &
         },
         "not_in" => match value.and_then(|v| v.as_array()) {
             Some(arr) if !arr.is_empty() => {
-                let placeholders: Vec<String> = arr.iter().map(|_| {
-                    let idx = binds.len() + 1;
-                    format!("${}", idx)
-                }).collect();
+                let placeholders: Vec<String> = arr
+                    .iter()
+                    .map(|_| {
+                        let idx = binds.len() + 1;
+                        format!("${}", idx)
+                    })
+                    .collect();
                 for v in arr {
                     binds.push(v.clone());
                 }
@@ -611,10 +621,7 @@ fn resolve_field_value<'a>(item: &'a Value, field: &str) -> Option<&'a Value> {
 
 /// Evaluate a single filter condition against an item.
 fn evaluate_condition(cond: &Value, item: &Value) -> bool {
-    let field = cond
-        .get("field")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let field = cond.get("field").and_then(|v| v.as_str()).unwrap_or("");
     let operator = cond
         .get("operator")
         .and_then(|v| v.as_str())
@@ -624,7 +631,11 @@ fn evaluate_condition(cond: &Value, item: &Value) -> bool {
     evaluate_single_condition(operator, expected, actual)
 }
 
-pub fn evaluate_single_condition(operator: &str, expected: Option<&Value>, actual: Option<&Value>) -> bool {
+pub fn evaluate_single_condition(
+    operator: &str,
+    expected: Option<&Value>,
+    actual: Option<&Value>,
+) -> bool {
     match operator {
         "eq" => match (actual, expected) {
             (Some(a), Some(e)) => a == e,
@@ -663,6 +674,11 @@ pub fn evaluate_single_condition(operator: &str, expected: Option<&Value>, actua
                 .unwrap_or(true),
             _ => true,
         },
+        "not_null" => match actual {
+            Some(a) => !a.is_null(),
+            _ => false,
+        },
+        // TODO: not all conditions are present here!
         _ => false,
     }
 }
@@ -677,17 +693,17 @@ fn compare_values(a: &Value, b: &Value, cmp: fn(f64, f64) -> bool) -> bool {
 
 /// Validate incoming field values against `field_validation` rules.
 /// Returns `Ok(())` if all rules pass, or `Err(AppError::Forbidden(...))` on first violation.
-pub fn validate_field_values(
-    field_validation: &[Value],
-    body: &Value,
-) -> Result<(), AppError> {
+pub fn validate_field_values(field_validation: &[Value], body: &Value) -> Result<(), AppError> {
     for rule in field_validation {
         let field = rule.get("field").and_then(|v| v.as_str()).unwrap_or("");
         // Skip validation if field isn't being set in this request
         if resolve_field_value(body, field).is_none() {
             continue;
         }
-        let operator = rule.get("operator").and_then(|v| v.as_str()).unwrap_or("eq");
+        let operator = rule
+            .get("operator")
+            .and_then(|v| v.as_str())
+            .unwrap_or("eq");
         let expected = rule.get("value");
         let actual = resolve_field_value(body, field);
         let matched = evaluate_single_condition(operator, expected, actual);
@@ -695,7 +711,9 @@ pub fn validate_field_values(
             return Err(AppError::Forbidden(format!(
                 "Field '{}': value '{}' not allowed by permission rules",
                 field,
-                actual.map(|v| v.to_string()).unwrap_or_else(|| "null".to_string())
+                actual
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "null".to_string())
             )));
         }
     }
@@ -721,7 +739,8 @@ pub fn resolve_variables(filter: &mut Vec<Value>, context: &Value) {
         };
 
         if let Some(resolved) = resolve_field_value(context, inner) {
-            condition.as_object_mut()
+            condition
+                .as_object_mut()
                 .and_then(|obj| obj.insert("value".to_string(), resolved.clone()));
         }
     }
@@ -752,15 +771,13 @@ mod tests {
 
     #[test]
     fn test_authorize_action() {
-        let perms = vec![
-            make_permission(
-                "00000000-0000-0000-0000-000000000001",
-                "read",
-                None,
-                json!([]),
-                None,
-            ),
-        ];
+        let perms = vec![make_permission(
+            "00000000-0000-0000-0000-000000000001",
+            "read",
+            None,
+            json!([]),
+            None,
+        )];
         assert!(authorize_action(&perms, "read"));
         assert!(!authorize_action(&perms, "write"));
     }
@@ -986,8 +1003,7 @@ mod tests {
             json!([]),
             None,
         )];
-        let matching_ids =
-            vec![Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()];
+        let matching_ids = vec![Uuid::parse_str("00000000-0000-0000-0000-000000000001").unwrap()];
         let fields = get_allowed_fields_for_item(&perms, &matching_ids);
         assert_eq!(fields, None);
     }
@@ -1053,5 +1069,4 @@ mod tests {
         let result = validate_field_values(rules.as_array().unwrap(), &body);
         assert!(result.is_ok());
     }
-
 }

@@ -1,5 +1,5 @@
 import { ref, readonly } from "vue";
-import { createClient } from "alcedocore-sdk-node";
+import { createClient } from "@alcedocore/sdk";
 
 const isConnected = ref(true);
 

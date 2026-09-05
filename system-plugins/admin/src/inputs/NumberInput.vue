@@ -9,8 +9,8 @@ const props = defineProps<{
 
 const value = defineModel<number>({
     set(v: number | string) {
-        if (v == null || v === "") return null;
-        const n = typeof v === "number" ? v : Number(v);
+        if (v == null || v == "") return null;
+        const n = typeof v == "number" ? v : Number(v);
         return Number.isNaN(n) ? null : n;
     },
 });
@@ -18,7 +18,7 @@ const value = defineModel<number>({
 const variant = computed(() => {
     const ic = props.field?.input_component;
     if (ic && ic !== "number") return ic;
-    return props.field?.type === "float" ? "decimal" : "number";
+    return props.field?.type == "float" ? "decimal" : "number";
 });
 
 const inputProps = computed(() => {
@@ -50,5 +50,8 @@ const inputProps = computed(() => {
         :readonly="readonly"
         fluid
         class="text-sm"
+        :min="field.options?.min"
+        :max="field.options?.max"
+        :max-fraction-digits="field.options?.fraction_digits"
     />
 </template>

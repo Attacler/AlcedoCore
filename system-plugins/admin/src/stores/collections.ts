@@ -86,6 +86,21 @@ export const useCollectionsStore = defineStore("collections", () => {
         currentCollection = ref<Collection | null>(null),
         collectionCache: { [key: string]: Promise<Collection> } = {};
 
+    // Field names explicitly deleted in the current editing session. Only these
+    // are sent as `removed_fields` on save, so layout/section-only saves never
+    // drop columns.
+    const deletedFieldNames = ref<string[]>([]);
+
+    function markFieldDeleted(name: string) {
+        if (!deletedFieldNames.value.includes(name)) {
+            deletedFieldNames.value.push(name);
+        }
+    }
+
+    function clearDeletedFields() {
+        deletedFieldNames.value = [];
+    }
+
     let fetchCollectionsPromise: Promise<void> | null = null; // Cache collection responses
 
     async function fetchCollections(force = false) {
@@ -95,8 +110,7 @@ export const useCollectionsStore = defineStore("collections", () => {
             error,
             async () => {
                 const response = (await client.collections.list()) as any;
-                collections.value =
-                    response.data?.collections || response.collections || [];
+                collections.value = response.collections || [];
             },
         ).finally(() => {
             fetchCollectionsPromise = null;
@@ -104,8 +118,12 @@ export const useCollectionsStore = defineStore("collections", () => {
         return fetchCollectionsPromise;
     }
 
-    async function getCollection(name: string): Promise<Collection> {
-        if (name in collectionCache) return await collectionCache[name];
+    async function getCollection(
+        name: string,
+        ignoreCache = false,
+    ): Promise<Collection> {
+        if (!ignoreCache && name in collectionCache)
+            return await collectionCache[name];
 
         collectionCache[name] = new Promise(async (res, rej) => {
             try {
@@ -132,7 +150,11 @@ export const useCollectionsStore = defineStore("collections", () => {
 
     async function updateCollection(
         name: string,
-        data: { fields?: FieldDefinition[]; display_name?: string | null },
+        data: {
+            fields?: FieldDefinition[];
+            removed_fields?: string[];
+            display_name?: string | null;
+        },
     ): Promise<Collection> {
         const response = (await client.collections.update(name, data)) as any;
         await fetchCollections(true);
@@ -299,6 +321,9 @@ export const useCollectionsStore = defineStore("collections", () => {
         loading,
         error,
         currentCollection,
+        deletedFieldNames,
+        markFieldDeleted,
+        clearDeletedFields,
         fetchCollections,
         getCollection,
         createCollection,
