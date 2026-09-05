@@ -1,7 +1,7 @@
 {
     "name": "test-node",
     "version": "1.0.0",
-    "description": "A plugin for Alcedo.",
+    "description": "A plugin for AlcedoCore.",
     "main": "index.js",
     "scripts": {
         "dev": "npx tsx server.ts",

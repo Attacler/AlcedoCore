@@ -23,7 +23,7 @@ app.get("/settings", async (_req, res) => {
             },
         });
         res.json({ slug: PLUGIN_SLUG, settings });
-    } catch (err) {
+    } catch (err: any) {
         res.status(500).json({ slug: PLUGIN_SLUG, error: err.message });
     }
 });
