@@ -190,7 +190,7 @@ impl SystemPluginDeployer {
 
                 // Read manifest from image to determine plugin type
                 let manifest_str = container_provider
-                    .get_file_from_image(&primary_image, "/app/manifest.json")
+                    .get_file_from_image(&final_image, "/app/manifest.json")
                     .await
                     .unwrap();
                 let plugin_type = serde_json::from_str::<serde_json::Value>(&manifest_str)

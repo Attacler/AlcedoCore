@@ -1,6 +1,12 @@
 use crate::DOCKER;
+use alcedo_common::AppError;
+use alcedo_db::db::resilience::{
+    find_slug_by_container_id, get_backoff_delay, record_restart, should_restart,
+};
+use alcedo_db::db::Pool;
 use bollard::models::{
-    ContainerCreateBody, HostConfig, NetworkConnectRequest, NetworkCreateRequest, RestartPolicy, RestartPolicyNameEnum,
+    ContainerCreateBody, HostConfig, NetworkConnectRequest, NetworkCreateRequest, RestartPolicy,
+    RestartPolicyNameEnum,
 };
 use bollard::query_parameters::{
     CreateContainerOptions, DownloadFromContainerOptions, ListContainersOptions, ListImagesOptions,
@@ -8,11 +14,6 @@ use bollard::query_parameters::{
 };
 use bollard_stubs::query_parameters::CreateImageOptions;
 use futures_util::StreamExt;
-use alcedo_db::db::Pool;
-use alcedo_db::db::resilience::{
-    find_slug_by_container_id, get_backoff_delay, record_restart, should_restart,
-};
-use alcedo_common::AppError;
 use std::collections::HashMap;
 use std::io::Read;
 use std::time::Duration;
@@ -275,7 +276,8 @@ impl DockerClient {
                 .unwrap_or(3);
 
             if should_restart(db, &slug, max_attempts).await? {
-                let recovery = alcedo_db::db::queries::PluginRecovery::find_by_slug(db, &slug).await?;
+                let recovery =
+                    alcedo_db::db::queries::PluginRecovery::find_by_slug(db, &slug).await?;
                 let backoff =
                     get_backoff_delay(recovery.map(|r| r.restart_count as u8).unwrap_or(0));
                 self.restart_container_with_backoff(db, container_id, backoff)
@@ -829,9 +831,24 @@ impl DockerClient {
 
         let mut stream = DOCKER.download_from_container(&response.id, Some(download_opts));
         let mut all_bytes = Vec::new();
+
         while let Some(chunk) = stream.next().await {
-            let bytes =
-                chunk.map_err(|e| AppError::Internal(format!("Failed to read archive: {}", e)))?;
+            let bytes = match chunk {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let _ = DOCKER
+                        .remove_container(
+                            &response.id,
+                            Some(RemoveContainerOptions {
+                                force: true,
+                                ..Default::default()
+                            }),
+                        )
+                        .await;
+                    return Err(AppError::Internal(format!("Failed to read archive: {}", e)));
+                }
+            };
+
             all_bytes.extend_from_slice(&bytes);
         }
 
