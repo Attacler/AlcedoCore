@@ -6,7 +6,7 @@
 //! Each test creates its own TestDb container — fully isolated.
 //! Collection names use UUID suffixes to prevent collisions when tests run in parallel.
 
-use plugin_core::plugins::health::AppState;
+use plugin_core::plugins::health::{AppState, CoreState};
 use plugin_core::services::redis_session::RedisSessionStore;
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -69,6 +69,7 @@ async fn create_test_state(pool: PgPool) -> AppState {
         .expect("Failed to connect to Redis for session store. Start Redis or set REDIS_URL");
     let dir = std::env::temp_dir().join("test-files");
     AppState {
+        core: CoreState::for_pool(Some(pool.clone())),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
         kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),

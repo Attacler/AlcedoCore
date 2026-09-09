@@ -3,6 +3,7 @@ pub mod responses;
 pub mod auth;
 pub mod users;
 pub mod saved_views;
+pub mod debug;
 pub mod items;
 pub mod kv;
 pub mod kv_types;

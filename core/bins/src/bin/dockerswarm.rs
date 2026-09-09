@@ -13,7 +13,8 @@ use pcl::events::{
 use pcl::kv::store::KvStore;
 use pcl::middleware::host_calls::spawn_host_call_writer;
 use pcl::middleware::logging::spawn_log_writer;
-use pcl::plugins::health::AppState;
+use pcl::plugins::health::{AppState, CoreState};
+use pcl::plugins::inspector::DatabaseSchema;
 use pcl::providers::plugin_container::PluginContainerProviderImpl;
 use pcl::providers::registries::RegistriesProviderImpl;
 use pcl::providers::{PluginContainerProvider, RegistriesProvider};
@@ -70,9 +71,7 @@ async fn main() -> Result<(), AppError> {
             AppError::Internal("DATABASE_URL is required but was not set or is empty".to_string())
         })?;
 
-    let pool: Pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(db_url)
+    let pool: Pool = pcl::db::connect_pool(db_url)
         .await
         .map_err(|e| AppError::Internal(format!("Failed to connect to database: {}", e)))?;
 
@@ -98,6 +97,19 @@ async fn main() -> Result<(), AppError> {
                     e
                 );
             }
+        }
+    }
+
+    // Run system migrations (sqlx_migrator: alcedo.* source tables).
+    // Runs AFTER CoreMigrationRunner, which owns the table shapes —
+    // m00001 skips DDL for tables that already exist.
+    if let Some(ref pool) = db_pool {
+        match pcl::run_system_migrations(pool).await {
+            Ok(()) => tracing::info!("System migrations applied/verified"),
+            Err(e) => tracing::error!(
+                "System migration failed: {}. Startup continuing without system migrations.",
+                e
+            ),
         }
     }
 
@@ -458,6 +470,7 @@ async fn main() -> Result<(), AppError> {
         .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {}", e)))?;
 
     let state = Arc::new(AppState {
+        core: CoreState::new(db_pool.clone(), config.clone()),
         health_map,
         db_pool,
         kv_store,
@@ -483,6 +496,22 @@ async fn main() -> Result<(), AppError> {
         rate_limit_api_window: config.rate_limit_api_window,
         file_storage,
     });
+
+    // Populate the inspector schema cache at boot so TableService and
+    // downstream readers see current tables/columns. Mutations refresh it
+    // afterwards via TableService::refresh_schema.
+    {
+        let fresh = DatabaseSchema::new().refresh(&state.core).await;
+        let cached = fresh.clone();
+        *state.core.schema.write().await = cached.into();
+
+        tracing::info!(
+            "Schema cache refreshed: {} tables, {} columns, {} app versions",
+            fresh.tables.len(),
+            fresh.columns.len(),
+            fresh.app_versions.len()
+        );
+    }
 
     // Spawn Docker event watcher to keep plugin state in sync
     tokio::spawn({

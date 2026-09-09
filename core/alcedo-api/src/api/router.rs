@@ -1,19 +1,19 @@
 use utoipa::OpenApi;
 
+use super::SlugPath;
+use crate::api::collections;
+use crate::db::queries::SystemSetting;
+use crate::plugins::health::AppState;
 use axum::{
-    Router,
-    routing::{get, post},
     extract::State,
-    response::{IntoResponse, Redirect, Response},
     http::{header, Method, StatusCode},
+    response::{IntoResponse, Redirect, Response},
+    routing::{get, post},
+    Router,
 };
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
-use crate::plugins::health::AppState;
-use crate::db::queries::SystemSetting;
-use crate::api::collections;
-use super::SlugPath;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -29,39 +29,56 @@ use super::SlugPath;
 struct ApiDoc;
 
 async fn openapi_handler() -> ([(axum::http::header::HeaderName, &'static str); 1], String) {
-    let spec = ApiDoc::openapi().to_json().expect("OpenAPI serialization failed");
-    ([(axum::http::header::CONTENT_TYPE, "application/json")], spec)
+    let spec = ApiDoc::openapi()
+        .to_json()
+        .expect("OpenAPI serialization failed");
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        spec,
+    )
 }
 
 pub fn make_router(
     state: Arc<AppState>,
-    session_layer: tower_sessions::SessionManagerLayer<crate::services::redis_session::RedisSessionStore>,
+    session_layer: tower_sessions::SessionManagerLayer<
+        crate::services::redis_session::RedisSessionStore,
+    >,
 ) -> Router {
-    tracing::info!("[MAKE_ROUTER] Creating router with state dev_mode={}", state.dev_mode);
-
-    async fn test_handler() -> &'static str {
-        "test ok"
-    }
-
-    async fn test_handler_with_state(state: axum::extract::State<Arc<AppState>>) -> String {
-        format!("test with state, dev_mode={}", state.dev_mode)
-    }
+    tracing::info!(
+        "[MAKE_ROUTER] Creating router with state dev_mode={}",
+        state.dev_mode
+    );
 
     let api_routes = Router::new();
 
     let api_routes = api_routes
         .route("/api/openapi.json", get(openapi_handler))
         // Mount plugins API explicitly at /api/plugins
-        .nest("/api/plugins", super::plugins::plugins_router(state.clone()))
+        .nest(
+            "/api/plugins",
+            super::plugins::plugins_router(state.clone()),
+        )
         // Mount registries API at /api/registries
-        .nest("/api/registries", super::registries::registries_router(state.clone()))
+        .nest(
+            "/api/registries",
+            super::registries::registries_router(state.clone()),
+        )
         // Mount settings API at /api/settings
-        .nest("/api/settings", super::settings::settings_router(state.clone()))
+        .nest(
+            "/api/settings",
+            super::settings::settings_router(state.clone()),
+        )
         // Mount menus API at /api/menus
         .nest("/api/menus", super::menus::menus_router(state.clone()))
         // Log API endpoints — must be before proxy catch-all
-        .route("/api/logs/system", get(crate::api::logs::list_system_logs).with_state(state.clone()))
-        .route("/api/logs/collections", get(crate::api::logs::list_collection_logs).with_state(state.clone()))
+        .route(
+            "/api/logs/system",
+            get(crate::api::logs::list_system_logs).with_state(state.clone()),
+        )
+        .route(
+            "/api/logs/collections",
+            get(crate::api::logs::list_collection_logs).with_state(state.clone()),
+        )
         // Dev session API — always available for CLI dev workflow
         .merge(super::dev::dev_router(state.clone()))
         // Auth API — must be before proxy catch-all
@@ -75,28 +92,90 @@ pub fn make_router(
         // Policies API — must be before proxy catch-all
         .merge(super::policies::policies_router(state.clone()))
         // KV API - must be before /:slug/*path catch-all
-        .route("/api/kv", get(crate::api::kv::list_keys).with_state(state.clone()))
-        .route("/api/kv/:key", get(crate::api::kv::get_key).put(crate::api::kv::put_key).delete(crate::api::kv::delete_key).with_state(state.clone()))
-        .route("/api/kv/:key/exists", get(crate::api::kv::key_exists).with_state(state.clone()))
-        .route("/api/kv/:key/ttl", get(crate::api::kv::key_ttl).with_state(state.clone()))
-        .route("/api/kv/batch/get", post(crate::api::kv::batch_get_keys).with_state(state.clone()))
-        .route("/api/kv/batch/set", post(crate::api::kv::batch_set_keys).with_state(state.clone()))
-        .route("/api/kv/batch/delete", post(crate::api::kv::batch_delete_keys).with_state(state.clone()))
-        .route("/api/kv/:key/increment", post(crate::api::kv::increment_key).with_state(state.clone()))
-        .route("/api/kv/:key/decrement", post(crate::api::kv::decrement_key).with_state(state.clone()))
+        .route(
+            "/api/kv",
+            get(crate::api::kv::list_keys).with_state(state.clone()),
+        )
+        .route(
+            "/api/kv/:key",
+            get(crate::api::kv::get_key)
+                .put(crate::api::kv::put_key)
+                .delete(crate::api::kv::delete_key)
+                .with_state(state.clone()),
+        )
+        .route(
+            "/api/kv/:key/exists",
+            get(crate::api::kv::key_exists).with_state(state.clone()),
+        )
+        .route(
+            "/api/kv/:key/ttl",
+            get(crate::api::kv::key_ttl).with_state(state.clone()),
+        )
+        .route(
+            "/api/kv/batch/get",
+            post(crate::api::kv::batch_get_keys).with_state(state.clone()),
+        )
+        .route(
+            "/api/kv/batch/set",
+            post(crate::api::kv::batch_set_keys).with_state(state.clone()),
+        )
+        .route(
+            "/api/kv/batch/delete",
+            post(crate::api::kv::batch_delete_keys).with_state(state.clone()),
+        )
+        .route(
+            "/api/kv/:key/increment",
+            post(crate::api::kv::increment_key).with_state(state.clone()),
+        )
+        .route(
+            "/api/kv/:key/decrement",
+            post(crate::api::kv::decrement_key).with_state(state.clone()),
+        )
         // Collections API - must be before proxy catch-all
-        .nest("/api/collections", super::collections::collections_router(state.clone()))
+        .nest(
+            "/api/collections",
+            super::collections::collections_router(state.clone()),
+        )
         // Items API - must be before proxy catch-all
         .merge(super::items::items_router(state.clone()))
         // File management API
-        .route("/api/files/upload", post(super::files::upload_file).with_state(state.clone()))
-        .route("/api/files/batch/delete", post(super::files::batch_delete_files).with_state(state.clone()))
-        .route("/api/files", get(super::files::list_files).with_state(state.clone()))
-        .route("/api/files/:id", get(super::files::get_file_metadata).patch(super::files::update_file_metadata).delete(super::files::delete_file).with_state(state.clone()))
-        .route("/api/files/:id/download", get(super::files::download_file).with_state(state.clone()))
+        .route(
+            "/api/files/upload",
+            post(super::files::upload_file).with_state(state.clone()),
+        )
+        .route(
+            "/api/files/batch/delete",
+            post(super::files::batch_delete_files).with_state(state.clone()),
+        )
+        .route(
+            "/api/files",
+            get(super::files::list_files).with_state(state.clone()),
+        )
+        .route(
+            "/api/files/:id",
+            get(super::files::get_file_metadata)
+                .patch(super::files::update_file_metadata)
+                .delete(super::files::delete_file)
+                .with_state(state.clone()),
+        )
+        .route(
+            "/api/files/:id/download",
+            get(super::files::download_file).with_state(state.clone()),
+        )
         // Folder management API
-        .route("/api/files/folders", post(super::files::create_folder).get(super::files::list_folders).with_state(state.clone()))
-        .route("/api/files/folders/:id", get(super::files::get_folder).patch(super::files::update_folder).delete(super::files::delete_folder).with_state(state.clone()));
+        .route(
+            "/api/files/folders",
+            post(super::files::create_folder)
+                .get(super::files::list_folders)
+                .with_state(state.clone()),
+        )
+        .route(
+            "/api/files/folders/:id",
+            get(super::files::get_folder)
+                .patch(super::files::update_folder)
+                .delete(super::files::delete_folder)
+                .with_state(state.clone()),
+        );
 
     // Session middleware only on /api/* routes
     let api_routes = api_routes.layer(session_layer);
@@ -105,30 +184,67 @@ pub fn make_router(
 
     public_routes = public_routes
         // Query endpoint - must be before proxy catch-all (QUERY-06)
-        .route("/p/:slug/db/query", post(crate::api::query::query_handler).with_state(state.clone()))
+        .route(
+            "/p/:slug/db/query",
+            post(crate::api::query::query_handler).with_state(state.clone()),
+        )
         // Execute endpoint - write operations (INSERT, UPDATE, DELETE)
-        .route("/p/:slug/db/execute", post(crate::api::query::execute_handler).with_state(state.clone()))
+        .route(
+            "/p/:slug/db/execute",
+            post(crate::api::query::execute_handler).with_state(state.clone()),
+        )
         // Proxy routes - serve plugin requests
-        .route("/p/:slug", get(crate::api::proxy::proxy_handler).post(crate::api::proxy::proxy_handler).put(crate::api::proxy::proxy_handler).delete(crate::api::proxy::proxy_handler).with_state(state.clone()))
-        .route("/p/:slug/*path", get(crate::api::proxy::proxy_handler).post(crate::api::proxy::proxy_handler).put(crate::api::proxy::proxy_handler).delete(crate::api::proxy::proxy_handler).with_state(state.clone()))
+        .route(
+            "/p/:slug",
+            get(crate::api::proxy::proxy_handler)
+                .post(crate::api::proxy::proxy_handler)
+                .put(crate::api::proxy::proxy_handler)
+                .delete(crate::api::proxy::proxy_handler)
+                .with_state(state.clone()),
+        )
+        .route(
+            "/p/:slug/*path",
+            get(crate::api::proxy::proxy_handler)
+                .post(crate::api::proxy::proxy_handler)
+                .put(crate::api::proxy::proxy_handler)
+                .delete(crate::api::proxy::proxy_handler)
+                .with_state(state.clone()),
+        )
         // Static plugins routes - serve from plugins/{slug}/public/*path (must be after /api/*)
-        .route("/:slug/public/*path", get(crate::api::static_files::serve_static_file).with_state(state.clone()))
+        .route(
+            "/:slug/public/*path",
+            get(crate::api::static_files::serve_static_file).with_state(state.clone()),
+        )
         // Plugin index files - serve index.html from plugins/{slug}/public/
-        .route("/:slug", get(crate::api::static_files::serve_index_or_static).with_state(state.clone()))
+        .route(
+            "/:slug",
+            get(crate::api::static_files::serve_index_or_static).with_state(state.clone()),
+        )
         // Plugin nested paths - serve from plugins/{slug}/public/*
-        .route("/:slug/*path", get(crate::api::static_files::serve_index_or_static).with_state(state.clone()))
+        .route(
+            "/:slug/*path",
+            get(crate::api::static_files::serve_index_or_static).with_state(state.clone()),
+        )
         // Redirect trailing slashes to non-trailing (e.g., /admin/ -> /admin)
-        .route("/:slug/", get(redirect_trailing_slash).with_state(state.clone()))
+        .route(
+            "/:slug/",
+            get(redirect_trailing_slash).with_state(state.clone()),
+        )
         // Redirect /p/:slug/ -> /p/:slug (matches the /:slug/ pattern)
-        .route("/p/:slug/", get(redirect_p_trailing_slash).with_state(state.clone()))
+        .route(
+            "/p/:slug/",
+            get(redirect_p_trailing_slash).with_state(state.clone()),
+        )
         // Health and test endpoints
-        .route("/health", axum::routing::get(crate::plugins::health::health_check).with_state(state.clone()))
-        .route("/test", get(test_handler))
-        .route("/test-state", get(test_handler_with_state).with_state(state.clone()));
+        .route(
+            "/health",
+            axum::routing::get(crate::plugins::health::health_check).with_state(state.clone()),
+        );
+    // DEBUG ONLY: cached inspector schema (no auth, like /health).
+    // ?refresh=true re-scans the live database first.
+    // .route("/debug/schema", get(crate::api::debug::get_schema).with_state(state.clone()))
 
-    let mut router = Router::new()
-        .merge(api_routes)
-        .merge(public_routes);
+    let mut router = Router::new().merge(api_routes).merge(public_routes);
 
     // Catch-all fallback — forward unmatched requests to the configured plugin
     router = router.fallback_service(
@@ -139,15 +255,23 @@ pub fn make_router(
             .patch(catch_all_handler)
             .head(catch_all_handler)
             .options(catch_all_handler)
-            .with_state(state.clone())
+            .with_state(state.clone()),
     );
 
     // Error detail sanitization — inner layer (runs after auth, reads AuthLevel from extensions)
-    router = router.layer(axum::middleware::from_fn(crate::middleware::error_sanitize::sanitize_error_middleware));
+    router = router.layer(axum::middleware::from_fn(
+        crate::middleware::error_sanitize::sanitize_error_middleware,
+    ));
     // Apply auth + RBAC middleware to protect /api/* routes (wraps sanitize)
-    router = router.layer(axum::middleware::from_fn_with_state(state.clone(), crate::middleware::auth::auth_middleware));
+    router = router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::auth::auth_middleware,
+    ));
     // Rate limit middleware — inner layer (runs after CORS, before auth)
-    router = router.layer(axum::middleware::from_fn_with_state(state, crate::middleware::rate_limit::rate_limit_middleware));
+    router = router.layer(axum::middleware::from_fn_with_state(
+        state,
+        crate::middleware::rate_limit::rate_limit_middleware,
+    ));
     // Security headers middleware — applied to all responses
     router = router.layer(axum::middleware::from_fn(
         crate::middleware::security_headers::security_headers_middleware,
@@ -168,15 +292,30 @@ pub fn make_router(
             .split(',')
             .filter_map(|o| {
                 let trimmed = o.trim();
-                if trimmed.is_empty() || trimmed == "null" || trimmed == "undefined" { None }
-                else { trimmed.parse::<axum::http::HeaderValue>().ok() }
+                if trimmed.is_empty() || trimmed == "null" || trimmed == "undefined" {
+                    None
+                } else {
+                    trimmed.parse::<axum::http::HeaderValue>().ok()
+                }
             })
             .collect();
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::PATCH, Method::OPTIONS])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::DELETE,
+                Method::PATCH,
+                Method::OPTIONS,
+            ])
             .allow_credentials(true)
-            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::COOKIE, header::ACCEPT])
+            .allow_headers([
+                header::CONTENT_TYPE,
+                header::AUTHORIZATION,
+                header::COOKIE,
+                header::ACCEPT,
+            ])
     };
     router = router.layer(cors);
 
@@ -225,21 +364,28 @@ async fn catch_all_handler(
 
     let response = super::proxy::proxy_handler(
         State(state),
-        axum::extract::Path(SlugPath { slug: slug.clone(), path: proxy_path }),
+        axum::extract::Path(SlugPath {
+            slug: slug.clone(),
+            path: proxy_path,
+        }),
         request,
-    ).await;
+    )
+    .await;
 
     match response {
         Ok(r) => {
             let resp = r.into_response();
             let (parts, body) = resp.into_parts();
-            let content_type = parts.headers.get("content-type")
+            let content_type = parts
+                .headers
+                .get("content-type")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
 
             if content_type.contains("text/html") {
-                let body_bytes = axum::body::to_bytes(body, 10_000_000).await
+                let body_bytes = axum::body::to_bytes(body, 10_000_000)
+                    .await
                     .unwrap_or_default();
                 let body_str = String::from_utf8_lossy(&body_bytes);
                 let replaced = body_str.replace(&format!("/{}/", slug), "/");
@@ -252,8 +398,11 @@ async fn catch_all_handler(
                     }
                 }
                 builder = builder.header("Content-Length", new_body.len());
-                return builder.body(axum::body::Body::from(new_body))
-                    .unwrap_or_else(|_| (StatusCode::INTERNAL_SERVER_ERROR, "Body rewrite failed").into_response());
+                return builder
+                    .body(axum::body::Body::from(new_body))
+                    .unwrap_or_else(|_| {
+                        (StatusCode::INTERNAL_SERVER_ERROR, "Body rewrite failed").into_response()
+                    });
             }
 
             Response::from_parts(parts, body)

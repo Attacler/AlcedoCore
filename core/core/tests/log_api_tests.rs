@@ -17,7 +17,7 @@ use tower_sessions::cookie::SameSite;
 use tower_sessions::SessionManagerLayer;
 
 use plugin_core::api::make_router;
-use plugin_core::plugins::health::AppState;
+use plugin_core::plugins::health::{AppState, CoreState};
 use plugin_core::services::redis_session::RedisSessionStore;
 
 #[path = "common/mod.rs"]
@@ -53,11 +53,61 @@ async fn get_ctx() -> &'static TestContext {
         );
 
         // Create a temporary pool for migration and seeding (discarded afterward).
+        // Every connection defaults to the per-app-version schema so migration
+        // and seed SQL resolve against it deterministically.
         let setup_pool = PgPoolOptions::new()
             .max_connections(5)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query(r#"SET search_path TO "default_app010version_1", public"#)
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
             .connect(&conn_str)
             .await
             .unwrap();
+
+        // Create the schemas and app/version source tables, mirroring the
+        // core migration runner (alcedo-db/src/db/core_migrations.rs).
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "alcedo""#)
+            .execute(&setup_pool)
+            .await
+            .unwrap();
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default_app010version_1""#)
+            .execute(&setup_pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps" (
+                id UUID PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                api_name TEXT NOT NULL UNIQUE
+            )"#,
+        )
+        .execute(&setup_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_versions" (
+                id UUID PRIMARY KEY,
+                version_name TEXT NOT NULL
+            )"#,
+        )
+        .execute(&setup_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps_versions" (
+                app_id UUID NOT NULL REFERENCES "alcedo"."alcedo_apps"(id) ON DELETE CASCADE,
+                version_id UUID NOT NULL REFERENCES "alcedo"."alcedo_versions"(id) ON DELETE CASCADE,
+                PRIMARY KEY (app_id, version_id)
+            )"#,
+        )
+        .execute(&setup_pool)
+        .await
+        .unwrap();
 
         // Run the migrations (split on `;` because sqlx does not support
         // multiple statements in a single `query()` call with PostgreSQL).
@@ -72,6 +122,7 @@ async fn get_ctx() -> &'static TestContext {
             include_str!("../../core-migrations/029_add_request_id_to_logs.up.sql"),
             include_str!("../../core-migrations/030_add_actor_to_system_logs.up.sql"),
         ];
+        // Route migrations into the per-app-version schema via search_path.
         for migration in migrations {
             for statement in migration.split(';') {
                 let trimmed = statement.trim();
@@ -132,6 +183,14 @@ async fn get_ctx() -> &'static TestContext {
 async fn make_test_pool(conn_str: &str) -> PgPool {
     PgPoolOptions::new()
         .max_connections(5)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query(r#"SET search_path TO "default_app010version_1", public"#)
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(conn_str)
         .await
         .unwrap()
@@ -166,6 +225,7 @@ async fn make_test_state(pool: PgPool) -> AppState {
         .expect("Failed to connect to Redis for session store. Start Redis or set REDIS_URL");
     let dir = std::env::temp_dir().join("test-files");
     AppState {
+        core: CoreState::for_pool(Some(pool.clone())),
         health_map: Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
         kv_store: Arc::new(plugin_core::kv::store::KvStore::new_test()),

@@ -1,5 +1,34 @@
 pub type Pool = sqlx::postgres::PgPool;
 
+/// Per-app-version schema (app=`default_app`, separator=`010`, version=`version_1`)
+/// into which all core migrations are applied and against which all application
+/// queries resolve via `search_path`.
+pub const DEFAULT_APP_VERSION_SCHEMA: &str = "default_app010version_1";
+
+/// Schema holding the app/version source tables.
+pub const ALCEDO_SCHEMA: &str = "alcedo";
+
+/// Build a PostgreSQL connection pool whose connections default to the
+/// per-app-version schema (with `public` as a fallback), so unqualified
+/// application queries resolve against the schema hosting the migrated tables.
+pub async fn connect_pool(db_url: &str) -> Result<Pool, sqlx::Error> {
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query(&format!(
+                    r#"SET search_path TO "{}", public"#,
+                    DEFAULT_APP_VERSION_SCHEMA
+                ))
+                .execute(conn)
+                .await?;
+                Ok(())
+            })
+        })
+        .connect(db_url)
+        .await
+}
+
 /// Split a SQL script into individual statements, respecting PostgreSQL
 /// quoting rules (single/double quotes, dollar-quoted strings, comments).
 /// A naive `split(';')` breaks DO blocks and other dollar-quoted bodies.

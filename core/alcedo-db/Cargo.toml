@@ -11,8 +11,9 @@ path = "src/lib.rs"
 alcedo-common = { path = "../alcedo-common" }
 alcedo-infra = { path = "../alcedo-infra" }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid"] }
-sea-query = { version = "0.32", features = ["thread-safe"] }
-sea-query-binder = { version = "0.7", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+sqlx_migrator = { version = "0.18.0", features = ["postgres"] }
+sea-query = { version = "0.32", features = ["thread-safe", "with-json"] }
+sea-query-binder = { version = "0.7", features = ["sqlx-postgres", "runtime-tokio-rustls", "with-json"] }
 sqlparser = "0.55"
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -23,5 +24,9 @@ tokio = { version = "1", features = ["full"] }
 thiserror = "1"
 tracing = "0.1"
 utoipa = { version = "5", features = ["axum_extras"] }
+async-trait = "0.1.89"
+futures = "0.3.31"
+
+
 [dev-dependencies]
 rstest = "0.24"

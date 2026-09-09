@@ -1,19 +1,14 @@
+use crate::services::redis_session::RedisPool;
+use crate::AppError;
+// Canonical definition lives in `super::appstate`; re-exported here so
+// existing `crate::plugins::health::AppState` imports keep working.
+pub use super::appstate::AppState;
+pub use alcedo_common::state::{CoreDatabaseSchema, CoreState};
 use axum::{extract::State, response::IntoResponse, Json};
 use serde::Serialize;
-use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
-use redis::aio::ConnectionManager;
 use std::collections::HashMap;
-use crate::AppError;
-use crate::db::Pool;
-use crate::kv::store::KvStore;
-use crate::channels::logging::LoggingChannel;
-use crate::channels::host_calls::HostCallChannel;
-use crate::events::EventBus;
-use crate::plugins::r#static::StaticPluginRegistry;
-use crate::container::PluginPlatform;
-use crate::providers::RegistriesProvider;
-use crate::services::redis_session::RedisPool;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 pub type RedisConn = RedisPool;
 
@@ -115,9 +110,16 @@ impl PluginHealthMap {
         let all = self.get_all_health().await;
         if all.iter().any(|e| e.status == PluginHealthStatus::Failed) {
             "unhealthy"
-        } else if all.iter().any(|e| e.status == PluginHealthStatus::Unhealthy) {
+        } else if all
+            .iter()
+            .any(|e| e.status == PluginHealthStatus::Unhealthy)
+        {
             "degraded"
-        } else if all.is_empty() || all.iter().all(|e| e.status == PluginHealthStatus::Healthy || e.status == PluginHealthStatus::Running) {
+        } else if all.is_empty()
+            || all.iter().all(|e| {
+                e.status == PluginHealthStatus::Healthy || e.status == PluginHealthStatus::Running
+            })
+        {
             "ok"
         } else {
             "degraded"
@@ -196,9 +198,17 @@ impl PluginHealthMap {
                         slug: vals[0].clone(),
                         status,
                         last_check: vals[2].clone(),
-                        container_id: if vals[3].is_empty() { None } else { Some(vals[3].clone()) },
+                        container_id: if vals[3].is_empty() {
+                            None
+                        } else {
+                            Some(vals[3].clone())
+                        },
                         restart_count: vals[4].parse().unwrap_or(0),
-                        last_restart_at: if vals[5].is_empty() { None } else { Some(vals[5].clone()) },
+                        last_restart_at: if vals[5].is_empty() {
+                            None
+                        } else {
+                            Some(vals[5].clone())
+                        },
                     })
                 }
                 _ => None,
@@ -229,57 +239,6 @@ impl PluginHealthMap {
         } else {
             vec![]
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct AppState {
-    pub health_map: Arc<PluginHealthMap>,
-    pub db_pool: Option<Pool>,
-    pub kv_store: Arc<KvStore>,
-    pub dev_mode: bool,
-    pub plugin_network: Option<String>,
-    pub static_registry: Option<Arc<StaticPluginRegistry>>,
-    pub registries: Option<Arc<dyn RegistriesProvider>>,
-    /// Platform-agnostic deployment interface (Docker, Swarm, K8s, etc.)
-    pub platform: Option<Arc<dyn PluginPlatform>>,
-    /// Shared Redis connection for request-ID lookups, health, dev sessions, etc.
-    pub redis_connection: Option<crate::services::redis_session::RedisPool>,
-    /// Dedicated Redis connection for rate limiting (avoids mutex contention).
-    pub rate_limit_redis: Option<Arc<Mutex<ConnectionManager>>>,
-    /// Dedicated Redis connection for KV store operations (avoids mutex contention).
-    pub kv_redis: Option<Arc<Mutex<ConnectionManager>>>,
-    pub logging_channel: Option<LoggingChannel>,
-    /// Host call recording channel for plugin-side actions (KV, DB queries, etc.)
-    pub host_call_channel: Option<HostCallChannel>,
-    /// Event bus for system activity tracking (broadcast-based, non-blocking).
-    /// Always available — no database dependency. Handlers emit events here
-    /// after their DB transactions commit (EVNT-03 convention).
-    pub event_bus: EventBus,
-    /// Whether request body capture is enabled (BE-06, DEV-05).
-    pub capture_body: bool,
-    /// Maximum request body size to capture in bytes (default 10KB, max 1MB).
-    pub capture_body_max_size: usize,
-    /// Maximum depth for nested field resolution (default 5, max 10).
-    pub nested_field_depth_limit: usize,
-    pub session_store: crate::services::redis_session::RedisSessionStore,
-    pub proxy_client: reqwest::Client,
-    /// Max requests per window for /api/auth/* endpoints.
-    pub rate_limit_auth_requests: u32,
-    /// Window in seconds for auth rate limiting.
-    pub rate_limit_auth_window: u64,
-    /// Max requests per window for other /api/* endpoints.
-    pub rate_limit_api_requests: u32,
-    /// Window in seconds for API rate limiting.
-    pub rate_limit_api_window: u64,
-    /// File storage backend for plugin files (local, S3, etc.)
-    pub file_storage: Arc<dyn file_storage::FileStorage>,
-}
-
-impl AppState {
-    pub fn db(&self) -> Result<&Pool, AppError> {
-        self.db_pool.as_ref()
-            .ok_or_else(|| AppError::Internal("Database not configured".to_string()))
     }
 }
 

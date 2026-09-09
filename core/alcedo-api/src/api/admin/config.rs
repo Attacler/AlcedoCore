@@ -35,6 +35,7 @@ pub async fn get_plugin_scopes_handler(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
     let granted: Vec<String> = serde_json::from_value(plugin.granted_scopes).unwrap_or_default();
+
     Ok(Json(ResponseEnvelope::success(ScopesResponse {
         requested_scopes: plugin.requested_scopes,
         granted_scopes: granted,

@@ -1,6 +1,7 @@
 pub mod plugins;
 
 pub use plugins::StaticPluginRegistry;
+pub use plugins::{AppState, CoreDatabaseSchema, CoreState};
 
 pub use alcedo_common::{channels, config, error};
 pub use alcedo_common::{AppConfig, AppError};

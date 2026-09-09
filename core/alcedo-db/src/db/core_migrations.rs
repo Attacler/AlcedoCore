@@ -2,6 +2,8 @@ use sqlx::PgPool;
 use std::fs;
 use std::path::PathBuf;
 
+use super::{ALCEDO_SCHEMA, DEFAULT_APP_VERSION_SCHEMA};
+
 /// Default path for core migration files inside Docker containers.
 /// Can be overridden with the `CORE_MIGRATIONS_DIR` environment variable.
 const CORE_MIGRATIONS_DIR_DEFAULT: &str = "/app/core-migrations";
@@ -53,9 +55,10 @@ const LEGACY_MIGRATIONS: &[(&str, &str)] = &[
 
 /// A runner for core (application-level) migrations stored in `core-migrations/`.
 ///
-/// Unlike plugin migrations (which live in per-plugin schemas), core migrations
-/// operate on the public schema and are tracked in the `schema_migrations` table
-/// with version prefixes like `core-001`, `core-002`, etc.
+/// Migrations are applied inside the per-app-version schema
+/// `default_app010version_1` (rather than `public`) and are tracked in that
+/// schema's `schema_migrations` table with version prefixes like `core-001`,
+/// `core-002`, etc. The `alcedo` schema holds the app/version source tables.
 ///
 /// # Backward Compatibility
 ///
@@ -74,22 +77,71 @@ impl CoreMigrationRunner {
         Self { pool }
     }
 
-    /// Ensure the `schema_migrations` tracking table exists (bootstrap).
+    /// Create the `alcedo` schema (with its app/version source tables) and the
+    /// per-app-version schema into which core migrations are applied.
+    async fn ensure_schemas(&self) -> Result<(), sqlx::Error> {
+        sqlx::query(&format!(r#"CREATE SCHEMA IF NOT EXISTS "{}""#, ALCEDO_SCHEMA))
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query(&format!(r#"CREATE SCHEMA IF NOT EXISTS "{}""#, DEFAULT_APP_VERSION_SCHEMA))
+            .execute(&self.pool)
+            .await?;
+
+        sqlx::query(&format!(
+            r#"CREATE TABLE IF NOT EXISTS "{s}"."alcedo_apps" (
+                id UUID PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                api_name TEXT NOT NULL UNIQUE
+            )"#,
+            s = ALCEDO_SCHEMA
+        ))
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(&format!(
+            r#"CREATE TABLE IF NOT EXISTS "{s}"."alcedo_versions" (
+                id UUID PRIMARY KEY,
+                version_name TEXT NOT NULL
+            )"#,
+            s = ALCEDO_SCHEMA
+        ))
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(&format!(
+            r#"CREATE TABLE IF NOT EXISTS "{s}"."alcedo_apps_versions" (
+                app_id UUID NOT NULL REFERENCES "{s}"."alcedo_apps"(id) ON DELETE CASCADE,
+                version_id UUID NOT NULL REFERENCES "{s}"."alcedo_versions"(id) ON DELETE CASCADE,
+                PRIMARY KEY (app_id, version_id)
+            )"#,
+            s = ALCEDO_SCHEMA
+        ))
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// Ensure the `schema_migrations` tracking table exists (bootstrap) inside
+    /// the per-app-version schema.
     async fn ensure_schema_migrations_table(&self) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS schema_migrations (
+        sqlx::query(&format!(
+            r#"CREATE TABLE IF NOT EXISTS "{s}"."schema_migrations" (
                 version VARCHAR(100) PRIMARY KEY,
                 applied_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                 description TEXT
             )"#,
-        )
+            s = DEFAULT_APP_VERSION_SCHEMA
+        ))
         .execute(&self.pool)
         .await?;
 
-        sqlx::query(
+        sqlx::query(&format!(
             r#"CREATE INDEX IF NOT EXISTS idx_schema_migrations_applied_at
-               ON schema_migrations(applied_at)"#,
-        )
+               ON "{s}"."schema_migrations"(applied_at)"#,
+            s = DEFAULT_APP_VERSION_SCHEMA
+        ))
         .execute(&self.pool)
         .await?;
 
@@ -113,11 +165,12 @@ impl CoreMigrationRunner {
 
     /// Return all already-applied core migration versions.
     async fn get_applied_core_migrations(&self) -> Result<Vec<String>, sqlx::Error> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            r#"SELECT version FROM schema_migrations
+        let rows: Vec<(String,)> = sqlx::query_as(&format!(
+            r#"SELECT version FROM "{s}"."schema_migrations"
                WHERE version LIKE 'core-%'
                ORDER BY applied_at ASC"#,
-        )
+            s = DEFAULT_APP_VERSION_SCHEMA
+        ))
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|(v,)| v).collect())
@@ -125,10 +178,11 @@ impl CoreMigrationRunner {
 
     /// Record a single migration as applied, skipping duplicates safely.
     async fn record_migration(&self, version: &str, description: &str) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            r#"INSERT INTO schema_migrations (version, description) VALUES ($1, $2)
+        sqlx::query(&format!(
+            r#"INSERT INTO "{s}"."schema_migrations" (version, description) VALUES ($1, $2)
                ON CONFLICT (version) DO NOTHING"#,
-        )
+            s = DEFAULT_APP_VERSION_SCHEMA
+        ))
         .bind(version)
         .bind(description)
         .execute(&self.pool)
@@ -159,7 +213,8 @@ impl CoreMigrationRunner {
     pub async fn run_pending(
         &self,
     ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-        // 1. Bootstrap the schema_migrations tracking table.
+        // 1. Create schemas and bootstrap the schema_migrations tracking table.
+        self.ensure_schemas().await?;
         self.ensure_schema_migrations_table().await?;
 
         // 2. Detect database state.
@@ -223,13 +278,22 @@ impl CoreMigrationRunner {
             tracing::info!("Applying core migration {} ({})...", version, filename);
             let content = fs::read_to_string(path)?;
 
+            // Use a transaction so the search_path applies to the same connection
+            // that runs the migration SQL, routing all statements into the
+            // per-app-version schema.
+            let mut tx = self.pool.begin().await?;
+            let set_path = format!(r#"SET search_path TO "{}""#, DEFAULT_APP_VERSION_SCHEMA);
+            sqlx::query(&set_path).execute(&mut *tx).await?;
+
             // Execute each statement separately (split by semicolons,
             // respecting dollar-quoted strings and comments).
             let statements = super::split_sql_statements(&content);
 
             for stmt in &statements {
-                sqlx::query(stmt).execute(&self.pool).await?;
+                sqlx::query(stmt).execute(&mut *tx).await?;
             }
+
+            tx.commit().await?;
 
             self.record_migration(&version, description).await?;
             executed.push(format!("{} ({})", version, filename));

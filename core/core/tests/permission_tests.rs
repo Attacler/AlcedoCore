@@ -1,4 +1,4 @@
-use plugin_core::plugins::health::AppState;
+use plugin_core::plugins::health::{AppState, CoreState};
 use plugin_core::services::redis_session::RedisSessionStore;
 use redis::aio::ConnectionManager;
 use serde_json::json;
@@ -37,6 +37,30 @@ impl TestDb {
         sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto")
             .execute(pool)
             .await?;
+        // Create the schemas and app/version source tables, mirroring the
+        // core migration runner (alcedo-db/src/db/core_migrations.rs).
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "alcedo""#).execute(pool).await?;
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default_app010version_1""#).execute(pool).await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps" (
+                id UUID PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                api_name TEXT NOT NULL UNIQUE
+            )"#,
+        ).execute(pool).await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_versions" (
+                id UUID PRIMARY KEY,
+                version_name TEXT NOT NULL
+            )"#,
+        ).execute(pool).await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps_versions" (
+                app_id UUID NOT NULL REFERENCES "alcedo"."alcedo_apps"(id) ON DELETE CASCADE,
+                version_id UUID NOT NULL REFERENCES "alcedo"."alcedo_versions"(id) ON DELETE CASCADE,
+                PRIMARY KEY (app_id, version_id)
+            )"#,
+        ).execute(pool).await?;
         let migration_files: Vec<(&str, &str)> = vec![
             ("001_create_plugins", include_str!("../../core-migrations/001_create_plugins.up.sql")),
             ("002_create_plugin_versions", include_str!("../../core-migrations/002_create_plugin_versions.up.sql")),
@@ -86,12 +110,17 @@ impl TestDb {
             ("046_seed_users_collection_fields", include_str!("../../core-migrations/046_seed_users_collection_fields.up.sql")),
         ];
         for (_name, sql) in &migration_files {
+            // Route each migration into the per-app-version schema via search_path.
+            let mut tx = pool.begin().await?;
+            sqlx::query(r#"SET search_path TO "default_app010version_1""#)
+                .execute(&mut *tx).await?;
             for statement in split_sql_statements(sql) {
                 let trimmed = statement.trim();
                 if !trimmed.is_empty() {
-                    sqlx::query(trimmed).execute(pool).await?;
+                    sqlx::query(trimmed).execute(&mut *tx).await?;
                 }
             }
+            tx.commit().await?;
         }
         Ok(())
     }
@@ -185,6 +214,7 @@ fn create_full_state(
     let redis_pool = managed::Pool::builder(mgr).max_size(2).build().unwrap();
     let dir = std::env::temp_dir().join("test-files");
     AppState {
+        core: CoreState::for_pool(Some(pool.clone())),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
         kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),

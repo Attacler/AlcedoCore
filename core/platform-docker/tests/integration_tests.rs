@@ -760,7 +760,7 @@ mod live_proxy_tests {
     use super::*;
 
     use alcedo_api::container::PluginPlatform;
-    use alcedo_api::plugins::health::{AppState, PluginHealthMap};
+    use alcedo_api::plugins::health::{AppState, CoreState, PluginHealthMap};
     use alcedo_api::services::redis_session::{RedisPool, RedisPoolManager, RedisSessionStore};
     use deadpool::managed;
     use std::sync::Arc;
@@ -903,6 +903,7 @@ while True:
                 rate_limit_api_requests: 100,
                 rate_limit_api_window: 60,
                 event_forwarder_max_concurrent: 50,
+                registry_seed: None,
             };
             let platform = platform_docker::platform::DockerPlatform::new(
                 None,
@@ -971,6 +972,7 @@ while True:
                 uuid::Uuid::new_v4()
             ));
             let state = AppState {
+                core: CoreState::for_pool(None),
                 health_map: Arc::new(PluginHealthMap::new(None)),
                 db_pool: None,
                 kv_store: Arc::new(alcedo_infra::kv::store::KvStore::new_test()),

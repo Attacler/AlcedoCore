@@ -61,6 +61,42 @@ pub struct RegistrySeed {
     pub password: Option<String>,
 }
 
+impl Default for AppConfig {
+    /// Same defaults as [`AppConfig::from_env`] when no env vars are set.
+    /// Falls back to these if the environment cannot be read.
+    fn default() -> Self {
+        Self::from_env().unwrap_or_else(|_| Self {
+            database_url: None,
+            core_port: 8080,
+            local_registry_url: "localhost:5000".to_string(),
+            docker_socket: "/var/run/docker.sock".to_string(),
+            plugin_network: "alcedocore_plugins".to_string(),
+            plugins_dir: "/plugins".to_string(),
+            health_check_interval: Duration::from_secs(5),
+            health_check_timeout: Duration::from_secs(60),
+            drain_timeout: Duration::from_secs(60),
+            max_restart_attempts: 3,
+            shutdown_timeout: Duration::from_secs(30),
+            dev_mode: false,
+            redis_url: String::new(),
+            capture_body: false,
+            capture_body_max_size: 10240,
+            nested_field_depth_limit: 5,
+            admin_email: None,
+            admin_password: None,
+            session_ttl_seconds: 86400,
+            core_public_url: None,
+            system_plugins_url: None,
+            rate_limit_auth_requests: 10,
+            rate_limit_auth_window: 60,
+            rate_limit_api_requests: 100,
+            rate_limit_api_window: 60,
+            event_forwarder_max_concurrent: 50,
+            registry_seed: None,
+        })
+    }
+}
+
 impl AppConfig {
     pub fn from_env() -> Result<Self, config::ConfigError> {
         let cfg = config::Config::builder()

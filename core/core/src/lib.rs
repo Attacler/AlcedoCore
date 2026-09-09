@@ -32,7 +32,15 @@ pub use alcedo_providers::providers;
 pub mod plugins {
     pub use alcedo_plugins::plugins::*;
     pub use alcedo_db::resilience;
+    /// Inspector schema cache + refresh, used at startup to populate
+    /// `CoreState.schema` and by `TableService`.
+    pub use alcedo_db::services::inspector;
 }
+
+/// sqlx_migrator-based system migrations (`alcedo.*` source tables).
+/// Call after `CoreMigrationRunner` at startup — the operation skips DDL
+/// for tables the SQL runner already created.
+pub use alcedo_db::system_migrations::run_system_migrations;
 
 pub mod services {
     pub use alcedo_services::services::*;

@@ -53,6 +53,7 @@ fn test_config(dev_mode: bool) -> AppConfig {
         rate_limit_api_requests: 100,
         rate_limit_api_window: 60,
         event_forwarder_max_concurrent: 50,
+        registry_seed: None,
     }
 }
 

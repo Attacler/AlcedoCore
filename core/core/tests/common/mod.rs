@@ -1,5 +1,5 @@
 use plugin_core::middleware::host_calls::spawn_host_call_writer;
-use plugin_core::plugins::health::AppState;
+use plugin_core::plugins::health::{AppState, CoreState};
 use plugin_core::services::redis_session::RedisSessionStore;
 use redis::aio::ConnectionManager;
 use sqlx::PgPool;
@@ -26,7 +26,18 @@ pub async fn start_postgres() -> Result<(PgPool, ContainerAsync<Postgres>), Box<
         container.get_host().await?,
         container.get_host_port_ipv4(5432).await?
     );
-    let pool = PgPool::connect(&connection_string).await?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .after_connect(|conn, _meta| {
+            Box::pin(async move {
+                sqlx::query(r#"SET search_path TO "default_app010version_1", public"#)
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&connection_string)
+        .await?;
     Ok((pool, container))
 }
 
@@ -45,7 +56,18 @@ impl TestDb {
             container.get_host().await?,
             container.get_host_port_ipv4(5432).await?
         );
-        let pool = PgPool::connect(&connection_string).await?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .after_connect(|conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query(r#"SET search_path TO "default_app010version_1", public"#)
+                        .execute(conn)
+                        .await?;
+                    Ok(())
+                })
+            })
+            .connect(&connection_string)
+            .await?;
         Self::_run_migrations(&pool).await?;
         Ok(Self { pool, _container: container })
     }
@@ -53,6 +75,31 @@ impl TestDb {
     async fn _run_migrations(pool: &PgPool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto")
             .execute(pool).await?;
+
+        // Create the schemas and the app/version source tables, mirroring the
+        // core migration runner (alcedo-db/src/db/core_migrations.rs).
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "alcedo""#).execute(pool).await?;
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default_app010version_1""#).execute(pool).await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps" (
+                id UUID PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                api_name TEXT NOT NULL UNIQUE
+            )"#,
+        ).execute(pool).await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_versions" (
+                id UUID PRIMARY KEY,
+                version_name TEXT NOT NULL
+            )"#,
+        ).execute(pool).await?;
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps_versions" (
+                app_id UUID NOT NULL REFERENCES "alcedo"."alcedo_apps"(id) ON DELETE CASCADE,
+                version_id UUID NOT NULL REFERENCES "alcedo"."alcedo_versions"(id) ON DELETE CASCADE,
+                PRIMARY KEY (app_id, version_id)
+            )"#,
+        ).execute(pool).await?;
 
         let migration_files: Vec<(&str, &str)> = vec![
             ("001_create_plugins", include_str!("../../../core-migrations/001_create_plugins.up.sql")),
@@ -104,12 +151,17 @@ impl TestDb {
         ];
 
         for (_name, sql) in &migration_files {
+            // Route each migration into the per-app-version schema via search_path.
+            let mut tx = pool.begin().await?;
+            sqlx::query(r#"SET search_path TO "default_app010version_1""#)
+                .execute(&mut *tx).await?;
             for statement in split_sql_statements(sql) {
                 let trimmed = statement.trim();
                 if !trimmed.is_empty() {
-                    sqlx::query(trimmed).execute(pool).await?;
+                    sqlx::query(trimmed).execute(&mut *tx).await?;
                 }
             }
+            tx.commit().await?;
         }
 
         Ok(())
@@ -240,6 +292,7 @@ fn base_state(
     session_store: RedisSessionStore,
 ) -> AppState {
     AppState {
+        core: CoreState::for_pool(db_pool.clone()),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool,
         kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),
@@ -294,6 +347,7 @@ pub async fn create_test_state_full(pool: PgPool, redis_conn_manager: Connection
     let mgr = plugin_core::services::redis_session::RedisPoolManager::default();
     let deadpool = managed::Pool::builder(mgr).max_size(2).build().unwrap();
     AppState {
+        core: CoreState::for_pool(Some(pool.clone())),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
         kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),
@@ -324,6 +378,7 @@ pub async fn create_test_state_full(pool: PgPool, redis_conn_manager: Connection
 pub async fn create_test_state_with_host_calls(pool: PgPool) -> AppState {
     let host_channel = spawn_host_call_writer(pool.clone());
     AppState {
+        core: CoreState::for_pool(Some(pool.clone())),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
         kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),
