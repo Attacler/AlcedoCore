@@ -8,12 +8,12 @@ use std::sync::Arc;
 use crate::api::permission_check;
 use crate::api::responses::ResponseEnvelope;
 use crate::error::AppError;
-use crate::plugins::health::AppState as PluginAppState;
 use crate::events::forwarder::EventSubscription;
+use crate::plugins::health::AppState as PluginAppState;
 
 pub fn resolve_plugin_callback_url(slug: &str, state: &Arc<PluginAppState>) -> String {
     let port = std::env::var("CORE_PORT").unwrap_or_else(|_| "8080".to_string());
-    if state.dev_mode {
+    if state.core.config.dev_mode {
         format!("http://localhost:{}/__events__", port)
     } else {
         format!("http://plugin_{}:{}/__events__", slug, port)
@@ -37,13 +37,16 @@ pub async fn get_plugin_event_subscriptions(
     .await
     .map_err(|e| AppError::DatabaseError { details: format!("Failed to query subscriptions: {}", e) })?;
 
-    let result: Vec<serde_json::Value> = subscriptions.iter().map(|s| {
-        serde_json::json!({
-            "plugin_slug": s.plugin_slug,
-            "event_type": s.event_type,
-            "callback_url": s.callback_url,
+    let result: Vec<serde_json::Value> = subscriptions
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "plugin_slug": s.plugin_slug,
+                "event_type": s.event_type,
+                "callback_url": s.callback_url,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(ResponseEnvelope::success(result)))
 }

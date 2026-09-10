@@ -4,10 +4,10 @@ use crate::container::PluginPlatform;
 use crate::db::Pool;
 use crate::events::EventBus;
 use crate::kv::store::KvStore;
+use crate::plugins::health::PluginHealthMap;
 use crate::plugins::r#static::StaticPluginRegistry;
 use crate::providers::RegistriesProvider;
 use crate::AppError;
-use crate::plugins::health::PluginHealthMap;
 use alcedo_common::state::CoreState;
 use redis::aio::ConnectionManager;
 use std::sync::Arc;
@@ -22,7 +22,6 @@ pub struct AppState {
     pub health_map: Arc<PluginHealthMap>,
     pub db_pool: Option<Pool>,
     pub kv_store: Arc<KvStore>,
-    pub dev_mode: bool,
     pub plugin_network: Option<String>,
     pub static_registry: Option<Arc<StaticPluginRegistry>>,
     pub registries: Option<Arc<dyn RegistriesProvider>>,

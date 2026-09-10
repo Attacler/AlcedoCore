@@ -312,7 +312,7 @@ async fn main() -> Result<(), AppError> {
     });
 
     // Deploy system plugins from remote manifest if configured
-    if let Some(ref url) = config.system_plugins_url {
+    if let Some(url) = &config.system_plugins_url {
         if let (Some(ref pool), Some(ref provider)) =
             (db_pool.as_ref(), plugin_containers_provider.as_ref())
         {
@@ -488,7 +488,6 @@ async fn main() -> Result<(), AppError> {
         health_map,
         db_pool,
         kv_store,
-        dev_mode: config.dev_mode,
         plugin_network: Some(config.plugin_network),
         static_registry: Some(static_reg),
         registries: registries_provider,

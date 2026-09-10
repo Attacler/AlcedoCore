@@ -34,11 +34,7 @@ fn test_config(dev_mode: bool) -> AppConfig {
             .unwrap_or_else(|_| "/var/run/docker.sock".to_string()),
         plugin_network: String::new(),
         plugins_dir: "/tmp/test-plugins".to_string(),
-        health_check_interval: Duration::from_secs(5),
-        health_check_timeout: Duration::from_secs(60),
-        drain_timeout: Duration::from_secs(60),
         max_restart_attempts: 3,
-        shutdown_timeout: Duration::from_secs(30),
         dev_mode,
         redis_url: String::new(),
         capture_body: false,
@@ -60,13 +56,17 @@ fn test_config(dev_mode: bool) -> AppConfig {
 
 fn create_platform(dev_mode: bool) -> DockerPlatform {
     ensure_docker();
-    let runtime = Arc::new(DockerRuntime::new()) as Arc<dyn alcedo_container::container::ContainerRuntime>;
+    let runtime =
+        Arc::new(DockerRuntime::new()) as Arc<dyn alcedo_container::container::ContainerRuntime>;
     let config = Arc::new(test_config(dev_mode));
     DockerPlatform::new(None, runtime, config)
 }
 
 fn unique_slug() -> String {
-    format!("test-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap())
+    format!(
+        "test-{}",
+        uuid::Uuid::new_v4().to_string().split('-').next().unwrap()
+    )
 }
 
 /// A registry with no pull URL — `Registry::resolve_image` passes the image
@@ -98,7 +98,15 @@ async fn test_deploy_simple_container() {
     let platform = create_platform(true);
     let slug = unique_slug();
 
-    let id = platform.deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", HashMap::new()).await
+    let id = platform
+        .deploy(
+            &test_registry(),
+            &slug,
+            "1.0.0",
+            "hello-world:latest",
+            HashMap::new(),
+        )
+        .await
         .expect("Deploy should succeed");
 
     assert!(!id.is_empty(), "Deployment ID should not be empty");
@@ -119,16 +127,28 @@ async fn test_deploy_with_env_vars() {
     env.insert("FOO".to_string(), "bar".to_string());
     env.insert("HELLO".to_string(), "world".to_string());
 
-    let id = platform.deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", env).await
+    let id = platform
+        .deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", env)
+        .await
         .expect("Deploy with env vars should succeed");
 
-    let info = platform_docker::DOCKER.inspect_container(&id, None).await
+    let info = platform_docker::DOCKER
+        .inspect_container(&id, None)
+        .await
         .expect("Failed to inspect container");
-    let env_vars = info.config.as_ref()
+    let env_vars = info
+        .config
+        .as_ref()
         .and_then(|c| c.env.as_ref())
         .expect("Container should have env vars");
-    assert!(env_vars.iter().any(|e| e == "FOO=bar"), "FOO env var should be set");
-    assert!(env_vars.iter().any(|e| e == "HELLO=world"), "HELLO env var should be set");
+    assert!(
+        env_vars.iter().any(|e| e == "FOO=bar"),
+        "FOO env var should be set"
+    );
+    assert!(
+        env_vars.iter().any(|e| e == "HELLO=world"),
+        "HELLO env var should be set"
+    );
 
     platform.remove(&id).await.expect("Remove should succeed");
 }
@@ -143,7 +163,10 @@ async fn test_deploy_remove_nonexistent() {
 
     let id = "nonexistent-container-id".to_string();
     let err = platform.remove(&id).await.unwrap_err();
-    assert!(matches!(err, alcedo_common::AppError::DockerError { .. }), "Should be a Docker error");
+    assert!(
+        matches!(err, alcedo_common::AppError::DockerError { .. }),
+        "Should be a Docker error"
+    );
 }
 
 #[tokio::test]
@@ -156,10 +179,26 @@ async fn test_deploy_duplicate() {
     let slug = unique_slug();
     let version = "1.0.0";
 
-    let id1 = platform.deploy(&test_registry(), &slug, version, "hello-world:latest", HashMap::new()).await
+    let id1 = platform
+        .deploy(
+            &test_registry(),
+            &slug,
+            version,
+            "hello-world:latest",
+            HashMap::new(),
+        )
+        .await
         .expect("First deploy should succeed");
 
-    let id2 = platform.deploy(&test_registry(), &slug, version, "hello-world:latest", HashMap::new()).await
+    let id2 = platform
+        .deploy(
+            &test_registry(),
+            &slug,
+            version,
+            "hello-world:latest",
+            HashMap::new(),
+        )
+        .await
         .expect("Second deploy (same slug+version) should succeed");
 
     assert_ne!(id1, id2, "Second deploy should create a new container ID");
@@ -175,7 +214,9 @@ async fn test_ensure_image() {
 
     let platform = create_platform(true);
 
-    platform.ensure_image(&test_registry(), "hello-world:latest").await
+    platform
+        .ensure_image(&test_registry(), "hello-world:latest")
+        .await
         .expect("ensure_image should succeed");
 }
 
@@ -188,13 +229,27 @@ async fn test_get_address() {
     let platform = create_platform(true);
     let slug = unique_slug();
 
-    let id = platform.deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", HashMap::new()).await
+    let id = platform
+        .deploy(
+            &test_registry(),
+            &slug,
+            "1.0.0",
+            "hello-world:latest",
+            HashMap::new(),
+        )
+        .await
         .expect("Deploy should succeed");
 
-    let address = platform.get_address(&id).await
+    let address = platform
+        .get_address(&id)
+        .await
         .expect("get_address should succeed");
     assert!(address.is_some(), "Address should be Some in dev mode");
-    assert_eq!(address.unwrap(), "localhost", "Address should be localhost in dev mode");
+    assert_eq!(
+        address.unwrap(),
+        "localhost",
+        "Address should be localhost in dev mode"
+    );
 
     platform.remove(&id).await.expect("Remove should succeed");
 }
@@ -208,7 +263,15 @@ async fn test_restart() {
     let platform = create_platform(true);
     let slug = unique_slug();
 
-    let id = platform.deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", HashMap::new()).await
+    let id = platform
+        .deploy(
+            &test_registry(),
+            &slug,
+            "1.0.0",
+            "hello-world:latest",
+            HashMap::new(),
+        )
+        .await
         .expect("Deploy should succeed");
 
     platform.restart(&id).await.expect("Restart should succeed");

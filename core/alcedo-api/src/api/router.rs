@@ -46,7 +46,7 @@ pub fn make_router(
 ) -> Router {
     tracing::info!(
         "[MAKE_ROUTER] Creating router with state dev_mode={}",
-        state.dev_mode
+        state.core.config.dev_mode
     );
 
     let api_routes = Router::new();

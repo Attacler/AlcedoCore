@@ -266,7 +266,7 @@ pub async fn deploy_plugin_handler(
     }
 
     let mut env = payload.env.clone();
-    let default_core_url = if state.dev_mode {
+    let default_core_url = if state.core.config.dev_mode {
         format!(
             "http://{}:8080",
             std::env::var("DEV_CORE_IP").expect("Expected DEV_CORE_IP to be provided")
@@ -276,7 +276,11 @@ pub async fn deploy_plugin_handler(
     } else {
         "http://core:8080".to_string()
     };
-    let port = if state.dev_mode { "8000" } else { "8080" };
+    let port = if state.core.config.dev_mode {
+        "8000"
+    } else {
+        "8080"
+    };
     env.insert("PORT".to_string(), port.to_string());
     env.insert("CORE_URL".to_string(), default_core_url);
 

@@ -122,7 +122,7 @@ async fn build_folder_path(pool: &sqlx::PgPool, folder_id: Uuid) -> Result<Strin
 async fn check_file_conflict(
     pool: &sqlx::PgPool,
     filename: &str,
-    folder_id: Option<Uuid>,
+    folder_id: Uuid,
     excluding_file_id: Option<Uuid>,
 ) -> Result<bool, AppError> {
     let exists = if let Some(exclude_id) = excluding_file_id {
@@ -244,6 +244,13 @@ pub async fn upload_file(
         }
     }
 
+    if let None = folder_id {
+        return Err(AppError::BadRequest(format!(
+            "The parameter folder_id is missing!"
+        )));
+    }
+    let folder_id = folder_id.unwrap();
+
     if let Some(ref coll) = collection_name {
         require_permission(&state, &identity, &headers, coll, "update").await?;
     }
@@ -253,11 +260,11 @@ pub async fn upload_file(
     let filename = filename.unwrap_or_else(|| "unnamed".to_string());
     let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
 
-    let folder_path = if let Some(fid) = folder_id {
+    let folder_path = {
         let folder_exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM file_folders WHERE id = $1)",
         )
-        .bind(fid)
+        .bind(folder_id)
         .fetch_one(db_pool)
         .await
         .map_err(|e| AppError::DatabaseError {
@@ -268,10 +275,7 @@ pub async fn upload_file(
             return Err(AppError::NotFound("Folder not found".to_string()));
         }
 
-        let path = build_folder_path(db_pool, fid).await?;
-        Some(path)
-    } else {
-        None
+        build_folder_path(db_pool, folder_id).await?
     };
 
     if !overwrite {
@@ -315,7 +319,7 @@ pub async fn upload_file(
             bytes::Bytes::from(file_data.clone()),
             &mime_type,
             &filename,
-            folder_path.as_deref(),
+            &folder_path,
         )
         .await
         .map_err(|e| AppError::Internal(format!("File storage upload failed: {}", e)))?;
@@ -655,6 +659,13 @@ pub async fn update_file_metadata(
 
     let resolved_folder_id = new_folder_id.unwrap_or(current_folder_id);
 
+    if let None = resolved_folder_id {
+        return Err(AppError::NotFound(
+            "The parameter 'folder_id' is required!".to_string(),
+        ));
+    }
+    let resolved_folder_id = resolved_folder_id.unwrap();
+
     let new_storage_path = if new_filename != current_filename || new_folder_id.is_some() {
         let mut actual_path = format!("{}-{}", Uuid::new_v4(), new_filename);
 
@@ -679,19 +690,11 @@ pub async fn update_file_metadata(
 
         if let Ok(Some((mime, data))) = state.file_storage.download(&current_storage_path).await {
             let _ = state.file_storage.delete(&current_storage_path).await;
-            let folder_path_for_storage = if let Some(fid) = resolved_folder_id {
-                Some(build_folder_path(db_pool, fid).await?)
-            } else {
-                None
-            };
+            let folder_path_for_storage = build_folder_path(db_pool, resolved_folder_id).await?;
+
             actual_path = state
                 .file_storage
-                .upload(
-                    data,
-                    &mime,
-                    new_filename,
-                    folder_path_for_storage.as_deref(),
-                )
+                .upload(data, &mime, new_filename, &folder_path_for_storage)
                 .await
                 .map_err(|e| AppError::Internal(format!("File storage move failed: {}", e)))?;
         }
@@ -1095,11 +1098,7 @@ pub async fn update_folder(
                     })?;
 
             for (file_id, file_name) in files {
-                let new_storage_path = if folder_path.is_empty() {
-                    format!("{}-{}", Uuid::new_v4(), file_name)
-                } else {
-                    format!("{}/{}", folder_path, file_name)
-                };
+                let new_storage_path = format!("{}/{}", folder_path, file_name);
 
                 let old_storage_path: String =
                     sqlx::query_scalar("SELECT storage_path FROM file_metadata WHERE id = $1")
@@ -1116,16 +1115,7 @@ pub async fn update_folder(
                     let _ = state.file_storage.delete(&old_storage_path).await;
                     let _ = state
                         .file_storage
-                        .upload(
-                            data,
-                            &mime,
-                            &file_name,
-                            if folder_path.is_empty() {
-                                None
-                            } else {
-                                Some(&folder_path)
-                            },
-                        )
+                        .upload(data, &mime, &file_name, &folder_path)
                         .await;
                 }
 

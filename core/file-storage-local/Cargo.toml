@@ -13,6 +13,5 @@ async-trait = "0.1"
 bytes = "1"
 thiserror = "1"
 tracing = "0.1"
-uuid = { version = "1", features = ["v4", "serde"] }
 mime_guess = "2"
 tokio = { version = "1", features = ["fs"] }

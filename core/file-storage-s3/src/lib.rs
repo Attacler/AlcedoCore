@@ -3,7 +3,6 @@ use aws_sdk_s3::error::SdkError;
 use bytes::Bytes;
 use pcl::{FileStorage, FileStorageError};
 use tracing::error;
-use uuid::Uuid;
 
 pub struct S3FileStorage {
     client: aws_sdk_s3::Client,
@@ -30,12 +29,9 @@ impl FileStorage for S3FileStorage {
         data: Bytes,
         mime_type: &str,
         filename: &str,
-        folder_path: Option<&str>,
+        folder_path: &str,
     ) -> Result<String, FileStorageError> {
-        let key = match folder_path {
-            Some(folder) => format!("{}/{}/{}", self.prefix, folder, filename),
-            None => format!("{}/{}-{}", self.prefix, Uuid::new_v4(), filename),
-        };
+        let key = format!("{}/{}/{}", self.prefix, folder_path, filename);
 
         self.client
             .put_object()
@@ -54,10 +50,7 @@ impl FileStorage for S3FileStorage {
         Ok(key)
     }
 
-    async fn download(
-        &self,
-        path: &str,
-    ) -> Result<Option<(String, Bytes)>, FileStorageError> {
+    async fn download(&self, path: &str) -> Result<Option<(String, Bytes)>, FileStorageError> {
         let output = self
             .client
             .get_object()

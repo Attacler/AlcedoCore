@@ -143,7 +143,7 @@ pub async fn proxy_handler(
         container_id.clone()
     };
 
-    let (target_url, parsed_url) = if state.dev_mode {
+    let (target_url, parsed_url) = if state.core.config.dev_mode {
         let plugin_port = std::env::var("DEV_PLUGIN_PORT").unwrap_or_else(|_| "8000".to_string());
         let url_str = format!("http://localhost:{}/{}", plugin_port, path_info.path);
         tracing::info!("[PROXY] dev mode, connecting to localhost");

@@ -721,9 +721,7 @@ pub async fn deploy_plugin_handler(
     let registry_id = payload.registry_id.unwrap_or(plugin.registry_id);
     let registry = Registry::find_by_id(db_pool, registry_id)
         .await?
-        .ok_or_else(|| {
-            AppError::NotFound(format!("Registry not found: {}", registry_id))
-        })?;
+        .ok_or_else(|| AppError::NotFound(format!("Registry not found: {}", registry_id)))?;
 
     // Determine version/tag to deploy - tag takes precedence over version
     let tag = payload
@@ -889,8 +887,12 @@ pub async fn deploy_plugin_handler(
         "http://core:8080".to_string()
     };
 
-    let port = if state.dev_mode { "8000" } else { "8080" };
-    env.insert("PORT".to_string(), port.to_string());
+    let port = if state.core.config.dev_mode {
+        std::env::var("DEV_PLUGIN_PORT").unwrap_or_else(|_| "8000".to_string())
+    } else {
+        "8080".to_string()
+    };
+    env.insert("PORT".to_string(), port);
     env.insert("CORE_URL".to_string(), default_core_url);
 
     // Give plugins access to the same Redis the core uses (e.g. automation's

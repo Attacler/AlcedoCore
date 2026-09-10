@@ -427,7 +427,6 @@ async fn main() -> Result<(), AppError> {
         health_map,
         db_pool,
         kv_store,
-        dev_mode: config.dev_mode,
         plugin_network: Some(config.plugin_network),
         static_registry: Some(static_reg),
         registries: registries_provider,

@@ -48,37 +48,19 @@ pub struct FileMetadata {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Platform-agnostic interface for file storage backends.
-///
-/// Each backend (local filesystem, S3, etc.) implements this trait.
-/// The core operates entirely through this trait and never references
-/// backend-specific types.
 #[async_trait]
 pub trait FileStorage: Send + Sync {
-    /// Store a file and return the storage path for later retrieval.
-    ///
-    /// The storage path is a backend-specific identifier (e.g. a relative
-    /// file path for local storage, or an object key for S3).
     async fn upload(
         &self,
         data: Bytes,
         mime_type: &str,
         filename: &str,
-        folder_path: Option<&str>,
+        folder_path: &str,
     ) -> Result<String, FileStorageError>;
 
-    /// Retrieve a file by its storage path.
-    ///
-    /// Returns `None` if the file does not exist.
-    /// On success returns `(mime_type, file_bytes)`.
-    async fn download(
-        &self,
-        path: &str,
-    ) -> Result<Option<(String, Bytes)>, FileStorageError>;
+    async fn download(&self, path: &str) -> Result<Option<(String, Bytes)>, FileStorageError>;
 
-    /// Delete a file from storage. Returns an error if the file does not exist.
     async fn delete(&self, path: &str) -> Result<(), FileStorageError>;
 
-    /// Check whether a file exists at the given storage path.
     async fn exists(&self, path: &str) -> Result<bool, FileStorageError>;
 }

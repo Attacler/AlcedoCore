@@ -60,7 +60,6 @@ impl fmt::Display for AuthLevel {
     }
 }
 
-/// Classify a `sqlx::Error` into the appropriate HTTP status and error code.
 fn classify_db_error(err: &sqlx::Error) -> (axum::http::StatusCode, &'static str) {
     match err {
         sqlx::Error::RowNotFound => (axum::http::StatusCode::NOT_FOUND, "NOT_FOUND"),
@@ -134,7 +133,6 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
-    /// 71-nested-field-selection-api
     #[error("Unprocessable entity: {0}")]
     UnprocessableEntity(String),
 
@@ -143,9 +141,6 @@ pub enum AppError {
         container_id: String,
         reason: String,
     },
-
-    #[error("Shutdown timeout exceeded")]
-    ShutdownTimeout,
 
     #[error("Container {container_id} failed")]
     ContainerFailed { container_id: String },
@@ -195,7 +190,7 @@ impl IntoResponse for AppError {
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "CONFIG_ERROR",
             ),
-            AppError::Database(ref err) => classify_db_error(err),
+            AppError::Database(err) => classify_db_error(err),
             AppError::DatabaseError { details } => {
                 // Attempt to classify from the error message text for call sites
                 // that convert sqlx::Error to a string (the majority).
@@ -251,10 +246,6 @@ impl IntoResponse for AppError {
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "RESTART_FAILED",
             ),
-            AppError::ShutdownTimeout => (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "SHUTDOWN_TIMEOUT",
-            ),
             AppError::ContainerFailed { .. } => {
                 (axum::http::StatusCode::BAD_GATEWAY, "CONTAINER_FAILED")
             }
@@ -278,7 +269,6 @@ impl IntoResponse for AppError {
             AppError::Io(_) => "IO error",
             AppError::RedisError(_) => "Redis error",
             AppError::TooManyRequests(_) => "Too many requests",
-            AppError::ShutdownTimeout => "Shutdown timeout",
             AppError::ContainerFailed { .. } => "Container failed",
             AppError::PluginUnhealthy { .. } => "Plugin unhealthy",
             AppError::RestartFailed { .. } => "Restart failed",

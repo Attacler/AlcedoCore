@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub database_url: Option<String>,
@@ -8,11 +6,7 @@ pub struct AppConfig {
     pub docker_socket: String,
     pub plugin_network: String,
     pub plugins_dir: String,
-    pub health_check_interval: Duration,
-    pub health_check_timeout: Duration,
-    pub drain_timeout: Duration,
     pub max_restart_attempts: u32,
-    pub shutdown_timeout: Duration,
     pub dev_mode: bool,
     pub redis_url: String,
     /// When true, capture request bodies for replay debugging.
@@ -72,11 +66,7 @@ impl Default for AppConfig {
             docker_socket: "/var/run/docker.sock".to_string(),
             plugin_network: "alcedocore_plugins".to_string(),
             plugins_dir: "/plugins".to_string(),
-            health_check_interval: Duration::from_secs(5),
-            health_check_timeout: Duration::from_secs(60),
-            drain_timeout: Duration::from_secs(60),
             max_restart_attempts: 3,
-            shutdown_timeout: Duration::from_secs(30),
             dev_mode: false,
             redis_url: String::new(),
             capture_body: false,
@@ -125,15 +115,7 @@ impl AppConfig {
                 .get_string("PLUGIN_NETWORK")
                 .unwrap_or_else(|_| "alcedocore_plugins".to_string()),
             plugins_dir: std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string()),
-            health_check_interval: Duration::from_secs(
-                cfg.get::<u64>("HEALTH_CHECK_INTERVAL").unwrap_or(5),
-            ),
-            health_check_timeout: Duration::from_secs(
-                cfg.get::<u64>("HEALTH_CHECK_TIMEOUT").unwrap_or(60),
-            ),
-            drain_timeout: Duration::from_secs(cfg.get::<u64>("DRAIN_TIMEOUT").unwrap_or(60)),
             max_restart_attempts: cfg.get::<u32>("MAX_RESTART_ATTEMPTS").unwrap_or(3),
-            shutdown_timeout: Duration::from_secs(cfg.get::<u64>("SHUTDOWN_TIMEOUT").unwrap_or(30)),
             dev_mode: cfg.get::<bool>("DEV_MODE").unwrap_or(false),
             redis_url: std::env::var("REDIS_URL").unwrap_or_default(),
             capture_body: cfg.get::<bool>("CAPTURE_BODY").unwrap_or(false),

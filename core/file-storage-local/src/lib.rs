@@ -4,7 +4,6 @@ use pcl::{FileStorage, FileStorageError};
 use std::io;
 use std::path::PathBuf;
 use tracing::{info, warn};
-use uuid::Uuid;
 
 pub struct LocalFileStorage {
     base_path: PathBuf,
@@ -26,12 +25,9 @@ impl FileStorage for LocalFileStorage {
         data: Bytes,
         mime_type: &str,
         filename: &str,
-        folder_path: Option<&str>,
+        folder_path: &str,
     ) -> Result<String, FileStorageError> {
-        let storage_path = match folder_path {
-            Some(folder) => format!("{}/{}", folder, filename),
-            None => format!("{}-{}", Uuid::new_v4(), filename),
-        };
+        let storage_path = format!("{}/{}", folder_path, filename);
         let full_path = self.base_path.join(&storage_path);
 
         if let Some(parent) = full_path.parent() {
@@ -48,10 +44,7 @@ impl FileStorage for LocalFileStorage {
         Ok(storage_path)
     }
 
-    async fn download(
-        &self,
-        path: &str,
-    ) -> Result<Option<(String, Bytes)>, FileStorageError> {
+    async fn download(&self, path: &str) -> Result<Option<(String, Bytes)>, FileStorageError> {
         let full_path = self.base_path.join(path);
 
         match tokio::fs::read(&full_path).await {
@@ -72,15 +65,13 @@ impl FileStorage for LocalFileStorage {
     async fn delete(&self, path: &str) -> Result<(), FileStorageError> {
         let full_path = self.base_path.join(path);
 
-        tokio::fs::remove_file(&full_path)
-            .await
-            .map_err(|e| {
-                if e.kind() == io::ErrorKind::NotFound {
-                    FileStorageError::NotFound(path.to_string())
-                } else {
-                    FileStorageError::StorageError(e.to_string())
-                }
-            })
+        tokio::fs::remove_file(&full_path).await.map_err(|e| {
+            if e.kind() == io::ErrorKind::NotFound {
+                FileStorageError::NotFound(path.to_string())
+            } else {
+                FileStorageError::StorageError(e.to_string())
+            }
+        })
     }
 
     async fn exists(&self, path: &str) -> Result<bool, FileStorageError> {
