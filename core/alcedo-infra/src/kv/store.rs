@@ -1,8 +1,8 @@
 use redis::aio::ConnectionManager;
 use redis::AsyncCommands;
-use tokio::sync::Mutex;
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 pub struct KvStore {
     conn: Option<Arc<Mutex<ConnectionManager>>>,
@@ -26,13 +26,17 @@ impl KvStore {
 
     /// Creates a disabled KV store that returns errors on all operations.
     pub fn new_disabled() -> Self {
-        Self { conn: None, local: None }
+        Self {
+            conn: None,
+            local: None,
+        }
     }
 
     pub async fn get(&self, key: &str) -> Result<Option<String>, crate::AppError> {
         if let Some(conn) = &self.conn {
             let mut conn = conn.lock().await;
-            conn.get::<_, Option<String>>(key).await
+            conn.get::<_, Option<String>>(key)
+                .await
                 .map_err(|e| crate::AppError::RedisError(format!("GET failed: {}", e)))
         } else if let Some(local) = &self.local {
             let local = local.lock().await;
@@ -42,14 +46,21 @@ impl KvStore {
         }
     }
 
-    pub async fn set(&self, key: String, value: String, ttl_seconds: Option<u64>) -> Result<(), crate::AppError> {
+    pub async fn set(
+        &self,
+        key: String,
+        value: String,
+        ttl_seconds: Option<u64>,
+    ) -> Result<(), crate::AppError> {
         if let Some(conn) = &self.conn {
             let mut conn = conn.lock().await;
             if let Some(ttl) = ttl_seconds {
-                conn.set_ex::<_, _, ()>(key, value, ttl as u64).await
+                conn.set_ex::<_, _, ()>(key, value, ttl as u64)
+                    .await
                     .map_err(|e| crate::AppError::RedisError(format!("SETEX failed: {}", e)))
             } else {
-                conn.set::<_, _, ()>(key, value).await
+                conn.set::<_, _, ()>(key, value)
+                    .await
                     .map_err(|e| crate::AppError::RedisError(format!("SET failed: {}", e)))
             }
         } else if let Some(local) = &self.local {
@@ -64,7 +75,8 @@ impl KvStore {
     pub async fn delete(&self, key: &str) -> Result<bool, crate::AppError> {
         if let Some(conn) = &self.conn {
             let mut conn = conn.lock().await;
-            conn.del::<_, i32>(key).await
+            conn.del::<_, i32>(key)
+                .await
                 .map(|n| n > 0)
                 .map_err(|e| crate::AppError::RedisError(format!("DEL failed: {}", e)))
         } else if let Some(local) = &self.local {
@@ -78,7 +90,8 @@ impl KvStore {
     pub async fn exists(&self, key: &str) -> Result<bool, crate::AppError> {
         if let Some(conn) = &self.conn {
             let mut conn = conn.lock().await;
-            conn.exists::<_, i32>(key).await
+            conn.exists::<_, i32>(key)
+                .await
                 .map(|n| n > 0)
                 .map_err(|e| crate::AppError::RedisError(format!("EXISTS failed: {}", e)))
         } else if let Some(local) = &self.local {
@@ -92,7 +105,9 @@ impl KvStore {
     pub async fn ttl(&self, key: &str) -> Result<Option<i64>, crate::AppError> {
         if let Some(conn) = &self.conn {
             let mut conn = conn.lock().await;
-            let remaining: i64 = conn.ttl::<_, i64>(key).await
+            let remaining: i64 = conn
+                .ttl::<_, i64>(key)
+                .await
                 .map_err(|e| crate::AppError::RedisError(format!("TTL failed: {}", e)))?;
             if remaining < 0 {
                 Ok(None)
@@ -133,7 +148,8 @@ impl KvStore {
             Ok(keys)
         } else if let Some(local) = &self.local {
             let local = local.lock().await;
-            let keys: Vec<String> = local.keys()
+            let keys: Vec<String> = local
+                .keys()
                 .filter(|k| k.starts_with(prefix))
                 .cloned()
                 .collect();
@@ -143,7 +159,10 @@ impl KvStore {
         }
     }
 
-    pub async fn batch_get(&self, keys: &[String]) -> Result<HashMap<String, Option<String>>, crate::AppError> {
+    pub async fn batch_get(
+        &self,
+        keys: &[String],
+    ) -> Result<HashMap<String, Option<String>>, crate::AppError> {
         if self.conn.is_some() || self.local.is_some() {
             let mut result = HashMap::new();
             for key in keys {
@@ -156,7 +175,10 @@ impl KvStore {
         }
     }
 
-    pub async fn batch_set(&self, pairs: Vec<(String, String, Option<u64>)>) -> Result<(), crate::AppError> {
+    pub async fn batch_set(
+        &self,
+        pairs: Vec<(String, String, Option<u64>)>,
+    ) -> Result<(), crate::AppError> {
         if let Some(conn) = &self.conn {
             let mut conn = conn.lock().await;
             let mut pipe = redis::pipe();
@@ -167,7 +189,8 @@ impl KvStore {
                     pipe.set(key, value).ignore();
                 }
             }
-            pipe.query_async(&mut *conn).await
+            pipe.query_async(&mut *conn)
+                .await
                 .map_err(|e| crate::AppError::RedisError(format!("batch SET failed: {}", e)))
         } else if let Some(local) = &self.local {
             let mut local = local.lock().await;
@@ -187,7 +210,9 @@ impl KvStore {
             for key in keys {
                 pipe.del(key).ignore();
             }
-            let _: () = pipe.query_async(&mut *conn).await
+            let _: () = pipe
+                .query_async(&mut *conn)
+                .await
                 .map_err(|e| crate::AppError::RedisError(format!("batch DEL failed: {}", e)))?;
             Ok(keys.len() as u64)
         } else if let Some(local) = &self.local {
@@ -202,11 +227,14 @@ impl KvStore {
     pub async fn increment(&self, key: &str, amount: i64) -> Result<i64, crate::AppError> {
         if let Some(conn) = &self.conn {
             let mut conn = conn.lock().await;
-            conn.incr::<_, i64, _>(key, amount).await
+            conn.incr::<_, i64, _>(key, amount)
+                .await
                 .map_err(|e| crate::AppError::RedisError(format!("INCRBY failed: {}", e)))
         } else if let Some(local) = &self.local {
             let mut local = local.lock().await;
-            let entry = local.entry(key.to_string()).or_insert_with(|| "0".to_string());
+            let entry = local
+                .entry(key.to_string())
+                .or_insert_with(|| "0".to_string());
             let current: i64 = entry.parse().unwrap_or(0);
             let new_val = current + amount;
             *entry = new_val.to_string();
@@ -219,7 +247,8 @@ impl KvStore {
     pub async fn decrement(&self, key: &str, amount: i64) -> Result<i64, crate::AppError> {
         if let Some(conn) = &self.conn {
             let mut conn = conn.lock().await;
-            conn.incr::<_, i64, _>(key, -amount).await
+            conn.incr::<_, i64, _>(key, -amount)
+                .await
                 .map_err(|e| crate::AppError::RedisError(format!("DECRBY failed: {}", e)))
         } else if self.local.is_some() {
             self.increment(key, -amount).await
@@ -231,7 +260,8 @@ impl KvStore {
     pub async fn expire(&self, key: &str, ttl: u64) -> Result<(), crate::AppError> {
         if let Some(conn) = &self.conn {
             let mut conn = conn.lock().await;
-            conn.expire::<_, ()>(key, ttl as i64).await
+            conn.expire::<_, ()>(key, ttl as i64)
+                .await
                 .map_err(|e| crate::AppError::RedisError(format!("EXPIRE failed: {}", e)))
         } else if self.local.is_some() {
             Ok(())

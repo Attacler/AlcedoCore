@@ -6,8 +6,8 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
-use tokio::sync::Mutex;
 use time::Duration;
+use tokio::sync::Mutex;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::SessionManagerLayer;
 
@@ -39,21 +39,29 @@ impl TestDb {
             .await?;
         // Create the schemas and app/version source tables, mirroring the
         // core migration runner (alcedo-db/src/db/core_migrations.rs).
-        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "alcedo""#).execute(pool).await?;
-        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default_app010version_1""#).execute(pool).await?;
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "alcedo""#)
+            .execute(pool)
+            .await?;
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default_app010version_1""#)
+            .execute(pool)
+            .await?;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps" (
                 id UUID PRIMARY KEY,
                 name TEXT NOT NULL UNIQUE,
                 api_name TEXT NOT NULL UNIQUE
             )"#,
-        ).execute(pool).await?;
+        )
+        .execute(pool)
+        .await?;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_versions" (
                 id UUID PRIMARY KEY,
                 version_name TEXT NOT NULL
             )"#,
-        ).execute(pool).await?;
+        )
+        .execute(pool)
+        .await?;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps_versions" (
                 app_id UUID NOT NULL REFERENCES "alcedo"."alcedo_apps"(id) ON DELETE CASCADE,
@@ -62,59 +70,203 @@ impl TestDb {
             )"#,
         ).execute(pool).await?;
         let migration_files: Vec<(&str, &str)> = vec![
-            ("001_create_plugins", include_str!("../../core-migrations/001_create_plugins.up.sql")),
-            ("002_create_plugin_versions", include_str!("../../core-migrations/002_create_plugin_versions.up.sql")),
-            ("003_create_schema_migrations", include_str!("../../core-migrations/003_create_schema_migrations.up.sql")),
-            ("004_create_request_logs", include_str!("../../core-migrations/004_create_request_logs.up.sql")),
-            ("005_create_registries", include_str!("../../core-migrations/005_create_registries.up.sql")),
-            ("006_create_collection_definitions", include_str!("../../core-migrations/006_create_collection_definitions.up.sql")),
-            ("007_create_saved_views", include_str!("../../core-migrations/007_create_saved_views.up.sql")),
-            ("008_create_system_settings", include_str!("../../core-migrations/008_create_system_settings.up.sql")),
-            ("009_add_request_body_capture", include_str!("../../core-migrations/009_add_request_body_capture.up.sql")),
-            ("010_create_host_calls", include_str!("../../core-migrations/010_create_host_calls.up.sql")),
-            ("011_activity_logs", include_str!("../../core-migrations/011_activity_logs.up.sql")),
-            ("012_add_registry_fk", include_str!("../../core-migrations/012_add_registry_fk.up.sql")),
-            ("013_create_collection_sections", include_str!("../../core-migrations/013_create_collection_sections.up.sql")),
-            ("014_add_collection_display_name", include_str!("../../core-migrations/014_add_collection_display_name.up.sql")),
-            ("015_create_policies", include_str!("../../core-migrations/015_create_policies.up.sql")),
-            ("016_permission_action_single", include_str!("../../core-migrations/016_permission_action_single.up.sql")),
-            ("017_plugin_scopes", include_str!("../../core-migrations/017_plugin_scopes.up.sql")),
-            ("018_users", include_str!("../../core-migrations/018_users.up.sql")),
-            ("019_roles_permissions", include_str!("../../core-migrations/019_roles_permissions.up.sql")),
-            ("020_rename_role_permissions_to_role_scopes", include_str!("../../core-migrations/020_rename_role_permissions_to_role_scopes.up.sql")),
-            ("021_role_policies", include_str!("../../core-migrations/021_role_policies.up.sql")),
-            ("022_update_scope_names", include_str!("../../core-migrations/022_update_scope_names.up.sql")),
-            ("023_seed_system_collections", include_str!("../../core-migrations/023_seed_system_collections.up.sql")),
-            ("024_seed_users_fields", include_str!("../../core-migrations/024_seed_users_fields.up.sql")),
-            ("025_add_request_log_source", include_str!("../../core-migrations/025_add_request_log_source.up.sql")),
-            ("026_create_developer_api_keys", include_str!("../../core-migrations/026_create_developer_api_keys.up.sql")),
-            ("027_create_collection_fields", include_str!("../../core-migrations/027_create_collection_fields.up.sql")),
-            ("028_event_subscriptions", include_str!("../../core-migrations/028_event_subscriptions.up.sql")),
-            ("029_add_request_id_to_logs", include_str!("../../core-migrations/029_add_request_id_to_logs.up.sql")),
-            ("030_add_actor_to_system_logs", include_str!("../../core-migrations/030_add_actor_to_system_logs.up.sql")),
-            ("031_add_registry_pull_url", include_str!("../../core-migrations/031_add_registry_pull_url.up.sql")),
-            ("032_create_file_metadata", include_str!("../../core-migrations/032_create_file_metadata.up.sql")),
-            ("033_create_item_files", include_str!("../../core-migrations/033_create_item_files.up.sql")),
-            ("034_menus", include_str!("../../core-migrations/034_menus.up.sql")),
-            ("035_create_plugin_recovery", include_str!("../../core-migrations/035_create_plugin_recovery.up.sql")),
-            ("036_add_last_login_at", include_str!("../../core-migrations/036_add_last_login_at.up.sql")),
-            ("037_add_dev_key_prefix_index", include_str!("../../core-migrations/037_add_dev_key_prefix_index.up.sql")),
-            ("038_add_sections_fk", include_str!("../../core-migrations/038_add_sections_fk.up.sql")),
-            ("039_create_collection_layouts", include_str!("../../core-migrations/039_create_collection_layouts.up.sql")),
-            ("040_add_layout_id_to_sections", include_str!("../../core-migrations/040_add_layout_id_to_sections.up.sql")),
-            ("041_create_file_folders", include_str!("../../core-migrations/041_create_file_folders.up.sql")),
-            ("042_add_input_component", include_str!("../../core-migrations/042_add_input_component.up.sql")),
-            ("043_add_display_component", include_str!("../../core-migrations/043_add_display_component.up.sql")),
-            ("044_drop_saved_views_fk", include_str!("../../core-migrations/044_drop_saved_views_fk.up.sql")),
-            ("045_seed_users_sections", include_str!("../../core-migrations/045_seed_users_sections.up.sql")),
-            ("046_seed_users_collection_fields", include_str!("../../core-migrations/046_seed_users_collection_fields.up.sql")),
-            ("047_registries_not_null", include_str!("../../core-migrations/047_registries_not_null.up.sql")),
+            (
+                "001_create_plugins",
+                include_str!("../../core-migrations/001_create_plugins.up.sql"),
+            ),
+            (
+                "002_create_plugin_versions",
+                include_str!("../../core-migrations/002_create_plugin_versions.up.sql"),
+            ),
+            (
+                "003_create_schema_migrations",
+                include_str!("../../core-migrations/003_create_schema_migrations.up.sql"),
+            ),
+            (
+                "004_create_request_logs",
+                include_str!("../../core-migrations/004_create_request_logs.up.sql"),
+            ),
+            (
+                "005_create_registries",
+                include_str!("../../core-migrations/005_create_registries.up.sql"),
+            ),
+            (
+                "006_create_collection_definitions",
+                include_str!("../../core-migrations/006_create_collection_definitions.up.sql"),
+            ),
+            (
+                "007_create_saved_views",
+                include_str!("../../core-migrations/007_create_saved_views.up.sql"),
+            ),
+            (
+                "008_create_system_settings",
+                include_str!("../../core-migrations/008_create_system_settings.up.sql"),
+            ),
+            (
+                "009_add_request_body_capture",
+                include_str!("../../core-migrations/009_add_request_body_capture.up.sql"),
+            ),
+            (
+                "010_create_host_calls",
+                include_str!("../../core-migrations/010_create_host_calls.up.sql"),
+            ),
+            (
+                "011_activity_logs",
+                include_str!("../../core-migrations/011_activity_logs.up.sql"),
+            ),
+            (
+                "012_add_registry_fk",
+                include_str!("../../core-migrations/012_add_registry_fk.up.sql"),
+            ),
+            (
+                "013_create_collection_sections",
+                include_str!("../../core-migrations/013_create_collection_sections.up.sql"),
+            ),
+            (
+                "014_add_collection_display_name",
+                include_str!("../../core-migrations/014_add_collection_display_name.up.sql"),
+            ),
+            (
+                "015_create_policies",
+                include_str!("../../core-migrations/015_create_policies.up.sql"),
+            ),
+            (
+                "016_permission_action_single",
+                include_str!("../../core-migrations/016_permission_action_single.up.sql"),
+            ),
+            (
+                "017_plugin_scopes",
+                include_str!("../../core-migrations/017_plugin_scopes.up.sql"),
+            ),
+            (
+                "018_users",
+                include_str!("../../core-migrations/018_users.up.sql"),
+            ),
+            (
+                "019_roles_permissions",
+                include_str!("../../core-migrations/019_roles_permissions.up.sql"),
+            ),
+            (
+                "020_rename_role_permissions_to_role_scopes",
+                include_str!(
+                    "../../core-migrations/020_rename_role_permissions_to_role_scopes.up.sql"
+                ),
+            ),
+            (
+                "021_role_policies",
+                include_str!("../../core-migrations/021_role_policies.up.sql"),
+            ),
+            (
+                "022_update_scope_names",
+                include_str!("../../core-migrations/022_update_scope_names.up.sql"),
+            ),
+            (
+                "023_seed_system_collections",
+                include_str!("../../core-migrations/023_seed_system_collections.up.sql"),
+            ),
+            (
+                "024_seed_users_fields",
+                include_str!("../../core-migrations/024_seed_users_fields.up.sql"),
+            ),
+            (
+                "025_add_request_log_source",
+                include_str!("../../core-migrations/025_add_request_log_source.up.sql"),
+            ),
+            (
+                "026_create_developer_api_keys",
+                include_str!("../../core-migrations/026_create_developer_api_keys.up.sql"),
+            ),
+            (
+                "027_create_collection_fields",
+                include_str!("../../core-migrations/027_create_collection_fields.up.sql"),
+            ),
+            (
+                "028_event_subscriptions",
+                include_str!("../../core-migrations/028_event_subscriptions.up.sql"),
+            ),
+            (
+                "029_add_request_id_to_logs",
+                include_str!("../../core-migrations/029_add_request_id_to_logs.up.sql"),
+            ),
+            (
+                "030_add_actor_to_system_logs",
+                include_str!("../../core-migrations/030_add_actor_to_system_logs.up.sql"),
+            ),
+            (
+                "031_add_registry_pull_url",
+                include_str!("../../core-migrations/031_add_registry_pull_url.up.sql"),
+            ),
+            (
+                "032_create_file_metadata",
+                include_str!("../../core-migrations/032_create_file_metadata.up.sql"),
+            ),
+            (
+                "033_create_item_files",
+                include_str!("../../core-migrations/033_create_item_files.up.sql"),
+            ),
+            (
+                "034_menus",
+                include_str!("../../core-migrations/034_menus.up.sql"),
+            ),
+            (
+                "035_create_plugin_recovery",
+                include_str!("../../core-migrations/035_create_plugin_recovery.up.sql"),
+            ),
+            (
+                "036_add_last_login_at",
+                include_str!("../../core-migrations/036_add_last_login_at.up.sql"),
+            ),
+            (
+                "037_add_dev_key_prefix_index",
+                include_str!("../../core-migrations/037_add_dev_key_prefix_index.up.sql"),
+            ),
+            (
+                "038_add_sections_fk",
+                include_str!("../../core-migrations/038_add_sections_fk.up.sql"),
+            ),
+            (
+                "039_create_collection_layouts",
+                include_str!("../../core-migrations/039_create_collection_layouts.up.sql"),
+            ),
+            (
+                "040_add_layout_id_to_sections",
+                include_str!("../../core-migrations/040_add_layout_id_to_sections.up.sql"),
+            ),
+            (
+                "041_create_file_folders",
+                include_str!("../../core-migrations/041_create_file_folders.up.sql"),
+            ),
+            (
+                "042_add_input_component",
+                include_str!("../../core-migrations/042_add_input_component.up.sql"),
+            ),
+            (
+                "043_add_display_component",
+                include_str!("../../core-migrations/043_add_display_component.up.sql"),
+            ),
+            (
+                "044_drop_saved_views_fk",
+                include_str!("../../core-migrations/044_drop_saved_views_fk.up.sql"),
+            ),
+            (
+                "045_seed_users_sections",
+                include_str!("../../core-migrations/045_seed_users_sections.up.sql"),
+            ),
+            (
+                "046_seed_users_collection_fields",
+                include_str!("../../core-migrations/046_seed_users_collection_fields.up.sql"),
+            ),
+            (
+                "047_registries_not_null",
+                include_str!("../../core-migrations/047_registries_not_null.up.sql"),
+            ),
         ];
         for (_name, sql) in &migration_files {
             // Route each migration into the per-app-version schema via search_path.
             let mut tx = pool.begin().await?;
             sqlx::query(r#"SET search_path TO "default_app010version_1""#)
-                .execute(&mut *tx).await?;
+                .execute(&mut *tx)
+                .await?;
             for statement in split_sql_statements(sql) {
                 let trimmed = statement.trim();
                 if !trimmed.is_empty() {
@@ -215,7 +367,9 @@ fn create_session_layer(store: RedisSessionStore) -> SessionManagerLayer<RedisSe
         .with_same_site(SameSite::Strict)
         .with_http_only(true)
         .with_secure(false)
-        .with_expiry(tower_sessions::Expiry::OnInactivity(Duration::seconds(3600)))
+        .with_expiry(tower_sessions::Expiry::OnInactivity(Duration::seconds(
+            3600,
+        )))
 }
 
 fn create_full_state(
@@ -232,10 +386,9 @@ fn create_full_state(
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
         kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),
-        file_storage: Arc::new(file_storage_local::LocalFileStorage::new(
-            dir.to_str().unwrap()
-        ).unwrap()),
-        dev_mode: true,
+        file_storage: Arc::new(
+            file_storage_local::LocalFileStorage::new(dir.to_str().unwrap()).unwrap(),
+        ),
         plugin_network: None,
         static_registry: None,
         registries: None,
@@ -259,11 +412,8 @@ fn create_full_state(
 }
 
 async fn provision_dev_key(pool: &PgPool) {
-    let _ = plugin_core::services::auth::provision_dev_api_key(
-        pool,
-        Some(DEV_API_KEY.to_string()),
-    )
-    .await;
+    let _ = plugin_core::services::auth::provision_dev_api_key(pool, Some(DEV_API_KEY.to_string()))
+        .await;
 }
 
 async fn insert_test_plugin(pool: &PgPool, slug: &str) {
@@ -287,11 +437,7 @@ async fn insert_test_plugin(pool: &PgPool, slug: &str) {
     .unwrap();
 }
 
-async fn setup_redis_mapping(
-    conn: &mut ConnectionManager,
-    request_id: &str,
-    plugin_slug: &str,
-) {
+async fn setup_redis_mapping(conn: &mut ConnectionManager, request_id: &str, plugin_slug: &str) {
     let redis_key = format!("plugin_req:{}", request_id);
     let _: Result<(), _> = redis::cmd("SETEX")
         .arg(&redis_key)
@@ -305,10 +451,7 @@ fn unique_slug(prefix: &str) -> String {
     format!(
         "{}-{}",
         prefix,
-        uuid::Uuid::new_v4()
-            .to_string()
-            .replace("-", "")[..12]
-            .to_string()
+        uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string()
     )
 }
 
@@ -319,9 +462,15 @@ fn unique_slug(prefix: &str) -> String {
 async fn test_read_enforcement_filters_by_permission() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     provision_dev_key(test_db.pool()).await;
-    let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
+    let test_redis = common::TestRedis::new()
+        .await
+        .expect("Failed to create test Redis");
     let mut redis_conn = test_redis.conn_manager.clone();
-    let state = create_full_state(test_db.pool().clone(), redis_conn.clone(), test_redis.url.clone());
+    let state = create_full_state(
+        test_db.pool().clone(),
+        redis_conn.clone(),
+        test_redis.url.clone(),
+    );
     let session_layer = create_session_layer(RedisSessionStore::new(redis_conn.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
@@ -342,7 +491,12 @@ async fn test_read_enforcement_filters_by_permission() {
             ]
         }))
         .await;
-    assert_eq!(resp.status_code(), 201, "Create collection: {}", resp.text());
+    assert_eq!(
+        resp.status_code(),
+        201,
+        "Create collection: {}",
+        resp.text()
+    );
 
     let items = vec![
         json!({"name": "Item 1", "status": "active", "price": 10.0}),
@@ -421,9 +575,15 @@ async fn test_read_enforcement_filters_by_permission() {
 async fn test_read_bypass_without_request_id() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     provision_dev_key(test_db.pool()).await;
-    let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
+    let test_redis = common::TestRedis::new()
+        .await
+        .expect("Failed to create test Redis");
     let mut redis_conn = test_redis.conn_manager.clone();
-    let state = create_full_state(test_db.pool().clone(), redis_conn.clone(), test_redis.url.clone());
+    let state = create_full_state(
+        test_db.pool().clone(),
+        redis_conn.clone(),
+        test_redis.url.clone(),
+    );
     let session_layer = create_session_layer(RedisSessionStore::new(redis_conn.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
@@ -444,7 +604,12 @@ async fn test_read_bypass_without_request_id() {
             ]
         }))
         .await;
-    assert_eq!(resp.status_code(), 201, "Create collection: {}", resp.text());
+    assert_eq!(
+        resp.status_code(),
+        201,
+        "Create collection: {}",
+        resp.text()
+    );
 
     let items = vec![
         json!({"name": "Item 1", "status": "active", "price": 10.0}),
@@ -523,9 +688,16 @@ async fn test_read_bypass_without_request_id() {
 async fn test_create_denied_when_no_create_permission() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     provision_dev_key(test_db.pool()).await;
-    let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
-    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone(), test_redis.url.clone());
-    let session_layer = create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
+    let test_redis = common::TestRedis::new()
+        .await
+        .expect("Failed to create test Redis");
+    let state = create_full_state(
+        test_db.pool().clone(),
+        test_redis.conn_manager.clone(),
+        test_redis.url.clone(),
+    );
+    let session_layer =
+        create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
 
@@ -544,7 +716,12 @@ async fn test_create_denied_when_no_create_permission() {
             ]
         }))
         .await;
-    assert_eq!(resp.status_code(), 201, "Create collection: {}", resp.text());
+    assert_eq!(
+        resp.status_code(),
+        201,
+        "Create collection: {}",
+        resp.text()
+    );
 
     let resp = server
         .post("/api/policies")
@@ -604,9 +781,16 @@ async fn test_create_denied_when_no_create_permission() {
 async fn test_additive_policy_merging() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     provision_dev_key(test_db.pool()).await;
-    let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
-    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone(), test_redis.url.clone());
-    let session_layer = create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
+    let test_redis = common::TestRedis::new()
+        .await
+        .expect("Failed to create test Redis");
+    let state = create_full_state(
+        test_db.pool().clone(),
+        test_redis.conn_manager.clone(),
+        test_redis.url.clone(),
+    );
+    let session_layer =
+        create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
 
@@ -626,7 +810,12 @@ async fn test_additive_policy_merging() {
             ]
         }))
         .await;
-    assert_eq!(resp.status_code(), 201, "Create collection: {}", resp.text());
+    assert_eq!(
+        resp.status_code(),
+        201,
+        "Create collection: {}",
+        resp.text()
+    );
 
     let items = vec![
         json!({"name": "Item 1", "status": "active", "price": 10.0}),
@@ -737,9 +926,16 @@ async fn test_additive_policy_merging() {
 async fn test_update_enforcement_restricts_rows() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     provision_dev_key(test_db.pool()).await;
-    let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
-    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone(), test_redis.url.clone());
-    let session_layer = create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
+    let test_redis = common::TestRedis::new()
+        .await
+        .expect("Failed to create test Redis");
+    let state = create_full_state(
+        test_db.pool().clone(),
+        test_redis.conn_manager.clone(),
+        test_redis.url.clone(),
+    );
+    let session_layer =
+        create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
 
@@ -758,7 +954,12 @@ async fn test_update_enforcement_restricts_rows() {
             ]
         }))
         .await;
-    assert_eq!(resp.status_code(), 201, "Create collection: {}", resp.text());
+    assert_eq!(
+        resp.status_code(),
+        201,
+        "Create collection: {}",
+        resp.text()
+    );
 
     let items = vec![
         json!({"name": "Active Item", "status": "active"}),
@@ -851,9 +1052,16 @@ async fn test_update_enforcement_restricts_rows() {
 async fn test_delete_enforcement_restricts_rows() {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     provision_dev_key(test_db.pool()).await;
-    let test_redis = common::TestRedis::new().await.expect("Failed to create test Redis");
-    let state = create_full_state(test_db.pool().clone(), test_redis.conn_manager.clone(), test_redis.url.clone());
-    let session_layer = create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
+    let test_redis = common::TestRedis::new()
+        .await
+        .expect("Failed to create test Redis");
+    let state = create_full_state(
+        test_db.pool().clone(),
+        test_redis.conn_manager.clone(),
+        test_redis.url.clone(),
+    );
+    let session_layer =
+        create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
 
@@ -872,7 +1080,12 @@ async fn test_delete_enforcement_restricts_rows() {
             ]
         }))
         .await;
-    assert_eq!(resp.status_code(), 201, "Create collection: {}", resp.text());
+    assert_eq!(
+        resp.status_code(),
+        201,
+        "Create collection: {}",
+        resp.text()
+    );
 
     let items = vec![
         json!({"name": "Item 1", "status": "active"}),
