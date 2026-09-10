@@ -108,6 +108,7 @@ impl TestDb {
             ("044_drop_saved_views_fk", include_str!("../../core-migrations/044_drop_saved_views_fk.up.sql")),
             ("045_seed_users_sections", include_str!("../../core-migrations/045_seed_users_sections.up.sql")),
             ("046_seed_users_collection_fields", include_str!("../../core-migrations/046_seed_users_collection_fields.up.sql")),
+            ("047_registries_not_null", include_str!("../../core-migrations/047_registries_not_null.up.sql")),
         ];
         for (_name, sql) in &migration_files {
             // Route each migration into the per-app-version schema via search_path.
@@ -121,6 +122,19 @@ impl TestDb {
                 }
             }
             tx.commit().await?;
+        }
+
+        // Provide a default `local` registry so plugin rows have a valid FK.
+        let reg_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM registries")
+            .fetch_one(pool)
+            .await?;
+        if reg_count == 0 {
+            sqlx::query(
+                r#"INSERT INTO registries (name, url, auth_type)
+                   VALUES ('local', 'http://localhost:5000', 'none')"#,
+            )
+            .execute(pool)
+            .await?;
         }
         Ok(())
     }

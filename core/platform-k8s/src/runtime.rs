@@ -1,6 +1,7 @@
-use async_trait::async_trait;
-use alcedo_container::container::{ContainerDetails, ContainerInfo, ImageInfo};
 use alcedo_common::AppError;
+use alcedo_container::container::{ContainerDetails, ContainerInfo, ImageInfo};
+use alcedo_db::queries::Registry;
+use async_trait::async_trait;
 use std::collections::HashMap;
 
 pub struct K8sRuntime;
@@ -13,11 +14,12 @@ impl K8sRuntime {
 
 #[async_trait]
 impl alcedo_container::container::ContainerRuntime for K8sRuntime {
-    async fn pull_image(&self, _image: &str) -> Result<(), AppError> {
-        Ok(())
+    async fn pull_image(&self, _image: &str, _registry: &Registry) -> Result<String, AppError> {
+        Ok("".to_string())
     }
     async fn create_container(
         &self,
+        _registry: &Registry,
         _slug: &str,
         _version: &str,
         _image: &str,
@@ -45,6 +47,7 @@ impl alcedo_container::container::ContainerRuntime for K8sRuntime {
     }
     async fn copy_directory_from_image(
         &self,
+        registry: &Registry,
         _image: &str,
         _src: &str,
         _dest: &str,
@@ -83,7 +86,12 @@ impl alcedo_container::container::ContainerRuntime for K8sRuntime {
     async fn inspect_image(&self, _name: &str) -> Result<ImageInfo, AppError> {
         Err(AppError::Internal("Not implemented".to_string()))
     }
-    async fn get_file_from_image(&self, _name: &str, _path: &str) -> Result<String, AppError> {
+    async fn get_file_from_image(
+        &self,
+        _registry: &Registry,
+        _name: &str,
+        _path: &str,
+    ) -> Result<String, AppError> {
         Err(AppError::Internal("Not implemented".to_string()))
     }
     async fn connect_container_to_network(

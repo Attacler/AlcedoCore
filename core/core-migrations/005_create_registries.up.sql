@@ -11,3 +11,5 @@ CREATE TABLE IF NOT EXISTS registries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_registries_name ON registries(name);
+
+INSERT INTO registries (id,auth_type,name,url) VALUES (0,'none','AlcedoSystemPlugins','')

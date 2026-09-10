@@ -195,7 +195,10 @@ async function fetchPreview() {
         const res = await fetch("/api/plugins/preview", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ image: ref }),
+            body: JSON.stringify({
+                image: ref,
+                registry_id: Number(selectedRegistryId.value),
+            }),
         });
         if (!res.ok) throw new Error(`Preview failed (${res.status})`);
         const json = await res.json();

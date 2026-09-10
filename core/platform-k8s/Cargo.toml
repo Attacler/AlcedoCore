@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [dependencies]
 alcedo-common = { path = "../alcedo-common" }
 alcedo-container = { path = "../alcedo-container" }
+alcedo-db = { path = "../alcedo-db" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

@@ -1,4 +1,7 @@
-use crate::{error::AppError, find_all, find_all_where, find_all_where_bind, find_by, find_by_two, find_by_where, update_by_slug_version, delete_by};
+use crate::{
+    delete_by, error::AppError, find_all, find_all_where, find_all_where_bind, find_by,
+    find_by_two, find_by_where, update_by_slug_version,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -31,7 +34,7 @@ pub struct Plugin {
     pub granted_scopes: serde_json::Value,
     #[serde(default)]
     #[sqlx(default)]
-    pub registry_id: Option<i32>,
+    pub registry_id: i32,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -56,10 +59,12 @@ impl PluginVersion {
     pub async fn set_active(db: &PgPool, slug: &str, version: &str) -> Result<(), AppError> {
         let mut tx = db.begin().await?;
 
-        sqlx::query("UPDATE plugin_versions SET is_active = FALSE WHERE slug = $1 AND is_active = TRUE")
-            .bind(slug)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE plugin_versions SET is_active = FALSE WHERE slug = $1 AND is_active = TRUE",
+        )
+        .bind(slug)
+        .execute(&mut *tx)
+        .await?;
 
         sqlx::query("UPDATE plugin_versions SET is_active = TRUE WHERE slug = $1 AND version = $2")
             .bind(slug)
@@ -72,11 +77,13 @@ impl PluginVersion {
     }
 
     pub async fn deactivate(db: &PgPool, slug: &str, version: &str) -> Result<(), AppError> {
-        sqlx::query("UPDATE plugin_versions SET is_active = FALSE WHERE slug = $1 AND version = $2")
-            .bind(slug)
-            .bind(version)
-            .execute(db)
-            .await?;
+        sqlx::query(
+            "UPDATE plugin_versions SET is_active = FALSE WHERE slug = $1 AND version = $2",
+        )
+        .bind(slug)
+        .bind(version)
+        .execute(db)
+        .await?;
         Ok(())
     }
 
@@ -91,7 +98,13 @@ impl PluginVersion {
         Ok(())
     }
 
-    pub async fn update_container(db: &PgPool, slug: &str, version: &str, container_id: &str, status: &str) -> Result<(), AppError> {
+    pub async fn update_container(
+        db: &PgPool,
+        slug: &str,
+        version: &str,
+        container_id: &str,
+        status: &str,
+    ) -> Result<(), AppError> {
         sqlx::query(
             "UPDATE plugin_versions SET container_id = $3, status = $4 WHERE slug = $1 AND version = $2"
         )
@@ -180,7 +193,10 @@ impl Plugin {
     pub async fn check_not_exists(db: &PgPool, slug: &str) -> Result<(), AppError> {
         let existing = Self::find_by_slug(db, slug).await?;
         if existing.is_some() {
-            return Err(AppError::Conflict(format!("Plugin {} already exists", slug)));
+            return Err(AppError::Conflict(format!(
+                "Plugin {} already exists",
+                slug
+            )));
         }
         Ok(())
     }
@@ -210,7 +226,11 @@ impl Plugin {
                registry_id = EXCLUDED.registry_id,
                updated_at = NOW()";
 
-    async fn plugin_insert_binds(db: &PgPool, plugin: &Plugin, upsert_suffix: &str) -> Result<(), AppError> {
+    async fn plugin_insert_binds(
+        db: &PgPool,
+        plugin: &Plugin,
+        upsert_suffix: &str,
+    ) -> Result<(), AppError> {
         let sql = format!("{}{}", Self::PLUGIN_INSERT_SQL_BASE, upsert_suffix);
         sqlx::query(&sql)
             .bind(&plugin.slug)
@@ -286,9 +306,15 @@ impl Plugin {
         );
 
         let mut q = sqlx::query(&query);
-        if let Some(v) = display_name { q = q.bind(v); }
-        if let Some(v) = description { q = q.bind(v); }
-        if let Some(v) = tags { q = q.bind(v); }
+        if let Some(v) = display_name {
+            q = q.bind(v);
+        }
+        if let Some(v) = description {
+            q = q.bind(v);
+        }
+        if let Some(v) = tags {
+            q = q.bind(v);
+        }
         q = q.bind(slug);
         q.execute(db).await?;
         Ok(())

@@ -1,3 +1,5 @@
+use alcedo_db::queries::Registry;
+use chrono::DateTime;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,25 +19,6 @@ pub struct SystemPluginConfig {
     pub min_core_version: Option<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
-}
-
-/// Resolve image name: if bare (no registry host), try local registry first,
-/// fall back to the original (Docker Hub) name.
-/// Returns the primary attempt and an optional fallback.
-fn resolve_image_names(image: &str) -> (String, Option<String>) {
-    let first_segment = image.split('/').next().unwrap_or("");
-    let has_registry = first_segment.contains('.') || first_segment.contains(':');
-    if has_registry {
-        (image.to_string(), None)
-    } else {
-        match std::env::var("LOCAL_REGISTRY_URL") {
-            Ok(reg) if !reg.is_empty() => {
-                let prefixed = format!("{}/{}", reg.trim_end_matches('/'), image);
-                (prefixed, Some(image.to_string()))
-            }
-            _ => (image.to_string(), None),
-        }
-    }
 }
 
 /// The response from the remote system plugins endpoint.
@@ -127,6 +110,20 @@ impl SystemPluginDeployer {
         let configured_slugs: std::collections::HashSet<String> =
             manifest.plugins.iter().map(|p| p.slug.clone()).collect();
 
+        let registry = Registry {
+            auth_type: "none".to_string(),
+            created_at: Some(DateTime::default()),
+            id: 0,
+            name: "".to_string(),
+            password: None,
+            pull_url: None,
+            updated_at: Some(DateTime::default()),
+            url: "".to_string(),
+            username: None,
+        };
+        let res = Registry::insert(db, &registry).await;
+        println!("create system reg: {:?}", res);
+
         // Deploy or update each plugin from the manifest
         for plugin_cfg in &manifest.plugins {
             let slug = &plugin_cfg.slug;
@@ -170,29 +167,36 @@ impl SystemPluginDeployer {
                     plugin_cfg.version,
                     plugin_cfg.image
                 );
-
-                let (primary_image, fallback_image) = resolve_image_names(&plugin_cfg.image);
-                let mut final_image = primary_image.clone();
                 // Pull image first so we can inspect the manifest
-                let pull_result = container_provider.pull_image(&primary_image).await;
-                if pull_result.is_err() {
-                    if let Some(fallback) = &fallback_image {
-                        tracing::warn!(
-                            "[SYSTEM_DEPLOYER] Failed to pull '{}' from local registry, falling back to '{}'",
-                            primary_image, fallback
+                let system_image = match container_provider
+                    .pull_image(&plugin_cfg.image, &registry)
+                    .await
+                {
+                    Err(e) => {
+                        tracing::error!(
+                            "[SYSTEM_DEPLOYER] Failed to pull '{}' from registry '{}': {}",
+                            plugin_cfg.image,
+                            registry.name,
+                            e
                         );
-                        container_provider.pull_image(fallback).await?;
-                        final_image = fallback.clone();
-                    } else {
-                        pull_result?;
+                        return Err(AppError::Internal(format!(
+                            "[SYSTEM_DEPLOYER] Failed to pull '{}': {}",
+                            plugin_cfg.image, e
+                        )));
                     }
-                }
+                    Ok(image) => image,
+                };
 
                 // Read manifest from image to determine plugin type
                 let manifest_str = container_provider
-                    .get_file_from_image(&final_image, "/app/manifest.json")
+                    .get_file_from_image(&registry, &system_image, "/app/manifest.json")
                     .await
-                    .unwrap();
+                    .map_err(|e| {
+                        AppError::Internal(format!(
+                            "[SYSTEM_DEPLOYER] Failed to read manifest.json from '{}': {}",
+                            system_image, e
+                        ))
+                    })?;
                 let plugin_type = serde_json::from_str::<serde_json::Value>(&manifest_str)
                     .ok()
                     .and_then(|v| {
@@ -246,7 +250,12 @@ impl SystemPluginDeployer {
                     // Copy public/ directory from image to plugins/{slug}/public/
                     let public_dest = slug_dir.to_string_lossy().to_string();
                     match container_provider
-                        .copy_directory_from_image(&final_image, "/app/public", &public_dest)
+                        .copy_directory_from_image(
+                            &registry,
+                            &system_image,
+                            "/app/public",
+                            &public_dest,
+                        )
                         .await
                     {
                         Ok(()) => tracing::info!(
@@ -265,7 +274,7 @@ impl SystemPluginDeployer {
 
                     let new_plugin = Plugin {
                         slug: slug.clone(),
-                        image: final_image.clone(),
+                        image: system_image.clone(),
                         plugin_type: "static".to_string(),
                         system_plugin: true,
                         env: manifest
@@ -327,7 +336,7 @@ impl SystemPluginDeployer {
                                 serde_json::json!(names)
                             })
                             .unwrap_or(serde_json::json!([])),
-                        registry_id: None,
+                        registry_id: registry.id,
                         enabled: true,
                         created_at: None,
                         updated_at: None,

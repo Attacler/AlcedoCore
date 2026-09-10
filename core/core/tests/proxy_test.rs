@@ -40,6 +40,7 @@ async fn test_proxy_plugin_no_container() {
     let slug = format!("proxy-no-container-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/proxy-no-container:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -66,6 +67,7 @@ async fn test_proxy_with_path() {
     let slug = format!("proxy-path-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/proxy-path:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -111,6 +113,7 @@ async fn test_static_public_path_not_found() {
     let slug = format!("static-no-file-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/static-no-file:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;

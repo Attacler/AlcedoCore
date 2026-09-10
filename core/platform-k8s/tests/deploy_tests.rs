@@ -5,7 +5,24 @@ use kube::Api;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::Service;
 use alcedo_container::container::{DeploymentId, PluginPlatform};
+use alcedo_db::queries::Registry;
 use platform_k8s::platform::K8sPlatform;
+
+/// A registry with no URL — K8s `pull_image`/`ensure_image` are no-ops and
+/// ignore the registry; pods pull the image reference as-is from the cluster.
+fn test_registry() -> Registry {
+    Registry {
+        id: 1,
+        name: "test".to_string(),
+        url: "".to_string(),
+        pull_url: None,
+        auth_type: "none".to_string(),
+        username: None,
+        password: None,
+        created_at: None,
+        updated_at: None,
+    }
+}
 
 fn k8s_available() -> bool {
     std::thread::spawn(|| {
@@ -58,7 +75,7 @@ async fn test_deploy_creates_deployment_and_service() {
     let image = "nginx:alpine";
 
     let deployment_id =
-        platform.deploy(&slug, &version, image, HashMap::new()).await
+        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new()).await
             .expect("Deploy should succeed");
     assert!(!deployment_id.is_empty(), "Deploy should return a deployment ID");
 
@@ -93,7 +110,7 @@ async fn test_deploy_with_env_vars() {
     env.insert("MY_VAR".to_string(), "my_value".to_string());
     env.insert("ANOTHER_VAR".to_string(), "42".to_string());
 
-    let deployment_id = platform.deploy(&slug, &version, image, env).await
+    let deployment_id = platform.deploy(&test_registry(), &slug, &version, image, env).await
         .expect("Deploy should succeed");
 
     // Verify env vars in the Deployment spec via kube API
@@ -129,7 +146,7 @@ async fn test_ensure_image() {
         return;
     }
     let platform = create_test_platform().await.unwrap();
-    let result = platform.ensure_image("nginx:alpine").await;
+    let result = platform.ensure_image(&test_registry(), "nginx:alpine").await;
     assert!(result.is_ok(), "ensure_image should be a no-op that returns Ok");
 }
 
@@ -148,7 +165,7 @@ async fn test_remove_cleans_up() {
     let image = "nginx:alpine";
 
     let deployment_id =
-        platform.deploy(&slug, &version, image, HashMap::new()).await
+        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new()).await
             .expect("Deploy should succeed");
 
     let client = kube::Client::try_default().await.unwrap();
@@ -189,7 +206,7 @@ async fn test_restart() {
     let image = "nginx:alpine";
 
     let deployment_id =
-        platform.deploy(&slug, &version, image, HashMap::new()).await
+        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new()).await
             .expect("Deploy should succeed");
     assert!(
         wait_for_pod_ready(&platform, &deployment_id).await,
@@ -221,7 +238,7 @@ async fn test_get_address() {
     let image = "nginx:alpine";
 
     let deployment_id =
-        platform.deploy(&slug, &version, image, HashMap::new()).await
+        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new()).await
             .expect("Deploy should succeed");
     assert!(
         wait_for_pod_ready(&platform, &deployment_id).await,

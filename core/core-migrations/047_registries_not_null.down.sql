@@ -1,0 +1,2 @@
+ALTER TABLE plugins
+    ALTER COLUMN registry_id DROP NOT NULL;

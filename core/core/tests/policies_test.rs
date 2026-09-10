@@ -367,6 +367,7 @@ async fn test_plugin_policy_assignment() {
         .add_header("Authorization", AUTH)
         .json(&json!({
             "slug": slug,
+            "registry_id": 1,
             "image": "localhost:5000/test-plugin:latest",
             "display_name": "Test Plugin"
         }))

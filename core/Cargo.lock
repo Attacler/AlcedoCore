@@ -137,6 +137,7 @@ name = "alcedo-container"
 version = "0.1.0"
 dependencies = [
  "alcedo-common",
+ "alcedo-db",
  "async-trait",
  "serde",
  "tokio",
@@ -3955,6 +3956,7 @@ version = "0.1.0"
 dependencies = [
  "alcedo-common",
  "alcedo-container",
+ "alcedo-db",
  "async-trait",
  "base64 0.22.1",
  "chrono",

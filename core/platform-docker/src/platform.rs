@@ -5,12 +5,13 @@ use tokio::sync::mpsc;
 
 use crate::client::DockerClient;
 use alcedo_common::config::AppConfig;
+use alcedo_common::AppError;
 use alcedo_container::container::{
     ContainerDetails, ContainerInfo, ContainerRuntime, ContainerStatsSnapshot, DeploymentEvent,
     DeploymentId, ImageInfo, InstanceInfo, PluginPlatform,
 };
 use alcedo_db::db::{queries::PluginVersion, Pool};
-use alcedo_common::AppError;
+use alcedo_db::queries::Registry;
 
 pub struct DockerPlatform {
     db_pool: Option<Pool>,
@@ -34,18 +35,19 @@ impl DockerPlatform {
 
 #[async_trait]
 impl PluginPlatform for DockerPlatform {
-    async fn ensure_image(&self, image: &str) -> Result<(), AppError> {
-        self.runtime.pull_image(image).await
+    async fn ensure_image(&self, registry: &Registry, image: &str) -> Result<String, AppError> {
+        self.runtime.pull_image(image, registry).await
     }
 
     async fn deploy(
         &self,
+        registry: &Registry,
         slug: &str,
         version: &str,
         image: &str,
         env: HashMap<String, String>,
     ) -> Result<DeploymentId, AppError> {
-        self.runtime.pull_image(image).await?;
+        let image = self.runtime.pull_image(image, registry).await?;
 
         // Extract and run migrations if a DB pool is available
         if let Some(ref pool) = self.db_pool {
@@ -62,7 +64,7 @@ impl PluginPlatform for DockerPlatform {
 
             match self
                 .runtime
-                .copy_directory_from_image(image, "/app/migrations", &migrations_dir_str)
+                .copy_directory_from_image(registry, &image, "/app/migrations", &migrations_dir_str)
                 .await
             {
                 Ok(()) => {
@@ -80,7 +82,8 @@ impl PluginPlatform for DockerPlatform {
                             slug,
                             migrations_dir_str,
                         );
-                        alcedo_db::db::run_plugin_migrations(pool, slug, &migrations_dir_str).await?;
+                        alcedo_db::db::run_plugin_migrations(pool, slug, &migrations_dir_str)
+                            .await?;
                     } else {
                         tracing::info!("No migration files found for plugin {}", slug);
                         let _ = std::fs::remove_dir_all(&migrations_dir);
@@ -128,7 +131,7 @@ impl PluginPlatform for DockerPlatform {
 
         let container_id = self
             .runtime
-            .create_container(slug, version, image, env, network_mode)
+            .create_container(registry, slug, version, &image, env, network_mode)
             .await?;
 
         self.runtime.start_container(&container_id).await?;
@@ -187,13 +190,26 @@ impl PluginPlatform for DockerPlatform {
         crate::services::scale_plugin_service(&crate::DOCKER, id, replicas as i64).await
     }
 
-    async fn read_file_from_image(&self, image: &str, path: &str) -> Result<String, AppError> {
-        self.runtime.get_file_from_image(image, path).await
+    async fn read_file_from_image(
+        &self,
+        registry: &Registry,
+        image: &str,
+        path: &str,
+    ) -> Result<String, AppError> {
+        self.runtime
+            .get_file_from_image(registry, image, path)
+            .await
     }
 
-    async fn extract_from_image(&self, image: &str, src: &str, dest: &str) -> Result<(), AppError> {
+    async fn extract_from_image(
+        &self,
+        registry: &Registry,
+        image: &str,
+        src: &str,
+        dest: &str,
+    ) -> Result<(), AppError> {
         self.runtime
-            .copy_directory_from_image(image, src, dest)
+            .copy_directory_from_image(registry, image, src, dest)
             .await
     }
 
@@ -362,11 +378,12 @@ impl PluginPlatform for DockerPlatform {
 
     async fn list_directory_in_image(
         &self,
+        registry: &Registry,
         image: &str,
         path: &str,
     ) -> Result<Vec<String>, AppError> {
         crate::client::DockerClient
-            .list_directory_in_image(image, path)
+            .list_directory_in_image(registry, image, path)
             .await
     }
 

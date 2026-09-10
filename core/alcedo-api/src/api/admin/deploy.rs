@@ -37,8 +37,7 @@ pub struct DeployPluginRequest {
     pub settings: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub granted_scopes: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub registry_id: Option<i32>,
+    pub registry_id: i32,
 }
 
 fn default_true() -> bool {
@@ -97,53 +96,38 @@ pub async fn deploy_plugin_handler(
 
     Plugin::check_not_exists(db_pool, &payload.slug).await?;
 
-    let local_image = || -> String {
-        payload
-            .image
-            .rsplit_once('/')
-            .map(|(_, rest)| format!("localhost:5000/{}", rest))
-            .unwrap_or_else(|| format!("localhost:5000/{}", payload.image))
-    };
+    let registry = Registry::find_by_id(db_pool, payload.registry_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("Registry not found: {}", payload.registry_id))
+        })?;
+
+    // Pulls always go through the configured registry — normalize the image
+    // reference against the registry's pull host up front.
+    let deploy_image = registry.resolve_image(&payload.image);
     if let Some(ref platform) = state.platform {
-        platform.ensure_image(&payload.image).await?;
+        platform.ensure_image(&registry, &deploy_image).await?;
     }
 
-    let manifest_content = if let Some(ref platform) = state.platform {
+    let manifest_content: Option<String> = if let Some(ref platform) = state.platform {
         match platform
-            .read_file_from_image(&payload.image, "/app/manifest.json")
+            .read_file_from_image(&registry, &deploy_image, "/app/manifest.json")
             .await
         {
             Ok(content) => {
-                tracing::info!("Found manifest.json in image {}", payload.image);
+                tracing::info!("Found manifest.json in image {}", deploy_image);
                 Some(content)
             }
-            Err(_) => {
-                let local = local_image();
-                match platform
-                    .read_file_from_image(&local, "/app/manifest.json")
-                    .await
-                {
-                    Ok(content) => {
-                        tracing::info!(
-                            "Found manifest.json in image {} (via localhost fallback)",
-                            payload.image
-                        );
-                        Some(content)
-                    }
-                    Err(_) => {
-                        tracing::warn!("No manifest.json found in image {} - will deploy without plugin metadata", payload.image);
-                        return Err(AppError::BadRequest(
-                            "The given plugin does not have a manifest.json.".to_string(),
-                        ));
-                    }
-                }
-            }
+            Err(_) => None,
         }
     } else {
+        None
+    };
+    if manifest_content.is_none() {
         return Err(AppError::BadRequest(
             "The given plugin does not have a manifest.json.".to_string(),
         ));
-    };
+    }
     let manifest_content = manifest_content.unwrap();
     let manifest_content =
         serde_json::from_str::<serde_json::Value>(&manifest_content).map_err(|_| {
@@ -202,7 +186,7 @@ pub async fn deploy_plugin_handler(
 
     let plugin_record = Plugin {
         slug: payload.slug.clone(),
-        image: payload.image.clone(),
+        image: deploy_image.clone(),
         plugin_type: manifest_content
             .get("plugin_type")
             .and_then(|v| v.as_str())
@@ -305,8 +289,7 @@ pub async fn deploy_plugin_handler(
     let container_id = if payload.start_container {
         let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
 
-        let mount_base =
-            std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
+        let mount_base = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
         let has_explicit_pvc = mount_base != "/var/lib/plugin-public";
 
         if has_explicit_pvc {
@@ -317,7 +300,8 @@ pub async fn deploy_plugin_handler(
             if let Some(ref platform) = state.platform {
                 let _ = platform
                     .extract_from_image(
-                        &payload.image,
+                        &registry,
+                        &deploy_image,
                         "/app/migrations",
                         &extract_base.to_string_lossy(),
                     )
@@ -382,7 +366,7 @@ pub async fn deploy_plugin_handler(
                     let dest = extract_base.clone().join(extra_path);
 
                     let _ = platform
-                        .extract_from_image(&payload.image, src, &dest.to_string_lossy())
+                        .extract_from_image(&registry, &deploy_image, src, &dest.to_string_lossy())
                         .await;
                 }
             }
@@ -396,7 +380,8 @@ pub async fn deploy_plugin_handler(
             if let Some(ref platform) = state.platform {
                 let _ = platform
                     .extract_from_image(
-                        &payload.image,
+                        &registry,
+                        &deploy_image,
                         "/app/pages/dist",
                         &pages_dir.to_string_lossy(),
                     )
@@ -406,7 +391,12 @@ pub async fn deploy_plugin_handler(
             let slug_dir = plugins_path.join(&payload.slug);
             if let Some(ref platform) = state.platform {
                 let _ = platform
-                    .extract_from_image(&payload.image, "/app/public", &slug_dir.to_string_lossy())
+                    .extract_from_image(
+                        &registry,
+                        &deploy_image,
+                        "/app/public",
+                        &slug_dir.to_string_lossy(),
+                    )
                     .await;
             }
 
@@ -416,7 +406,12 @@ pub async fn deploy_plugin_handler(
             }
             if let Some(ref platform) = state.platform {
                 let _ = platform
-                    .extract_from_image(&payload.image, "/app/docs", &docs_dir.to_string_lossy())
+                    .extract_from_image(
+                        &registry,
+                        &deploy_image,
+                        "/app/docs",
+                        &docs_dir.to_string_lossy(),
+                    )
                     .await;
             }
 
@@ -427,7 +422,12 @@ pub async fn deploy_plugin_handler(
                 if let Some(ref platform) = state.platform {
                     for src in &["/app/docs", "/app/pages/dist", "/app/public"] {
                         let _ = platform
-                            .extract_from_image(&payload.image, src, &pvc_base.to_string_lossy())
+                            .extract_from_image(
+                                &registry,
+                                &deploy_image,
+                                src,
+                                &pvc_base.to_string_lossy(),
+                            )
                             .await;
                     }
                 }
@@ -456,36 +456,14 @@ pub async fn deploy_plugin_handler(
                 .await
                 .ok();
 
-            let deploy_image = if let Some(rid) = payload.registry_id {
-                match Registry::find_by_id(db_pool, rid).await {
-                    Ok(Some(reg)) => {
-                        if let Some(ref pull_url) = reg.pull_url {
-                            let pull_host = pull_url
-                                .trim_start_matches("http://")
-                                .trim_start_matches("https://")
-                                .trim_end_matches('/');
-                            let reg_host = reg
-                                .url
-                                .trim_start_matches("http://")
-                                .trim_start_matches("https://")
-                                .trim_end_matches('/');
-                            if let Some(rest) = payload.image.strip_prefix(reg_host) {
-                                format!("{}{}", pull_host, rest)
-                            } else {
-                                payload.image.clone()
-                            }
-                        } else {
-                            payload.image.clone()
-                        }
-                    }
-                    _ => payload.image.clone(),
-                }
-            } else {
-                payload.image.clone()
-            };
-
             let dep_id = platform
-                .deploy(&payload.slug, &payload.version, &deploy_image, env.clone())
+                .deploy(
+                    &registry,
+                    &payload.slug,
+                    &payload.version,
+                    &deploy_image,
+                    env.clone(),
+                )
                 .await?;
             tracing::info!(
                 "Deployed plugin {} version {} via platform (id: {})",

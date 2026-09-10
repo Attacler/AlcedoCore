@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use alcedo_common::config::AppConfig;
 use alcedo_container::container::PluginPlatform;
+use alcedo_db::queries::Registry;
 use platform_docker::platform::DockerPlatform;
 use platform_docker::runtime::DockerRuntime;
 
@@ -68,6 +69,22 @@ fn unique_slug() -> String {
     format!("test-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap())
 }
 
+/// A registry with no pull URL — `Registry::resolve_image` passes the image
+/// reference through unchanged, so these tests keep pulling from Docker Hub.
+fn test_registry() -> Registry {
+    Registry {
+        id: 1,
+        name: "test".to_string(),
+        url: "".to_string(),
+        pull_url: None,
+        auth_type: "none".to_string(),
+        username: None,
+        password: None,
+        created_at: None,
+        updated_at: None,
+    }
+}
+
 fn docker_available() -> bool {
     bollard::Docker::connect_with_local_defaults().is_ok()
 }
@@ -81,7 +98,7 @@ async fn test_deploy_simple_container() {
     let platform = create_platform(true);
     let slug = unique_slug();
 
-    let id = platform.deploy(&slug, "1.0.0", "hello-world:latest", HashMap::new()).await
+    let id = platform.deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", HashMap::new()).await
         .expect("Deploy should succeed");
 
     assert!(!id.is_empty(), "Deployment ID should not be empty");
@@ -98,10 +115,11 @@ async fn test_deploy_with_env_vars() {
     let platform = create_platform(true);
     let slug = unique_slug();
     let mut env = HashMap::new();
+
     env.insert("FOO".to_string(), "bar".to_string());
     env.insert("HELLO".to_string(), "world".to_string());
 
-    let id = platform.deploy(&slug, "1.0.0", "hello-world:latest", env).await
+    let id = platform.deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", env).await
         .expect("Deploy with env vars should succeed");
 
     let info = platform_docker::DOCKER.inspect_container(&id, None).await
@@ -138,10 +156,10 @@ async fn test_deploy_duplicate() {
     let slug = unique_slug();
     let version = "1.0.0";
 
-    let id1 = platform.deploy(&slug, version, "hello-world:latest", HashMap::new()).await
+    let id1 = platform.deploy(&test_registry(), &slug, version, "hello-world:latest", HashMap::new()).await
         .expect("First deploy should succeed");
 
-    let id2 = platform.deploy(&slug, version, "hello-world:latest", HashMap::new()).await
+    let id2 = platform.deploy(&test_registry(), &slug, version, "hello-world:latest", HashMap::new()).await
         .expect("Second deploy (same slug+version) should succeed");
 
     assert_ne!(id1, id2, "Second deploy should create a new container ID");
@@ -157,7 +175,7 @@ async fn test_ensure_image() {
 
     let platform = create_platform(true);
 
-    platform.ensure_image("hello-world:latest").await
+    platform.ensure_image(&test_registry(), "hello-world:latest").await
         .expect("ensure_image should succeed");
 }
 
@@ -170,7 +188,7 @@ async fn test_get_address() {
     let platform = create_platform(true);
     let slug = unique_slug();
 
-    let id = platform.deploy(&slug, "1.0.0", "hello-world:latest", HashMap::new()).await
+    let id = platform.deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", HashMap::new()).await
         .expect("Deploy should succeed");
 
     let address = platform.get_address(&id).await
@@ -190,7 +208,7 @@ async fn test_restart() {
     let platform = create_platform(true);
     let slug = unique_slug();
 
-    let id = platform.deploy(&slug, "1.0.0", "hello-world:latest", HashMap::new()).await
+    let id = platform.deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", HashMap::new()).await
         .expect("Deploy should succeed");
 
     platform.restart(&id).await.expect("Restart should succeed");

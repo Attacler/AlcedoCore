@@ -34,7 +34,7 @@ pub struct PluginListItem {
     pub version: String,
     pub status: String,
     pub tags: serde_json::Value,
-    pub registry: Option<String>,
+    pub registry: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,7 +76,9 @@ pub async fn list_plugins_handler(
             .ok()
             .flatten();
         let (version, status) = version_status(&active_version);
-        let registry = resolve_plugin_registry(db_pool, &plugin).await;
+        let registry = resolve_plugin_registry_name(db_pool, &plugin)
+            .await
+            .unwrap_or_else(|| "unknown".to_string());
 
         plugins_list.push(PluginListItem {
             slug: plugin.slug.clone(),
@@ -165,6 +167,7 @@ pub async fn get_plugin_handler(
 pub struct CreatePluginRequest {
     pub slug: String,
     pub image: String,
+    pub registry_id: i32,
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub env: Option<serde_json::Value>,
@@ -207,6 +210,15 @@ pub async fn create_plugin_handler(
         return Err(AppError::BadRequest("Image is required".to_string()));
     }
 
+    // Plugins always belong to a concrete registry — resolve it up front and
+    // normalize the image reference against its pull host.
+    let registry = Registry::find_by_id(db_pool, payload.registry_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("Registry not found: {}", payload.registry_id))
+        })?;
+    let resolved_image = registry.resolve_image(&payload.image);
+
     let existing = Plugin::find_by_slug(db_pool, &payload.slug).await?;
     if existing.is_some() {
         return Err(AppError::Conflict(format!(
@@ -218,7 +230,7 @@ pub async fn create_plugin_handler(
     let now = chrono::Utc::now();
     let plugin = Plugin {
         slug: payload.slug.clone(),
-        image: payload.image.clone(),
+        image: resolved_image,
         plugin_type: "dynamic".to_string(),
         system_plugin: false,
         env: payload.validated_env(),
@@ -233,7 +245,7 @@ pub async fn create_plugin_handler(
         tags: payload.validated_tags(),
         requested_scopes: serde_json::json!([]),
         granted_scopes: serde_json::json!([]),
-        registry_id: None,
+        registry_id: payload.registry_id,
         enabled: true,
         created_at: Some(now),
         updated_at: Some(now),
@@ -288,6 +300,8 @@ pub struct UpdatePluginRequest {
 pub struct DeployPluginRequest {
     pub version: Option<String>,
     pub tag: Option<String>,
+    #[serde(default)]
+    pub registry_id: Option<i32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -312,32 +326,41 @@ pub struct LifecycleResponse {
     pub new_scopes: Option<Vec<serde_json::Value>>,
 }
 
-/// Resolve the display name of the registry a plugin was pulled from.
+/// Resolve the display name of the registry a plugin belongs to.
 ///
 /// Prefers the plugin's `registry_id` FK; falls back to deriving the registry
-/// host from the image string (e.g. "localhost:5000/hello-world:1.0.0").
-async fn resolve_plugin_registry(db_pool: &sqlx::PgPool, plugin: &Plugin) -> Option<String> {
-    if let Some(registry_id) = plugin.registry_id {
-        if let Ok(Some(registry)) = Registry::find_by_id(db_pool, registry_id).await {
-            return Some(registry.name);
-        }
-    }
+/// host from the image string (e.g. "localhost:5000/hello-world:1.0.0") so a
+/// missing/dangling FK never breaks listing.
+pub async fn resolve_plugin_registry_name(
+    db_pool: &sqlx::PgPool,
+    plugin: &Plugin,
+) -> Option<String> {
+    Registry::find_by_id(db_pool, plugin.registry_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|reg| reg.name)
+        .or_else(|| registry_host_from_image(&plugin.image))
+}
 
-    // Fall back to parsing the registry host from the image string.
-    let image = &plugin.image;
+/// Derive the registry host from an image string, e.g. "localhost:5000" from
+/// "localhost:5000/hello-world:1.0.0". Returns None for bare references.
+fn registry_host_from_image(image: &str) -> Option<String> {
     // Strip any tag (last ':') and repo, keeping the leading registry segment.
     let no_tag = match image.rfind(':') {
         Some(pos) => &image[..pos],
         None => image,
     };
-    let host = match no_tag.find('/') {
-        Some(pos) => &no_tag[..pos],
-        None => "registry.hub.docker.com",
-    };
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_string())
+    match no_tag.find('/') {
+        Some(pos) => {
+            let host = &no_tag[..pos];
+            if host.is_empty() {
+                None
+            } else {
+                Some(host.to_string())
+            }
+        }
+        None => None,
     }
 }
 
@@ -406,16 +429,12 @@ pub async fn get_plugin_versions_handler(
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
     // Determine registry URL: prefer registry_id lookup, fall back to parsing image string
-    let registry_url_opt = if let Some(reg_id) = plugin.registry_id {
-        match Registry::find_by_id(db_pool, reg_id).await {
-            Ok(Some(reg)) => {
-                let clean = reg.url.trim_end_matches('/').to_string();
-                Some(clean)
-            }
-            _ => None,
+    let registry_url_opt = match Registry::find_by_id(db_pool, plugin.registry_id).await {
+        Ok(Some(reg)) => {
+            let clean = reg.url.trim_end_matches('/').to_string();
+            Some(clean)
         }
-    } else {
-        None
+        _ => None,
     };
 
     let image = &plugin.image;
@@ -697,6 +716,15 @@ pub async fn deploy_plugin_handler(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
+    // Plugins always pull from a configured registry — fall back to the
+    // plugin's stored registry when the caller doesn't re-send it.
+    let registry_id = payload.registry_id.unwrap_or(plugin.registry_id);
+    let registry = Registry::find_by_id(db_pool, registry_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("Registry not found: {}", registry_id))
+        })?;
+
     // Determine version/tag to deploy - tag takes precedence over version
     let tag = payload
         .tag
@@ -712,6 +740,8 @@ pub async fn deploy_plugin_handler(
         let image_base = plugin.image.rsplitn(2, ':').nth(1).unwrap_or(&plugin.image);
         format!("{}:{}", image_base, tag)
     };
+    // Pulls always go through the configured registry.
+    let deploy_image = registry.resolve_image(&deploy_image);
 
     if let None = state.platform {
         return Err(AppError::Internal("Platform incorrect.".to_string()));
@@ -719,7 +749,7 @@ pub async fn deploy_plugin_handler(
 
     let platform = state.platform.clone().unwrap();
 
-    platform.ensure_image(&deploy_image).await?;
+    platform.ensure_image(&registry, &deploy_image).await?;
 
     let container_id = PluginVersion::find_active(db_pool, &slug)
         .await?
@@ -739,7 +769,7 @@ pub async fn deploy_plugin_handler(
     // Read manifest from image to update plugin metadata
     let mut new_scopes_detected = Vec::new();
     match platform
-        .read_file_from_image(&deploy_image, "/app/manifest.json")
+        .read_file_from_image(&registry, &deploy_image, "/app/manifest.json")
         .await
     {
         Ok(manifest_json) => {
@@ -820,7 +850,7 @@ pub async fn deploy_plugin_handler(
                     tags: serde_json::json!([]),
                     requested_scopes: manifest_scopes,
                     granted_scopes: existing_granted,
-                    registry_id: None,
+                    registry_id: registry_id,
                     enabled: true,
                     created_at: None,
                     updated_at: None,
@@ -870,7 +900,9 @@ pub async fn deploy_plugin_handler(
     }
 
     // Deploy through platform or Docker fallback
-    let container_id = platform.deploy(&slug, &tag, &deploy_image, env).await?;
+    let container_id = platform
+        .deploy(&registry, &slug, &tag, &deploy_image, env)
+        .await?;
     let prev_active = PluginVersion::find_active(db_pool, &slug).await?;
 
     // Try to update DB state; if this fails, clean up the running container
@@ -1054,6 +1086,7 @@ pub async fn get_plugin_instance_logs_handler(
 #[derive(Debug, Deserialize)]
 pub struct PreviewPluginRequest {
     pub image: String,
+    pub registry_id: i32,
 }
 
 #[derive(Debug, Serialize)]
@@ -1069,8 +1102,18 @@ pub async fn preview_plugin_handler(
     Json(payload): Json<PreviewPluginRequest>,
 ) -> Result<Json<ResponseEnvelope<PreviewPluginResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
-    let slug = payload
-        .image
+    let db_pool = state.db()?;
+
+    let registry = Registry::find_by_id(db_pool, payload.registry_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("Registry not found: {}", payload.registry_id))
+        })?;
+
+    // Pulls always go through the configured registry.
+    let image = registry.resolve_image(&payload.image);
+
+    let slug = image
         .rsplit_once('/')
         .and_then(|(_, rest)| rest.rsplit_once(':').map(|(name, _)| name.to_string()))
         .unwrap_or_else(|| payload.image.clone());
@@ -1078,7 +1121,7 @@ pub async fn preview_plugin_handler(
     // Try platform path first (works for both Docker and K8s)
     let manifest = if let Some(ref platform) = state.platform {
         match platform
-            .read_file_from_image(&payload.image, "/app/manifest.json")
+            .read_file_from_image(&registry, &image, "/app/manifest.json")
             .await
         {
             Ok(content) => serde_json::from_str::<serde_json::Value>(&content).ok(),
@@ -1090,7 +1133,7 @@ pub async fn preview_plugin_handler(
 
     let migrations = if let Some(ref platform) = state.platform {
         platform
-            .list_directory_in_image(&payload.image, "/app/migrations")
+            .list_directory_in_image(&registry, &image, "/app/migrations")
             .await
             .unwrap_or_default()
             .into_iter()

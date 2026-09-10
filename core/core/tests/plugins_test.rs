@@ -43,6 +43,7 @@ async fn test_create_and_list_plugin() {
     let slug = unique_slug("create-list");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/test:1.0.0"
     });
 
@@ -69,6 +70,7 @@ async fn test_get_plugin_by_slug() {
     let slug = unique_slug("get-test");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/get-test:1.0.0"
     });
 
@@ -90,6 +92,7 @@ async fn test_delete_plugin() {
     let slug = unique_slug("delete-test");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/delete-test:1.0.0"
     });
 
@@ -121,6 +124,7 @@ async fn test_create_duplicate_plugin() {
     let slug = unique_slug("duplicate");
     let payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/duplicate:1.0.0"
     });
 
@@ -138,6 +142,7 @@ async fn test_list_plugins_pagination() {
         let slug = unique_slug(&format!("pagination-{}", i));
         let payload = serde_json::json!({
             "slug": slug,
+            "registry_id": 1,
             "image": "localhost:5000/pagination:1.0.0"
         });
         let response = server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&payload).await;
@@ -176,6 +181,7 @@ async fn test_create_plugin_empty_slug() {
     let (server, _test_db) = setup().await;
     let payload = serde_json::json!({
         "slug": "",
+        "registry_id": 1,
         "image": "localhost:5000/test:1.0.0"
     });
 
@@ -188,6 +194,7 @@ async fn test_create_plugin_invalid_slug_chars() {
     let (server, _test_db) = setup().await;
     let payload = serde_json::json!({
         "slug": "invalid slug!@#",
+        "registry_id": 1,
         "image": "localhost:5000/test:1.0.0"
     });
 
@@ -200,6 +207,7 @@ async fn test_create_plugin_empty_image() {
     let (server, _test_db) = setup().await;
     let payload = serde_json::json!({
         "slug": "valid-slug",
+        "registry_id": 1,
         "image": ""
     });
 
@@ -213,6 +221,7 @@ async fn test_update_plugin() {
     let slug = unique_slug("update-test");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/update-test:1.0.0"
     });
 
@@ -240,6 +249,7 @@ async fn test_admin_list_plugins() {
     let slug = unique_slug("admin-list");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/admin-list:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -259,6 +269,7 @@ async fn test_admin_plugins_ui_list() {
     let slug = unique_slug("ui-list");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/ui-list:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -277,6 +288,7 @@ async fn test_admin_plugins_ui_get() {
     let slug = unique_slug("ui-get");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/ui-get:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -295,6 +307,7 @@ async fn test_admin_plugin_deploy_requires_container_provider() {
     let payload = serde_json::json!({
         "slug": slug,
         "version": "1.0.0",
+        "registry_id": 1,
         "image": "localhost:5000/test:1.0.0",
         "env": {}
     });
@@ -313,6 +326,7 @@ async fn test_admin_plugin_stop() {
     let slug = unique_slug("stop-test");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/stop-test:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -343,6 +357,7 @@ async fn test_admin_plugin_restart_requires_container() {
     let slug = unique_slug("restart-test");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/restart-test:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -361,6 +376,7 @@ async fn test_admin_plugin_delete() {
     let slug = unique_slug("admin-delete");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/admin-delete:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -393,6 +409,7 @@ async fn test_admin_plugin_docs_path_not_found() {
     let slug = unique_slug("docs-path");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/docs-path:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -410,6 +427,7 @@ async fn test_get_plugin_schema() {
     let slug = unique_slug("schema");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/schema:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -445,6 +463,7 @@ async fn test_get_plugin_migrations() {
     let slug = unique_slug("migrations");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/migrations:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -477,6 +496,7 @@ async fn test_post_plugin_migrations() {
     let slug = unique_slug("migrate-post");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/migrate-post:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -492,6 +512,7 @@ async fn test_get_plugin_settings() {
     let slug = unique_slug("settings");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/settings:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -523,6 +544,7 @@ async fn test_get_plugin_pages() {
     let slug = unique_slug("pages");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/pages:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -557,6 +579,7 @@ async fn test_get_plugin_pages_assets() {
     let slug = unique_slug("assets");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/assets:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -582,6 +605,7 @@ async fn test_get_plugin_docs() {
     let slug = unique_slug("docs");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/docs:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -604,6 +628,7 @@ async fn test_get_plugin_docs_with_path() {
     let slug = unique_slug("docspath");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/docspath:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -619,6 +644,7 @@ async fn test_get_plugin_logs() {
     let slug = unique_slug("logs");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/logs:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -653,6 +679,7 @@ async fn test_get_plugin_logs_with_params() {
     let slug = unique_slug("logparams");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/logparams:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -686,6 +713,7 @@ async fn test_get_plugin_log_detail_not_found() {
     let slug = unique_slug("logdetail");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/logdetail:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;
@@ -718,6 +746,7 @@ async fn test_post_plugin_rollback_version_not_found() {
     let slug = unique_slug("rollback");
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": "localhost:5000/rollback:1.0.0"
     });
     server.post("/api/plugins").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&create_payload).await;

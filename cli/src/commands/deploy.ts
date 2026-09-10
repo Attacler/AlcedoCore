@@ -22,6 +22,48 @@ function parseEnvVars(env: string[] = []): Record<string, string> {
   return result;
 }
 
+interface RegistryItem {
+  id: number;
+  name: string;
+  url: string;
+}
+
+/**
+ * Resolve the registry_id for a deploy from the core's registry list.
+ *
+ * Deploys ALWAYS pull from a configured registry on the core, so we match the
+ * local registry URL against the core's registry entries and fall back to the
+ * first/default one when nothing matches.
+ */
+async function resolveRegistryId(
+  coreUrl: string,
+  apiKey: string | undefined,
+  registryUrl: string,
+): Promise<number> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (apiKey) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+
+  const res = await fetch(`${coreUrl.replace(/\/$/, "")}/api/registries`, { headers });
+  if (!res.ok) {
+    throw new Error(`Failed to list registries (${res.status})`);
+  }
+  const json: any = await res.json();
+  const registries: RegistryItem[] = json?.data?.registries || json?.registries || [];
+  if (!registries.length) {
+    throw new Error(
+      "No registries configured on the core. Seed one via REGISTRY_URL/REGISTRY_NAME or the admin API, then retry.",
+    );
+  }
+
+  const normalized = (url: string) =>
+    (url || "").replace(/^https?:\/\//, "").replace(/\/$/, "");
+  const target = normalized(registryUrl);
+  const match = registries.find((r) => normalized(r.url) === target);
+  return (match || registries[0]).id;
+}
+
 export const deployCommand = new Command("deploy")
   .argument("<slug>", "Plugin slug (e.g., my-plugin)")
   .option("-t, --tag <version>", "Plugin version tag", "1.0.0")
@@ -39,17 +81,30 @@ export const deployCommand = new Command("deploy")
     const spinner = createSpinner(`Deploying plugin: ${slug} v${tag}`);
 
     try {
+      const registryId = await resolveRegistryId(
+        coreUrl,
+        config.apiKey || process.env.ALCEDO_API_KEY,
+        registryUrl,
+      );
+
       const body = JSON.stringify({
         slug,
         version: tag,
         image,
+        registry_id: registryId,
         env: parseEnvVars(options.env),
         start_container: options.start !== false,
       });
 
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      const apiKey = config.apiKey || process.env.ALCEDO_API_KEY;
+      if (apiKey) {
+        headers["Authorization"] = `Bearer ${apiKey}`;
+      }
+
       const res = await fetch(`${coreUrl}/api/plugins/deploy`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body,
       });
 

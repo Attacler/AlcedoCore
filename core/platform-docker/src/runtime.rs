@@ -1,7 +1,8 @@
 use crate::client::DockerClient;
-use alcedo_container::container::{ContainerDetails, ContainerInfo, ContainerRuntime, ImageInfo};
 use alcedo_common::delegate_impl;
 use alcedo_common::AppError;
+use alcedo_container::container::{ContainerDetails, ContainerInfo, ContainerRuntime, ImageInfo};
+use alcedo_db::queries::Registry;
 use std::collections::HashMap;
 
 pub struct DockerRuntime;
@@ -13,8 +14,9 @@ impl DockerRuntime {
 }
 
 delegate_impl!(ContainerRuntime, DockerRuntime, DockerClient, {
-    fn pull_image(image: &str) -> Result<(), AppError>;
+    fn pull_image(image: &str, registry: &Registry) -> Result<String, AppError>;
     fn create_container(
+        registry: &Registry,
         slug: &str,
         version: &str,
         image: &str,
@@ -30,7 +32,11 @@ delegate_impl!(ContainerRuntime, DockerRuntime, DockerClient, {
         -> Result<Option<String>, AppError>;
     fn restart_container(container_id: &str) -> Result<(), AppError>;
     fn inspect_image(image_name: &str) -> Result<ImageInfo, AppError>;
-    fn get_file_from_image(image_name: &str, file_path: &str) -> Result<String, AppError>;
+    fn get_file_from_image(
+        registry: &Registry,
+        image_name: &str,
+        file_path: &str,
+    ) -> Result<String, AppError>;
     fn get_file_from_container(container_id: &str, path: &str) -> Result<Vec<u8>, AppError>;
     fn list_directory_in_container(container_id: &str, path: &str)
         -> Result<Vec<String>, AppError>;
@@ -44,6 +50,7 @@ delegate_impl!(ContainerRuntime, DockerRuntime, DockerClient, {
         host_dest: &str,
     ) -> Result<(), AppError>;
     fn copy_directory_from_image(
+        registry: &Registry,
         image_name: &str,
         container_path: &str,
         host_dest: &str,

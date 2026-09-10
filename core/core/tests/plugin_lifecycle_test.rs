@@ -38,6 +38,7 @@ fn plugins_dir() -> std::path::PathBuf {
 async fn create_plugin_via_api(server: &axum_test::TestServer, slug: &str, image: &str) {
     let create_payload = serde_json::json!({
         "slug": slug,
+        "registry_id": 1,
         "image": image
     });
     let response = server.post("/api/plugins")
@@ -289,6 +290,7 @@ async fn test_plugin_preview_without_provider() {
     let response = server.post("/api/plugins/preview")
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({
+            "registry_id": 1,
             "image": "localhost:5000/preview-test:2.0.0"
         }))
         .await;

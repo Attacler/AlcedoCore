@@ -4,6 +4,7 @@ use alcedo_db::db::resilience::{
     find_slug_by_container_id, get_backoff_delay, record_restart, should_restart,
 };
 use alcedo_db::db::Pool;
+use alcedo_db::queries::Registry;
 use bollard::models::{
     ContainerCreateBody, HostConfig, NetworkConnectRequest, NetworkCreateRequest, RestartPolicy,
     RestartPolicyNameEnum,
@@ -24,10 +25,14 @@ use alcedo_container::container::{ContainerDetails, ContainerInfo, ImageInfo};
 pub struct DockerClient;
 
 impl DockerClient {
-    pub async fn pull_image(&self, image: &str) -> Result<(), AppError> {
-        // Check if the image already exists locally first.
+    pub async fn pull_image(&self, image: &str, registry: &Registry) -> Result<String, AppError> {
+        // Pulls always go through the configured registry: rewrite the image
+        // reference against the registry's pull host (pull_url, else url).
+        let full_image_name = registry.resolve_image(image);
+
         let mut filters = HashMap::new();
-        filters.insert("reference".to_string(), vec![image.to_string()]);
+
+        filters.insert("reference".to_string(), vec![full_image_name.to_string()]);
         let list_options = ListImagesOptions {
             filters: Some(filters),
             ..Default::default()
@@ -36,24 +41,27 @@ impl DockerClient {
             Ok(existing) if !existing.is_empty() => {
                 tracing::info!(
                     "[DOCKER] Image already exists locally, skipping pull: {}",
-                    image
+                    full_image_name
                 );
-                return Ok(());
+                return Ok(full_image_name);
             }
             Ok(_) => {
-                tracing::info!("[DOCKER] Image not found locally, pulling: {}", image);
+                tracing::info!(
+                    "[DOCKER] Image not found locally, pulling: {}",
+                    full_image_name
+                );
             }
             Err(e) => {
                 tracing::warn!(
                     "[DOCKER] Failed to list images, falling back to pull: {} ({:?})",
-                    image,
+                    full_image_name,
                     e
                 );
             }
         }
 
         let options = CreateImageOptions {
-            from_image: Some(image.to_string()),
+            from_image: Some(full_image_name.to_string()),
             ..Default::default()
         };
 
@@ -65,18 +73,19 @@ impl DockerClient {
                 });
             }
         }
-        Ok(())
+        Ok(full_image_name)
     }
 
     pub async fn create_container(
         &self,
+        registry: &Registry,
         slug: &str,
         version: &str,
         image: &str,
         env: HashMap<String, String>,
         network_mode: Option<&str>,
     ) -> Result<String, AppError> {
-        self.pull_image(image).await?;
+        let image = self.pull_image(image, registry).await?;
         let name = format!("{}-{}", slug, version);
 
         let env_vars: Vec<String> = env
@@ -97,7 +106,7 @@ impl DockerClient {
         let exposed_ports = vec!["8000/tcp".to_string()];
 
         let config = ContainerCreateBody {
-            image: Some(image.to_string()),
+            image: Some(image),
             env: Some(env_vars),
             host_config: Some(host_config),
             exposed_ports: Some(exposed_ports),
@@ -353,34 +362,13 @@ impl DockerClient {
         })
     }
 
-    // async fn pull_image(image_name: &str) -> Result<(), AppError> {
-    //     let options = Some(CreateImageOptions {
-    //         from_image: Some(image_name.to_string()),
-    //         ..Default::default()
-    //     });
-
-    //     let mut stream = DOCKER.create_image(options, None, None);
-
-    //     while let Some(msg) = stream.next().await {
-    //         match msg {
-    //             Ok(_) => {}
-    //             Err(err) => {
-    //                 return Err(AppError::Internal(format!(
-    //                     "Failed to create container: {}",
-    //                     e
-    //                 )))
-    //             }
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
     async fn create_temp_container(
         &self,
         prefix: &str,
+        registry: &Registry,
         image_name: &str,
     ) -> Result<(String, String), AppError> {
-        self.pull_image(image_name).await?;
+        let image_name = self.pull_image(image_name, registry).await?;
         let name = format!("temp-{}-{}", prefix, uuid::Uuid::new_v4());
         let config = ContainerCreateBody {
             image: Some(image_name.to_string()),
@@ -412,13 +400,15 @@ impl DockerClient {
 
     pub async fn get_file_from_image(
         &self,
+        registry: &Registry,
         image_name: &str,
         file_path: &str,
     ) -> Result<String, AppError> {
         use futures_util::StreamExt;
 
-        let (_temp_container, container_id) =
-            self.create_temp_container("extract", image_name).await?;
+        let (_temp_container, container_id) = self
+            .create_temp_container("extract", registry, image_name)
+            .await?;
 
         let result = async {
             let download_opts = DownloadFromContainerOptions {
@@ -483,12 +473,15 @@ impl DockerClient {
 
     pub async fn list_directory_in_image(
         &self,
+        registry: &Registry,
         image_name: &str,
         dir_path: &str,
     ) -> Result<Vec<String>, AppError> {
         use futures_util::StreamExt;
 
-        let (_temp_container, container_id) = self.create_temp_container("ls", image_name).await?;
+        let (_temp_container, container_id) = self
+            .create_temp_container("ls", registry, image_name)
+            .await?;
 
         let result = async {
             let download_opts = DownloadFromContainerOptions {
@@ -802,13 +795,14 @@ impl DockerClient {
 
     pub async fn copy_directory_from_image(
         &self,
+        registry: &Registry,
         image_name: &str,
         container_path: &str,
         host_dest: &str,
     ) -> Result<(), AppError> {
         use futures_util::StreamExt;
 
-        self.pull_image(image_name).await?;
+        let image_name = self.pull_image(image_name, registry).await?;
         let temp_container = format!("temp-extract-{}", uuid::Uuid::new_v4());
 
         let config = ContainerCreateBody {

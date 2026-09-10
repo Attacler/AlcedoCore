@@ -260,6 +260,19 @@ async fn main() -> Result<(), AppError> {
         }
     }
 
+    // Plugins ALWAYS pull from a configured registry — ensure at least one
+    // exists (a default `local` registry from LOCAL_REGISTRY_URL). Idempotent.
+    if let Some(ref pool) = db_pool.as_ref() {
+        match pcl::db::queries::Registry::ensure_default(pool, &config.local_registry_url).await {
+            Ok(id) => {
+                tracing::info!("[REGISTRY] Default registry ensured (id={})", id);
+            }
+            Err(e) => {
+                tracing::warn!("[REGISTRY] Failed to ensure default registry: {}", e);
+            }
+        }
+    }
+
     let registries_provider = db_pool.as_ref().map(|pool| {
         Arc::new(RegistriesProviderImpl::new(pool.clone())) as Arc<dyn RegistriesProvider>
     });

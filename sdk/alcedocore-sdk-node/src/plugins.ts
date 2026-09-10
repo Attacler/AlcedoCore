@@ -51,7 +51,7 @@ export function createPluginsResource(ky: any) {
         create: (data: any, options?: any) =>
             ky.post("plugins", { json: data, ...options }).json(),
         createFromRegistry: (
-            data: { slug: string; image: string; status?: string },
+            data: { slug: string; image: string; registry_id?: number; status?: string },
             options?: any,
         ) => ky.post("plugins", { json: data, ...options }).json(),
         delete: (name: string, options?: any) =>

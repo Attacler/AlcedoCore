@@ -1,3 +1,4 @@
+use alcedo_db::queries::Registry;
 use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -84,9 +85,10 @@ pub struct ImageInfo {
 /// Each deployment backend (Docker/Swarm, K8s, Railway) implements this trait.
 #[async_trait]
 pub trait ContainerRuntime: Send + Sync {
-    async fn pull_image(&self, image: &str) -> Result<(), AppError>;
+    async fn pull_image(&self, image: &str, registry: &Registry) -> Result<String, AppError>;
     async fn create_container(
         &self,
+        registry: &Registry,
         slug: &str,
         version: &str,
         image: &str,
@@ -107,6 +109,7 @@ pub trait ContainerRuntime: Send + Sync {
     async fn inspect_image(&self, image_name: &str) -> Result<ImageInfo, AppError>;
     async fn get_file_from_image(
         &self,
+        registry: &Registry,
         image_name: &str,
         file_path: &str,
     ) -> Result<String, AppError>;
@@ -133,6 +136,7 @@ pub trait ContainerRuntime: Send + Sync {
     ) -> Result<(), AppError>;
     async fn copy_directory_from_image(
         &self,
+        registry: &Registry,
         image_name: &str,
         container_path: &str,
         host_dest: &str,
@@ -162,12 +166,13 @@ pub trait ContainerRuntime: Send + Sync {
 #[async_trait]
 pub trait PluginPlatform: Send + Sync {
     /// Ensure the container image is available (pull if needed).
-    async fn ensure_image(&self, image: &str) -> Result<(), AppError>;
+    async fn ensure_image(&self, registry: &Registry, image: &str) -> Result<String, AppError>;
 
     /// Deploy a plugin version. Handles image pull, container/pod creation,
     /// network attachment, and startup. Returns a `DeploymentId`.
     async fn deploy(
         &self,
+        registry: &Registry,
         slug: &str,
         version: &str,
         image: &str,
@@ -192,10 +197,21 @@ pub trait PluginPlatform: Send + Sync {
     async fn scale(&self, id: &DeploymentId, replicas: u32) -> Result<(), AppError>;
 
     /// Read a file from a container image (for manifest/migration extraction).
-    async fn read_file_from_image(&self, image: &str, path: &str) -> Result<String, AppError>;
+    async fn read_file_from_image(
+        &self,
+        registry: &Registry,
+        image: &str,
+        path: &str,
+    ) -> Result<String, AppError>;
 
     /// Extract a directory from a container image to the host filesystem.
-    async fn extract_from_image(&self, image: &str, src: &str, dest: &str) -> Result<(), AppError>;
+    async fn extract_from_image(
+        &self,
+        registry: &Registry,
+        image: &str,
+        src: &str,
+        dest: &str,
+    ) -> Result<(), AppError>;
 
     /// Read a file from a running deployment (for debugging / admin UI).
     async fn read_file(&self, id: &DeploymentId, path: &str) -> Result<Vec<u8>, AppError>;
@@ -237,6 +253,7 @@ pub trait PluginPlatform: Send + Sync {
     /// List files in a directory within a container image (for preview/migrations).
     async fn list_directory_in_image(
         &self,
+        registry: &Registry,
         image: &str,
         path: &str,
     ) -> Result<Vec<String>, AppError>;

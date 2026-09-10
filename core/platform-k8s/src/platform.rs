@@ -14,11 +14,12 @@ use kube::{Api, Client};
 use std::collections::{BTreeMap, HashMap};
 use tokio::sync::mpsc;
 
+use alcedo_common::AppError;
 use alcedo_container::container::{
     ContainerDetails, ContainerInfo, ContainerStatsSnapshot, DeploymentEvent, DeploymentId,
     ImageInfo, InstanceInfo, PluginPlatform,
 };
-use alcedo_common::AppError;
+use alcedo_db::queries::Registry;
 
 const MANAGED_BY_LABEL: &str = "app.kubernetes.io/managed-by";
 const MANAGED_BY_VALUE: &str = "alcedo-core";
@@ -180,12 +181,13 @@ impl K8sPlatform {
 
 #[async_trait]
 impl PluginPlatform for K8sPlatform {
-    async fn ensure_image(&self, _image: &str) -> Result<(), AppError> {
-        Ok(())
+    async fn ensure_image(&self, _registry: &Registry, _image: &str) -> Result<String, AppError> {
+        Ok("".to_string())
     }
 
     async fn deploy(
         &self,
+        registry: &Registry,
         slug: &str,
         _version: &str,
         image: &str,
@@ -359,7 +361,12 @@ impl PluginPlatform for K8sPlatform {
         Ok(())
     }
 
-    async fn read_file_from_image(&self, image: &str, path: &str) -> Result<String, AppError> {
+    async fn read_file_from_image(
+        &self,
+        registry: &Registry,
+        image: &str,
+        path: &str,
+    ) -> Result<String, AppError> {
         let pod_name = self
             .create_temp_pod("readimg", image, vec!["cat".to_string(), path.to_string()])
             .await?;
@@ -379,7 +386,13 @@ impl PluginPlatform for K8sPlatform {
         Ok(logs)
     }
 
-    async fn extract_from_image(&self, image: &str, src: &str, dest: &str) -> Result<(), AppError> {
+    async fn extract_from_image(
+        &self,
+        registry: &Registry,
+        image: &str,
+        src: &str,
+        dest: &str,
+    ) -> Result<(), AppError> {
         // Use tar -C to produce the same output as Docker's download_from_container,
         // which wraps tar entries in the leaf directory name.
         // For /app/public, this produces: public/index.html
@@ -679,6 +692,7 @@ impl PluginPlatform for K8sPlatform {
 
     async fn list_directory_in_image(
         &self,
+        registry: &Registry,
         image: &str,
         path: &str,
     ) -> Result<Vec<String>, AppError> {

@@ -137,11 +137,16 @@ curl -X POST http://localhost:<port>/api/plugins/deploy \
     "slug": "hello-world",
     "version": "1.0.0",
     "image": "localhost:5000/hello-world:1.0.0",
+    "registry_id": 1,
     "env": {}
   }'
 ```
 
 **Note:** Use `/api/plugins/deploy`, not `/admin/plugins/deploy` (which returns 405).
+`registry_id` is required — plugins always pull from a configured registry. The
+core seeds a default `local` registry (id 1, from `LOCAL_REGISTRY_URL`) on
+startup when the registries table is empty; list registries via
+`GET /api/registries`.
 
 ### Access via Proxy
 
@@ -218,7 +223,7 @@ cp pages/dist/* ../../.docker-plugins/<plugin>/pages/dist/
 # 5. Deploy via admin API (if a new plugin)
 curl -X POST http://localhost:8080/api/plugins/deploy \
   -H "Content-Type: application/json" \
-  -d '{"slug": "<plugin>", "version": "0.1.0", "image": "localhost:5000/<plugin>:0.1.0", "env": {}}'
+  -d '{"slug": "<plugin>", "version": "0.1.0", "image": "localhost:5000/<plugin>:0.1.0", "registry_id": 1, "env": {}}'
 ```
 
 For an already-deployed plugin (e.g., automation), update the Swarm service instead:
@@ -357,6 +362,7 @@ curl -X POST http://localhost:8080/api/plugins/deploy \
     "slug": "my-plugin",
     "version": "1.0.0",
     "image": "localhost:5000/my-plugin:1.0.0",
+    "registry_id": 1,
     "env": {},
     "granted_scopes": ["kv.all", "db.query", "items.all"]
   }'

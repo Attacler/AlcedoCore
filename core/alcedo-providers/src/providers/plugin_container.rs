@@ -1,3 +1,4 @@
+use alcedo_db::queries::Registry;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +20,7 @@ pub trait PluginContainerProvider: Send + Sync {
         &self,
         slug: &str,
         version: &str,
+        registry: &Registry,
         image: &str,
         env: HashMap<String, String>,
     ) -> Result<String, AppError>;
@@ -26,7 +28,7 @@ pub trait PluginContainerProvider: Send + Sync {
     async fn start_container(&self, container_id: &str) -> Result<(), AppError>;
     async fn stop_container(&self, container_id: &str) -> Result<(), AppError>;
     async fn remove_container(&self, container_id: &str, force: bool) -> Result<(), AppError>;
-    async fn pull_image(&self, image: &str) -> Result<(), AppError>;
+    async fn pull_image(&self, image: &str, registry: &Registry) -> Result<String, AppError>;
     async fn restart_container(&self, container_id: &str) -> Result<(), AppError>;
     async fn get_file_from_container(
         &self,
@@ -54,11 +56,13 @@ pub trait PluginContainerProvider: Send + Sync {
     async fn inspect_image(&self, image_name: &str) -> Result<ImageInfo, AppError>;
     async fn get_file_from_image(
         &self,
+        registry: &Registry,
         image_name: &str,
         file_path: &str,
     ) -> Result<String, AppError>;
     async fn copy_directory_from_image(
         &self,
+        registry: &Registry,
         image_name: &str,
         container_path: &str,
         host_dest: &str,
@@ -178,6 +182,7 @@ impl PluginContainerProvider for PluginContainerProviderImpl {
         &self,
         slug: &str,
         version: &str,
+        registry: &Registry,
         image: &str,
         env: HashMap<String, String>,
     ) -> Result<String, AppError> {
@@ -211,7 +216,7 @@ impl PluginContainerProvider for PluginContainerProviderImpl {
             PluginVersion::insert(&self.pool, &new_version).await?;
         }
 
-        self.pull_image(image).await?;
+        let image = self.pull_image(image, registry).await?;
 
         let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
         let migrations_dir = std::path::Path::new(&plugins_dir)
@@ -225,7 +230,7 @@ impl PluginContainerProvider for PluginContainerProviderImpl {
 
         match self
             .runtime
-            .copy_directory_from_image(image, "/app/migrations", &migrations_dir_str)
+            .copy_directory_from_image(registry, &image, "/app/migrations", &migrations_dir_str)
             .await
         {
             Ok(()) => {
@@ -270,7 +275,7 @@ impl PluginContainerProvider for PluginContainerProviderImpl {
 
         let container_id = self
             .runtime
-            .create_container(slug, version, image, env, network_mode)
+            .create_container(registry, slug, version, &image, env, network_mode)
             .await?;
 
         self.start_container(&container_id).await?;
@@ -336,8 +341,8 @@ impl PluginContainerProvider for PluginContainerProviderImpl {
         self.runtime.remove_container(container_id, force).await
     }
 
-    async fn pull_image(&self, image: &str) -> Result<(), AppError> {
-        self.runtime.pull_image(image).await
+    async fn pull_image(&self, image: &str, registry: &Registry) -> Result<String, AppError> {
+        self.runtime.pull_image(image, registry).await
     }
 
     async fn restart_container(&self, container_id: &str) -> Result<(), AppError> {
@@ -398,22 +403,24 @@ impl PluginContainerProvider for PluginContainerProviderImpl {
 
     async fn get_file_from_image(
         &self,
+        registry: &Registry,
         image_name: &str,
         file_path: &str,
     ) -> Result<String, AppError> {
         self.runtime
-            .get_file_from_image(image_name, file_path)
+            .get_file_from_image(registry, image_name, file_path)
             .await
     }
 
     async fn copy_directory_from_image(
         &self,
+        registry: &Registry,
         image_name: &str,
         container_path: &str,
         host_dest: &str,
     ) -> Result<(), AppError> {
         self.runtime
-            .copy_directory_from_image(image_name, container_path, host_dest)
+            .copy_directory_from_image(registry, image_name, container_path, host_dest)
             .await
     }
 

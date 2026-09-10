@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 alcedo-common = { path = "../alcedo-common" }
+alcedo-db = { path = "../alcedo-db" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["sync"] }

@@ -55,7 +55,11 @@ async fn test_list_registries() {
     let registries = body["data"]["registries"]
         .as_array()
         .expect("data.registries should be an array");
-    assert!(registries.is_empty(), "Expected empty registry list, got: {}", registries.len());
+    // A default `local` registry is always seeded so plugin pulls never have
+    // an "optional" registry path.
+    assert_eq!(registries.len(), 1, "Expected exactly the default registry, got: {}", registries.len());
+    let name = registries[0].get("name").and_then(|n| n.as_str()).unwrap_or("");
+    assert_eq!(name, "local", "Default registry should be named 'local', got: {}", name);
 }
 
 #[tokio::test]
