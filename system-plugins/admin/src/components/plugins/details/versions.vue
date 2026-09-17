@@ -21,8 +21,8 @@ const dockerInfo = ref<{
         image_id: string;
         tags: string[];
         size: number;
-        container_id: string | null;
-        container_state: string | null;
+        deployment_id: string | null;
+        deployment_state: string | null;
         status: string;
     } | null>(null),
     dockerLoading = ref(false),
@@ -192,12 +192,12 @@ onMounted(() => {
                         </h3>
                         <div>
                             <div class="text-xs text-gray-500 mb-1">
-                                Container ID
+                                Deployment ID
                             </div>
                             <div
                                 class="font-mono text-sm bg-gray-50 p-2 rounded truncate"
                             >
-                                {{ dockerInfo.container_id || "Not running" }}
+                                {{ dockerInfo.deployment_id || "Not running" }}
                             </div>
                         </div>
                         <div class="grid grid-cols-2 gap-4 mt-2">
@@ -210,18 +210,18 @@ onMounted(() => {
                                         class="px-2 py-0.5 rounded-full text-xs font-medium"
                                         :class="{
                                             'bg-green-100 text-green-800':
-                                                dockerInfo.container_state ===
+                                                dockerInfo.deployment_state ===
                                                 'running',
                                             'bg-gray-100 text-gray-700':
-                                                dockerInfo.container_state ===
+                                                dockerInfo.deployment_state ===
                                                     'stopped' ||
-                                                !dockerInfo.container_state,
+                                                !dockerInfo.deployment_state,
                                             'bg-red-100 text-red-800':
-                                                dockerInfo.container_state ===
+                                                dockerInfo.deployment_state ===
                                                 'failed',
                                         }"
                                         >{{
-                                            dockerInfo.container_state ||
+                                            dockerInfo.deployment_state ||
                                             "unknown"
                                         }}</span
                                     >

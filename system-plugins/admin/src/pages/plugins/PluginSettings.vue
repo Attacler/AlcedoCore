@@ -6,6 +6,7 @@ import { useToast } from "@/composables/useToast";
 import DynamicFormField from "@/components/plugins/DynamicFormField.vue";
 import type { JsonSchema } from "@/types/dynamic-form";
 import { validateForm } from "@/types/dynamic-form";
+import { appPath } from "@/utils/appHeaders";
 
 const route = useRoute(),
     store = usePluginsStore(),
@@ -98,7 +99,7 @@ function resetForm() {
 <template>
     <div class="p-6 max-w-2xl">
         <router-link
-            :to="`/plugins/${pluginName}/`"
+            :to="appPath(`/plugins/${pluginName}/`)"
             class="inline-block mb-4 text-blue-500 text-sm hover:underline"
             >← Back to Detail</router-link
         >

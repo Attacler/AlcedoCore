@@ -2,7 +2,7 @@
 import {
     usePluginsStore,
     InstanceInfo,
-    ContainerStatsSnapshot,
+    DeploymentStatsSnapshot,
 } from "@/stores/plugins";
 import { withAsyncHandlingVoid } from "@/utils/asyncUtils";
 import { onMounted, ref } from "vue";
@@ -25,7 +25,7 @@ const instances = ref<InstanceInfo[]>([]),
     showInstanceDetail = ref(false),
     showInstanceLogs = ref(false),
     selectedInstanceId = ref<string | null>(null),
-    instanceStats = ref<Record<string, ContainerStatsSnapshot>>({});
+    instanceStats = ref<Record<string, DeploymentStatsSnapshot>>({});
 let instancesPollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function loadInstances() {

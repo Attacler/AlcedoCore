@@ -11,6 +11,8 @@ import ToastContainer from "@/components/ToastContainer.vue";
 import SplashScreen from "@/components/SplashScreen.vue";
 import { Message, Toast } from "primevue";
 import { useDevServerStore } from "@/stores/devServerStore";
+import { useAppContextStore } from "@/stores/appContext";
+import { appPath } from "@/utils/appHeaders";
 
 const authStore = useAuthStore(),
     router = useRouter(),
@@ -18,7 +20,56 @@ const authStore = useAuthStore(),
     collectionsStore = useCollectionsStore(),
     menuStore = useMenuStore(),
     settingsStore = useSettingsStore(),
-    devStore = useDevServerStore();
+    devStore = useDevServerStore(),
+    appContext = useAppContextStore();
+
+const accessibleApps = ref<{ api_name: string; name: string }[]>([]);
+const appSwitcherOpen = ref(false);
+
+const currentAppName = computed(
+    () =>
+        accessibleApps.value.find(
+            (a) => a.api_name === appContext.appSlug,
+        )?.name ?? appContext.appSlug,
+);
+
+async function loadAccessibleApps() {
+    try {
+        const res = await fetch("/api/me/apps", { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const apps = (data?.data ?? data ?? []) as {
+            app_name: string;
+            api_name: string;
+            version: string;
+        }[];
+        const version = appContext.version;
+        accessibleApps.value = apps
+            .filter((a) => a.version === version)
+            .map((a) => ({ api_name: a.api_name, name: a.app_name }));
+    } catch {
+        /* ignore */
+    }
+}
+
+function switchApp(apiName: string) {
+    const version = appContext.version;
+    if (!version) return;
+    const current = router.currentRoute.value.path;
+    const target = current.replace(
+        new RegExp(`^/app/[^/]+/${version}`),
+        `/app/${encodeURIComponent(apiName)}/${version}`,
+    );
+    router.push(target);
+    appSwitcherOpen.value = false;
+}
+
+function goBackToApps() {
+    router.push({
+        path: "/apps",
+        query: { version: appContext.version || undefined },
+    });
+}
 
 const fullPage = computed(
     () => router.currentRoute.value.meta.fullPage || false,
@@ -74,13 +125,6 @@ const settingsSections = computed<MenuSection[]>(() => {
                 visible: true,
             },
             {
-                id: "registries",
-                label: "Registries",
-                icon: "cloud",
-                route: "/registries",
-                visible: true,
-            },
-            {
                 id: "policies",
                 label: "Policies",
                 icon: "policy",
@@ -92,13 +136,6 @@ const settingsSections = computed<MenuSection[]>(() => {
                 label: "Roles",
                 icon: "security",
                 route: "/roles",
-                visible: true,
-            },
-            {
-                id: "users",
-                label: "Users",
-                icon: "group",
-                route: "/users",
                 visible: true,
             },
         ],
@@ -226,13 +263,29 @@ function visibleSectionItems(section: { items: any[]; visible: boolean }) {
     return section.items.filter((i: any) => i.visible !== false);
 }
 
+const GLOBAL_ONLY_ROUTES = ["/apps", "/users", "/registries", "/login"];
+
+function isGlobalOnlyRoute(route: string): boolean {
+    if (
+        route === "/settings/developer" ||
+        route.startsWith("/settings/developer/")
+    ) {
+        return true;
+    }
+    return GLOBAL_ONLY_ROUTES.some(
+        (prefix) => route === prefix || route.startsWith(prefix + "/"),
+    );
+}
+
 function resolveItemRoute(item: {
     route?: string;
     url?: string;
     external?: boolean;
 }) {
     if (item.external && item.url) return item.url;
-    return item.route || "/";
+    const route = item.route || "/";
+    if (isGlobalOnlyRoute(route)) return route;
+    return appPath(route);
 }
 
 onMounted(() => {
@@ -242,9 +295,22 @@ onMounted(() => {
 
     settingsStore.fetchSettings();
     collectionsStore.fetchCollections();
-    pluginsStore.fetchPlugins();
+    pluginsStore.fetchPlugins({ effective: true });
+    loadAccessibleApps();
     bootStarted.value = true;
 });
+
+watch(
+    () => [appContext.appSlug, appContext.version],
+    async () => {
+        if (appContext.appSlug) {
+            menuStore.loadMyMenus();
+            collectionsStore.fetchCollections(true);
+            await pluginsStore.fetchPlugins({ effective: true });
+        }
+        loadAccessibleApps();
+    },
+);
 
 const bootStarted = ref(false);
 const booting = ref(true);
@@ -466,12 +532,48 @@ onUnmounted(() => {
                 </div>
             </nav>
 
+            <!-- App Switcher -->
+            <div
+                v-if="accessibleApps.length > 1"
+                class="px-2 py-2 border-t border-slate-700/50"
+            >
+                <button
+                    @click="appSwitcherOpen = !appSwitcherOpen"
+                    class="flex items-center gap-2 w-full px-2 py-1.5 rounded hover:bg-slate-700/50 text-sm text-slate-200 transition-colors cursor-pointer"
+                >
+                    <span class="material-symbols-outlined text-lg">apps</span>
+                    <span
+                        v-if="!collapsed || isMobile"
+                        class="flex-1 text-left truncate"
+                        >{{ currentAppName }}</span
+                    >
+                    <span
+                        v-if="!collapsed"
+                        class="material-symbols-outlined text-sm ml-auto"
+                        >arrow_drop_down</span
+                    >
+                </button>
+                <div
+                    v-if="appSwitcherOpen"
+                    class="mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-lg z-50 overflow-hidden"
+                >
+                    <div
+                        v-for="a in accessibleApps"
+                        :key="a.api_name"
+                        @click="switchApp(a.api_name)"
+                        class="flex items-center gap-2 px-3 py-2.5 hover:bg-slate-700 cursor-pointer text-sm transition-colors"
+                    >
+                        <span>{{ a.name }}</span>
+                    </div>
+                </div>
+            </div>
+
             <!-- User Info & Logout -->
             <div
                 v-if="authStore.user"
                 class="border-t border-slate-700 px-3 py-2"
             >
-                <routerLink to="/settings/developer">
+                <routerLink :to="appPath('/settings/developer')">
                     <Message
                         v-if="devStore.enabled"
                         :severity="devStore.connected ? 'success' : 'error'"
@@ -514,6 +616,7 @@ onUnmounted(() => {
             <div
                 class="border-t border-slate-700 p-2"
                 v-if="
+                    authStore.isAdmin ||
                     authStore.scopes.some(
                         (s) =>
                             s === 'users.all' ||
@@ -591,7 +694,18 @@ onUnmounted(() => {
                 class="flex-1 flex flex-col grow"
                 :class="{ 'p-4': !fullPage }"
             >
-                <router-view />
+                <div v-if="appContext.appSlug" class="mb-2">
+                    <Button
+                        label="Apps"
+                        icon="pi pi-arrow-left"
+                        text
+                        size="small"
+                        @click="goBackToApps"
+                    />
+                </div>
+                <router-view
+                    :key="`${appContext.appSlug}:${appContext.version}`"
+                />
             </main>
         </div>
     </div>

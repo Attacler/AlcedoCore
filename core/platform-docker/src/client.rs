@@ -1,7 +1,7 @@
 use crate::DOCKER;
 use alcedo_common::AppError;
 use alcedo_db::db::resilience::{
-    find_slug_by_container_id, get_backoff_delay, record_restart, should_restart,
+    find_install_id_by_deployment_id, get_backoff_delay, record_restart, should_restart,
 };
 use alcedo_db::db::Pool;
 use alcedo_db::queries::Registry;
@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::time::Duration;
 
-use alcedo_container::container::{ContainerDetails, ContainerInfo, ImageInfo};
+use alcedo_container::container::{DeploymentDetails, DeploymentInfo, ImageInfo};
 
 #[derive(Clone)]
 pub struct DockerClient;
@@ -84,9 +84,10 @@ impl DockerClient {
         image: &str,
         env: HashMap<String, String>,
         network_mode: Option<&str>,
+        scope: i64,
     ) -> Result<String, AppError> {
         let image = self.pull_image(image, registry).await?;
-        let name = format!("{}-{}", slug, version);
+        let name = format!("{}-{}-{}", slug, version, scope);
 
         let env_vars: Vec<String> = env
             .into_iter()
@@ -110,7 +111,11 @@ impl DockerClient {
             env: Some(env_vars),
             host_config: Some(host_config),
             exposed_ports: Some(exposed_ports),
-            // entrypoint: Some(vec!["/bin/true".to_string()]),
+            // Allocate a TTY so line-buffered apps (e.g. Python) flush their
+            // stdout/stderr to Docker's log driver. Without a TTY, `print()`
+            // output stays in the process buffer and never reaches `docker logs`
+            // (matching `docker run -t`). Log frames then arrive as `Console`.
+            tty: Some(true),
             ..Default::default()
         };
 
@@ -118,41 +123,40 @@ impl DockerClient {
             name: Some(name),
             ..Default::default()
         };
-        // println!("config: {:?}", options);
         let response = DOCKER.create_container(Some(options), config).await?;
-        // println!("{:?}", response);
         Ok(response.id)
     }
 
-    pub async fn start_container(&self, container_id: &str) -> Result<(), AppError> {
+    pub async fn start_container(&self, deployment_id: &str) -> Result<(), AppError> {
         DOCKER
-            .start_container(container_id, None::<StartContainerOptions>)
+            .start_container(deployment_id, None::<StartContainerOptions>)
             .await?;
         Ok(())
     }
 
     pub async fn stop_container(
         &self,
-        container_id: &str,
+        deployment_id: &str,
         _timeout_secs: i64,
     ) -> Result<(), AppError> {
         DOCKER
-            .stop_container(container_id, None::<StopContainerOptions>)
+            .stop_container(deployment_id, None::<StopContainerOptions>)
             .await?;
         Ok(())
     }
 
-    pub async fn remove_container(&self, container_id: &str, force: bool) -> Result<(), AppError> {
+    pub async fn remove_container(&self, deployment_id: &str, force: bool) -> Result<(), AppError> {
         let options = RemoveContainerOptions {
             force,
             ..Default::default()
         };
-        let remove = DOCKER.remove_container(container_id, Some(options)).await?;
-        println!("Resp: {:?}:{:?}", remove, container_id);
+        DOCKER
+            .remove_container(deployment_id, Some(options))
+            .await?;
         Ok(())
     }
 
-    pub async fn list_containers(&self) -> Result<Vec<ContainerInfo>, AppError> {
+    pub async fn list_containers(&self) -> Result<Vec<DeploymentInfo>, AppError> {
         let options = ListContainersOptions {
             all: true,
             ..Default::default()
@@ -161,7 +165,7 @@ impl DockerClient {
         let containers = DOCKER.list_containers(Some(options)).await?;
         Ok(containers
             .into_iter()
-            .map(|c| ContainerInfo {
+            .map(|c| DeploymentInfo {
                 id: c.id.unwrap_or_default(),
                 name: c
                     .names
@@ -176,9 +180,9 @@ impl DockerClient {
 
     pub async fn inspect_container(
         &self,
-        container_id: &str,
-    ) -> Result<ContainerDetails, AppError> {
-        let info = DOCKER.inspect_container(container_id, None).await?;
+        deployment_id: &str,
+    ) -> Result<DeploymentDetails, AppError> {
+        let info = DOCKER.inspect_container(deployment_id, None).await?;
         let state = info
             .state
             .and_then(|s| s.status)
@@ -188,7 +192,7 @@ impl DockerClient {
             .host_config
             .map(|hc| hc.network_mode.clone())
             .unwrap_or_default();
-        Ok(ContainerDetails {
+        Ok(DeploymentDetails {
             id: info.id.unwrap_or_default(),
             name: info.name.unwrap_or_else(|| "".to_string()),
             state,
@@ -203,10 +207,10 @@ impl DockerClient {
 
     pub async fn get_container_ip(
         &self,
-        container_id: &str,
+        deployment_id: &str,
         network_name: &str,
     ) -> Result<Option<String>, AppError> {
-        let info = DOCKER.inspect_container(container_id, None).await?;
+        let info = DOCKER.inspect_container(deployment_id, None).await?;
         if let Some(networks) = info.network_settings.map(|ns| ns.networks).flatten() {
             if let Some(network_settings) = networks.get(network_name) {
                 match &network_settings.ip_address {
@@ -218,8 +222,8 @@ impl DockerClient {
         Ok(None)
     }
 
-    pub async fn is_host_network_mode(&self, container_id: &str) -> Result<bool, AppError> {
-        let info = DOCKER.inspect_container(container_id, None).await?;
+    pub async fn is_host_network_mode(&self, deployment_id: &str) -> Result<bool, AppError> {
+        let info = DOCKER.inspect_container(deployment_id, None).await?;
         let network_mode = info
             .host_config
             .map(|hc| hc.network_mode.clone())
@@ -227,21 +231,21 @@ impl DockerClient {
         Ok(network_mode == Some("host".to_string()) || network_mode == Some("HOST".to_string()))
     }
 
-    pub async fn restart_container(&self, container_id: &str) -> Result<(), AppError> {
-        self.stop_container(container_id, 60).await?;
-        self.start_container(container_id).await
+    pub async fn restart_container(&self, deployment_id: &str) -> Result<(), AppError> {
+        self.stop_container(deployment_id, 60).await?;
+        self.start_container(deployment_id).await
     }
 
     pub async fn restart_container_with_backoff(
         &self,
         db: &Pool,
-        container_id: &str,
+        deployment_id: &str,
         backoff_delay: Duration,
     ) -> Result<(), AppError> {
-        let slug = match find_slug_by_container_id(db, container_id).await? {
-            Some(s) => s,
+        let install_id = match find_install_id_by_deployment_id(db, deployment_id).await? {
+            Some(id) => id,
             None => {
-                tracing::warn!(container_id = %container_id, "Cannot find slug for container, skipping restart");
+                tracing::warn!(deployment_id = %deployment_id, "Cannot find install for container, skipping restart");
                 return Ok(());
             }
         };
@@ -250,32 +254,32 @@ impl DockerClient {
             .map(|c| c.max_restart_attempts as i32)
             .unwrap_or(3);
 
-        if !should_restart(db, &slug, max_attempts).await? {
-            tracing::warn!(container_id = %container_id, "Container exceeded restart attempts, entering failed state");
+        if !should_restart(db, install_id, max_attempts).await? {
+            tracing::warn!(deployment_id = %deployment_id, "Container exceeded restart attempts, entering failed state");
             return Err(AppError::Internal(format!(
                 "Container {} entered failed state after {} restart attempts",
-                container_id, max_attempts
+                deployment_id, max_attempts
             )));
         }
 
-        record_restart(db, &slug, None).await?;
+        record_restart(db, install_id, None).await?;
         tokio::time::sleep(backoff_delay).await;
-        self.start_container(container_id).await
+        self.start_container(deployment_id).await
     }
 
     pub async fn handle_container_exit(
         &self,
         db: &Pool,
-        container_id: &str,
+        deployment_id: &str,
         exit_code: i32,
     ) -> Result<(), AppError> {
         if exit_code != 0 {
-            tracing::info!(container_id = %container_id, exit_code = %exit_code, "Container exited with non-zero code, checking restart eligibility");
+            tracing::info!(deployment_id = %deployment_id, exit_code = %exit_code, "Container exited with non-zero code, checking restart eligibility");
 
-            let slug = match find_slug_by_container_id(db, container_id).await? {
-                Some(s) => s,
+            let install_id = match find_install_id_by_deployment_id(db, deployment_id).await? {
+                Some(id) => id,
                 None => {
-                    tracing::warn!(container_id = %container_id, "Cannot find slug for container, skipping restart check");
+                    tracing::warn!(deployment_id = %deployment_id, "Cannot find install for container, skipping restart check");
                     return Ok(());
                 }
             };
@@ -284,12 +288,12 @@ impl DockerClient {
                 .map(|c| c.max_restart_attempts as i32)
                 .unwrap_or(3);
 
-            if should_restart(db, &slug, max_attempts).await? {
+            if should_restart(db, install_id, max_attempts).await? {
                 let recovery =
-                    alcedo_db::db::queries::PluginRecovery::find_by_slug(db, &slug).await?;
+                    alcedo_db::db::queries::PluginRecovery::find_by_install(db, install_id).await?;
                 let backoff =
                     get_backoff_delay(recovery.map(|r| r.restart_count as u8).unwrap_or(0));
-                self.restart_container_with_backoff(db, container_id, backoff)
+                self.restart_container_with_backoff(db, deployment_id, backoff)
                     .await?;
             }
         }
@@ -298,7 +302,7 @@ impl DockerClient {
 
     pub async fn connect_container_to_network(
         &self,
-        container_id: &str,
+        deployment_id: &str,
         network_name: &str,
         alias: Option<&str>,
     ) -> Result<(), AppError> {
@@ -310,7 +314,7 @@ impl DockerClient {
             None => bollard_stubs::models::EndpointSettings::default(),
         };
         let config = NetworkConnectRequest {
-            container: container_id.to_string(),
+            container: deployment_id.to_string(),
             endpoint_config: Some(endpoint_config),
         };
         DOCKER.connect_network(network_name, config).await?;
@@ -386,10 +390,10 @@ impl DockerClient {
         Ok((name, response.id))
     }
 
-    async fn remove_container_quiet(container_id: &str) {
+    async fn remove_container_quiet(deployment_id: &str) {
         let _ = DOCKER
             .remove_container(
-                container_id,
+                deployment_id,
                 Some(RemoveContainerOptions {
                     force: true,
                     ..Default::default()
@@ -406,7 +410,7 @@ impl DockerClient {
     ) -> Result<String, AppError> {
         use futures_util::StreamExt;
 
-        let (_temp_container, container_id) = self
+        let (_temp_container, deployment_id) = self
             .create_temp_container("extract", registry, image_name)
             .await?;
 
@@ -415,7 +419,7 @@ impl DockerClient {
                 path: file_path.to_string(),
             };
 
-            let mut stream = DOCKER.download_from_container(&container_id, Some(download_opts));
+            let mut stream = DOCKER.download_from_container(&deployment_id, Some(download_opts));
             let mut all_bytes = Vec::new();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk
@@ -467,7 +471,7 @@ impl DockerClient {
         }
         .await;
 
-        Self::remove_container_quiet(&container_id).await;
+        Self::remove_container_quiet(&deployment_id).await;
         result
     }
 
@@ -479,7 +483,7 @@ impl DockerClient {
     ) -> Result<Vec<String>, AppError> {
         use futures_util::StreamExt;
 
-        let (_temp_container, container_id) = self
+        let (_temp_container, deployment_id) = self
             .create_temp_container("ls", registry, image_name)
             .await?;
 
@@ -488,7 +492,7 @@ impl DockerClient {
                 path: dir_path.to_string(),
             };
 
-            let mut stream = DOCKER.download_from_container(&container_id, Some(download_opts));
+            let mut stream = DOCKER.download_from_container(&deployment_id, Some(download_opts));
             let mut all_bytes = Vec::new();
             while let Some(chunk) = stream.next().await {
                 let bytes = chunk
@@ -521,13 +525,13 @@ impl DockerClient {
         }
         .await;
 
-        Self::remove_container_quiet(&container_id).await;
+        Self::remove_container_quiet(&deployment_id).await;
         result
     }
 
     pub async fn get_file_from_container(
         &self,
-        container_id: &str,
+        deployment_id: &str,
         path: &str,
     ) -> Result<Vec<u8>, AppError> {
         use bollard::container::LogOutput;
@@ -542,7 +546,7 @@ impl DockerClient {
             ..Default::default()
         };
 
-        let exec = DOCKER.create_exec(container_id, exec_options).await?;
+        let exec = DOCKER.create_exec(deployment_id, exec_options).await?;
 
         let start_options = StartExecOptions {
             detach: false,
@@ -590,10 +594,10 @@ impl DockerClient {
 
     pub async fn file_exists_in_container(
         &self,
-        container_id: &str,
+        deployment_id: &str,
         path: &str,
     ) -> Result<bool, AppError> {
-        match self.get_file_from_container(container_id, path).await {
+        match self.get_file_from_container(deployment_id, path).await {
             Ok(_) => Ok(true),
             Err(AppError::DockerError { .. }) => Ok(false),
             Err(e) => Err(e),
@@ -602,7 +606,7 @@ impl DockerClient {
 
     pub async fn list_directory_in_container(
         &self,
-        container_id: &str,
+        deployment_id: &str,
         path: &str,
     ) -> Result<Vec<String>, AppError> {
         use bollard::container::LogOutput;
@@ -617,7 +621,7 @@ impl DockerClient {
             ..Default::default()
         };
 
-        let exec = DOCKER.create_exec(container_id, exec_options).await?;
+        let exec = DOCKER.create_exec(deployment_id, exec_options).await?;
 
         let start_options = StartExecOptions {
             detach: false,
@@ -677,7 +681,7 @@ impl DockerClient {
 
     pub async fn list_directory_recursive_in_container(
         &self,
-        container_id: &str,
+        deployment_id: &str,
         path: &str,
     ) -> Result<Vec<String>, AppError> {
         use bollard::container::LogOutput;
@@ -697,7 +701,7 @@ impl DockerClient {
             ..Default::default()
         };
 
-        let exec = DOCKER.create_exec(container_id, exec_options).await?;
+        let exec = DOCKER.create_exec(deployment_id, exec_options).await?;
 
         let start_options = StartExecOptions {
             detach: false,
@@ -757,7 +761,7 @@ impl DockerClient {
 
     pub async fn copy_directory_from_container(
         &self,
-        container_id: &str,
+        deployment_id: &str,
         container_path: &str,
         host_dest: &str,
     ) -> Result<(), AppError> {
@@ -767,7 +771,7 @@ impl DockerClient {
             path: container_path.to_string(),
         };
 
-        let mut stream = DOCKER.download_from_container(container_id, Some(download_opts));
+        let mut stream = DOCKER.download_from_container(deployment_id, Some(download_opts));
         let mut all_bytes = Vec::new();
         while let Some(chunk) = stream.next().await {
             let bytes =
@@ -778,7 +782,7 @@ impl DockerClient {
         if all_bytes.is_empty() {
             return Err(AppError::Internal(format!(
                 "Empty archive for container {} path {}",
-                container_id, container_path
+                deployment_id, container_path
             )));
         }
 

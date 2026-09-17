@@ -7,13 +7,12 @@ use std::sync::Arc;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use time::Duration;
-use tokio::sync::Mutex;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::SessionManagerLayer;
 
 #[path = "common/mod.rs"]
 mod common;
-use common::DEV_API_KEY;
+use common::{with_default_app_headers, DEV_API_KEY};
 
 /// Authorization header value used for authenticated setup requests.
 const AUTH: &str = "Bearer dev_test-key-for-tests-12345";
@@ -38,25 +37,27 @@ impl TestDb {
             .execute(pool)
             .await?;
         // Create the schemas and app/version source tables, mirroring the
-        // core migration runner (alcedo-db/src/db/core_migrations.rs).
+        // app migration runner (alcedo-db/src/system_migrations/m00001_init.rs).
         sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "alcedo""#)
             .execute(pool)
             .await?;
-        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default_app010version_1""#)
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default010v1""#)
             .execute(pool)
             .await?;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps" (
-                id UUID PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                api_name TEXT NOT NULL UNIQUE
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                api_name TEXT NOT NULL,
+                icon TEXT,
+                logo TEXT
             )"#,
         )
         .execute(pool)
         .await?;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_versions" (
-                id UUID PRIMARY KEY,
+                id SERIAL PRIMARY KEY,
                 version_name TEXT NOT NULL
             )"#,
         )
@@ -64,207 +65,21 @@ impl TestDb {
         .await?;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps_versions" (
-                app_id UUID NOT NULL REFERENCES "alcedo"."alcedo_apps"(id) ON DELETE CASCADE,
-                version_id UUID NOT NULL REFERENCES "alcedo"."alcedo_versions"(id) ON DELETE CASCADE,
-                PRIMARY KEY (app_id, version_id)
+                id SERIAL PRIMARY KEY,
+                app_id INTEGER NOT NULL REFERENCES "alcedo"."alcedo_apps"(id),
+                version_id INTEGER NOT NULL REFERENCES "alcedo"."alcedo_versions"(id)
             )"#,
         ).execute(pool).await?;
-        let migration_files: Vec<(&str, &str)> = vec![
-            (
-                "001_create_plugins",
-                include_str!("../../core-migrations/001_create_plugins.up.sql"),
-            ),
-            (
-                "002_create_plugin_versions",
-                include_str!("../../core-migrations/002_create_plugin_versions.up.sql"),
-            ),
-            (
-                "003_create_schema_migrations",
-                include_str!("../../core-migrations/003_create_schema_migrations.up.sql"),
-            ),
-            (
-                "004_create_request_logs",
-                include_str!("../../core-migrations/004_create_request_logs.up.sql"),
-            ),
-            (
-                "005_create_registries",
-                include_str!("../../core-migrations/005_create_registries.up.sql"),
-            ),
-            (
-                "006_create_collection_definitions",
-                include_str!("../../core-migrations/006_create_collection_definitions.up.sql"),
-            ),
-            (
-                "007_create_saved_views",
-                include_str!("../../core-migrations/007_create_saved_views.up.sql"),
-            ),
-            (
-                "008_create_system_settings",
-                include_str!("../../core-migrations/008_create_system_settings.up.sql"),
-            ),
-            (
-                "009_add_request_body_capture",
-                include_str!("../../core-migrations/009_add_request_body_capture.up.sql"),
-            ),
-            (
-                "010_create_host_calls",
-                include_str!("../../core-migrations/010_create_host_calls.up.sql"),
-            ),
-            (
-                "011_activity_logs",
-                include_str!("../../core-migrations/011_activity_logs.up.sql"),
-            ),
-            (
-                "012_add_registry_fk",
-                include_str!("../../core-migrations/012_add_registry_fk.up.sql"),
-            ),
-            (
-                "013_create_collection_sections",
-                include_str!("../../core-migrations/013_create_collection_sections.up.sql"),
-            ),
-            (
-                "014_add_collection_display_name",
-                include_str!("../../core-migrations/014_add_collection_display_name.up.sql"),
-            ),
-            (
-                "015_create_policies",
-                include_str!("../../core-migrations/015_create_policies.up.sql"),
-            ),
-            (
-                "016_permission_action_single",
-                include_str!("../../core-migrations/016_permission_action_single.up.sql"),
-            ),
-            (
-                "017_plugin_scopes",
-                include_str!("../../core-migrations/017_plugin_scopes.up.sql"),
-            ),
-            (
-                "018_users",
-                include_str!("../../core-migrations/018_users.up.sql"),
-            ),
-            (
-                "019_roles_permissions",
-                include_str!("../../core-migrations/019_roles_permissions.up.sql"),
-            ),
-            (
-                "020_rename_role_permissions_to_role_scopes",
-                include_str!(
-                    "../../core-migrations/020_rename_role_permissions_to_role_scopes.up.sql"
-                ),
-            ),
-            (
-                "021_role_policies",
-                include_str!("../../core-migrations/021_role_policies.up.sql"),
-            ),
-            (
-                "022_update_scope_names",
-                include_str!("../../core-migrations/022_update_scope_names.up.sql"),
-            ),
-            (
-                "023_seed_system_collections",
-                include_str!("../../core-migrations/023_seed_system_collections.up.sql"),
-            ),
-            (
-                "024_seed_users_fields",
-                include_str!("../../core-migrations/024_seed_users_fields.up.sql"),
-            ),
-            (
-                "025_add_request_log_source",
-                include_str!("../../core-migrations/025_add_request_log_source.up.sql"),
-            ),
-            (
-                "026_create_developer_api_keys",
-                include_str!("../../core-migrations/026_create_developer_api_keys.up.sql"),
-            ),
-            (
-                "027_create_collection_fields",
-                include_str!("../../core-migrations/027_create_collection_fields.up.sql"),
-            ),
-            (
-                "028_event_subscriptions",
-                include_str!("../../core-migrations/028_event_subscriptions.up.sql"),
-            ),
-            (
-                "029_add_request_id_to_logs",
-                include_str!("../../core-migrations/029_add_request_id_to_logs.up.sql"),
-            ),
-            (
-                "030_add_actor_to_system_logs",
-                include_str!("../../core-migrations/030_add_actor_to_system_logs.up.sql"),
-            ),
-            (
-                "031_add_registry_pull_url",
-                include_str!("../../core-migrations/031_add_registry_pull_url.up.sql"),
-            ),
-            (
-                "032_create_file_metadata",
-                include_str!("../../core-migrations/032_create_file_metadata.up.sql"),
-            ),
-            (
-                "033_create_item_files",
-                include_str!("../../core-migrations/033_create_item_files.up.sql"),
-            ),
-            (
-                "034_menus",
-                include_str!("../../core-migrations/034_menus.up.sql"),
-            ),
-            (
-                "035_create_plugin_recovery",
-                include_str!("../../core-migrations/035_create_plugin_recovery.up.sql"),
-            ),
-            (
-                "036_add_last_login_at",
-                include_str!("../../core-migrations/036_add_last_login_at.up.sql"),
-            ),
-            (
-                "037_add_dev_key_prefix_index",
-                include_str!("../../core-migrations/037_add_dev_key_prefix_index.up.sql"),
-            ),
-            (
-                "038_add_sections_fk",
-                include_str!("../../core-migrations/038_add_sections_fk.up.sql"),
-            ),
-            (
-                "039_create_collection_layouts",
-                include_str!("../../core-migrations/039_create_collection_layouts.up.sql"),
-            ),
-            (
-                "040_add_layout_id_to_sections",
-                include_str!("../../core-migrations/040_add_layout_id_to_sections.up.sql"),
-            ),
-            (
-                "041_create_file_folders",
-                include_str!("../../core-migrations/041_create_file_folders.up.sql"),
-            ),
-            (
-                "042_add_input_component",
-                include_str!("../../core-migrations/042_add_input_component.up.sql"),
-            ),
-            (
-                "043_add_display_component",
-                include_str!("../../core-migrations/043_add_display_component.up.sql"),
-            ),
-            (
-                "044_drop_saved_views_fk",
-                include_str!("../../core-migrations/044_drop_saved_views_fk.up.sql"),
-            ),
-            (
-                "045_seed_users_sections",
-                include_str!("../../core-migrations/045_seed_users_sections.up.sql"),
-            ),
-            (
-                "046_seed_users_collection_fields",
-                include_str!("../../core-migrations/046_seed_users_collection_fields.up.sql"),
-            ),
-            (
-                "047_registries_not_null",
-                include_str!("../../core-migrations/047_registries_not_null.up.sql"),
-            ),
-        ];
-        for (_name, sql) in &migration_files {
-            // Route each migration into the per-app-version schema via search_path.
+
+        // Global (alcedo schema) migrations first: the app migration's FKs
+        // reference alcedo.alcedo_users / alcedo.alcedo_plugins.
+        let global_migration_files: Vec<(&str, &str)> = vec![(
+            "001_init",
+            include_str!("../../core-migrations-global/001_init.up.sql"),
+        )];
+        for (_name, sql) in &global_migration_files {
             let mut tx = pool.begin().await?;
-            sqlx::query(r#"SET search_path TO "default_app010version_1""#)
+            sqlx::query(r#"SET LOCAL search_path TO "alcedo", public"#)
                 .execute(&mut *tx)
                 .await?;
             for statement in split_sql_statements(sql) {
@@ -276,18 +91,35 @@ impl TestDb {
             tx.commit().await?;
         }
 
-        // Provide a default `local` registry so plugin rows have a valid FK.
-        let reg_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM registries")
-            .fetch_one(pool)
-            .await?;
-        if reg_count == 0 {
-            sqlx::query(
-                r#"INSERT INTO registries (name, url, auth_type)
-                   VALUES ('local', 'http://localhost:5000', 'none')"#,
-            )
-            .execute(pool)
-            .await?;
+        // Production seeds a `local` registry from env (Registry::ensure_default).
+        // Mirror it so tests that use registry_id 1 (local) resolve.
+        sqlx::query(
+            r#"INSERT INTO alcedo_registries (name, url, pull_url, auth_type)
+               SELECT 'local', 'http://localhost:5000', NULL, 'none'
+               WHERE NOT EXISTS (SELECT 1 FROM alcedo_registries WHERE name = 'local')"#,
+        )
+        .execute(pool)
+        .await?;
+
+        let migration_files: Vec<(&str, &str)> = vec![(
+            "001_init",
+            include_str!("../../core-migrations/001_init.up.sql"),
+        )];
+        for (_name, sql) in &migration_files {
+            // Route each migration into the per-app-version schema via search_path.
+            let mut tx = pool.begin().await?;
+            sqlx::query(r#"SET LOCAL search_path TO "default010v1", "alcedo", public"#)
+                .execute(&mut *tx)
+                .await?;
+            for statement in split_sql_statements(sql) {
+                let trimmed = statement.trim();
+                if !trimmed.is_empty() {
+                    sqlx::query(trimmed).execute(&mut *tx).await?;
+                }
+            }
+            tx.commit().await?;
         }
+
         Ok(())
     }
 
@@ -372,20 +204,21 @@ fn create_session_layer(store: RedisSessionStore) -> SessionManagerLayer<RedisSe
         )))
 }
 
-fn create_full_state(
+async fn create_full_state(
     pool: PgPool,
-    redis_conn_manager: ConnectionManager,
     redis_url: String,
 ) -> AppState {
-    use deadpool::managed;
-    let mgr = plugin_core::services::redis_session::RedisPoolManager::with_url(redis_url);
-    let redis_pool = managed::Pool::builder(mgr).max_size(2).build().unwrap();
+    let redis_client = Arc::new(
+        plugin_core::services::redis_client::RedisClient::connect(&redis_url)
+            .await
+            .expect("Failed to connect to Redis for tests. Start Redis or set REDIS_URL"),
+    );
     let dir = std::env::temp_dir().join("test-files");
-    AppState {
+    let state = AppState {
         core: CoreState::for_pool(Some(pool.clone())),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
-        kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),
+        kv_store: Arc::new(plugin_core::kv::store::KvStore::new(redis_client.clone())),
         file_storage: Arc::new(
             file_storage_local::LocalFileStorage::new(dir.to_str().unwrap()).unwrap(),
         ),
@@ -393,22 +226,24 @@ fn create_full_state(
         static_registry: None,
         registries: None,
         platform: None,
-        redis_connection: Some(redis_pool),
-        rate_limit_redis: Some(Arc::new(Mutex::new(redis_conn_manager.clone()))),
-        kv_redis: Some(Arc::new(Mutex::new(redis_conn_manager.clone()))),
+        redis: Some(redis_client.clone()),
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,
-        session_store: RedisSessionStore::new(redis_conn_manager),
+        session_store: RedisSessionStore::new(redis_client),
         proxy_client: reqwest::Client::new(),
         rate_limit_auth_requests: 10,
         rate_limit_auth_window: 60,
         rate_limit_api_requests: 100,
         rate_limit_api_window: 60,
-    }
+    };
+    // Engine-routed handlers resolve tables via the schema cache; populate it
+    // like production boot (and `common::setup`) so policy/role writes work.
+    common::refresh_schema(&state).await;
+    state
 }
 
 async fn provision_dev_key(pool: &PgPool) {
@@ -418,18 +253,19 @@ async fn provision_dev_key(pool: &PgPool) {
 
 async fn insert_test_plugin(pool: &PgPool, slug: &str) {
     sqlx::query(
-        "INSERT INTO plugins (slug, image, plugin_type, system_plugin, enabled, env, resources, endpoints, documentation, settings_schema, settings, tags)
-         VALUES ($1, 'permission-test:latest', 'dynamic', false, true, '{}', '{}', '[]', '[]', '{}', '{}', '[]')
-         ON CONFLICT (slug) DO NOTHING",
+        "INSERT INTO alcedo_plugins (slug, app_version_id, image, plugin_type, system_plugin, enabled, env, resources, endpoints, documentation, settings_schema, settings, tags, registry_id)
+         VALUES ($1, NULL, 'permission-test:latest', 'dynamic', false, true, '{}', '{}', '[]', '[]', '{}', '{}', '[]', (SELECT id FROM alcedo_registries ORDER BY id LIMIT 1))
+         ON CONFLICT (slug) WHERE app_version_id IS NULL AND version_id IS NULL DO NOTHING",
     )
     .bind(slug)
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO plugin_versions (slug, version, container_id, status, is_active, public_synced, pages_synced)
-         VALUES ($1, '1.0.0', 'test-container', 'running', true, false, false)
-         ON CONFLICT (slug, version) DO NOTHING",
+        "INSERT INTO alcedo_plugin_versions (install_id, slug, version, deployment_id, status, is_active, public_synced, pages_synced)
+         SELECT id, $1, '1.0.0', 'test-container', 'running', true, false, false
+         FROM alcedo_plugins WHERE slug = $1 AND app_version_id IS NULL
+         ON CONFLICT (install_id, version) DO NOTHING",
     )
     .bind(slug)
     .execute(pool)
@@ -468,12 +304,11 @@ async fn test_read_enforcement_filters_by_permission() {
     let mut redis_conn = test_redis.conn_manager.clone();
     let state = create_full_state(
         test_db.pool().clone(),
-        redis_conn.clone(),
         test_redis.url.clone(),
-    );
-    let session_layer = create_session_layer(RedisSessionStore::new(redis_conn.clone()));
+    ).await;
+    let session_layer = create_session_layer(RedisSessionStore::new(Arc::new(common::connect_redis_client_at(&test_redis.url).await)));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let pool = test_db.pool();
     let plugin_slug = unique_slug("test-plugin");
@@ -581,12 +416,11 @@ async fn test_read_bypass_without_request_id() {
     let mut redis_conn = test_redis.conn_manager.clone();
     let state = create_full_state(
         test_db.pool().clone(),
-        redis_conn.clone(),
         test_redis.url.clone(),
-    );
-    let session_layer = create_session_layer(RedisSessionStore::new(redis_conn.clone()));
+    ).await;
+    let session_layer = create_session_layer(RedisSessionStore::new(Arc::new(common::connect_redis_client_at(&test_redis.url).await)));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let pool = test_db.pool();
     let plugin_slug = unique_slug("test-plugin");
@@ -693,13 +527,12 @@ async fn test_create_denied_when_no_create_permission() {
         .expect("Failed to create test Redis");
     let state = create_full_state(
         test_db.pool().clone(),
-        test_redis.conn_manager.clone(),
         test_redis.url.clone(),
-    );
+    ).await;
     let session_layer =
-        create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
+        create_session_layer(RedisSessionStore::new(Arc::new(common::connect_redis_client_at(&test_redis.url).await)));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let pool = test_db.pool();
     let plugin_slug = unique_slug("test-plugin");
@@ -786,13 +619,12 @@ async fn test_additive_policy_merging() {
         .expect("Failed to create test Redis");
     let state = create_full_state(
         test_db.pool().clone(),
-        test_redis.conn_manager.clone(),
         test_redis.url.clone(),
-    );
+    ).await;
     let session_layer =
-        create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
+        create_session_layer(RedisSessionStore::new(Arc::new(common::connect_redis_client_at(&test_redis.url).await)));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let pool = test_db.pool();
     let plugin_slug = unique_slug("test-plugin");
@@ -931,13 +763,12 @@ async fn test_update_enforcement_restricts_rows() {
         .expect("Failed to create test Redis");
     let state = create_full_state(
         test_db.pool().clone(),
-        test_redis.conn_manager.clone(),
         test_redis.url.clone(),
-    );
+    ).await;
     let session_layer =
-        create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
+        create_session_layer(RedisSessionStore::new(Arc::new(common::connect_redis_client_at(&test_redis.url).await)));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let pool = test_db.pool();
     let plugin_slug = unique_slug("test-plugin");
@@ -1057,13 +888,12 @@ async fn test_delete_enforcement_restricts_rows() {
         .expect("Failed to create test Redis");
     let state = create_full_state(
         test_db.pool().clone(),
-        test_redis.conn_manager.clone(),
         test_redis.url.clone(),
-    );
+    ).await;
     let session_layer =
-        create_session_layer(RedisSessionStore::new(test_redis.conn_manager.clone()));
+        create_session_layer(RedisSessionStore::new(Arc::new(common::connect_redis_client_at(&test_redis.url).await)));
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let pool = test_db.pool();
     let plugin_slug = unique_slug("test-plugin");

@@ -101,9 +101,31 @@ join alcedo.alcedo_versions on alcedo.alcedo_versions.id = alcedo.alcedo_apps_ve
 
         let fetch_columns = fetch_rows(
             pool,
-            "SELECT *
-FROM information_schema.columns
-WHERE (table_schema like '%010%' or table_schema = 'alcedo')
+            "SELECT
+    ic.column_name,
+    ic.table_name,
+    ic.table_schema,
+    CASE
+        WHEN pg_t.typname LIKE '\\_%'
+            THEN substr(pg_t.typname, 2) || '[]'
+        ELSE ic.udt_name
+    END AS data_type,
+    ic.column_default,
+    ic.numeric_precision,
+    ic.numeric_scale,
+    ic.character_maximum_length,
+    ic.is_nullable,
+    ic.is_generated,
+    ic.generation_expression
+FROM information_schema.columns ic
+JOIN pg_class ON pg_class.oid = format('%I.%I', ic.table_schema, ic.table_name)::regclass
+JOIN pg_attribute pg_a
+    ON pg_a.attrelid = pg_class.oid
+   AND pg_a.attname = ic.column_name
+   AND pg_a.attnum > 0
+   AND NOT pg_a.attisdropped
+JOIN pg_type pg_t ON pg_t.oid = pg_a.atttypid
+WHERE (ic.table_schema like '%010%' or ic.table_schema = 'alcedo')
 ",
         )
         .await

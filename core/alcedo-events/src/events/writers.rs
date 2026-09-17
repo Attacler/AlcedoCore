@@ -12,14 +12,29 @@
 //! never block event producers on the broadcast channel.
 
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
-use crate::db::Pool;
 use crate::db::activity_logs::{CollectionLogEntry, SystemLogEntry};
+use crate::db::Pool;
 use crate::events::redact::redact_sensitive_metadata;
 use crate::events::{EventBus, SystemEvent};
-use crate::services::redis_session::RedisPool;
+use crate::services::redis_client::RedisClient;
+
+/// Log a failed activity-log insert. Missing app-bound tables (fresh DB / global
+/// zone) are expected and downgraded to debug; genuine failures stay as ERROR.
+fn log_batch_insert_failure(prefix: &str, context: &str, count: usize, e: &crate::error::AppError) {
+    if e.is_missing_relation() {
+        tracing::debug!(
+            "{} {} skipped ({} entries): app log table does not exist",
+            prefix,
+            context,
+            count
+        );
+    } else {
+        tracing::error!("{} {} of {} entries failed: {}", prefix, context, count, e);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // System Log Writer
@@ -86,7 +101,10 @@ pub fn spawn_system_log_writer(pool: Pool, event_bus: EventBus) {
                             buffer.push(e);
                             if buffer.len() >= batch_size {
                                 if let Err(e) = SystemLogEntry::insert_batch(&pool, &buffer).await {
-                                    tracing::error!("[SYSLOG_WRITER] Batch insert of {} entries failed: {}", buffer.len(), e);
+                                    log_batch_insert_failure("[SYSLOG_WRITER]", "Batch insert", buffer.len(), &e);
+                                    if e.is_missing_relation() {
+                                        buffer.clear();
+                                    }
                                 } else {
                                     tracing::trace!("[SYSLOG_WRITER] Flushed {} entries", buffer.len());
                                     buffer.clear();
@@ -97,7 +115,7 @@ pub fn spawn_system_log_writer(pool: Pool, event_bus: EventBus) {
                             // Channel closed — flush remaining and exit
                             if !buffer.is_empty() {
                                 if let Err(e) = SystemLogEntry::insert_batch(&pool, &buffer).await {
-                                    tracing::error!("[SYSLOG_WRITER] Final flush of {} entries failed: {}", buffer.len(), e);
+                                    log_batch_insert_failure("[SYSLOG_WRITER]", "Final flush", buffer.len(), &e);
                                 }
                                 buffer.clear();
                             }
@@ -109,7 +127,10 @@ pub fn spawn_system_log_writer(pool: Pool, event_bus: EventBus) {
                 _ = ticker.tick() => {
                     if !buffer.is_empty() {
                         if let Err(e) = SystemLogEntry::insert_batch(&pool, &buffer).await {
-                            tracing::error!("[SYSLOG_WRITER] Timeout flush of {} entries failed: {}", buffer.len(), e);
+                            log_batch_insert_failure("[SYSLOG_WRITER]", "Timeout flush", buffer.len(), &e);
+                            if e.is_missing_relation() {
+                                buffer.clear();
+                            }
                         } else {
                             tracing::trace!("[SYSLOG_WRITER] Timeout flush of {} entries", buffer.len());
                             buffer.clear();
@@ -192,7 +213,10 @@ pub fn spawn_collection_log_writer(pool: Pool, event_bus: EventBus) {
                             buffer.push(e);
                             if buffer.len() >= batch_size {
                                 if let Err(e) = CollectionLogEntry::insert_batch(&pool, &buffer).await {
-                                    tracing::error!("[COLLOG_WRITER] Batch insert of {} entries failed: {}", buffer.len(), e);
+                                    log_batch_insert_failure("[COLLOG_WRITER]", "Batch insert", buffer.len(), &e);
+                                    if e.is_missing_relation() {
+                                        buffer.clear();
+                                    }
                                 } else {
                                     tracing::trace!("[COLLOG_WRITER] Flushed {} entries", buffer.len());
                                     buffer.clear();
@@ -203,7 +227,7 @@ pub fn spawn_collection_log_writer(pool: Pool, event_bus: EventBus) {
                             // Channel closed — flush remaining and exit
                             if !buffer.is_empty() {
                                 if let Err(e) = CollectionLogEntry::insert_batch(&pool, &buffer).await {
-                                    tracing::error!("[COLLOG_WRITER] Final flush of {} entries failed: {}", buffer.len(), e);
+                                    log_batch_insert_failure("[COLLOG_WRITER]", "Final flush", buffer.len(), &e);
                                 }
                                 buffer.clear();
                             }
@@ -215,7 +239,10 @@ pub fn spawn_collection_log_writer(pool: Pool, event_bus: EventBus) {
                 _ = ticker.tick() => {
                     if !buffer.is_empty() {
                         if let Err(e) = CollectionLogEntry::insert_batch(&pool, &buffer).await {
-                            tracing::error!("[COLLOG_WRITER] Timeout flush of {} entries failed: {}", buffer.len(), e);
+                            log_batch_insert_failure("[COLLOG_WRITER]", "Timeout flush", buffer.len(), &e);
+                            if e.is_missing_relation() {
+                                buffer.clear();
+                            }
                         } else {
                             tracing::trace!("[COLLOG_WRITER] Timeout flush of {} entries", buffer.len());
                             buffer.clear();
@@ -232,23 +259,22 @@ pub fn spawn_collection_log_writer(pool: Pool, event_bus: EventBus) {
 ///
 /// Gracefully tolerates Redis being unavailable — the `try_del` helpers
 /// silently return on Redis errors.
-pub fn spawn_cache_invalidator(event_bus: EventBus, redis: Option<RedisPool>) {
-    let redis = Arc::new(redis);
+pub fn spawn_cache_invalidator(event_bus: EventBus, redis: Option<Arc<RedisClient>>) {
     tokio::spawn(async move {
         let mut rx = event_bus.subscribe();
         tracing::info!("[CACHE_INVALIDATOR] Subscribed to EventBus");
         while let Ok(event) = rx.recv().await {
             match &event {
-                // Schema cache — collection definition changes
-                SystemEvent::CollectionCreated { name, .. }
-                | SystemEvent::CollectionUpdated { name, .. }
-                | SystemEvent::CollectionDeleted { name, .. } => {
-                    crate::services::cache::try_del(
-                        &redis,
-                        &format!("schema:collection:{}", name),
-                    )
-                    .await;
-                    crate::services::cache::try_del(&redis, "schema:all").await;
+                // Schema cache — collection definition changes.
+                // Keys are scoped per app-version schema
+                // (`schema:collection:{schema}:{name}` / `schema:all:{schema}`),
+                // so delete by prefix to invalidate every schema
+                // (over-invalidation is correct).
+                SystemEvent::CollectionCreated { .. }
+                | SystemEvent::CollectionUpdated { .. }
+                | SystemEvent::CollectionDeleted { .. } => {
+                    crate::services::cache::try_del_prefix(&redis, "schema:collection:").await;
+                    crate::services::cache::try_del_prefix(&redis, "schema:all:").await;
                 }
                 // Permission cache — any policy/role/scope mutation
                 SystemEvent::PolicyCreated { .. }
@@ -269,15 +295,14 @@ pub fn spawn_cache_invalidator(event_bus: EventBus, redis: Option<RedisPool>) {
                 | SystemEvent::UserRoleAssigned { .. }
                 | SystemEvent::UserRoleRemoved { .. }
                 | SystemEvent::PluginScopesUpdated { .. } => {
-                    crate::services::cache::try_del(&redis, "perm:*").await;
+                    crate::services::cache::try_del_prefix(&redis, "perm:").await;
                 }
-                // User context cache — invalidate on profile changes
-                SystemEvent::UserUpdated { user_id, .. } => {
-                    crate::services::cache::try_del(
-                        &redis,
-                        &format!("user_ctx:{}", user_id),
-                    )
-                    .await;
+                // User context cache — invalidate on profile changes.
+                // Keys are scoped per app-version schema
+                // (`user_ctx:{schema}:{user_id}`), so delete by prefix to
+                // cover every schema.
+                SystemEvent::UserUpdated { .. } => {
+                    crate::services::cache::try_del_prefix(&redis, "user_ctx:").await;
                 }
                 // Item events + user create/delete + file events — no cache impact
                 SystemEvent::SettingChanged { .. }

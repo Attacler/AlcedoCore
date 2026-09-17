@@ -8,11 +8,10 @@ use sqlx_migrator::operation::Operation;
 use crate::core_state_for_migrations_from_env;
 use crate::services::tables::TableService;
 
-/// The `CoreMigrationRunner` (SQL files, already wired into both bins)
-/// owns the `alcedo.*` source tables with UUID keys. This sqlx_migrator
-/// operation carries the prototype's integer-key DDL, so it must never
-/// recreate or reshape those tables — only create them when missing
-/// (e.g. databases bootstrapped purely through this runner).
+/// This `sqlx_migrator` operation owns the `alcedo.*` source tables with
+/// integer keys. It creates them only when missing (e.g. databases
+/// bootstrapped purely through this runner); a pre-existing UUID-shaped
+/// `alcedo` schema is left untouched and requires a DB reset.
 async fn table_exists(pool: &sqlx::PgPool, schema: &str, table: &str) -> bool {
     sqlx::query_scalar::<_, bool>("SELECT to_regclass($1) IS NOT NULL")
         .bind(format!("{}.{}", schema, table))
@@ -176,6 +175,29 @@ impl Operation<Postgres> for M0001Operation {
                         .await
                         .map_err(|e| Error::Box(Box::new(e)))?;
         }
+
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_alcedo_apps_versions_pair \
+             ON alcedo.alcedo_apps_versions(app_id, version_id)",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Box(Box::new(e)))?;
+
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_alcedo_apps_api_name \
+             ON alcedo.alcedo_apps(api_name)",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Box(Box::new(e)))?;
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_alcedo_versions_name \
+             ON alcedo.alcedo_versions(version_name)",
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| Error::Box(Box::new(e)))?;
 
         tx.commit()
             .await

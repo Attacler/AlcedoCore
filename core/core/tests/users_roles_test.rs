@@ -465,6 +465,105 @@ async fn test_role_policies_assign_list_remove() {
 }
 
 // ===========================================================================
+// Role error paths (pinned: delete/update missing, system delete guard,
+// permission delete missing, assignment remove missing)
+// ===========================================================================
+
+#[tokio::test]
+async fn test_role_error_paths() {
+    let (server, test_db) = setup().await;
+
+    // Delete missing role -> 400 "Cannot delete system role or role not found".
+    let missing = Uuid::new_v4();
+    let del = authed_delete(&server, &format!("/api/roles/{}", missing)).await;
+    assert_eq!(
+        del.status_code(),
+        StatusCode::BAD_REQUEST,
+        "delete missing role should be 400: {}",
+        del.text()
+    );
+    assert!(
+        parse_body(&del).to_string()
+            .contains("Cannot delete system role or role not found"),
+        "delete missing role message pinned, got: {}",
+        del.text()
+    );
+
+    // Update missing role -> 404 "Role not found: {id}".
+    let upd = authed_put(
+        &server,
+        &format!("/api/roles/{}", missing),
+        json!({ "name": "ghost" }),
+    )
+    .await;
+    assert_eq!(
+        upd.status_code(),
+        StatusCode::NOT_FOUND,
+        "update missing role should be 404: {}",
+        upd.text()
+    );
+    assert!(
+        upd.text().contains(&format!("Role not found: {}", missing)),
+        "update missing role message pinned, got: {}",
+        upd.text()
+    );
+
+    // Delete system role -> same 400 as missing.
+    let sys_name = format!("sys-role-{}", Uuid::new_v4().to_string().replace('-', "")[..8].to_string());
+    let (sys_id, _) = create_role(&server, &sys_name).await;
+    sqlx::query("UPDATE alcedocore_roles SET is_system = true WHERE id = $1")
+        .bind(sys_id.parse::<Uuid>().expect("role id is a uuid"))
+        .execute(test_db.pool())
+        .await
+        .expect("mark role as system");
+    let del_sys = authed_delete(&server, &format!("/api/roles/{}", sys_id)).await;
+    assert_eq!(
+        del_sys.status_code(),
+        StatusCode::BAD_REQUEST,
+        "delete system role should be 400: {}",
+        del_sys.text()
+    );
+    assert!(
+        del_sys.text().contains("Cannot delete system role or role not found"),
+        "delete system role message pinned, got: {}",
+        del_sys.text()
+    );
+
+    // Delete-permission missing -> 404.
+    let perm_del = authed_delete(
+        &server,
+        &format!("/api/roles/{}/permissions/{}", sys_id, Uuid::new_v4()),
+    )
+    .await;
+    assert_eq!(
+        perm_del.status_code(),
+        StatusCode::NOT_FOUND,
+        "delete missing permission should be 404: {}",
+        perm_del.text()
+    );
+
+    // Remove-assignment missing -> 404 "Role assignment not found".
+    let email = unique_email();
+    let (user_id, _) = create_user(&server, &email, "password123!").await;
+    let unassign = authed_delete(
+        &server,
+        &format!("/api/users/{}/roles/{}", user_id, sys_id),
+    )
+    .await;
+    assert_eq!(
+        unassign.status_code(),
+        StatusCode::NOT_FOUND,
+        "remove missing assignment should be 404: {}",
+        unassign.text()
+    );
+    assert!(
+        unassign.text().contains("Role assignment not found"),
+        "remove missing assignment message pinned, got: {}",
+        unassign.text()
+    );
+}
+
+// ===========================================================================
 // User-Roles
 // ===========================================================================
 

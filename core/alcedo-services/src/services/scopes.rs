@@ -2,10 +2,13 @@ use uuid::Uuid;
 
 use crate::db::Pool;
 use crate::error::AppError;
-use sqlx::Row;
 
 pub enum ScopeSource<'a> {
-    Plugin { slug: &'a str },
+    Plugin {
+        slug: &'a str,
+        app_version_id: Option<i32>,
+        version_id: Option<i32>,
+    },
     User { user_id: &'a Uuid },
     Public,
 }
@@ -13,7 +16,11 @@ pub enum ScopeSource<'a> {
 impl std::fmt::Debug for ScopeSource<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ScopeSource::Plugin { slug } => write!(f, "Plugin({})", slug),
+            ScopeSource::Plugin {
+                slug,
+                app_version_id,
+                version_id,
+            } => write!(f, "Plugin({}, {:?}, {:?})", slug, app_version_id, version_id),
             ScopeSource::User { user_id } => write!(f, "User({})", user_id),
             ScopeSource::Public => write!(f, "Public"),
         }
@@ -26,38 +33,63 @@ pub async fn check_entity_scope(
     required: &str,
 ) -> Result<(), AppError> {
     let granted = match source {
-        ScopeSource::Plugin { slug } => {
-            let row = sqlx::query(
-                "SELECT granted_scopes FROM plugins WHERE slug = $1",
+        ScopeSource::Plugin {
+            slug,
+            app_version_id,
+            version_id,
+        } => {
+            let plugin = crate::db::queries::Plugin::resolve_install_scoped(
+                pool,
+                slug,
+                app_version_id,
+                version_id,
             )
-            .bind(slug)
-            .fetch_optional(pool)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
-
-            let scopes: serde_json::Value = row.get("granted_scopes");
-            serde_json::from_value::<Vec<String>>(scopes).unwrap_or_default()
+            serde_json::from_value::<Vec<String>>(plugin.granted_scopes).unwrap_or_default()
         }
         ScopeSource::User { user_id } => {
-            sqlx::query_scalar::<_, String>(
+            match sqlx::query_scalar::<_, String>(
                 r#"SELECT DISTINCT rs.scope
-                   FROM user_roles ur
-                   JOIN role_scopes rs ON rs.role_id = ur.role_id
+                   FROM alcedocore_user_roles ur
+                   JOIN alcedocore_role_scopes rs ON rs.role_id = ur.role_id
                    WHERE ur.user_id = $1"#,
             )
             .bind(user_id)
             .fetch_all(pool)
-            .await?
+            .await
+            {
+                Ok(v) => v,
+                // Missing app schema (clean DB / global zone): fail closed so
+                // the caller gets 403 rather than a 500.
+                Err(e) if crate::error::is_undefined_table(&e) => {
+                    return Err(AppError::Forbidden(format!(
+                        "Missing required scope: {}",
+                        required
+                    )))
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
         ScopeSource::Public => {
-            sqlx::query_scalar::<_, String>(
+            match sqlx::query_scalar::<_, String>(
                 r#"SELECT rs.scope
-                   FROM roles r
-                   JOIN role_scopes rs ON rs.role_id = r.id
+                   FROM alcedocore_roles r
+                   JOIN alcedocore_role_scopes rs ON rs.role_id = r.id
                    WHERE r.name = 'public'"#,
             )
             .fetch_all(pool)
-            .await?
+            .await
+            {
+                Ok(v) => v,
+                Err(e) if crate::error::is_undefined_table(&e) => {
+                    return Err(AppError::Forbidden(format!(
+                        "Missing required scope: {}",
+                        required
+                    )))
+                }
+                Err(e) => return Err(e.into()),
+            }
         }
     };
 

@@ -8,6 +8,8 @@ async fn setup_server() -> (axum_test::TestServer, TestDb) {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     let state = create_test_state_with_pool(test_db.pool().clone()).await;
 
+    refresh_schema(&state).await;
+
     let _ = plugin_core::services::auth::provision_dev_api_key(
         test_db.pool(),
         Some(DEV_API_KEY.to_string()),
@@ -15,7 +17,7 @@ async fn setup_server() -> (axum_test::TestServer, TestDb) {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
     (server, test_db)
 }
 
@@ -24,12 +26,7 @@ async fn setup_server() -> (axum_test::TestServer, TestDb) {
 async fn setup_dev_server() -> (axum_test::TestServer, TestDb, TestRedis) {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     let test_redis = TestRedis::new().await.expect("Failed to create test Redis");
-    let mut state = create_test_state_full(test_db.pool().clone(), test_redis.conn_manager.clone()).await;
-    {
-        use deadpool::managed;
-        let mgr = plugin_core::services::redis_session::RedisPoolManager::with_url(test_redis.url.clone());
-        state.redis_connection = Some(managed::Pool::builder(mgr).max_size(2).build().unwrap());
-    }
+    let state = create_test_state_full(test_db.pool().clone(), &test_redis.url).await;
 
     let _ = plugin_core::services::auth::provision_dev_api_key(
         test_db.pool(),
@@ -38,7 +35,7 @@ async fn setup_dev_server() -> (axum_test::TestServer, TestDb, TestRedis) {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
     (server, test_db, test_redis)
 }
 
@@ -110,9 +107,30 @@ async fn test_dev_request_id() {
     let request_id = rid_body["request_id"].as_str().expect("Missing request_id").to_string();
     assert!(!request_id.is_empty(), "request_id should be non-empty");
 
-    // The mapping must be visible in Redis under plugin_req:{request_id}.
-    let mapped = get_plugin_req(&redis, &request_id).await;
-    assert_eq!(mapped.as_deref(), Some(slug), "Expected Redis mapping to plugin slug");
+    // The mapping must be visible in Redis under plugin_req:{request_id} as
+    // the richer install identity (slug + scope ids + install_id).
+    let mapped = get_plugin_req(&redis, &request_id)
+        .await
+        .expect("Expected plugin_req mapping in Redis");
+    let identity: serde_json::Value =
+        serde_json::from_str(&mapped).expect("plugin_req mapping should be JSON identity");
+    assert_eq!(
+        identity["slug"].as_str(),
+        Some(slug),
+        "Expected Redis mapping to carry plugin slug"
+    );
+    assert!(
+        identity["install_id"].as_i64().is_some(),
+        "Expected Redis mapping to carry install_id"
+    );
+    assert!(
+        identity["app_version_id"].is_null(),
+        "Global test install must have a null app_version_id"
+    );
+    assert!(
+        identity["version_id"].is_null(),
+        "Global test install must have a null version_id"
+    );
 }
 
 // ---------------------------------------------------------------- dev key marker --
@@ -197,7 +215,7 @@ async fn test_db_execute_inserts_and_confirms_via_query() {
 
     let slug = unique_slug("exec");
     setup_test_plugin(pool, &slug).await;
-    sqlx::query("UPDATE plugins SET granted_scopes = $2::jsonb WHERE slug = $1")
+    sqlx::query("UPDATE alcedo_plugins SET granted_scopes = $2::jsonb WHERE slug = $1")
         .bind(&slug)
         .bind(serde_json::json!(["db.execute", "db.query"]))
         .execute(pool)
@@ -216,12 +234,7 @@ async fn test_db_execute_inserts_and_confirms_via_query() {
 
     let test_redis = TestRedis::new().await.expect("Failed to create test Redis");
 
-    let mut state = create_test_state_full(pool.clone(), test_redis.conn_manager.clone()).await;
-    {
-        use deadpool::managed;
-        let mgr = plugin_core::services::redis_session::RedisPoolManager::with_url(test_redis.url.clone());
-        state.redis_connection = Some(managed::Pool::builder(mgr).max_size(2).build().unwrap());
-    }
+    let state = create_test_state_full(pool.clone(), &test_redis.url).await;
 
     let _ = plugin_core::services::auth::provision_dev_api_key(
         pool,
@@ -230,7 +243,7 @@ async fn test_db_execute_inserts_and_confirms_via_query() {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let request_id = uuid::Uuid::new_v4().to_string();
     set_plugin_req(&test_redis, &request_id, &slug).await;

@@ -9,11 +9,13 @@ use uuid::Uuid;
 
 #[path = "common/mod.rs"]
 mod common;
-use common::{create_test_session_layer, create_test_state_with_pool, TestDb, DEV_API_KEY};
+use common::{create_test_session_layer, create_test_state_with_pool, refresh_schema, with_default_app_headers, TestDb, DEV_API_KEY};
 
 async fn setup_server() -> (axum_test::TestServer, TestDb) {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     let state = create_test_state_with_pool(test_db.pool().clone()).await;
+
+    refresh_schema(&state).await;
 
     let _ = plugin_core::services::auth::provision_dev_api_key(
         test_db.pool(),
@@ -22,7 +24,7 @@ async fn setup_server() -> (axum_test::TestServer, TestDb) {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
     (server, test_db)
 }
 
@@ -438,7 +440,7 @@ async fn test_my_menus_lists_menus_for_visible_roles() {
     let user_id = create_user(&server, &email, "test1234!").await;
 
     sqlx::query(
-        "INSERT INTO user_roles (user_id, role_id) VALUES ($1::uuid, $2::uuid)"
+        "INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ($1::uuid, $2::uuid)"
     )
     .bind(&user_id)
     .bind(role_id)
@@ -486,6 +488,141 @@ async fn test_my_menus_lists_menus_for_visible_roles() {
     assert!(
         menus.iter().any(|m| m["id"] == menu_id),
         "menu assigned to the user's role should be visible: {:?}",
+        menus
+    );
+}
+
+#[tokio::test]
+async fn test_menu_nested_items_round_trip() {
+    let (server, _test_db) = setup_server().await;
+
+    let body = create_menu(&server, "Nested Menu").await;
+    let id = body["data"]["id"]
+        .as_str()
+        .expect("created menu missing id")
+        .to_string();
+
+    set_menu_sections(
+        &server,
+        &id,
+        serde_json::json!([
+            {
+                "id": "sec-nested",
+                "label": "General",
+                "icon": "folder",
+                "visible": true,
+                "items": [
+                    {
+                        "id": "parent-1",
+                        "label": "Parent",
+                        "icon": "home",
+                        "visible": true,
+                        "route": "/parent",
+                        "sortOrder": 0,
+                        "children": [
+                            {
+                                "id": "child-1",
+                                "label": "Child",
+                                "icon": "sub",
+                                "visible": true,
+                                "route": "/parent/child",
+                                "sortOrder": 0
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]),
+    )
+    .await;
+
+    let resp = server
+        .get(&format!("/api/menus/{}", id))
+        .add_header("Authorization", format!("Bearer {}", DEV_API_KEY))
+        .await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
+    let body: Value =
+        serde_json::from_str(&resp.text()).expect("Invalid JSON in get menu response");
+
+    assert_eq!(
+        body["data"]["sections"][0]["items"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0),
+        1,
+        "child must be nested under the parent, not a sibling top-level item"
+    );
+    assert_eq!(
+        body["data"]["sections"][0]["items"][0]["label"],
+        "Parent",
+        "parent item round-trips"
+    );
+    assert_eq!(
+        body["data"]["sections"][0]["items"][0]["children"][0]["label"],
+        "Child",
+        "nested child item round-trips"
+    );
+    assert_eq!(
+        body["data"]["sections"][0]["items"][0]["children"][0]["route"],
+        "/parent/child",
+        "nested child route round-trips"
+    );
+}
+
+#[tokio::test]
+async fn test_my_menus_admin_sees_all_menus() {
+    let (server, test_db) = setup_server().await;
+
+    let first = create_menu(&server, "Admin Menu One").await;
+    let first_id = first["data"]["id"].as_str().expect("missing menu id").to_string();
+    let second = create_menu(&server, "Admin Menu Two").await;
+    let second_id = second["data"]["id"].as_str().expect("missing menu id").to_string();
+
+    let role = create_role(&server, "admin-menu-role").await;
+    let role_id = role["data"]["id"].as_str().expect("missing role id").to_string();
+    let resp = server
+        .put(&format!("/api/menus/{}/roles", first_id))
+        .add_header("Authorization", format!("Bearer {}", DEV_API_KEY))
+        .json(&serde_json::json!({ "role_ids": [role_id] }))
+        .await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
+
+    let email = format!("adminuser{}@test.com", Uuid::new_v4());
+    let user_id = create_user(&server, &email, "test1234!").await;
+
+    // Make the user a global admin so /api/menus/my takes the admin branch
+    // (engine list of every menu id) regardless of role grants.
+    sqlx::query("UPDATE alcedo.alcedo_users SET is_admin = true WHERE id = $1::uuid")
+        .bind(&user_id)
+        .execute(test_db.pool())
+        .await
+        .expect("failed to set user is_admin");
+
+    let login_resp = login(&server, &email, "test1234!").await;
+    assert_eq!(login_resp.status_code(), axum::http::StatusCode::OK);
+    let cookie = extract_session_cookie(&login_resp);
+
+    let resp = server
+        .get("/api/menus/my")
+        .add_header("cookie", cookie)
+        .await;
+    assert_eq!(
+        resp.status_code(),
+        axum::http::StatusCode::OK,
+        "my menus failed: {}",
+        resp.text()
+    );
+    let body: Value =
+        serde_json::from_str(&resp.text()).expect("Invalid JSON in my menus response");
+    let menus = body["data"].as_array().expect("data should be an array");
+    assert!(
+        menus.iter().any(|m| m["id"] == first_id),
+        "admin should see a role-granted menu: {:?}",
+        menus
+    );
+    assert!(
+        menus.iter().any(|m| m["id"] == second_id),
+        "admin should see a menu not granted to any role: {:?}",
         menus
     );
 }

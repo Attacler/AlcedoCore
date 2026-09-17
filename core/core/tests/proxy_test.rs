@@ -16,7 +16,7 @@ async fn test_proxy_plugin_not_found() {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let response = server.get("/p/nonexistent-plugin/some/path").await;
     assert_eq!(response.status_code(), axum::http::StatusCode::NOT_FOUND,
@@ -35,7 +35,7 @@ async fn test_proxy_plugin_no_container() {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let slug = format!("proxy-no-container-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
     let create_payload = serde_json::json!({
@@ -62,7 +62,7 @@ async fn test_proxy_with_path() {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let slug = format!("proxy-path-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
     let create_payload = serde_json::json!({
@@ -89,7 +89,7 @@ async fn test_static_file_plugin_not_found() {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let response = server.get("/nonexistent-plugin/some/file.js").await;
     assert_eq!(response.status_code(), axum::http::StatusCode::NOT_FOUND,
@@ -108,7 +108,7 @@ async fn test_static_public_path_not_found() {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let slug = format!("static-no-file-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..12].to_string());
     let create_payload = serde_json::json!({
@@ -135,7 +135,7 @@ async fn test_trailing_slash_redirect() {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let response = server.get("/some-path/").await;
     assert_eq!(response.status_code(), axum::http::StatusCode::PERMANENT_REDIRECT,
@@ -155,7 +155,7 @@ async fn test_internal_kv_not_in_main_router() {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
 
     let key = format!("test-key-{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..8].to_string());
     let response = server.put(&format!("/internal/kv/{}", key))

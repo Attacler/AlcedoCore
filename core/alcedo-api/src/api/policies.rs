@@ -1,3 +1,13 @@
+use alcedo_db::db::filter_condition::{
+    ComparisonOperator, FilterCondition, LogicOperator, SortField,
+};
+use alcedo_db::services::items::read::{ListRequest, OneRequest, UNBOUNDED_LIMIT};
+use alcedo_db::services::items::service::ItemsService;
+use alcedo_db::services::items::shape::TableRef;
+use alcedo_db::services::items::write::{
+    execute_create_for_table, execute_delete_for_table, execute_delete_for_table_by_filter,
+    execute_insert_for_table_with_conflict, execute_update_one_for_table, ConflictPolicy,
+};
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
@@ -8,6 +18,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -51,7 +62,7 @@ pub struct AssignPolicyRequest {
     pub policy_id: Uuid,
 }
 
-#[derive(sqlx::FromRow, Serialize)]
+#[derive(sqlx::FromRow, Serialize, Deserialize)]
 struct PolicyRow {
     id: Uuid,
     name: String,
@@ -60,7 +71,7 @@ struct PolicyRow {
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(sqlx::FromRow, Serialize)]
+#[derive(sqlx::FromRow, Serialize, Deserialize)]
 struct PermissionRow {
     id: Uuid,
     policy_id: Uuid,
@@ -73,14 +84,82 @@ struct PermissionRow {
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+fn policy_fields() -> Vec<String> {
+    vec![
+        "id".into(),
+        "name".into(),
+        "description".into(),
+        "created_at".into(),
+        "updated_at".into(),
+    ]
+}
+
+fn permission_fields() -> Vec<String> {
+    vec![
+        "id".into(),
+        "policy_id".into(),
+        "collection_name".into(),
+        "action".into(),
+        "fields".into(),
+        "filter".into(),
+        "field_validation".into(),
+        "created_at".into(),
+        "updated_at".into(),
+    ]
+}
+
+/// Read all permission rows for a policy via the items engine, ordered by
+/// collection name.
+async fn read_permissions_for_policy(
+    engine: &ItemsService<'_>,
+    pool: &sqlx::PgPool,
+    schema: String,
+    policy_id: Uuid,
+) -> Result<Vec<PermissionRow>, AppError> {
+    let result = engine
+        .read_list_for_table(
+            pool,
+            TableRef {
+                schema: Some(schema),
+                name: "alcedocore_policy_permissions".to_string(),
+            },
+            ListRequest {
+                fields: permission_fields(),
+                filter: Some(FilterCondition::Rule {
+                    field: "policy_id".to_string(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(json!(policy_id.to_string())),
+                }),
+                sort: vec![SortField {
+                    field: "collection_name".into(),
+                    order: "asc".into(),
+                }],
+                limit: UNBOUNDED_LIMIT,
+                ..Default::default()
+            },
+        )
+        .await?;
+    result
+        .items
+        .into_iter()
+        .map(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| AppError::Internal(format!("Invalid permission row: {}", e)))
+        })
+        .collect()
+}
+
 // ---------- Policies CRUD ----------
 
 pub async fn list_policies(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.read").await?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_policies".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
 
     #[derive(sqlx::FromRow, Serialize)]
     struct PolicyRowWithCount {
@@ -92,13 +171,70 @@ pub async fn list_policies(
         updated_at: chrono::DateTime<chrono::Utc>,
     }
 
-    let rows = sqlx::query_as::<_, PolicyRowWithCount>(
-        "SELECT id, name, description, created_at, updated_at, \
-         (SELECT COUNT(*) FROM policy_permissions WHERE policy_id = policies.id) AS permission_count \
-         FROM policies ORDER BY name",
-    )
-    .fetch_all(db_pool)
-    .await?;
+    let result = engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema.clone()),
+                name: collection.clone(),
+            },
+            ListRequest {
+                fields: policy_fields(),
+                sort: vec![SortField {
+                    field: "name".into(),
+                    order: "asc".into(),
+                }],
+                limit: UNBOUNDED_LIMIT,
+                ..Default::default()
+            },
+        )
+        .await?;
+    let policies: Vec<PolicyRow> = result
+        .items
+        .into_iter()
+        .map(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| AppError::Internal(format!("Invalid policy row: {}", e)))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let permissions = engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema),
+                name: "alcedocore_policy_permissions".to_string(),
+            },
+            ListRequest {
+                fields: vec!["policy_id".into()],
+                limit: UNBOUNDED_LIMIT,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let mut counts: HashMap<String, i64> = HashMap::new();
+    for item in permissions.items {
+        let pid = item
+            .get("policy_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AppError::Internal("Invalid policy-permission row: missing policy_id".to_string())
+            })?;
+        *counts.entry(pid.to_string()).or_insert(0) += 1;
+    }
+
+    let rows: Vec<PolicyRowWithCount> = policies
+        .into_iter()
+        .map(|p| PolicyRowWithCount {
+            id: p.id,
+            name: p.name,
+            description: p.description,
+            permission_count: counts.get(&p.id.to_string()).copied().unwrap_or(0),
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+        })
+        .collect();
 
     Ok(Json(json!({ "data": rows })))
 }
@@ -108,7 +244,6 @@ pub async fn create_policy(
     headers: HeaderMap,
     Json(payload): Json<CreatePolicyRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
 
     if payload.name.is_empty() || payload.name.len() > 255 {
@@ -117,14 +252,33 @@ pub async fn create_policy(
         ));
     }
 
-    let row = sqlx::query_as::<_, PolicyRow>(
-        "INSERT INTO policies (name, description) VALUES ($1, $2) \
-         RETURNING id, name, description, created_at, updated_at",
-    )
-    .bind(&payload.name)
-    .bind(&payload.description)
-    .fetch_one(db_pool)
-    .await?;
+    let schema = crate::api::roles::app_schema(&state, &headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_policies".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let mut map = serde_json::Map::new();
+    map.insert("name".to_string(), json!(payload.name));
+    map.insert("description".to_string(), json!(payload.description));
+    let outcome = execute_create_for_table(db_pool, &shape, vec![map]).await?;
+    let row: PolicyRow = outcome
+        .affected
+        .into_iter()
+        .next()
+        .map(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| AppError::Internal(format!("Invalid policy row: {}", e)))
+        })
+        .transpose()?
+        .ok_or_else(|| AppError::Internal("Policy insert returned no row".to_string()))?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
         &state,
@@ -152,24 +306,34 @@ pub async fn get_policy(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.read").await?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_policies".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
 
-    let policy = sqlx::query_as::<_, PolicyRow>(
-        "SELECT id, name, description, created_at, updated_at FROM policies WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(db_pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("Policy not found: {}", id)))?;
+    let policy = engine
+        .read_one_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema.clone()),
+                name: collection.clone(),
+            },
+            OneRequest {
+                item_id: id.to_string(),
+                fields: policy_fields(),
+                ..Default::default()
+            },
+        )
+        .await?
+        .map(|v| {
+            serde_json::from_value::<PolicyRow>(v)
+                .map_err(|e| AppError::Internal(format!("Invalid policy row: {}", e)))
+        })
+        .transpose()?
+        .ok_or_else(|| AppError::NotFound(format!("Policy not found: {}", id)))?;
 
-    let permissions = sqlx::query_as::<_, PermissionRow>(
-        "SELECT id, policy_id, collection_name, action, fields, filter, field_validation, created_at, updated_at \
-         FROM policy_permissions WHERE policy_id = $1 ORDER BY collection_name",
-    )
-    .bind(id)
-    .fetch_all(db_pool)
-    .await?;
+    let permissions = read_permissions_for_policy(&engine, &pool, schema, id).await?;
 
     Ok(Json(json!({
         "id": policy.id,
@@ -187,20 +351,51 @@ pub async fn update_policy(
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdatePolicyRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
-
-    let row = sqlx::query_as::<_, PolicyRow>(
-        "UPDATE policies SET name = COALESCE($1, name), description = COALESCE($2, description), \
-         updated_at = NOW() WHERE id = $3 \
-         RETURNING id, name, description, created_at, updated_at",
+    let schema = crate::api::roles::app_schema(&state, &headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_policies".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let mut map = serde_json::Map::new();
+    if let Some(name) = &payload.name {
+        map.insert("name".to_string(), json!(name));
+    }
+    if let Some(description) = &payload.description {
+        map.insert("description".to_string(), json!(description));
+    }
+    let outcome = match execute_update_one_for_table(
+        db_pool,
+        &shape,
+        &Value::String(id.to_string()),
+        &map,
     )
-    .bind(&payload.name)
-    .bind(&payload.description)
-    .bind(id)
-    .fetch_optional(db_pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("Policy not found: {}", id)))?;
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(AppError::NotFound(_)) => {
+            return Err(AppError::NotFound(format!("Policy not found: {}", id)));
+        }
+        Err(e) => return Err(e),
+    };
+    let row: PolicyRow = outcome
+        .affected
+        .into_iter()
+        .next()
+        .map(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| AppError::Internal(format!("Invalid policy row: {}", e)))
+        })
+        .transpose()?
+        .ok_or_else(|| AppError::NotFound(format!("Policy not found: {}", id)))?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
         &state,
@@ -228,15 +423,23 @@ pub async fn delete_policy(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
-
-    let result = sqlx::query("DELETE FROM policies WHERE id = $1")
-        .bind(id)
-        .execute(db_pool)
+    let schema = crate::api::roles::app_schema(&state, &headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_policies".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            &[],
+        )
         .await?;
+    let outcome = execute_delete_for_table(db_pool, &shape, vec![Value::String(id.to_string())]).await?;
 
-    if result.rows_affected() == 0 {
+    if outcome.affected_count == 0 {
         return Err(AppError::NotFound(format!("Policy not found: {}", id)));
     }
 
@@ -268,16 +471,13 @@ pub async fn list_permissions(
     headers: HeaderMap,
     Path(policy_id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.read").await?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_policy_permissions".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
 
-    let rows = sqlx::query_as::<_, PermissionRow>(
-        "SELECT id, policy_id, collection_name, action, fields, filter, field_validation, created_at, updated_at \
-         FROM policy_permissions WHERE policy_id = $1 ORDER BY collection_name",
-    )
-    .bind(policy_id)
-    .fetch_all(db_pool)
-    .await?;
+    let rows = read_permissions_for_policy(&engine, &pool, schema, policy_id).await?;
 
     Ok(Json(json!({ "data": rows })))
 }
@@ -329,6 +529,8 @@ async fn validate_filter_paths_resolve(
                         collection_name,
                         &all_cols,
                         &mut joins,
+                        None,
+                        None,
                     )?;
                 } else if field.starts_with('_') {
                     // Internal fields (e.g. _inner) are not schema-validated
@@ -353,10 +555,22 @@ pub async fn create_permission(
     Path(policy_id): Path<Uuid>,
     Json(payload): Json<CreatePermissionRuleRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
+    let schema = crate::api::roles::app_schema(&state, &headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_policy_permissions".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
 
-    let filter = payload.filter.unwrap_or_else(|| json!([]));
+    let filter = payload.filter.clone().unwrap_or_else(|| json!([]));
 
     if let Some(arr) = filter.as_array() {
         for cond in arr {
@@ -369,19 +583,32 @@ pub async fn create_permission(
     // Validate filter paths resolve against the collection schema
     validate_filter_paths_resolve(db_pool, &payload.collection_name, &filter).await?;
 
-    let row = sqlx::query_as::<_, PermissionRow>(
-        "INSERT INTO policy_permissions (policy_id, collection_name, action, fields, filter, field_validation) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
-         RETURNING id, policy_id, collection_name, action, fields, filter, field_validation, created_at, updated_at",
-    )
-    .bind(policy_id)
-    .bind(&payload.collection_name)
-    .bind(&payload.action)
-    .bind(&payload.fields)
-    .bind(&filter)
-    .bind(&payload.field_validation)
-    .fetch_one(db_pool)
-    .await?;
+    // `filter`'s column is NOT NULL DEFAULT '[]' (defaults to `[]`, not Null);
+    // `fields`/`field_validation` are nullable (NULL when absent).
+    let mut map = serde_json::Map::new();
+    map.insert("policy_id".to_string(), json!(policy_id));
+    map.insert("collection_name".to_string(), json!(&payload.collection_name));
+    map.insert("action".to_string(), json!(&payload.action));
+    map.insert(
+        "fields".to_string(),
+        payload.fields.clone().unwrap_or(Value::Null),
+    );
+    map.insert("filter".to_string(), filter);
+    map.insert(
+        "field_validation".to_string(),
+        payload.field_validation.clone().unwrap_or(Value::Null),
+    );
+    let outcome = execute_create_for_table(db_pool, &shape, vec![map]).await?;
+    let row: PermissionRow = outcome
+        .affected
+        .into_iter()
+        .next()
+        .map(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| AppError::Internal(format!("Invalid permission row: {}", e)))
+        })
+        .transpose()?
+        .ok_or_else(|| AppError::Internal("Permission insert returned no row".to_string()))?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
         &state,
@@ -413,19 +640,43 @@ pub async fn update_permission(
     Path((policy_id, permission_id)): Path<(Uuid, Uuid)>,
     Json(payload): Json<UpdatePermissionRuleRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
+    let schema = crate::api::roles::app_schema(&state, &headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_policy_permissions".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema.clone()),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
 
     // Fetch existing permission to get collection_name for schema validation
-    let existing = sqlx::query_as::<_, PermissionRow>(
-        "SELECT id, policy_id, collection_name, action, fields, filter, field_validation, created_at, updated_at \
-         FROM policy_permissions WHERE id = $1 AND policy_id = $2",
-    )
-    .bind(permission_id)
-    .bind(policy_id)
-    .fetch_optional(db_pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("Permission not found: {}", permission_id)))?;
+    let existing: PermissionRow = engine
+        .read_one_for_table(
+            db_pool,
+            TableRef {
+                schema: Some(schema.clone()),
+                name: collection.clone(),
+            },
+            OneRequest {
+                item_id: permission_id.to_string(),
+                fields: permission_fields(),
+                ..Default::default()
+            },
+        )
+        .await?
+        .map(|v| {
+            serde_json::from_value::<PermissionRow>(v)
+                .map_err(|e| AppError::Internal(format!("Invalid permission row: {}", e)))
+        })
+        .transpose()?
+        .filter(|row| row.policy_id == policy_id)
+        .ok_or_else(|| AppError::NotFound(format!("Permission not found: {}", permission_id)))?;
 
     let effective_filter = payload.filter.as_ref().unwrap_or(&existing.filter);
 
@@ -440,25 +691,48 @@ pub async fn update_permission(
     // Validate filter paths resolve against the collection schema
     validate_filter_paths_resolve(db_pool, &existing.collection_name, effective_filter).await?;
 
-    let row = sqlx::query_as::<_, PermissionRow>(
-        "UPDATE policy_permissions SET \
-         action = COALESCE($1, action), \
-         filter = COALESCE($2, filter), \
-         field_validation = COALESCE($3, field_validation), \
-         fields = COALESCE($4, fields), \
-         updated_at = NOW() \
-         WHERE id = $5 AND policy_id = $6 \
-         RETURNING id, policy_id, collection_name, action, fields, filter, field_validation, created_at, updated_at",
+    let mut map = serde_json::Map::new();
+    if let Some(action) = &payload.action {
+        map.insert("action".to_string(), json!(action));
+    }
+    if let Some(filter) = &payload.filter {
+        map.insert("filter".to_string(), json!(filter));
+    }
+    if let Some(field_validation) = &payload.field_validation {
+        map.insert("field_validation".to_string(), json!(field_validation));
+    }
+    if let Some(fields) = &payload.fields {
+        map.insert("fields".to_string(), json!(fields));
+    }
+    let outcome = match execute_update_one_for_table(
+        db_pool,
+        &shape,
+        &Value::String(permission_id.to_string()),
+        &map,
     )
-    .bind(&payload.action)
-    .bind(&payload.filter)
-    .bind(&payload.field_validation)
-    .bind(&payload.fields)
-    .bind(permission_id)
-    .bind(policy_id)
-    .fetch_optional(db_pool)
-    .await?
-    .ok_or_else(|| AppError::NotFound(format!("Permission not found: {}", permission_id)))?;
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(AppError::NotFound(_)) => {
+            return Err(AppError::NotFound(format!(
+                "Permission not found: {}",
+                permission_id
+            )));
+        }
+        Err(e) => return Err(e),
+    };
+    let row: PermissionRow = outcome
+        .affected
+        .into_iter()
+        .next()
+        .map(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| AppError::Internal(format!("Invalid permission row: {}", e)))
+        })
+        .transpose()?
+        .ok_or_else(|| {
+            AppError::NotFound(format!("Permission not found: {}", permission_id))
+        })?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
         &state,
@@ -489,16 +763,53 @@ pub async fn delete_permission(
     headers: HeaderMap,
     Path((policy_id, permission_id)): Path<(Uuid, Uuid)>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
-
-    let result = sqlx::query("DELETE FROM policy_permissions WHERE id = $1 AND policy_id = $2")
-        .bind(permission_id)
-        .bind(policy_id)
-        .execute(db_pool)
+    let schema = crate::api::roles::app_schema(&state, &headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_policy_permissions".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema.clone()),
+                name: collection.clone(),
+            },
+            &[],
+        )
         .await?;
 
-    if result.rows_affected() == 0 {
+    let existing = engine
+        .read_one_for_table(
+            db_pool,
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            OneRequest {
+                item_id: permission_id.to_string(),
+                fields: vec!["policy_id".into()],
+                ..Default::default()
+            },
+        )
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Permission not found: {}", permission_id)))?;
+    let belongs_to_policy = existing
+        .get("policy_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s == policy_id.to_string())
+        .unwrap_or(false);
+    if !belongs_to_policy {
+        return Err(AppError::NotFound(format!(
+            "Permission not found: {}",
+            permission_id
+        )));
+    }
+
+    let outcome =
+        execute_delete_for_table(db_pool, &shape, vec![Value::String(permission_id.to_string())])
+            .await?;
+
+    if outcome.affected_count == 0 {
         return Err(AppError::NotFound(format!(
             "Permission not found: {}",
             permission_id
@@ -534,15 +845,41 @@ pub async fn delete_collection_permissions(
     headers: HeaderMap,
     Path((policy_id, collection_name)): Path<(Uuid, String)>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
+    let schema = crate::api::roles::app_schema(&state, &headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let table = "alcedocore_policy_permissions".to_string();
+    let engine = ItemsService::for_global(&state.core, &table);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: table.clone(),
+            },
+            &[],
+        )
+        .await?;
 
-    let result =
-        sqlx::query("DELETE FROM policy_permissions WHERE policy_id = $1 AND collection_name = $2")
-            .bind(policy_id)
-            .bind(&collection_name)
-            .execute(db_pool)
-            .await?;
+    let outcome = execute_delete_for_table_by_filter(
+        db_pool,
+        &shape,
+        FilterCondition::Group {
+            operator: LogicOperator::And,
+            conditions: vec![
+                FilterCondition::Rule {
+                    field: "policy_id".into(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(json!(policy_id)),
+                },
+                FilterCondition::Rule {
+                    field: "collection_name".into(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(json!(&collection_name)),
+                },
+            ],
+        },
+    )
+    .await?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
         &state,
@@ -566,7 +903,7 @@ pub async fn delete_collection_permissions(
         });
 
     Ok(Json(
-        json!({ "deleted": true, "policy_id": policy_id, "collection_name": collection_name, "count": result.rows_affected() }),
+        json!({ "deleted": true, "policy_id": policy_id, "collection_name": collection_name, "count": outcome.affected_count }),
     ))
 }
 
@@ -577,26 +914,86 @@ pub async fn list_plugin_policies(
     headers: HeaderMap,
     Path(slug): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.read").await?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
 
-    #[derive(sqlx::FromRow, Serialize)]
+    #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
     struct PluginPolicyRow {
         id: Uuid,
         name: String,
         description: Option<String>,
     }
 
-    let rows = sqlx::query_as::<_, PluginPolicyRow>(
-        "SELECT p.id, p.name, p.description \
-         FROM policies p \
-         JOIN plugin_policies pp ON p.id = pp.policy_id \
-         WHERE pp.plugin_slug = $1 \
-         ORDER BY p.name",
-    )
-    .bind(&slug)
-    .fetch_all(db_pool)
-    .await?;
+    let plugin_policies_collection = "alcedocore_plugin_policies".to_string();
+    let engine = ItemsService::for_global(&state.core, &plugin_policies_collection);
+    let assignments = engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema.clone()),
+                name: "alcedocore_plugin_policies".to_string(),
+            },
+            ListRequest {
+                fields: vec!["policy_id".into()],
+                filter: Some(FilterCondition::Rule {
+                    field: "plugin_slug".into(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(json!(slug)),
+                }),
+                limit: UNBOUNDED_LIMIT,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let mut policy_ids: Vec<String> = Vec::new();
+    for v in &assignments.items {
+        let policy_id = v
+            .get("policy_id")
+            .and_then(|r| r.as_str())
+            .ok_or_else(|| {
+                AppError::Internal("Invalid plugin-policy row: missing policy_id".to_string())
+            })?;
+        policy_ids.push(policy_id.to_string());
+    }
+
+    if policy_ids.is_empty() {
+        return Ok(Json(json!({ "data": [] })));
+    }
+
+    let policies = engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema),
+                name: "alcedocore_policies".to_string(),
+            },
+            ListRequest {
+                fields: policy_fields(),
+                filter: Some(FilterCondition::Rule {
+                    field: "id".into(),
+                    operator: ComparisonOperator::In,
+                    value: Some(json!(policy_ids)),
+                }),
+                sort: vec![SortField {
+                    field: "name".into(),
+                    order: "asc".into(),
+                }],
+                limit: UNBOUNDED_LIMIT,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let rows: Vec<PluginPolicyRow> = policies
+        .items
+        .into_iter()
+        .map(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| AppError::Internal(format!("Invalid policy row: {}", e)))
+        })
+        .collect::<Result<_, _>>()?;
 
     Ok(Json(json!({ "data": rows })))
 }
@@ -606,10 +1003,11 @@ pub async fn list_assigned_plugins(
     headers: HeaderMap,
     Path(policy_id): Path<Uuid>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.read").await?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
 
-    #[derive(sqlx::FromRow, Serialize)]
+    #[derive(Debug, sqlx::FromRow, Serialize, Deserialize)]
     struct AssignedPluginRow {
         plugin_slug: String,
         plugin_name: Option<String>,
@@ -617,45 +1015,105 @@ pub async fn list_assigned_plugins(
         created_at: chrono::DateTime<chrono::Utc>,
     }
 
-    let mut select = sea_query::Query::select();
-    select
-        .expr(sea_query::Expr::col((
-            sea_query::Alias::new("pp"),
-            sea_query::Alias::new("plugin_slug"),
-        )))
-        .expr_as(
-            sea_query::Expr::col((sea_query::Alias::new("p"), sea_query::Alias::new("display_name"))),
-            sea_query::Alias::new("plugin_name"),
+    let plugin_policies_collection = "alcedocore_plugin_policies".to_string();
+    let engine = ItemsService::for_global(&state.core, &plugin_policies_collection);
+    let assignments = engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema.clone()),
+                name: "alcedocore_plugin_policies".to_string(),
+            },
+            ListRequest {
+                fields: vec![
+                    "plugin_slug".into(),
+                    "policy_id".into(),
+                    "created_at".into(),
+                ],
+                filter: Some(FilterCondition::Rule {
+                    field: "policy_id".into(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(json!(policy_id.to_string())),
+                }),
+                sort: vec![SortField {
+                    field: "plugin_slug".into(),
+                    order: "asc".into(),
+                }],
+                limit: UNBOUNDED_LIMIT,
+                ..Default::default()
+            },
         )
-        .expr(sea_query::Expr::col((
-            sea_query::Alias::new("pp"),
-            sea_query::Alias::new("policy_id"),
-        )))
-        .expr(sea_query::Expr::col((
-            sea_query::Alias::new("pp"),
-            sea_query::Alias::new("created_at"),
-        )))
-        .from_as(sea_query::Alias::new("plugin_policies"), sea_query::Alias::new("pp"))
-        .join_as(
-            sea_query::JoinType::LeftJoin,
-            sea_query::Alias::new("plugins"),
-            sea_query::Alias::new("p"),
-            sea_query::Expr::col((sea_query::Alias::new("p"), sea_query::Alias::new("slug")))
-                .equals((sea_query::Alias::new("pp"), sea_query::Alias::new("plugin_slug"))),
-        )
-        .and_where(sea_query::SimpleExpr::Custom(
-            "pp.policy_id = $1".to_string(),
-        ))
-        .order_by(
-            (sea_query::Alias::new("pp"), sea_query::Alias::new("plugin_slug")),
-            sea_query::Order::Asc,
-        );
-
-    let sql = select.to_string(sea_query::PostgresQueryBuilder);
-    let rows = sqlx::query_as::<_, AssignedPluginRow>(&sql)
-        .bind(policy_id)
-        .fetch_all(db_pool)
         .await?;
+
+    let mut slugs: Vec<String> = Vec::new();
+    for v in &assignments.items {
+        let slug = v
+            .get("plugin_slug")
+            .and_then(|r| r.as_str())
+            .ok_or_else(|| {
+                AppError::Internal("Invalid plugin-policy row: missing plugin_slug".to_string())
+            })?;
+        slugs.push(slug.to_string());
+    }
+
+    if slugs.is_empty() {
+        return Ok(Json(json!({ "data": { "plugins": [] } })));
+    }
+
+    let plugins_collection = "alcedo_plugins".to_string();
+    let plugins_engine = ItemsService::for_global(&state.core, &plugins_collection);
+    let plugins = plugins_engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some("alcedo".to_string()),
+                name: "alcedo_plugins".to_string(),
+            },
+            ListRequest {
+                fields: vec!["slug".into(), "display_name".into()],
+                filter: Some(FilterCondition::Rule {
+                    field: "slug".into(),
+                    operator: ComparisonOperator::In,
+                    value: Some(json!(slugs)),
+                }),
+                limit: UNBOUNDED_LIMIT,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let mut names: HashMap<String, Option<String>> = HashMap::new();
+    for v in &plugins.items {
+        let slug = v
+            .get("slug")
+            .and_then(|r| r.as_str())
+            .ok_or_else(|| AppError::Internal("Invalid plugin row: missing slug".to_string()))?;
+        names.insert(
+            slug.to_string(),
+            v.get("display_name")
+                .and_then(|d| d.as_str())
+                .map(String::from),
+        );
+    }
+
+    let rows: Vec<AssignedPluginRow> = assignments
+        .items
+        .into_iter()
+        .map(|mut v| {
+            let slug = v
+                .get("plugin_slug")
+                .and_then(|r| r.as_str())
+                .ok_or_else(|| {
+                    AppError::Internal("Invalid plugin-policy row: missing plugin_slug".to_string())
+                })?;
+            let plugin_name = names.get(slug).cloned().unwrap_or(None);
+            v["plugin_name"] = serde_json::to_value(plugin_name).map_err(|e| {
+                AppError::Internal(format!("Invalid plugin name for '{}': {}", slug, e))
+            })?;
+            serde_json::from_value(v)
+                .map_err(|e| AppError::Internal(format!("Invalid plugin-policy row: {}", e)))
+        })
+        .collect::<Result<_, AppError>>()?;
 
     Ok(Json(json!({ "data": { "plugins": rows } })))
 }
@@ -666,15 +1124,30 @@ pub async fn assign_policy(
     Path(slug): Path<String>,
     Json(payload): Json<AssignPolicyRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
-
-    sqlx::query(
-        "INSERT INTO plugin_policies (plugin_slug, policy_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+    let schema = crate::api::roles::app_schema(&state, &headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let table = "alcedocore_plugin_policies".to_string();
+    let engine = ItemsService::for_global(&state.core, &table);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: table.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let mut map = serde_json::Map::new();
+    map.insert("plugin_slug".to_string(), json!(&slug));
+    map.insert("policy_id".to_string(), json!(payload.policy_id));
+    execute_insert_for_table_with_conflict(
+        db_pool,
+        &shape,
+        &["plugin_slug", "policy_id"],
+        ConflictPolicy::DoNothing,
+        vec![map],
     )
-    .bind(&slug)
-    .bind(payload.policy_id)
-    .execute(db_pool)
     .await?;
 
     let (_, request_id) = crate::api::logs::log_and_emit(
@@ -708,17 +1181,43 @@ pub async fn unassign_policy(
     headers: HeaderMap,
     Path((slug, policy_id)): Path<(String, Uuid)>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
     permission_check::require_scope(&state, &headers, "policies.write").await?;
+    let schema = crate::api::roles::app_schema(&state, &headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let table = "alcedocore_plugin_policies".to_string();
+    let engine = ItemsService::for_global(&state.core, &table);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: table.clone(),
+            },
+            &[],
+        )
+        .await?;
 
-    let result =
-        sqlx::query("DELETE FROM plugin_policies WHERE plugin_slug = $1 AND policy_id = $2")
-            .bind(&slug)
-            .bind(policy_id)
-            .execute(db_pool)
-            .await?;
+    let outcome = execute_delete_for_table_by_filter(
+        db_pool,
+        &shape,
+        FilterCondition::Group {
+            operator: LogicOperator::And,
+            conditions: vec![
+                FilterCondition::Rule {
+                    field: "plugin_slug".into(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(json!(&slug)),
+                },
+                FilterCondition::Rule {
+                    field: "policy_id".into(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(json!(policy_id)),
+                },
+            ],
+        },
+    )
+    .await?;
 
-    if result.rows_affected() == 0 {
+    if outcome.affected_count == 0 {
         return Err(AppError::NotFound(format!(
             "Assignment not found for plugin {} policy {}",
             slug, policy_id

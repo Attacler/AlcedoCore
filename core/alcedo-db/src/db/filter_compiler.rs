@@ -8,17 +8,26 @@
 use serde_json::Value;
 
 use crate::db::collections::{CollectionDefinition, FieldType};
-use crate::db::filter_condition::{
-    ComparisonOperator,
-    FilterCondition,
-    LogicOperator,
-    SortField,
-};
+use crate::db::filter_condition::{ComparisonOperator, FilterCondition, LogicOperator, SortField};
+use crate::db::ALCEDO_SCHEMA;
 use crate::error::AppError;
+use crate::services::items::shape::{qualified_table_ref, PhysicalCatalog};
 
 /// Double-quote a name as a PostgreSQL identifier. Delegates to `db::quote_identifier`.
 pub fn quote(name: &str) -> String {
     super::quote_identifier(name)
+}
+
+/// Qualify a JOIN target table with its schema when the physical catalog knows
+/// it, preferring `base_schema` and falling back to the `alcedo` schema.
+fn join_table_ref(
+    table: &str,
+    physical: Option<&PhysicalCatalog>,
+    base_schema: Option<&str>,
+) -> String {
+    let schema = physical
+        .and_then(|catalog| catalog.table_schema(table, base_schema.unwrap_or(ALCEDO_SCHEMA)));
+    qualified_table_ref(schema.as_deref(), table)
 }
 
 // ---------------------------------------------------------------------------
@@ -47,9 +56,10 @@ pub fn compile_filter(
     bind_values: &mut Vec<Value>,
 ) -> Result<String, AppError> {
     match filter {
-        FilterCondition::Group { operator, conditions } => {
-            compile_group_simple(operator, conditions, col_type_map, bind_values)
-        }
+        FilterCondition::Group {
+            operator,
+            conditions,
+        } => compile_group_simple(operator, conditions, col_type_map, bind_values),
         FilterCondition::Rule {
             field,
             operator,
@@ -99,8 +109,19 @@ pub fn compile_filter_with_joins(
     base_collection: &str,
     all_collections: &[CollectionDefinition],
     joins: &mut Vec<String>,
+    physical: Option<&PhysicalCatalog>,
+    base_schema: Option<&str>,
 ) -> Result<String, AppError> {
-    compile_filter_node(filter, col_type_map, bind_values, base_collection, all_collections, joins)
+    compile_filter_node(
+        filter,
+        col_type_map,
+        bind_values,
+        base_collection,
+        all_collections,
+        joins,
+        physical,
+        base_schema,
+    )
 }
 
 /// Build a SELECT clause with dot-notation join resolution.
@@ -121,7 +142,7 @@ pub fn build_fields_select_with_joins(
         .iter()
         .map(|f| {
             if f.contains('.') {
-                resolve_field_path(f, base_collection, all_collections, joins)
+                resolve_field_path(f, base_collection, all_collections, joins, None, None)
                     .unwrap_or_else(|_| quote(f))
             } else {
                 quote(f)
@@ -156,14 +177,25 @@ fn compile_filter_node(
     base_collection: &str,
     all_collections: &[CollectionDefinition],
     joins: &mut Vec<String>,
+    physical: Option<&PhysicalCatalog>,
+    base_schema: Option<&str>,
 ) -> Result<String, AppError> {
     match filter {
-        FilterCondition::Group { operator, conditions } => {
+        FilterCondition::Group {
+            operator,
+            conditions,
+        } => {
             let mut clauses = Vec::new();
             for condition in conditions {
                 clauses.push(compile_filter_node(
-                    condition, col_type_map, bind_values,
-                    base_collection, all_collections, joins,
+                    condition,
+                    col_type_map,
+                    bind_values,
+                    base_collection,
+                    all_collections,
+                    joins,
+                    physical,
+                    base_schema,
                 )?);
             }
             if clauses.is_empty() {
@@ -182,9 +214,16 @@ fn compile_filter_node(
             operator,
             value,
         } => compile_rule_with_joins(
-            field, operator, value.as_ref(),
-            col_type_map, bind_values,
-            base_collection, all_collections, joins,
+            field,
+            operator,
+            value.as_ref(),
+            col_type_map,
+            bind_values,
+            base_collection,
+            all_collections,
+            joins,
+            physical,
+            base_schema,
         ),
     }
 }
@@ -199,12 +238,15 @@ fn compile_group_simple(
     let mut clauses = Vec::new();
     for condition in conditions {
         let clause = match condition {
-            FilterCondition::Group { operator: op, conditions: inner_conds } => {
-                compile_group_simple(op, inner_conds, col_type_map, bind_values)?
-            }
-            FilterCondition::Rule { field, operator, value } => {
-                compile_rule_simple(field, operator, value.as_ref(), col_type_map, bind_values)?
-            }
+            FilterCondition::Group {
+                operator: op,
+                conditions: inner_conds,
+            } => compile_group_simple(op, inner_conds, col_type_map, bind_values)?,
+            FilterCondition::Rule {
+                field,
+                operator,
+                value,
+            } => compile_rule_simple(field, operator, value.as_ref(), col_type_map, bind_values)?,
         };
         clauses.push(clause);
     }
@@ -241,7 +283,8 @@ fn compile_rule_simple(
     }
     let quoted = quote(field);
     let is_uuid = is_uuid_field(field, col_type_map);
-    emit_rule_clause(field, quoted, operator, value, is_uuid, bind_values)
+    let is_datetime = is_datetime_field(field, col_type_map);
+    emit_rule_clause(field, quoted, operator, value, is_uuid, is_datetime, bind_values)
 }
 
 /// Compile a single rule with dot-notation join support.
@@ -254,13 +297,23 @@ fn compile_rule_with_joins(
     base_collection: &str,
     all_collections: &[CollectionDefinition],
     joins: &mut Vec<String>,
+    physical: Option<&PhysicalCatalog>,
+    base_schema: Option<&str>,
 ) -> Result<String, AppError> {
     if field.contains('.') {
         // Resolve dot-notation path — validates the relationship chain.
-        let qualified = resolve_field_path(field, base_collection, all_collections, joins)?;
+        let qualified = resolve_field_path(
+            field,
+            base_collection,
+            all_collections,
+            joins,
+            physical,
+            base_schema,
+        )?;
         // Skip col_type_map validation — the target field is on a joined table.
-        // UUID detection also not applicable on joined tables.
-        emit_rule_clause(field, qualified, operator, value, false, bind_values)
+        // UUID and datetime casts are also not applicable on joined tables (the
+        // joined field's type isn't resolved here), so both are passed as false.
+        emit_rule_clause(field, qualified, operator, value, false, false, bind_values)
     } else {
         compile_rule_simple(field, operator, value, col_type_map, bind_values)
     }
@@ -278,13 +331,14 @@ fn emit_rule_clause(
     operator: &ComparisonOperator,
     value: Option<&Value>,
     is_uuid: bool,
+    is_datetime: bool,
     bind_values: &mut Vec<Value>,
 ) -> Result<String, AppError> {
     match operator {
         ComparisonOperator::Eq => match value {
             Some(v) if !v.is_null() => {
                 let idx = next_bind_index(bind_values);
-                let ph = placeholder(idx, is_uuid);
+                let ph = placeholder(idx, is_uuid, is_datetime);
                 bind_values.push(v.clone());
                 Ok(format!("{} = {}", quoted, ph))
             }
@@ -293,7 +347,7 @@ fn emit_rule_clause(
         ComparisonOperator::Neq => match value {
             Some(v) if !v.is_null() => {
                 let idx = next_bind_index(bind_values);
-                let ph = placeholder(idx, is_uuid);
+                let ph = placeholder(idx, is_uuid, is_datetime);
                 bind_values.push(v.clone());
                 Ok(format!("{} <> {}", quoted, ph))
             }
@@ -301,7 +355,10 @@ fn emit_rule_clause(
         },
         ComparisonOperator::Gt => {
             let v = value.ok_or_else(|| {
-                AppError::BadRequest(format!("'gt' operator requires a value for field '{}'", field))
+                AppError::BadRequest(format!(
+                    "'gt' operator requires a value for field '{}'",
+                    field
+                ))
             })?;
             if v.is_null() {
                 return Err(AppError::BadRequest(format!(
@@ -310,13 +367,16 @@ fn emit_rule_clause(
                 )));
             }
             let idx = next_bind_index(bind_values);
-            let ph = placeholder(idx, is_uuid);
+            let ph = placeholder(idx, is_uuid, is_datetime);
             bind_values.push(v.clone());
             Ok(format!("{} > {}", quoted, ph))
         }
         ComparisonOperator::Gte => {
             let v = value.ok_or_else(|| {
-                AppError::BadRequest(format!("'gte' operator requires a value for field '{}'", field))
+                AppError::BadRequest(format!(
+                    "'gte' operator requires a value for field '{}'",
+                    field
+                ))
             })?;
             if v.is_null() {
                 return Err(AppError::BadRequest(format!(
@@ -325,13 +385,16 @@ fn emit_rule_clause(
                 )));
             }
             let idx = next_bind_index(bind_values);
-            let ph = placeholder(idx, is_uuid);
+            let ph = placeholder(idx, is_uuid, is_datetime);
             bind_values.push(v.clone());
             Ok(format!("{} >= {}", quoted, ph))
         }
         ComparisonOperator::Lt => {
             let v = value.ok_or_else(|| {
-                AppError::BadRequest(format!("'lt' operator requires a value for field '{}'", field))
+                AppError::BadRequest(format!(
+                    "'lt' operator requires a value for field '{}'",
+                    field
+                ))
             })?;
             if v.is_null() {
                 return Err(AppError::BadRequest(format!(
@@ -340,13 +403,16 @@ fn emit_rule_clause(
                 )));
             }
             let idx = next_bind_index(bind_values);
-            let ph = placeholder(idx, is_uuid);
+            let ph = placeholder(idx, is_uuid, is_datetime);
             bind_values.push(v.clone());
             Ok(format!("{} < {}", quoted, ph))
         }
         ComparisonOperator::Lte => {
             let v = value.ok_or_else(|| {
-                AppError::BadRequest(format!("'lte' operator requires a value for field '{}'", field))
+                AppError::BadRequest(format!(
+                    "'lte' operator requires a value for field '{}'",
+                    field
+                ))
             })?;
             if v.is_null() {
                 return Err(AppError::BadRequest(format!(
@@ -355,7 +421,7 @@ fn emit_rule_clause(
                 )));
             }
             let idx = next_bind_index(bind_values);
-            let ph = placeholder(idx, is_uuid);
+            let ph = placeholder(idx, is_uuid, is_datetime);
             bind_values.push(v.clone());
             Ok(format!("{} <= {}", quoted, ph))
         }
@@ -377,6 +443,14 @@ fn emit_rule_clause(
             bind_values.push(Value::String(format!("%{}", s)));
             Ok(format!("{} LIKE ${}", quoted, idx))
         }
+        // Case-insensitive LIKE; added for file-search parity (the engine's
+        // Contains is case-sensitive, so Ilike must not be collapsed into it).
+        ComparisonOperator::Ilike => {
+            let s = value_str(field, operator, value)?;
+            let idx = next_bind_index(bind_values);
+            bind_values.push(Value::String(format!("%{}%", s)));
+            Ok(format!("{} ILIKE ${}", quoted, idx))
+        }
         ComparisonOperator::In => {
             let arr = value_array(field, operator, value)?;
             if arr.is_empty() {
@@ -388,7 +462,7 @@ fn emit_rule_clause(
             let mut placeholders = Vec::with_capacity(arr.len());
             for v in arr {
                 let idx = next_bind_index(bind_values);
-                placeholders.push(placeholder(idx, is_uuid));
+                placeholders.push(placeholder(idx, is_uuid, is_datetime));
                 bind_values.push(v.clone());
             }
             Ok(format!("{} IN ({})", quoted, placeholders.join(", ")))
@@ -404,7 +478,7 @@ fn emit_rule_clause(
             let mut placeholders = Vec::with_capacity(arr.len());
             for v in arr {
                 let idx = next_bind_index(bind_values);
-                placeholders.push(placeholder(idx, is_uuid));
+                placeholders.push(placeholder(idx, is_uuid, is_datetime));
                 bind_values.push(v.clone());
             }
             Ok(format!("{} NOT IN ({})", quoted, placeholders.join(", ")))
@@ -433,6 +507,8 @@ pub fn resolve_field_path(
     base_collection: &str,
     all_collections: &[CollectionDefinition],
     joins: &mut Vec<String>,
+    physical: Option<&PhysicalCatalog>,
+    base_schema: Option<&str>,
 ) -> Result<String, AppError> {
     let segments: Vec<&str> = field.split('.').collect();
     if segments.len() < 2 {
@@ -462,15 +538,18 @@ pub fn resolve_field_path(
             .find(|f| f.name == rel_field_name && f.field_type == FieldType::Relationship);
 
         if let Some(fwd) = forward_field {
-            let target_collection = fwd.related_collection.as_deref()
-                .ok_or_else(|| AppError::BadRequest(format!(
+            let target_collection = fwd.related_collection.as_deref().ok_or_else(|| {
+                AppError::BadRequest(format!(
                     "Relationship field '{}' on '{}' has no target collection",
                     rel_field_name, current_source
-                )))?;
+                ))
+            })?;
 
             // Generate a unique alias for this join step.
             let alias = format!("_rel_{}", segments[..=i].join("_"));
-            let join_alias_present = joins.iter().any(|j| j.contains(&format!(" AS {} ", quote(&alias))));
+            let join_alias_present = joins
+                .iter()
+                .any(|j| j.contains(&format!(" AS {} ", quote(&alias))));
 
             if !join_alias_present {
                 let source_aliased = if i == 0 {
@@ -483,23 +562,32 @@ pub fn resolve_field_path(
                 if fwd.relationship_type.as_deref() == Some("one_to_many") {
                     // 1:M — FK is on the TARGET table (e.g. contacts.customer = customers.id).
                     // Find the reverse FK on the target collection pointing back to source.
-                    let target_def = all_collections.iter()
+                    let target_def = all_collections
+                        .iter()
                         .find(|c| c.name == target_collection)
-                        .ok_or_else(|| AppError::BadRequest(format!(
-                            "Cannot resolve path '{}': target collection '{}' not found",
-                            field, target_collection
-                        )))?;
-                    let reverse_fk = target_def.fields.iter()
-                        .find(|f| f.field_type == FieldType::Relationship
-                            && f.related_collection.as_deref() == Some(current_source))
-                        .ok_or_else(|| AppError::BadRequest(format!(
-                            "Cannot resolve path '{}': collection '{}' has no FK back to '{}'",
-                            field, target_collection, current_source
-                        )))?;
+                        .ok_or_else(|| {
+                            AppError::BadRequest(format!(
+                                "Cannot resolve path '{}': target collection '{}' not found",
+                                field, target_collection
+                            ))
+                        })?;
+                    let reverse_fk = target_def
+                        .fields
+                        .iter()
+                        .find(|f| {
+                            f.field_type == FieldType::Relationship
+                                && f.related_collection.as_deref() == Some(current_source)
+                        })
+                        .ok_or_else(|| {
+                            AppError::BadRequest(format!(
+                                "Cannot resolve path '{}': collection '{}' has no FK back to '{}'",
+                                field, target_collection, current_source
+                            ))
+                        })?;
 
                     let join_sql = format!(
                         "LEFT JOIN {} AS {} ON {}.{} = {}.{}",
-                        quote(target_collection),
+                        join_table_ref(target_collection, physical, base_schema),
                         quote(&alias),
                         source_aliased,
                         quote("id"),
@@ -511,7 +599,7 @@ pub fn resolve_field_path(
                     // M:1 — FK is on the SOURCE table (existing behavior).
                     let join_sql = format!(
                         "LEFT JOIN {} AS {} ON {}.{} = {}.{}",
-                        quote(target_collection),
+                        join_table_ref(target_collection, physical, base_schema),
                         quote(&alias),
                         source_aliased,
                         quote(rel_field_name),
@@ -549,8 +637,9 @@ pub fn resolve_field_path(
                 // This is a 1:M reverse resolution.
                 // LEFT JOIN from target collection back to current source.
                 let alias = format!("_rel_{}", segments[..=i].join("_"));
-                let join_alias_present =
-                    joins.iter().any(|j| j.contains(&format!(" AS {} ", quote(&alias))));
+                let join_alias_present = joins
+                    .iter()
+                    .any(|j| j.contains(&format!(" AS {} ", quote(&alias))));
 
                 if !join_alias_present {
                     let source_aliased = if i == 0 {
@@ -562,7 +651,7 @@ pub fn resolve_field_path(
 
                     let join_sql = format!(
                         "LEFT JOIN {} AS {} ON {}.{} = {}.{}",
-                        quote(&target_def.name),
+                        join_table_ref(&target_def.name, physical, base_schema),
                         quote(&alias),
                         quote(&alias),
                         quote(&reverse_field.name),
@@ -608,7 +697,7 @@ fn build_order_by_impl(
         .map(|s| {
             let qualified = if s.field.contains('.') {
                 if let (Some(bc), Some(ac)) = (base_collection, all_collections) {
-                    resolve_field_path(&s.field, bc, ac, joins)
+                    resolve_field_path(&s.field, bc, ac, joins, None, None)
                         .unwrap_or_else(|_| quote(&s.field))
                 } else {
                     quote(&s.field)
@@ -638,15 +727,23 @@ fn is_uuid_field(field: &str, col_type_map: &ColTypeMap) -> bool {
     )
 }
 
+/// Check whether a field name corresponds to a datetime-typed column.
+fn is_datetime_field(field: &str, col_type_map: &ColTypeMap) -> bool {
+    matches!(col_type_map.get(field), Some(FieldType::Datetime))
+}
+
 /// Return the next 1-based bind index.
 fn next_bind_index(bind_values: &[Value]) -> u32 {
     bind_values.len() as u32 + 1
 }
 
-/// Format a placeholder string — with `::uuid` cast for UUID columns.
-fn placeholder(idx: u32, is_uuid: bool) -> String {
+/// Format a placeholder string — with `::uuid` cast for UUID columns and
+/// `::timestamptz` for datetime columns (so ISO-8601 string values bind).
+fn placeholder(idx: u32, is_uuid: bool, is_datetime: bool) -> String {
     if is_uuid {
         format!("${}::uuid", idx)
+    } else if is_datetime {
+        format!("${}::timestamptz", idx)
     } else {
         format!("${}", idx)
     }
@@ -687,4 +784,54 @@ fn value_array<'a>(
 /// Human-readable operator name for error messages.
 fn serde_operator_name(op: &ComparisonOperator) -> &'static str {
     op.as_str()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use serde_json::json;
+
+    use super::*;
+
+    fn text_type_map() -> HashMap<&'static str, &'static FieldType> {
+        let mut map = HashMap::new();
+        map.insert("filename", &FieldType::Text);
+        map
+    }
+
+    #[test]
+    fn ilike_operator_emits_case_insensitive_like() {
+        let mut bind_values: Vec<Value> = Vec::new();
+        let clause = compile_filter(
+            &FilterCondition::Rule {
+                field: "filename".into(),
+                operator: ComparisonOperator::Ilike,
+                value: Some(json!("hello")),
+            },
+            &text_type_map(),
+            &mut bind_values,
+        )
+        .expect("Ilike filter should compile");
+
+        assert_eq!(clause, "\"filename\" ILIKE $1");
+        assert_eq!(bind_values, vec![json!("%hello%")]);
+    }
+
+    #[test]
+    fn ilike_requires_string_value() {
+        let mut bind_values: Vec<Value> = Vec::new();
+        let err = compile_filter(
+            &FilterCondition::Rule {
+                field: "filename".into(),
+                operator: ComparisonOperator::Ilike,
+                value: Some(json!(42)),
+            },
+            &text_type_map(),
+            &mut bind_values,
+        )
+        .expect_err("Ilike with a non-string value must be rejected");
+
+        assert!(matches!(err, AppError::BadRequest(ref m) if m.contains("string")));
+    }
 }

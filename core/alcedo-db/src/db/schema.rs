@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::AppError;
 use crate::db::Pool;
+use crate::error::AppError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnSchema {
@@ -85,15 +85,17 @@ async fn get_columns(
 
     Ok(rows
         .into_iter()
-        .map(|(column_name, data_type, is_nullable, column_default, ordinal_position)| {
-            ColumnSchema {
-                column_name,
-                data_type,
-                is_nullable,
-                column_default,
-                ordinal_position,
-            }
-        })
+        .map(
+            |(column_name, data_type, is_nullable, column_default, ordinal_position)| {
+                ColumnSchema {
+                    column_name,
+                    data_type,
+                    is_nullable,
+                    column_default,
+                    ordinal_position,
+                }
+            },
+        )
         .collect())
 }
 
@@ -161,7 +163,13 @@ async fn get_foreign_keys(
     Ok(rows
         .into_iter()
         .map(
-            |(constraint_name, column_name, foreign_table_schema, foreign_table_name, foreign_column_name)| ForeignKey {
+            |(
+                constraint_name,
+                column_name,
+                foreign_table_schema,
+                foreign_table_name,
+                foreign_column_name,
+            )| ForeignKey {
                 constraint_name,
                 column_name,
                 foreign_table_schema,

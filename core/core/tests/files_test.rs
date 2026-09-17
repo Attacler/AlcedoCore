@@ -102,6 +102,28 @@ async fn upload_file(
         .await
 }
 
+/// Upload a small file with an explicit MIME type (the default helper always
+/// uses `text/plain`, so MIME-filter tests need this variant).
+async fn upload_file_with_mime(
+    server: &axum_test::TestServer,
+    cookie: &str,
+    filename: &str,
+    content: &[u8],
+    mime_type: &str,
+) -> axum_test::TestResponse {
+    let form = MultipartForm::new().add_part(
+        "file",
+        Part::bytes(content.to_vec())
+            .file_name(filename)
+            .mime_type(mime_type),
+    );
+    server
+        .post("/api/files/upload")
+        .add_header("cookie", cookie)
+        .multipart(form)
+        .await
+}
+
 /// Create a folder as a session user (same FK reason as upload).
 async fn create_folder(
     server: &axum_test::TestServer,
@@ -517,6 +539,101 @@ async fn test_file_upload_in_folder_and_folder_delete_guard() {
 }
 
 // ---------------------------------------------------------------------------
+// Explicit-null folder_id move-to-root
+// ---------------------------------------------------------------------------
+
+/// `PATCH /api/files/:id` with an explicit `"folder_id": null` must move the
+/// file to the root: the metadata row's `folder_id` becomes NULL. (The old
+/// `COALESCE($3, folder_id)` SQL kept the stale folder id while the storage
+/// path had already moved to root, diverging the two.)
+#[tokio::test]
+async fn test_file_patch_explicit_null_folder_id_moves_to_root() {
+    let (server, _test_db) = setup().await;
+    let admin_cookie = create_admin_session(&server).await;
+
+    let folder = create_folder(&server, &admin_cookie, &common::unique_name("moveme")).await;
+    assert_eq!(folder.status_code(), StatusCode::OK, "create folder failed: {}", folder.text());
+    let folder_id = parse_body(&folder)["id"].as_str().expect("folder id").to_string();
+
+    // Upload into the folder.
+    let content = b"move me to root".to_vec();
+    let upload = upload_file(&server, &admin_cookie, "moving.txt", &content, Some(&folder_id)).await;
+    assert_eq!(upload.status_code(), StatusCode::OK, "upload to folder failed: {}", upload.text());
+    let file_id = parse_body(&upload)["id"].as_str().expect("file id").to_string();
+
+    // Sanity: metadata shows the folder association.
+    let meta = get_authed(&server, &format!("/api/files/{}", file_id)).await;
+    assert_eq!(
+        parse_body(&meta)["folder_id"].as_str(),
+        Some(folder_id.as_str()),
+        "file starts inside the folder"
+    );
+
+    // Rename-only PATCH (folder_id absent) preserves the folder.
+    let patch = patch_authed(
+        &server,
+        &format!("/api/files/{}", file_id),
+        json!({ "filename": "still-here.txt" }),
+    )
+    .await;
+    assert_eq!(patch.status_code(), StatusCode::OK, "rename failed: {}", patch.text());
+    assert_eq!(
+        parse_body(&patch)["folder_id"].as_str(),
+        Some(folder_id.as_str()),
+        "absent folder_id must preserve the current folder"
+    );
+
+    // Explicit null moves the file to the root.
+    let patch = patch_authed(
+        &server,
+        &format!("/api/files/{}", file_id),
+        json!({ "folder_id": null }),
+    )
+    .await;
+    assert_eq!(patch.status_code(), StatusCode::OK, "move to root failed: {}", patch.text());
+    let body = parse_body(&patch);
+    assert!(
+        body["folder_id"].is_null(),
+        "explicit-null folder_id must clear folder_id, got: {}",
+        body["folder_id"]
+    );
+
+    // GET metadata confirms folder_id is null.
+    let meta = get_authed(&server, &format!("/api/files/{}", file_id)).await;
+    assert!(
+        parse_body(&meta)["folder_id"].is_null(),
+        "metadata folder_id is null after move to root"
+    );
+
+    // Root listing includes it; folder-scoped listing excludes it.
+    let root = get_authed(&server, "/api/files?folder_id=").await;
+    assert_eq!(root.status_code(), StatusCode::OK, "root listing failed: {}", root.text());
+    let ids = file_ids(&parse_body(&root));
+    assert!(ids.contains(&file_id), "moved file must be listed at root, got ids: {:?}", ids);
+
+    let scoped = get_authed(&server, &format!("/api/files?folder_id={}", folder_id)).await;
+    assert_eq!(scoped.status_code(), StatusCode::OK, "folder listing failed: {}", scoped.text());
+    let ids = file_ids(&parse_body(&scoped));
+    assert!(
+        !ids.contains(&file_id),
+        "moved file must be excluded from the folder listing, got ids: {:?}",
+        ids
+    );
+
+    // Download still returns the exact bytes after the move.
+    let dl = server
+        .get(&format!("/api/files/{}/download", file_id))
+        .add_header("cookie", admin_cookie.clone())
+        .await;
+    assert_eq!(dl.status_code(), StatusCode::OK, "download after move failed: {}", dl.text());
+    assert_eq!(
+        dl.as_bytes().as_ref(),
+        content.as_slice(),
+        "downloaded bytes match the uploaded content after move to root"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Rename round-trip: upload → rename → download → delete
 // ---------------------------------------------------------------------------
 
@@ -561,4 +678,184 @@ async fn test_file_delete_after_rename_documents_bug() {
     assert_eq!(del.status_code(), StatusCode::NO_CONTENT, "delete after rename failed: {}", del.text());
     let gone = get_authed(&server, &format!("/api/files/{}", file_id)).await;
     assert_eq!(gone.status_code(), StatusCode::NOT_FOUND, "deleted file is gone (404)");
+}
+
+// ---------------------------------------------------------------------------
+// Search / filter paths (engine-backed reads)
+// ---------------------------------------------------------------------------
+
+/// Extract the list of file ids from a `GET /api/files` response body.
+fn file_ids(body: &Value) -> Vec<String> {
+    body["data"]
+        .as_array()
+        .expect("files response has a data array")
+        .iter()
+        .filter_map(|f| f["id"].as_str().map(|s| s.to_string()))
+        .collect()
+}
+
+/// Extract the list of folder ids from a `GET /api/files/folders` response body.
+fn folder_ids(body: &Value) -> Vec<String> {
+    body["data"]
+        .as_array()
+        .expect("folders response has a data array")
+        .iter()
+        .filter_map(|f| f["id"].as_str().map(|s| s.to_string()))
+        .collect()
+}
+
+/// `?search=` is case-insensitive (ILIKE): names differing only in case must
+/// both match a lowercase search term.
+#[tokio::test]
+async fn test_file_search_is_case_insensitive() {
+    let (server, _test_db) = setup().await;
+    let admin_cookie = create_admin_session(&server).await;
+
+    let up1 = upload_file(&server, &admin_cookie, "Photo.JPG", b"jpeg bytes", None).await;
+    assert_eq!(up1.status_code(), StatusCode::OK, "upload Photo.JPG failed: {}", up1.text());
+    let photo_id = parse_body(&up1)["id"].as_str().expect("uploaded file has an id").to_string();
+
+    let up2 = upload_file(&server, &admin_cookie, "photo.png", b"png bytes", None).await;
+    assert_eq!(up2.status_code(), StatusCode::OK, "upload photo.png failed: {}", up2.text());
+    let photo_png_id = parse_body(&up2)["id"].as_str().expect("uploaded file has an id").to_string();
+
+    let resp = get_authed(&server, "/api/files?search=photo").await;
+    assert_eq!(resp.status_code(), StatusCode::OK, "search failed: {}", resp.text());
+    let body = parse_body(&resp);
+
+    let ids = file_ids(&body);
+    assert!(
+        ids.contains(&photo_id),
+        "Photo.JPG must match search=photo (case-insensitive), got ids: {:?}",
+        ids
+    );
+    assert!(
+        ids.contains(&photo_png_id),
+        "photo.png must match search=photo, got ids: {:?}",
+        ids
+    );
+
+    let names: Vec<&str> = body["data"]
+        .as_array()
+        .expect("data is an array")
+        .iter()
+        .filter_map(|f| f["filename"].as_str())
+        .collect();
+    assert!(names.contains(&"Photo.JPG"), "response names: {:?}", names);
+    assert!(names.contains(&"photo.png"), "response names: {:?}", names);
+}
+
+/// `?mime_type=` uses StartsWith semantics: `image/` matches only image files.
+#[tokio::test]
+async fn test_file_mime_type_filter_matches_prefix() {
+    let (server, _test_db) = setup().await;
+    let admin_cookie = create_admin_session(&server).await;
+
+    let up_text = upload_file(&server, &admin_cookie, "notes.txt", b"text bytes", None).await;
+    assert_eq!(up_text.status_code(), StatusCode::OK, "upload notes.txt failed: {}", up_text.text());
+    let text_id = parse_body(&up_text)["id"].as_str().expect("uploaded file has an id").to_string();
+
+    let up_img = upload_file_with_mime(&server, &admin_cookie, "pic.png", b"image bytes", "image/png").await;
+    assert_eq!(up_img.status_code(), StatusCode::OK, "upload pic.png failed: {}", up_img.text());
+    let image_id = parse_body(&up_img)["id"].as_str().expect("uploaded file has an id").to_string();
+
+    let resp = get_authed(&server, "/api/files?mime_type=image/").await;
+    assert_eq!(resp.status_code(), StatusCode::OK, "mime filter failed: {}", resp.text());
+    let body = parse_body(&resp);
+
+    let ids = file_ids(&body);
+    assert!(ids.contains(&image_id), "image file must match mime_type=image/, got ids: {:?}", ids);
+    assert!(
+        !ids.contains(&text_id),
+        "text file must not match mime_type=image/, got ids: {:?}",
+        ids
+    );
+}
+
+/// `?folder_id=` (empty string) returns only root-level files (folder_id IS NULL).
+#[tokio::test]
+async fn test_file_list_empty_folder_id_returns_root_files_only() {
+    let (server, _test_db) = setup().await;
+    let admin_cookie = create_admin_session(&server).await;
+
+    let folder = create_folder(&server, &admin_cookie, &common::unique_name("root-only")).await;
+    assert_eq!(folder.status_code(), StatusCode::OK, "create folder failed: {}", folder.text());
+    let folder_id = parse_body(&folder)["id"].as_str().expect("folder id").to_string();
+
+    let up_root = upload_file(&server, &admin_cookie, "root.txt", b"root bytes", None).await;
+    assert_eq!(up_root.status_code(), StatusCode::OK, "root upload failed: {}", up_root.text());
+    let root_id = parse_body(&up_root)["id"].as_str().expect("uploaded file has an id").to_string();
+
+    let up_in_folder = upload_file(&server, &admin_cookie, "nested.txt", b"nested bytes", Some(&folder_id)).await;
+    assert_eq!(up_in_folder.status_code(), StatusCode::OK, "folder upload failed: {}", up_in_folder.text());
+    let nested_id = parse_body(&up_in_folder)["id"].as_str().expect("uploaded file has an id").to_string();
+
+    let resp = get_authed(&server, "/api/files?folder_id=").await;
+    assert_eq!(resp.status_code(), StatusCode::OK, "empty folder_id filter failed: {}", resp.text());
+    let body = parse_body(&resp);
+
+    let ids = file_ids(&body);
+    assert!(ids.contains(&root_id), "root file must be listed with folder_id=, got ids: {:?}", ids);
+    assert!(
+        !ids.contains(&nested_id),
+        "folder-scoped file must be excluded with folder_id=, got ids: {:?}",
+        ids
+    );
+}
+
+/// `list_folders?parent_id=` scopes to children; root listing excludes them.
+#[tokio::test]
+async fn test_folder_list_parent_id_filters_and_root_excludes() {
+    let (server, _test_db) = setup().await;
+    let admin_cookie = create_admin_session(&server).await;
+
+    let parent = create_folder(&server, &admin_cookie, &common::unique_name("parent")).await;
+    assert_eq!(parent.status_code(), StatusCode::OK, "create parent folder failed: {}", parent.text());
+    let parent_id = parse_body(&parent)["id"].as_str().expect("parent folder id").to_string();
+
+    // Child folder created via PATCH (the create_folder helper makes root folders only).
+    let child_name = common::unique_name("child");
+    let child = create_folder(&server, &admin_cookie, &child_name).await;
+    assert_eq!(child.status_code(), StatusCode::OK, "create child folder failed: {}", child.text());
+    let child_id = parse_body(&child)["id"].as_str().expect("child folder id").to_string();
+    let patch = patch_authed(
+        &server,
+        &format!("/api/files/folders/{}", child_id),
+        json!({ "parent_id": parent_id }),
+    )
+    .await;
+    assert_eq!(patch.status_code(), StatusCode::OK, "move child under parent failed: {}", patch.text());
+
+    // Children listing returns the child.
+    let children = get_authed(&server, &format!("/api/files/folders?parent_id={}", parent_id)).await;
+    assert_eq!(children.status_code(), StatusCode::OK, "children listing failed: {}", children.text());
+    let children_body = parse_body(&children);
+    let child_ids = folder_ids(&children_body);
+    assert!(
+        child_ids.contains(&child_id),
+        "child folder must be listed under parent_id, got ids: {:?}",
+        child_ids
+    );
+    assert!(
+        !child_ids.contains(&parent_id),
+        "parent must not be listed as its own child, got ids: {:?}",
+        child_ids
+    );
+
+    // Root listing (no parent_id) returns the parent but not the child.
+    let root = get_authed(&server, "/api/files/folders").await;
+    assert_eq!(root.status_code(), StatusCode::OK, "root listing failed: {}", root.text());
+    let root_ids = folder_ids(&parse_body(&root));
+    assert!(root_ids.contains(&parent_id), "parent must be in the root listing, got ids: {:?}", root_ids);
+    assert!(
+        !root_ids.contains(&child_id),
+        "child folder must be excluded from the root listing, got ids: {:?}",
+        root_ids
+    );
+
+    // Parent folder metadata reports the child.
+    let meta = get_authed(&server, &format!("/api/files/folders/{}", parent_id)).await;
+    assert_eq!(meta.status_code(), StatusCode::OK, "get folder failed: {}", meta.text());
+    let meta_body = parse_body(&meta);
+    assert_eq!(meta_body["subfolder_count"].as_i64(), Some(1), "parent has one subfolder");
 }

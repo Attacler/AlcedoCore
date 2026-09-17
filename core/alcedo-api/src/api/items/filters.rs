@@ -1,18 +1,7 @@
 use serde_json::Value;
 
-use crate::db::filter_condition::FilterCondition;
 use crate::db::query_builder::FilterCondition as QueryFilterCondition;
 use crate::db::query_builder::FilterOperator;
-
-/// Check whether a FilterCondition contains any dot-notation field paths.
-pub fn filter_has_dot_path(filter: &FilterCondition) -> bool {
-    match filter {
-        FilterCondition::Group { conditions, .. } => {
-            conditions.iter().any(|c| filter_has_dot_path(c))
-        }
-        FilterCondition::Rule { field, .. } => field.contains('.'),
-    }
-}
 
 /// Convert permission policy filters into query_builder::FilterCondition format.
 /// Rules are OR-ed, conditions within a rule are AND-ed.

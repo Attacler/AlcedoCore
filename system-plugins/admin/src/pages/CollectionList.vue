@@ -7,6 +7,7 @@ import Button from "primevue/button";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import { formatDate } from "@/utils/formatters";
+import { appPath } from "@/utils/appHeaders";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { Drawer } from "primevue";
 
@@ -84,7 +85,7 @@ async function handleCreate() {
             "success",
         );
         closeCreateModal();
-        router.push(`/collections/${collection.name}/edit`);
+        router.push(appPath(`/collections/${collection.name}/edit`));
     } catch (e) {
         toast.show(
             `Failed to create collection: ${e instanceof Error ? e.message : "Unknown error"}`,
@@ -179,7 +180,7 @@ function closeDeleteModal() {
                         >folder</span
                     >
                     <router-link
-                        :to="`/collections/${collection.name}/edit`"
+                        :to="appPath(`/collections/${collection.name}/edit`)"
                         class="font-medium hover:text-blue-600 transition-colors"
                         :class="
                             collection.is_system
@@ -208,7 +209,7 @@ function closeDeleteModal() {
                         severity="secondary"
                         outlined
                         as="router-link"
-                        :to="`/collections/${collection.name}/edit`"
+                        :to="appPath(`/collections/${collection.name}/edit`)"
                     />
                     <Button
                         v-if="!collection.is_system"

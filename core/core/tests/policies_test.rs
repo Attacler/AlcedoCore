@@ -174,6 +174,87 @@ async fn test_policy_crud_lifecycle() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 1b: List permission_count aggregation
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn test_policy_list_permission_count() {
+    let (server, _test_db) = setup_server().await;
+
+    let collection = common::unique_name("col");
+    create_collection(&server, &collection).await;
+
+    let empty_policy = create_policy(&server, &common::unique_name("policy")).await;
+    let empty_id = policy_id(&empty_policy);
+    let with_rules = create_policy(&server, &common::unique_name("policy")).await;
+    let with_rules_id = policy_id(&with_rules);
+
+    // No permission rules yet -> permission_count 0 for both.
+    let resp = server
+        .get("/api/policies")
+        .add_header("Authorization", AUTH)
+        .await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
+    let entries = parse_body(&resp)["data"]
+        .as_array()
+        .expect("data should be an array")
+        .clone();
+    let empty = entries
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(empty_id.as_str()))
+        .expect("Empty policy should appear in the list");
+    assert_eq!(empty["permission_count"], json!(0));
+    let with_rules_entry = entries
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(with_rules_id.as_str()))
+        .expect("Policy should appear in the list");
+    assert_eq!(with_rules_entry["permission_count"], json!(0));
+
+    // Add two permission rules to `with_rules`.
+    for action in ["read", "update"] {
+        let resp = server
+            .post(&format!("/api/policies/{}/permissions", with_rules_id))
+            .add_header("Authorization", AUTH)
+            .json(&json!({
+                "collection_name": collection,
+                "action": action,
+                "filter": []
+            }))
+            .await;
+        assert_eq!(
+            resp.status_code(),
+            axum::http::StatusCode::OK,
+            "Create {} permission failed: {}",
+            action,
+            resp.text()
+        );
+    }
+
+    let resp = server
+        .get("/api/policies")
+        .add_header("Authorization", AUTH)
+        .await;
+    assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
+    let entries = parse_body(&resp)["data"]
+        .as_array()
+        .expect("data should be an array")
+        .clone();
+    let empty = entries
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(empty_id.as_str()))
+        .expect("Empty policy should appear in the list");
+    assert_eq!(empty["permission_count"], json!(0));
+    let with_rules_entry = entries
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(with_rules_id.as_str()))
+        .expect("Policy should appear in the list");
+    assert_eq!(
+        with_rules_entry["permission_count"],
+        json!(2),
+        "permission_count should equal the number of permission rules"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test 2: Permission rule CRUD (create / list / update / delete)
 // ---------------------------------------------------------------------------
 #[tokio::test]
@@ -439,6 +520,11 @@ async fn test_plugin_policy_assignment() {
         .expect("Plugin should appear in assigned plugins list");
     assert_eq!(plugin["plugin_slug"], json!(slug));
     assert_eq!(plugin["policy_id"], json!(id));
+    assert_eq!(
+        plugin["plugin_name"],
+        json!("Test Plugin"),
+        "Assigned plugin should carry its display_name"
+    );
 
     // DELETE unassigns the policy
     let resp = server
@@ -468,5 +554,113 @@ async fn test_plugin_policy_assignment() {
             .iter()
             .any(|p| p.get("id").and_then(|v| v.as_str()) == Some(id.as_str())),
         "Unassigned policy should not appear in plugin policy list"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 4b: Policy/permission/assignment error paths (pinned 404s)
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn test_policy_error_paths() {
+    let (server, _test_db) = setup_server().await;
+    let missing_policy = uuid::Uuid::new_v4().to_string();
+    let missing_perm = uuid::Uuid::new_v4().to_string();
+
+    // Update missing policy -> 404 "Policy not found".
+    let resp = server
+        .put(&format!("/api/policies/{}", missing_policy))
+        .add_header("Authorization", AUTH)
+        .json(&json!({ "name": "ghost" }))
+        .await;
+    assert_eq!(
+        resp.status_code(),
+        axum::http::StatusCode::NOT_FOUND,
+        "update missing policy should be 404: {}",
+        resp.text()
+    );
+    assert!(
+        resp.text().contains("Policy not found"),
+        "update missing policy message pinned, got: {}",
+        resp.text()
+    );
+
+    // Delete missing permission -> 404.
+    let policy = create_policy(&server, &common::unique_name("policy")).await;
+    let id = policy_id(&policy);
+    let resp = server
+        .delete(&format!("/api/policies/{}/permissions/{}", id, missing_perm))
+        .add_header("Authorization", AUTH)
+        .await;
+    assert_eq!(
+        resp.status_code(),
+        axum::http::StatusCode::NOT_FOUND,
+        "delete missing permission should be 404: {}",
+        resp.text()
+    );
+    assert!(
+        resp.text().contains("Permission not found"),
+        "delete missing permission message pinned, got: {}",
+        resp.text()
+    );
+
+    // Unassign missing (plugin, policy) assignment -> 404 "Assignment not found".
+    let resp = server
+        .delete(&format!("/api/plugins/{}/policies/{}", "no-such-plugin", id))
+        .add_header("Authorization", AUTH)
+        .await;
+    assert_eq!(
+        resp.status_code(),
+        axum::http::StatusCode::NOT_FOUND,
+        "unassign missing assignment should be 404: {}",
+        resp.text()
+    );
+    assert!(
+        resp.text().contains("Assignment not found"),
+        "unassign missing assignment message pinned, got: {}",
+        resp.text()
+    );
+
+    // GET missing policy -> 404 "Policy not found" (companion pin).
+    let resp = server
+        .get(&format!("/api/policies/{}", missing_policy))
+        .add_header("Authorization", AUTH)
+        .await;
+    assert_eq!(
+        resp.status_code(),
+        axum::http::StatusCode::NOT_FOUND,
+        "get missing policy should be 404: {}",
+        resp.text()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: Assigned plugins — empty policy (early-return path)
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn test_policy_with_no_assigned_plugins_returns_empty_list() {
+    let (server, _test_db) = setup_server().await;
+
+    let policy = create_policy(&server, &common::unique_name("policy")).await;
+    let id = policy_id(&policy);
+
+    // No plugins assigned yet -> empty list.
+    let resp = server
+        .get(&format!("/api/policies/{}/plugins", id))
+        .add_header("Authorization", AUTH)
+        .await;
+    assert_eq!(
+        resp.status_code(),
+        axum::http::StatusCode::OK,
+        "List assigned plugins failed: {}",
+        resp.text()
+    );
+    let body = parse_body(&resp);
+    let plugins = body["data"]["plugins"]
+        .as_array()
+        .expect("data.plugins should be an array");
+    assert!(
+        plugins.is_empty(),
+        "Policy with no assigned plugins should return an empty list, got: {}",
+        plugins.len()
     );
 }

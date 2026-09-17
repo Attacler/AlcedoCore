@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::query_builder::{execute_query, QueryRequest, QueryResponse};
 use crate::db::schema::get_table_schemas;
-use crate::error::AppError;
 use crate::db::Pool;
+use crate::error::AppError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateRequest {
@@ -22,8 +22,18 @@ pub struct DeleteRequest {
     pub pk_values: Option<Vec<serde_json::Value>>,
 }
 
-async fn resolve_schema(pool: &Pool, slug: &str, table_name: Option<&str>) -> Result<(String, String, Vec<String>), AppError> {
-    let schema_name = crate::db::plugin_migrations::plugin_schema_name(slug);
+async fn resolve_schema(
+    pool: &Pool,
+    slug: &str,
+    table_name: Option<&str>,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
+) -> Result<(String, String, Vec<String>), AppError> {
+    let schema_name = crate::db::plugin_migrations::plugin_schema_name_for_scope(
+        slug,
+        app_version_id,
+        version_id,
+    );
     let schemas = get_table_schemas(pool, &schema_name).await?;
 
     if schemas.is_empty() {
@@ -37,7 +47,9 @@ async fn resolve_schema(pool: &Pool, slug: &str, table_name: Option<&str>) -> Re
         schemas
             .into_iter()
             .find(|t| t.table_name == name)
-            .ok_or_else(|| AppError::NotFound(format!("Table '{}' not found for plugin '{}'", name, slug)))?
+            .ok_or_else(|| {
+                AppError::NotFound(format!("Table '{}' not found for plugin '{}'", name, slug))
+            })?
     } else {
         schemas
             .into_iter()
@@ -45,14 +57,15 @@ async fn resolve_schema(pool: &Pool, slug: &str, table_name: Option<&str>) -> Re
             .ok_or_else(|| AppError::NotFound(format!("No user tables for plugin '{}'", slug)))?
     };
 
-    let col_names: Vec<String> = table.columns.iter().map(|c| c.column_name.clone()).collect();
+    let col_names: Vec<String> = table
+        .columns
+        .iter()
+        .map(|c| c.column_name.clone())
+        .collect();
     Ok((schema_name, table.table_name, col_names))
 }
 
-fn validate_columns(
-    keys: &[String],
-    valid_columns: &[String],
-) -> Result<(), AppError> {
+fn validate_columns(keys: &[String], valid_columns: &[String]) -> Result<(), AppError> {
     for key in keys {
         if !valid_columns.contains(key) {
             return Err(AppError::BadRequest(format!(
@@ -69,10 +82,16 @@ pub async fn query_items(
     pool: &Pool,
     slug: &str,
     request: QueryRequest,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
 ) -> Result<QueryResponse, AppError> {
-    let (schema_name, _table_name, _columns) = resolve_schema(pool, slug, None).await?;
+    let (schema_name, _table_name, _columns) =
+        resolve_schema(pool, slug, None, app_version_id, version_id).await?;
     let schemas = get_table_schemas(pool, &schema_name).await?;
-    let table_schema = schemas.into_iter().find(|t| t.table_name != "_sqlx_migrations").unwrap();
+    let table_schema = schemas
+        .into_iter()
+        .find(|t| t.table_name != "_sqlx_migrations")
+        .unwrap();
     execute_query(pool, &schema_name, &table_schema, &request).await
 }
 
@@ -80,8 +99,11 @@ pub async fn create_items(
     pool: &Pool,
     slug: &str,
     request: CreateRequest,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
-    let (schema_name, table_name, valid_columns) = resolve_schema(pool, slug, None).await?;
+    let (schema_name, table_name, valid_columns) =
+        resolve_schema(pool, slug, None, app_version_id, version_id).await?;
     let table_name = table_name.clone();
 
     if request.items.is_empty() {
@@ -103,19 +125,29 @@ pub async fn create_items(
 
         let sql = format!(
             "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({}) RETURNING row_to_json(\"{}\".\"{}\".*)",
-            schema_name, table_name, quoted.join(", "), ph.join(", "),
-            schema_name, table_name
+            schema_name,
+            table_name,
+            quoted.join(", "),
+            ph.join(", "),
+            schema_name,
+            table_name
         );
 
         let mut q = sqlx::query_as::<_, (serde_json::Value,)>(&sql);
         for col in cols {
-            let val = item.get(col.as_str()).cloned().unwrap_or(serde_json::Value::Null);
+            let val = item
+                .get(col.as_str())
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             q = crate::bind_json_value_owned!(q, val);
         }
 
-        let (row,): (serde_json::Value,) = q.fetch_one(&mut *tx).await.map_err(|e| {
-            AppError::DatabaseError { details: format!("Insert failed: {}", e) }
-        })?;
+        let (row,): (serde_json::Value,) =
+            q.fetch_one(&mut *tx)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    details: format!("Insert failed: {}", e),
+                })?;
         results.push(row);
     }
 
@@ -127,13 +159,19 @@ pub async fn update_items(
     pool: &Pool,
     slug: &str,
     request: UpdateRequest,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
 ) -> Result<u64, AppError> {
-    let (schema_name, table_name, valid_columns) = resolve_schema(pool, slug, None).await?;
+    let (schema_name, table_name, valid_columns) =
+        resolve_schema(pool, slug, None, app_version_id, version_id).await?;
 
     let update_keys: Vec<String> = request.update.keys().cloned().collect();
     validate_columns(&update_keys, &valid_columns)?;
 
-    let set_clauses: Vec<String> = request.update.keys().enumerate()
+    let set_clauses: Vec<String> = request
+        .update
+        .keys()
+        .enumerate()
         .map(|(i, k)| format!("\"{}\" = ${}", k, i + 1))
         .collect();
     let update_vals: Vec<serde_json::Value> = request.update.values().cloned().collect();
@@ -157,7 +195,10 @@ pub async fn update_items(
 
     let sql = format!(
         "UPDATE \"{}\".\"{}\" SET {} WHERE {}",
-        schema_name, table_name, set_clauses.join(", "), filter_clause
+        schema_name,
+        table_name,
+        set_clauses.join(", "),
+        filter_clause
     );
 
     let mut q = sqlx::query(&sql);
@@ -178,8 +219,11 @@ pub async fn delete_items(
     pool: &Pool,
     slug: &str,
     request: DeleteRequest,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
 ) -> Result<(u64, Vec<serde_json::Value>), AppError> {
-    let (schema_name, table_name, _valid_columns) = resolve_schema(pool, slug, None).await?;
+    let (schema_name, table_name, _valid_columns) =
+        resolve_schema(pool, slug, None, app_version_id, version_id).await?;
 
     let pks = ["id"];
 
@@ -189,19 +233,28 @@ pub async fn delete_items(
                 return Err(AppError::BadRequest("No pk_values provided".to_string()));
             }
             let phs: Vec<String> = (1..=pk_values.len()).map(|i| format!("${}", i)).collect();
-            (format!("\"{}\" IN ({})", pks[0], phs.join(", ")), pk_values.clone())
+            (
+                format!("\"{}\" IN ({})", pks[0], phs.join(", ")),
+                pk_values.clone(),
+            )
         } else if let Some(ref filter) = request.filter {
             if let Some(obj) = filter.as_object() {
-                let conds: Vec<String> = obj.keys().enumerate()
+                let conds: Vec<String> = obj
+                    .keys()
+                    .enumerate()
                     .map(|(i, k)| format!("\"{}\" = ${}", k, i + 1))
                     .collect();
                 let vals: Vec<serde_json::Value> = obj.values().cloned().collect();
                 (conds.join(" AND "), vals)
             } else {
-                return Err(AppError::BadRequest("Filter must be a JSON object".to_string()));
+                return Err(AppError::BadRequest(
+                    "Filter must be a JSON object".to_string(),
+                ));
             }
         } else {
-            return Err(AppError::BadRequest("filter or pk_values required".to_string()));
+            return Err(AppError::BadRequest(
+                "filter or pk_values required".to_string(),
+            ));
         };
 
     let table_ref = format!("\"{}\".\"{}\"", schema_name, table_name);
@@ -215,9 +268,12 @@ pub async fn delete_items(
         q = crate::bind_json_value!(q, val);
     }
 
-    let rows: Vec<(serde_json::Value,)> = q.fetch_all(pool).await.map_err(|e| AppError::DatabaseError {
-        details: format!("Delete failed: {}", e),
-    })?;
+    let rows: Vec<(serde_json::Value,)> =
+        q.fetch_all(pool)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Delete failed: {}", e),
+            })?;
     let count = rows.len() as u64;
     let items: Vec<serde_json::Value> = rows.into_iter().map(|(v,)| v).collect();
     Ok((count, items))

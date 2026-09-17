@@ -1,15 +1,17 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     response::Response,
     Json,
 };
+use alcedo_common::context::ExtractContext;
 use std::sync::Arc;
 use walkdir::WalkDir;
 
 use crate::api::permission_check;
+use crate::api::plugins::InstallOverride;
 use crate::api::responses::ResponseEnvelope;
-use crate::db::queries::{Plugin, PluginVersion};
+use crate::db::queries::PluginVersion;
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
 
@@ -17,13 +19,18 @@ pub async fn list_plugin_docs(
     State(state): State<Arc<PluginAppState>>,
     headers: HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<ResponseEnvelope<crate::api::admin::PluginDocsList>>, AppError> {
     let db_pool = state.db()?;
 
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+
     let mount_base = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-    if let Ok(Some(active_version)) = PluginVersion::find_active(db_pool, &slug).await {
+    if let Ok(Some(active_version)) = PluginVersion::find_active_for_install(db_pool, plugin.id).await
+    {
         let version = &active_version.version;
         let docs_path = std::path::Path::new(&mount_base)
             .join(&slug)
@@ -183,6 +190,8 @@ pub async fn fetch_plugin_doc(
     State(state): State<Arc<PluginAppState>>,
     headers: HeaderMap,
     Path((slug, path)): Path<(String, String)>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Response, AppError> {
     validate_docs_path(&path)?;
 
@@ -190,16 +199,14 @@ pub async fn fetch_plugin_doc(
 
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug)
+    let active_version = PluginVersion::find_active_for_install(db_pool, plugin.id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("No active version for plugin: {}", slug)))?;
 
-    let container_id = active_version
-        .container_id
+    let deployment_id = active_version
+        .deployment_id
         .filter(|c| !c.is_empty())
         .ok_or_else(|| AppError::NotFound(format!("No container for plugin: {}", slug)))?;
 
@@ -252,7 +259,7 @@ pub async fn fetch_plugin_doc(
                 .map_err(|e| AppError::Internal(format!("Failed to build response: {}", e)))
         };
         if path.ends_with('/') || normalized_path.is_empty() {
-            match platform.list_directory(&container_id, &docs_subpath).await {
+            match platform.list_directory(&deployment_id, &docs_subpath).await {
                 Ok(entries) => {
                     let md_content = render_docs_directory_markdown(&docs_subpath, &entries);
                     return build_md_response(md_content);
@@ -260,13 +267,13 @@ pub async fn fetch_plugin_doc(
                 Err(_) => return Err(AppError::NotFound("Docs directory not found".to_string())),
             }
         }
-        match platform.read_file(&container_id, &docs_subpath).await {
+        match platform.read_file(&deployment_id, &docs_subpath).await {
             Ok(content) => {
                 return build_md_response(String::from_utf8_lossy(&content).to_string());
             }
             Err(_) => {
                 let alt = format!("/app/{}", docs_subpath);
-                match platform.read_file(&container_id, &alt).await {
+                match platform.read_file(&deployment_id, &alt).await {
                     Ok(content) => {
                         return build_md_response(String::from_utf8_lossy(&content).to_string())
                     }

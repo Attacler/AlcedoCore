@@ -136,17 +136,17 @@ pub enum AppError {
     #[error("Unprocessable entity: {0}")]
     UnprocessableEntity(String),
 
-    #[error("Restart failed for container {container_id}: {reason}")]
+    #[error("Restart failed for container {deployment_id}: {reason}")]
     RestartFailed {
-        container_id: String,
+        deployment_id: String,
         reason: String,
     },
 
-    #[error("Container {container_id} failed")]
-    ContainerFailed { container_id: String },
+    #[error("Deployment {deployment_id} failed")]
+    DeploymentFailed { deployment_id: String },
 
-    #[error("Plugin {container_id} is unhealthy")]
-    PluginUnhealthy { container_id: String },
+    #[error("Plugin {deployment_id} is unhealthy")]
+    PluginUnhealthy { deployment_id: String },
 
     #[error("Docker error: {details}")]
     DockerError { details: String },
@@ -159,6 +159,32 @@ pub enum AppError {
 
     #[error("Too Many Requests: {0}")]
     TooManyRequests(String),
+}
+
+/// True when the sqlx error is PostgreSQL `undefined_table` (SQLSTATE 42P01).
+///
+/// App-bound tables (`alcedocore_*`) do not exist in the global zone or on a
+/// clean database with no app schema. Callers that probe such tables should
+/// fail closed (or no-op) instead of surfacing a 500.
+pub fn is_undefined_table(err: &sqlx::Error) -> bool {
+    matches!(
+        err,
+        sqlx::Error::Database(db_err) if db_err.code().as_deref() == Some("42P01")
+    )
+}
+
+impl AppError {
+    /// True when this error wraps a PostgreSQL `undefined_table` (SQLSTATE 42P01).
+    ///
+    /// Used by background log writers to avoid spamming ERRORs on a clean DB
+    /// where the app-bound log tables have not been created yet.
+    pub fn is_missing_relation(&self) -> bool {
+        match self {
+            AppError::Database(err) => is_undefined_table(err),
+            AppError::DatabaseError { details } => details.contains("42P01"),
+            _ => false,
+        }
+    }
 }
 
 #[cfg(feature = "docker")]
@@ -246,8 +272,8 @@ impl IntoResponse for AppError {
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "RESTART_FAILED",
             ),
-            AppError::ContainerFailed { .. } => {
-                (axum::http::StatusCode::BAD_GATEWAY, "CONTAINER_FAILED")
+            AppError::DeploymentFailed { .. } => {
+                (axum::http::StatusCode::BAD_GATEWAY, "DEPLOYMENT_FAILED")
             }
             AppError::PluginUnhealthy { .. } => (
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -269,7 +295,7 @@ impl IntoResponse for AppError {
             AppError::Io(_) => "IO error",
             AppError::RedisError(_) => "Redis error",
             AppError::TooManyRequests(_) => "Too many requests",
-            AppError::ContainerFailed { .. } => "Container failed",
+            AppError::DeploymentFailed { .. } => "Deployment failed",
             AppError::PluginUnhealthy { .. } => "Plugin unhealthy",
             AppError::RestartFailed { .. } => "Restart failed",
             _ => &code, // NotFound, BadRequest, etc. use their code as message

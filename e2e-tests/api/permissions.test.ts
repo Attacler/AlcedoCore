@@ -18,8 +18,7 @@ let adminCookie: string;
 let testHash: string;
 
 function psql(sql: string): string {
-  // Strip newlines, trim
-  const flat = sql.replace(/\n\s*/g, ' ').trim();
+  const flat = `SET search_path TO default010v1, public; ${sql}`.replace(/\n\s*/g, ' ').trim();
   return execSync(
     `docker compose exec -T postgres psql -U postgres -d plugin_core`,
     { cwd: COMPOSE_DIR, encoding: 'utf-8', timeout: 10000, input: flat },
@@ -61,34 +60,34 @@ async function api(method: string, path: string, body?: any, cookie?: string) {
 // Bootstrap: create admin user via psql and get session
 // ---------------------------------------------------------------------------
 before(async () => {
-  psql(`DELETE FROM user_roles WHERE user_id = (SELECT id FROM users WHERE email = 'admin@test.com')`);
-  psql(`DELETE FROM role_scopes WHERE role_id = (SELECT id FROM roles WHERE name = 'test-admin-role')`);
-  psql(`DELETE FROM role_policies WHERE role_id = (SELECT id FROM roles WHERE name = 'test-admin-role')`);
-  psql(`DELETE FROM users WHERE email = 'admin@test.com'`);
-  psql(`DELETE FROM roles WHERE name = 'test-admin-role'`);
+  psql(`DELETE FROM alcedocore_user_roles WHERE user_id = (SELECT id FROM alcedo_users WHERE email = 'admin@test.com')`);
+  psql(`DELETE FROM alcedocore_role_scopes WHERE role_id = (SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role')`);
+  psql(`DELETE FROM alcedocore_role_policies WHERE role_id = (SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role')`);
+  psql(`DELETE FROM alcedo_users WHERE email = 'admin@test.com'`);
+  psql(`DELETE FROM alcedocore_roles WHERE name = 'test-admin-role'`);
 
   testHash = generateHash(ADMIN_PASSWORD);
-  psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('admin@test.com', '${testHash}', true)`);
-  psql(`INSERT INTO roles (name, description) VALUES ('test-admin-role', 'admin test role')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'rootaccess.all')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'users.all')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'roles.read')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'roles.write')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'policies.read')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'policies.write')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'collections.read')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'collections.write')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'collections.delete')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'plugins.read')`);
-  psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = 'test-admin-role'), 'plugins.write')`);
-  psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = 'admin@test.com'), (SELECT id FROM roles WHERE name = 'test-admin-role'))`);
+  psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('admin@test.com', '${testHash}', true)`);
+  psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('test-admin-role', 'admin test role')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'rootaccess.all')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'users.all')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'roles.read')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'roles.write')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'policies.read')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'policies.write')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'collections.read')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'collections.write')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'collections.delete')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'plugins.read')`);
+  psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'), 'plugins.write')`);
+  psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = 'admin@test.com'), (SELECT id FROM alcedocore_roles WHERE name = 'test-admin-role'))`);
 
   adminCookie = await login('admin@test.com', ADMIN_PASSWORD);
 });
 
 after(async () => {
   // Clean up test admin
-  psql("DELETE FROM users WHERE email = 'admin@test.com' AND is_admin = true");
+  psql("DELETE FROM alcedo_users WHERE email = 'admin@test.com' AND is_admin = true");
 });
 
 // ---------------------------------------------------------------------------
@@ -109,12 +108,12 @@ describe('Auth & scope enforcement', () => {
   it('denies access when user lacks required scope', async () => {
     const email = `restricted-${uuid().slice(0, 8)}@test.com`;
     psql(
-      `INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`,
+      `INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`,
     );
     const cookie = await login(email, ADMIN_PASSWORD);
     const { status } = await api('GET', '/api/policies', undefined, cookie);
     assert.strictEqual(status, 403, 'User without policies.read scope should get 403');
-    psql(`DELETE FROM users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
   });
 });
 
@@ -123,7 +122,7 @@ describe('Auth & scope enforcement', () => {
 // ---------------------------------------------------------------------------
 describe('Users API permissions', () => {
 
-  const usersCol = 'users';
+  const usersCol = 'alcedo_users';
 
   it('allows user with read permission on users to list', async () => {
     let r = await api('POST', '/api/policies', { name: `policy-${uuid().slice(0, 8)}`, description: '' }, adminCookie);
@@ -138,27 +137,27 @@ describe('Users API permissions', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `usrlst-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', '/api/users', undefined, cookie);
     assert.strictEqual(r.status, 200, 'User with read on users can list users');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('denies listing users without read permission', async () => {
     const email = `usrdeny-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
     const cookie = await login(email, ADMIN_PASSWORD);
     const r = await api('GET', '/api/users', undefined, cookie);
     assert.strictEqual(r.status, 403, 'User without read on users should get 403');
-    psql(`DELETE FROM users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
   });
 
   it('forces is_admin to false for non-admin create', async () => {
@@ -171,11 +170,11 @@ describe('Users API permissions', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `usradm-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('POST', '/api/users', {
@@ -185,12 +184,12 @@ describe('Users API permissions', () => {
     }, cookie);
     assert.strictEqual(r.status, 200, 'Create should succeed');
     // is_admin is forced to false for non-admin; it may not appear in response due to field restriction
-    const createdIsAdmin = psql("SELECT is_admin FROM users WHERE email LIKE 'newuser-%'").trim().match(/f/);
+    const createdIsAdmin = psql("SELECT is_admin FROM alcedo_users WHERE email LIKE 'newuser-%'").trim().match(/f/);
     assert.ok(createdIsAdmin, 'is_admin should be false in database (forced)');
 
-    psql(`DELETE FROM users WHERE email LIKE 'newuser-%'`);
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email LIKE 'newuser-%'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces field-level write restrictions on user create', async () => {
@@ -203,11 +202,11 @@ describe('Users API permissions', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `usrfld-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -231,20 +230,20 @@ describe('Users API permissions', () => {
     assert.strictEqual(r.status, 200, 'Create with only allowed fields should succeed');
     assert.ok((r.body.data || r.body).email, 'email should be present in response');
 
-    psql(`DELETE FROM users WHERE email LIKE 'restricted-%'`);
-    psql(`DELETE FROM users WHERE email LIKE 'allowed-%'`);
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email LIKE 'restricted-%'`);
+    psql(`DELETE FROM alcedo_users WHERE email LIKE 'allowed-%'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('prevents demoting the only admin', async () => {
     // Ensure only admin@test.com has is_admin=true
-    psql("UPDATE users SET is_admin = false WHERE email != 'admin@test.com'");
-    const adminId = psql("SELECT id FROM users WHERE email = 'admin@test.com'")
+    psql("UPDATE alcedo_users SET is_admin = false WHERE email != 'admin@test.com'");
+    const adminId = psql("SELECT id FROM alcedo_users WHERE email = 'admin@test.com'")
       .match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0];
     assert.ok(adminId, 'Admin user ID found');
 
-    const countStr = psql("SELECT COUNT(*) FROM users WHERE is_admin = true").trim();
+    const countStr = psql("SELECT COUNT(*) FROM alcedo_users WHERE is_admin = true").trim();
     const adminCount = parseInt((countStr.match(/\d+/) || ['0'])[0]);
     assert.strictEqual(adminCount, 1, 'Should be exactly 1 admin for this test');
 
@@ -279,7 +278,7 @@ describe('Users API permissions', () => {
     assert.strictEqual(r.status, 200, 'Should restore admin status');
 
     // Cleanup second admin
-    psql(`DELETE FROM users WHERE email = '${secondEmail}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${secondEmail}'`);
   });
 
   it('does not expose password_hash in user responses', async () => {
@@ -295,7 +294,7 @@ describe('Users API permissions', () => {
     }
 
     // Get single user as admin — no password_hash
-    const adminId = psql("SELECT id FROM users WHERE email = 'admin@test.com'")
+    const adminId = psql("SELECT id FROM alcedo_users WHERE email = 'admin@test.com'")
       .match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0];
     if (adminId) {
       r = await api('GET', `/api/users/${adminId}`, undefined, adminCookie);
@@ -339,11 +338,11 @@ describe('Cross-collection permission enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `xcdeny-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -351,8 +350,8 @@ describe('Cross-collection permission enforcement', () => {
     r = await api('PATCH', `/api/items/${invCol}/${invId}`, { customer_id: { name: 'Denied Co' } }, cookie);
     assert.strictEqual(r.status, 403, 'M:1 nested CREATE denied without create permission on Customer');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('allows M:1 nested create when caller has create on related collection', async () => {
@@ -385,11 +384,11 @@ describe('Cross-collection permission enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `xcallow-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -402,8 +401,8 @@ describe('Cross-collection permission enforcement', () => {
     assert.strictEqual(r.status, 200);
     assert.ok((r.body.items || []).some((i) => i.name === 'Allowed Co'), 'Customer was created in Customer collection');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('denies __parent__ inline update when caller lacks update on parent collection', async () => {
@@ -436,11 +435,11 @@ describe('Cross-collection permission enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `xcpar-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -454,8 +453,8 @@ describe('Cross-collection permission enforcement', () => {
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.data.name, 'ParentCo', 'Customer name should remain unchanged');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('allows __parent__ inline update when caller has update on parent collection', async () => {
@@ -490,11 +489,11 @@ describe('Cross-collection permission enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `xcpar2-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -507,8 +506,8 @@ describe('Cross-collection permission enforcement', () => {
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.data.name, 'Renamed OK', 'Customer name should be updated');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('denies O2M child create when caller lacks create on child collection', async () => {
@@ -548,11 +547,11 @@ describe('Cross-collection permission enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `xco2m-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -562,8 +561,8 @@ describe('Cross-collection permission enforcement', () => {
     }, cookie);
     assert.strictEqual(r.status, 403, 'O2M child CREATE denied without create permission on child collection');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 });
 
@@ -610,12 +609,12 @@ describe('Collection-level policy enforcement', () => {
 
     // Assign policy to a role, assign role to a non-admin user
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', 'test')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', 'test')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     const email = `read-fields-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const userCookie = await login(email, ADMIN_PASSWORD);
 
@@ -634,8 +633,8 @@ describe('Collection-level policy enforcement', () => {
     assert.strictEqual(r.status, 200);
     assert.ok(r.body.items[0].secret, 'Admin should see secret field');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces field-level write restrictions', async () => {
@@ -669,12 +668,12 @@ describe('Collection-level policy enforcement', () => {
 
     // Grant the policy to a role and assign it to a non-admin user
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', 'test')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', 'test')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     const email = `write-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const userCookie = await login(email, ADMIN_PASSWORD);
 
@@ -686,8 +685,8 @@ describe('Collection-level policy enforcement', () => {
     r = await api('POST', `/api/items/${colName}`, { title: 'allowed-only' }, userCookie);
     assert.strictEqual(r.status, 200, 'Should allow create with only allowed fields');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('restricts rows via permission filter', async () => {
@@ -723,12 +722,12 @@ describe('Collection-level policy enforcement', () => {
 
     // Assign to role + user
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', 'test')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', 'test')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     const email = `filtered-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -740,8 +739,8 @@ describe('Collection-level policy enforcement', () => {
       assert.strictEqual(item.status, 'active', 'All returned items should be active');
     }
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('annotates results with $permissions metadata', async () => {
@@ -777,12 +776,12 @@ describe('Collection-level policy enforcement', () => {
 
     // Assign to role + user
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', 'test')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', 'test')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     const email = `perms-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -813,8 +812,8 @@ describe('Collection-level policy enforcement', () => {
       }
     }
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('restricts PATCH response fields', async () => {
@@ -853,12 +852,12 @@ describe('Collection-level policy enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', 'test')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', 'test')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     const email = `patch-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -872,8 +871,8 @@ describe('Collection-level policy enforcement', () => {
     assert.strictEqual(r.body.updated.secret, undefined, 'PATCH response should not include restricted secret field');
     assert.strictEqual(r.body.updated.title, 'updated', 'PATCH response should include allowed title field');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces delete permission filter', async () => {
@@ -913,12 +912,12 @@ describe('Collection-level policy enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', 'test')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', 'test')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     const email = `delete-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -932,8 +931,8 @@ describe('Collection-level policy enforcement', () => {
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.deleted, 2, 'Should delete 2 active items');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces field-level update write restrictions', async () => {
@@ -972,12 +971,12 @@ describe('Collection-level policy enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', 'test')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', 'test')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     const email = `update-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -996,8 +995,8 @@ describe('Collection-level policy enforcement', () => {
     assert.strictEqual(r.status, 200);
     assert.strictEqual(r.body.updated, 1, 'Should update 1 item');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces field-level restrictions on single-item GET', async () => {
@@ -1029,12 +1028,12 @@ describe('Collection-level policy enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', 'test')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', 'test')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     const email = `getitem-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}/${itemId}`, undefined, cookie);
@@ -1044,8 +1043,8 @@ describe('Collection-level policy enforcement', () => {
     assert.strictEqual(r.body.data.title, 'single', 'Title field should be visible');
     assert.ok(r.body.data.$permissions, 'Should have $permissions');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces field restrictions on references', async () => {
@@ -1105,12 +1104,12 @@ describe('Collection-level policy enforcement', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', 'test')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', 'test')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     const email = `ref-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -1130,8 +1129,8 @@ describe('Collection-level policy enforcement', () => {
       }
     }
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 });
 
@@ -1142,7 +1141,7 @@ describe('Error detail sanitization', () => {
 
   it('returns structured error responses for non-admin users', async () => {
     const email = `error-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
     const cookie = await login(email, ADMIN_PASSWORD);
 
     // Try an operation that fails
@@ -1151,7 +1150,7 @@ describe('Error detail sanitization', () => {
     assert.ok(r.body.code, 'Error response should have code field');
     assert.ok(r.body.error, 'Error response should have error field');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
   });
 });
 describe('Public role', () => {
@@ -1180,12 +1179,12 @@ describe('Public role', () => {
     }, adminCookie);
 
     // Get the public role ID and assign policy
-    const publicId = psql("SELECT id FROM roles WHERE name = 'public'").match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0];
+    const publicId = psql("SELECT id FROM alcedocore_roles WHERE name = 'public'").match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0];
     if (!publicId) {
       console.log('No public role found, skipping');
       return;
     }
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ('${publicId}', '${policyId}')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ('${publicId}', '${policyId}')`);
 
     // Access without auth — should work because public role grants read
     r = await api('GET', `/api/items/${colName}`, undefined);
@@ -1223,11 +1222,11 @@ describe('Filter operators', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `noteq-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1235,8 +1234,8 @@ describe('Filter operators', () => {
     assert.strictEqual((r.body.items || []).length, 1, 'not_eq active should return only archived item');
     assert.strictEqual(r.body.items[0].status, 'archived');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('supports in operator', async () => {
@@ -1259,11 +1258,11 @@ describe('Filter operators', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `inop-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1271,8 +1270,8 @@ describe('Filter operators', () => {
     assert.strictEqual((r.body.items || []).length, 2, 'in [active, pending] should return 2 items');
     assert.strictEqual(r.body.total, 2);
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('supports not_in operator', async () => {
@@ -1295,11 +1294,11 @@ describe('Filter operators', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `notin-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1307,8 +1306,8 @@ describe('Filter operators', () => {
     assert.strictEqual((r.body.items || []).length, 2, 'not_in [archived] should return 2 items');
     assert.strictEqual(r.body.total, 2);
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('supports gt/lt operators', async () => {
@@ -1331,11 +1330,11 @@ describe('Filter operators', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `gtlt-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1347,8 +1346,8 @@ describe('Filter operators', () => {
     // admin sees all — just verify the operator works
     assert.strictEqual(r.status, 200);
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('supports contains operator', async () => {
@@ -1371,11 +1370,11 @@ describe('Filter operators', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `cntn-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1383,8 +1382,8 @@ describe('Filter operators', () => {
     assert.strictEqual((r.body.items || []).length, 1, 'contains "hello" should return 1 item');
     assert.strictEqual(r.body.items[0].name, 'hello world');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('handles not_eq with null values', async () => {
@@ -1407,11 +1406,11 @@ describe('Filter operators', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `nullneq-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1421,8 +1420,8 @@ describe('Filter operators', () => {
     assert.strictEqual((r.body.items || []).length, 0, 'not_eq active at SQL level excludes both active and null items');
     assert.strictEqual(r.body.total, 0);
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 });
 
@@ -1458,11 +1457,11 @@ describe('Compound & additive filters', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `andf-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1471,8 +1470,8 @@ describe('Compound & additive filters', () => {
     assert.strictEqual(r.body.items[0].name, 'active/20');
     assert.strictEqual(r.body.total, 1);
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('merges additive policies with OR logic', async () => {
@@ -1503,12 +1502,12 @@ describe('Compound & additive filters', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${p1}')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${p2}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${p1}')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${p2}')`);
     const email = `addpol-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1516,8 +1515,8 @@ describe('Compound & additive filters', () => {
     assert.strictEqual((r.body.items || []).length, 3, 'OR-ed policies should return all 3 items');
     assert.strictEqual(r.body.total, 3);
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   // Note: POST /api/items/:slug/query is for PLUGIN tables (plugin schemas), not regular collections.
@@ -1554,13 +1553,13 @@ describe('Variable resolution', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     // Create a regular user (non-admin) whose email matches one of the items
     const userEmail = `uemail-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${userEmail}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${userEmail}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${userEmail}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${userEmail}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(userEmail, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1581,8 +1580,8 @@ describe('Variable resolution', () => {
     assert.strictEqual(items2.length, 1, 'After creating matching item, should see 1');
     assert.strictEqual(items2[0].email, userEmail);
 
-    psql(`DELETE FROM users WHERE email = '${userEmail}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${userEmail}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('resolves {user.id} placeholder in permission filters', async () => {
@@ -1595,12 +1594,12 @@ describe('Variable resolution', () => {
     // Two test users
     const email1 = `u1-${uuid().slice(0, 8)}@test.com`;
     const email2 = `u2-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email1}', '${testHash}', false)`);
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email2}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email1}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email2}', '${testHash}', false)`);
 
     // Get their UUIDs
-    const uid1 = psql(`SELECT id FROM users WHERE email = '${email1}'`).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0];
-    const uid2 = psql(`SELECT id FROM users WHERE email = '${email2}'`).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0];
+    const uid1 = psql(`SELECT id FROM alcedo_users WHERE email = '${email1}'`).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0];
+    const uid2 = psql(`SELECT id FROM alcedo_users WHERE email = '${email2}'`).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0];
     assert.ok(uid1 && uid2, 'User IDs should be extractable');
 
     // Create items: one owned by each user via admin
@@ -1618,12 +1617,12 @@ describe('Variable resolution', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
 
     // Assign role to both users
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email1}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email2}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email1}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email2}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     // User 1 should see only their item
     const cookie1 = await login(email1, ADMIN_PASSWORD);
@@ -1644,9 +1643,9 @@ describe('Variable resolution', () => {
     assert.strictEqual(r.status, 200);
     assert.strictEqual((r.body.items || []).length, 2, 'Admin bypass should see both items');
 
-    psql(`DELETE FROM user_roles WHERE user_id IN ((SELECT id FROM users WHERE email IN ('${email1}', '${email2}')))`);
-    psql(`DELETE FROM users WHERE email IN ('${email1}', '${email2}')`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedocore_user_roles WHERE user_id IN ((SELECT id FROM alcedo_users WHERE email IN ('${email1}', '${email2}')))`);
+    psql(`DELETE FROM alcedo_users WHERE email IN ('${email1}', '${email2}')`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 });
 
@@ -1670,12 +1669,12 @@ describe('Metadata & validation', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), 'collections.read')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), 'collections.read')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `sec-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -1692,8 +1691,8 @@ describe('Metadata & validation', () => {
     assert.ok(r.status === 200 || r.status === 201);
     assert.ok((r.body.sections || []).length > 0);
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces manage_views permission', async () => {
@@ -1710,12 +1709,12 @@ describe('Metadata & validation', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), 'collections.read')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), 'collections.read')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `vw-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -1726,8 +1725,8 @@ describe('Metadata & validation', () => {
     }, cookie);
     assert.ok(r.status === 200 || r.status === 201, 'User with manage_views should create views');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces policy-based collection update permission', async () => {
@@ -1745,13 +1744,13 @@ describe('Metadata & validation', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), 'collections.read')`);
-    psql(`INSERT INTO role_scopes (role_id, scope) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), 'collections.write')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), 'collections.read')`);
+    psql(`INSERT INTO alcedocore_role_scopes (role_id, scope) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), 'collections.write')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `cupd-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -1763,8 +1762,8 @@ describe('Metadata & validation', () => {
     }, cookie);
     assert.strictEqual(r.status, 200, 'User with update permission should update collection');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces create permission with field restriction', async () => {
@@ -1787,11 +1786,11 @@ describe('Metadata & validation', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `cr-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -1804,8 +1803,8 @@ describe('Metadata & validation', () => {
     r = await api('POST', `/api/items/${colName}`, { title: 'partial', status: 'blocked' }, cookie);
     assert.strictEqual(r.status, 403, 'Should reject create with restricted field');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces field_validation rules on create', async () => {
@@ -1829,11 +1828,11 @@ describe('Metadata & validation', () => {
     assert.strictEqual(r.status, 200, 'Create permission with field_validation');
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `fvld-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -1847,8 +1846,8 @@ describe('Metadata & validation', () => {
     if (r.status !== 200) console.log('Valid email response:', JSON.stringify(r.body));
     assert.strictEqual(r.status, 200, 'field_validation should allow valid email');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('denied responses include correct error structure', async () => {
@@ -1860,7 +1859,7 @@ describe('Metadata & validation', () => {
 
     // Forbidden 403 with scope check
     const email = `struct-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('POST', '/api/policies', { name: 'fail', description: '' }, cookie);
     assert.strictEqual(r.status, 403);
@@ -1872,7 +1871,7 @@ describe('Metadata & validation', () => {
     r = await api('GET', '/api/items/nonexistent-collection', undefined, adminCookie);
     assert.strictEqual(r.status, 404);
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
   });
 });
 
@@ -1901,11 +1900,11 @@ describe('Edge cases & remaining scenarios', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `emptyrd-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1916,8 +1915,8 @@ describe('Edge cases & remaining scenarios', () => {
     // With empty fields, user-defined fields are excluded
     assert.strictEqual(items[0].title, undefined, 'title should not be visible');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('handles fields empty allowlist on create', async () => {
@@ -1934,11 +1933,11 @@ describe('Edge cases & remaining scenarios', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `emptycr-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('POST', `/api/items/${colName}`, { title: 'test' }, cookie);
@@ -1946,8 +1945,8 @@ describe('Edge cases & remaining scenarios', () => {
     // so the create succeeds. This matches current behavior (fields: [] treated like unrestricted).
     assert.strictEqual(r.status, 200, 'Create with empty fields (treated as unrestricted)');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('merges fields across multiple additive policies', async () => {
@@ -1974,12 +1973,12 @@ describe('Edge cases & remaining scenarios', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${p1}')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${p2}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${p1}')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${p2}')`);
     const email = `mergef-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
     r = await api('GET', `/api/items/${colName}`, undefined, cookie);
@@ -1989,8 +1988,8 @@ describe('Edge cases & remaining scenarios', () => {
     assert.ok(items[0].title, 'title should be visible from policy 1');
     assert.ok(items[0].secret, 'secret should be visible from policy 2 (merged)');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('enforces field_validation on update', async () => {
@@ -2018,11 +2017,11 @@ describe('Edge cases & remaining scenarios', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `fvupd-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -2041,8 +2040,8 @@ describe('Edge cases & remaining scenarios', () => {
     }, cookie);
     assert.strictEqual(r.status, 200, 'field_validation should allow valid value on update');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 
   it('evaluates dot-notation permission filter on get item', async () => {
@@ -2083,11 +2082,11 @@ describe('Edge cases & remaining scenarios', () => {
     }, adminCookie);
 
     const roleName = `role-${uuid().slice(0, 8)}`;
-    psql(`INSERT INTO roles (name, description) VALUES ('${roleName}', '')`);
-    psql(`INSERT INTO role_policies (role_id, policy_id) VALUES ((SELECT id FROM roles WHERE name = '${roleName}'), '${policyId}')`);
+    psql(`INSERT INTO alcedocore_roles (name, description) VALUES ('${roleName}', '')`);
+    psql(`INSERT INTO alcedocore_role_policies (role_id, policy_id) VALUES ((SELECT id FROM alcedocore_roles WHERE name = '${roleName}'), '${policyId}')`);
     const email = `dns-${uuid().slice(0, 8)}@test.com`;
-    psql(`INSERT INTO users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
-    psql(`INSERT INTO user_roles (user_id, role_id) VALUES ((SELECT id FROM users WHERE email = '${email}'), (SELECT id FROM roles WHERE name = '${roleName}'))`);
+    psql(`INSERT INTO alcedo_users (email, password_hash, is_admin) VALUES ('${email}', '${testHash}', false)`);
+    psql(`INSERT INTO alcedocore_user_roles (user_id, role_id) VALUES ((SELECT id FROM alcedo_users WHERE email = '${email}'), (SELECT id FROM alcedocore_roles WHERE name = '${roleName}'))`);
 
     const cookie = await login(email, ADMIN_PASSWORD);
 
@@ -2106,7 +2105,7 @@ describe('Edge cases & remaining scenarios', () => {
     r = await api('GET', `/api/items/${invCol}/${eastInvId}`, undefined, cookie);
     assert.strictEqual(r.status, 404, 'Non-matching invoice should not be accessible');
 
-    psql(`DELETE FROM users WHERE email = '${email}'`);
-    psql(`DELETE FROM roles WHERE name = '${roleName}'`);
+    psql(`DELETE FROM alcedo_users WHERE email = '${email}'`);
+    psql(`DELETE FROM alcedocore_roles WHERE name = '${roleName}'`);
   });
 });

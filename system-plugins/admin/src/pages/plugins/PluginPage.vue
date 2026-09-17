@@ -1,12 +1,22 @@
 <script setup lang="ts">
-import { onMounted, ref, shallowRef, computed, type Component } from "vue";
+import {
+    onMounted,
+    ref,
+    shallowRef,
+    computed,
+    watch,
+    type Component,
+} from "vue";
 import { useRoute } from "vue-router";
 import { useDevServerStore } from "@/stores/devServerStore";
 import { useExtensionRegistryStore } from "@/stores/extensionRegistry";
+import { usePluginsStore } from "@/stores/plugins";
+import { appPath } from "@/utils/appHeaders";
 
 const route = useRoute(),
     devServerStore = useDevServerStore(),
-    extensionRegistry = useExtensionRegistryStore();
+    extensionRegistry = useExtensionRegistryStore(),
+    pluginsStore = usePluginsStore();
 
 const pluginName = computed(() => (route.params.plugin as string) || ""),
     pagePath = computed(() => {
@@ -68,23 +78,25 @@ function fetchPageInfo() {
     }
 }
 
-// Load on mount and connect SSE
-onMounted(async () => {
-    console.log(
-        "[PluginPage] mounted, route params:",
-        route.params,
-        "pathMatch:",
-        route.params.pathMatch,
-    );
-
-    fetchPageInfo();
+onMounted(() => {
+    if (pluginsStore.pluginsReady) fetchPageInfo();
 });
+
+watch(
+    () => pluginsStore.pluginsReady,
+    (ready) => {
+        if (ready) fetchPageInfo();
+    },
+);
 </script>
 
 <template>
     <div class="plugin-page" :class="{ fullpage: fullpage }">
         <!-- Loading spinner -->
-        <div v-if="loading" class="flex items-center justify-center p-8">
+        <div
+            v-if="loading || !pluginsStore.pluginsReady"
+            class="flex items-center justify-center p-8"
+        >
             <div
                 class="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"
             ></div>
@@ -94,7 +106,7 @@ onMounted(async () => {
         <!-- Component -->
         <component
             :is="devServerStore.pageComponents[pagePath] || currentComponent"
-            v-if="!loading && !error && !notFound"
+            v-if="pluginsStore.pluginsReady && !loading && !error && !notFound"
             :class="fullpage ? 'fullpage-component' : ''"
         />
         <!-- Error boundary -->
@@ -119,7 +131,7 @@ onMounted(async () => {
                 The page "{{ pagePath }}" does not exist in this plugin.
             </p>
             <router-link
-                :to="`/plugins/${pluginName}`"
+                :to="appPath(`/plugins/${pluginName}`)"
                 class="text-blue-600 hover:text-blue-800 underline"
             >
                 Back to plugin

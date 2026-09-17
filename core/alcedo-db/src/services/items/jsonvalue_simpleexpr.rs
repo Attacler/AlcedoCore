@@ -25,15 +25,16 @@ pub fn parse_value(
 
     let sea_value = match column.data_type.as_str() {
         // Consolidated numeric types
-        "bigint" | "bigserial" | "int" | "int4" | "serial4" | "int2" | "serial2" | "integer"
-        | "smallint" | "float" | "float8" | "float4" | "real" | "double precision" => {
+        "bigint" | "bigserial" | "int8" | "serial8" | "int" | "int4" | "serial4" | "int2"
+        | "serial2" | "integer" | "smallint" | "float" | "float8" | "float4" | "real"
+        | "double precision" => {
             parse_number(&value, &column.data_type)?
         }
 
         // Decimal types - using f64 for better precision
         "decimal" | "money" => parse_decimal(&value)?,
 
-        "boolean" => {
+        "boolean" | "bool" => {
             let b = value.as_bool().or_else(|| {
                 value
                     .as_str()
@@ -47,7 +48,7 @@ pub fn parse_value(
         }
 
         // Text types - only accept strings or explicit conversions
-        "text" | "varchar" | "character varying" | "character" | "macaddr" | "macaddr8"
+        "text" | "varchar" | "character varying" | "character" | "bpchar" | "macaddr" | "macaddr8"
         | "cidr" | "inet" | "bit" | "varbit" | "uuid" => {
             let s = match value {
                 Value::String(s) => s,
@@ -96,7 +97,9 @@ fn parse_number(v: &Value, data_type: &str) -> Option<sea_query::Value> {
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
                 return match data_type {
-                    "bigint" | "bigserial" => Some(sea_query::Value::BigInt(Some(i))),
+                    "bigint" | "bigserial" | "int8" | "serial8" => {
+                        Some(sea_query::Value::BigInt(Some(i)))
+                    }
                     "int" | "int4" | "serial4" | "integer" => {
                         Some(sea_query::Value::Int(Some(i as i32)))
                     }
@@ -119,7 +122,7 @@ fn parse_number(v: &Value, data_type: &str) -> Option<sea_query::Value> {
             Some(sea_query::Value::Double(Some(n.to_string().parse().ok()?)))
         }
         Value::String(s) => match data_type {
-            "bigint" | "bigserial" => s
+            "bigint" | "bigserial" | "int8" | "serial8" => s
                 .parse::<i64>()
                 .ok()
                 .map(|i| sea_query::Value::BigInt(Some(i))),

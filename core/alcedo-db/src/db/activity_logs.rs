@@ -11,13 +11,13 @@
 //! - **Item-level** events (ItemCreated/Updated/Deleted)
 //!   → [`CollectionLogEntry`] → `collection_logs` table
 
+use crate::db::Pool;
+use crate::error::AppError;
+use alcedo_common::SystemEvent;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use sqlx::QueryBuilder;
 use uuid::Uuid;
-use crate::db::Pool;
-use crate::error::AppError;
-use alcedo_common::SystemEvent;
 
 // ---------------------------------------------------------------------------
 // SystemLogEntry
@@ -77,7 +77,11 @@ impl SystemLogEntry {
                 }),
                 request_id,
             }),
-            SystemEvent::CollectionUpdated { name, changes, request_id } => Some(SystemLogEntry {
+            SystemEvent::CollectionUpdated {
+                name,
+                changes,
+                request_id,
+            } => Some(SystemLogEntry {
                 actor_id: None,
                 action: "collection_updated".to_string(),
                 target: name.clone(),
@@ -135,13 +139,15 @@ impl SystemLogEntry {
     /// Inserts multiple entries into `system_logs` in a single multi-row INSERT.
     ///
     /// No-op if `entries` is empty.
+    ///
+    /// Phase 5 deviation: background/internal log writer — runs with only a `Pool` (no `CoreState` for `TableShape` resolution), so row SQL stays bespoke.
     pub async fn insert_batch(pool: &Pool, entries: &[Self]) -> Result<(), AppError> {
         if entries.is_empty() {
             return Ok(());
         }
 
         let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(
-            "INSERT INTO system_logs (actor_id, action, target, description, metadata, request_id) ",
+            "INSERT INTO alcedocore_system_logs (actor_id, action, target, description, metadata, request_id) ",
         );
 
         query_builder.push_values(entries, |mut b, entry| {
@@ -269,13 +275,15 @@ impl CollectionLogEntry {
     /// Inserts multiple entries into `collection_logs` in a single multi-row INSERT.
     ///
     /// No-op if `entries` is empty.
+    ///
+    /// Phase 5 deviation: background/internal log writer — runs with only a `Pool` (no `CoreState` for `TableShape` resolution), so row SQL stays bespoke.
     pub async fn insert_batch(pool: &Pool, entries: &[Self]) -> Result<(), AppError> {
         if entries.is_empty() {
             return Ok(());
         }
 
         let mut query_builder: QueryBuilder<'_, sqlx::Postgres> = QueryBuilder::new(
-            "INSERT INTO collection_logs (action, collection_name, item_id, diff, metadata, request_id) ",
+            "INSERT INTO alcedocore_collection_logs (action, collection_name, item_id, diff, metadata, request_id) ",
         );
 
         query_builder.push_values(entries, |mut b, entry| {
@@ -326,86 +334,6 @@ pub struct CollectionLogRow {
 // Query functions
 // ---------------------------------------------------------------------------
 
-/// Builds the dynamic WHERE clause for system_logs queries.
-///
-/// Returns (SQL fragment, next_param_index).
-fn build_system_logs_filter(
-    start_date: Option<chrono::DateTime<chrono::Utc>>,
-    end_date: Option<chrono::DateTime<chrono::Utc>>,
-    target: Option<&str>,
-    operation_type: Option<&str>,
-) -> (String, i32) {
-    let mut clauses = Vec::new();
-    let mut param_idx: i32 = 1;
-
-    if target.is_some() {
-        clauses.push(format!(" AND target = ${}", param_idx));
-        param_idx += 1;
-    }
-    if operation_type.is_some() {
-        clauses.push(format!(" AND action = ${}", param_idx));
-        param_idx += 1;
-    }
-    if start_date.is_some() {
-        clauses.push(format!(" AND created_at >= ${}", param_idx));
-        param_idx += 1;
-    }
-    if end_date.is_some() {
-        clauses.push(format!(" AND created_at <= ${}", param_idx));
-        param_idx += 1;
-    }
-
-    (clauses.concat(), param_idx)
-}
-
-/// Queries `system_logs` with optional filters and pagination.
-///
-/// Returns a tuple of (rows, total_count).
-pub async fn query_system_logs(
-    pool: &Pool,
-    start_date: Option<chrono::DateTime<chrono::Utc>>,
-    end_date: Option<chrono::DateTime<chrono::Utc>>,
-    target: Option<&str>,
-    operation_type: Option<&str>,
-    limit: i64,
-    offset: i64,
-) -> Result<(Vec<SystemLogRow>, i64), AppError> {
-    let (filter_sql, next_idx) = build_system_logs_filter(
-        start_date, end_date, target, operation_type,
-    );
-
-    let query = format!(
-        "SELECT id, actor_id, action, target, description, metadata, request_id, created_at \
-         FROM system_logs WHERE 1=1{filter_sql} \
-         ORDER BY created_at DESC LIMIT ${next_idx} OFFSET ${}",
-        next_idx + 1
-    );
-
-    let mut q = sqlx::query_as::<_, SystemLogRow>(&query);
-    if let Some(t) = target { q = q.bind(t); }
-    if let Some(t) = operation_type { q = q.bind(t); }
-    if let Some(d) = start_date { q = q.bind(d); }
-    if let Some(d) = end_date { q = q.bind(d); }
-    q = q.bind(limit).bind(offset);
-
-    let rows = q.fetch_all(pool).await?;
-
-    // Count query — same WHERE but SELECT COUNT(*) with no LIMIT/OFFSET
-    let count_query = format!(
-        "SELECT COUNT(*) FROM system_logs WHERE 1=1{filter_sql}"
-    );
-
-    let mut cq = sqlx::query_scalar::<_, i64>(&count_query);
-    if let Some(t) = target { cq = cq.bind(t); }
-    if let Some(t) = operation_type { cq = cq.bind(t); }
-    if let Some(d) = start_date { cq = cq.bind(d); }
-    if let Some(d) = end_date { cq = cq.bind(d); }
-
-    let total = cq.fetch_one(pool).await?;
-
-    Ok((rows, total))
-}
-
 /// Builds the dynamic WHERE clause for collection_logs queries.
 fn build_collection_logs_filter(
     start_date: Option<chrono::DateTime<chrono::Utc>>,
@@ -439,16 +367,29 @@ fn build_collection_logs_filter(
     }
 
     let mut mask = Vec::new();
-    if collection_name.is_some() { mask.push(1); }
-    if operation_type.is_some() { mask.push(2); }
-    if start_date.is_some() { mask.push(3); }
-    if end_date.is_some() { mask.push(4); }
-    if item_id.is_some() { mask.push(5); }
+    if collection_name.is_some() {
+        mask.push(1);
+    }
+    if operation_type.is_some() {
+        mask.push(2);
+    }
+    if start_date.is_some() {
+        mask.push(3);
+    }
+    if end_date.is_some() {
+        mask.push(4);
+    }
+    if item_id.is_some() {
+        mask.push(5);
+    }
 
     (clauses.concat(), mask, param_idx)
 }
 
 /// Queries `collection_logs` with optional filters and pagination.
+///
+/// Phase-4 exception: the `item_id #>> '{}'` JSONB-text filter is not
+/// expressible via the engine's `FilterCondition`; stays bespoke.
 ///
 /// Returns a tuple of (rows, total_count).
 pub async fn query_collection_logs(
@@ -462,38 +403,69 @@ pub async fn query_collection_logs(
     offset: i64,
 ) -> Result<(Vec<CollectionLogRow>, i64), AppError> {
     let (filter_sql, mask, next_idx) = build_collection_logs_filter(
-        start_date, end_date, collection_name, operation_type, item_id,
+        start_date,
+        end_date,
+        collection_name,
+        operation_type,
+        item_id,
     );
 
     let query = format!(
         "SELECT id, action, collection_name, item_id, diff, metadata, request_id, created_at \
-         FROM collection_logs WHERE 1=1{filter_sql} \
+         FROM alcedocore_collection_logs WHERE 1=1{filter_sql} \
          ORDER BY created_at DESC LIMIT ${next_idx} OFFSET ${}",
         next_idx + 1
     );
 
     let mut q = sqlx::query_as::<_, CollectionLogRow>(&query);
     let mut idx: usize = 0;
-    if idx < mask.len() && mask[idx] == 1 { q = q.bind(collection_name.unwrap()); idx += 1; }
-    if idx < mask.len() && mask[idx] == 2 { q = q.bind(operation_type.unwrap()); idx += 1; }
-    if idx < mask.len() && mask[idx] == 3 { q = q.bind(start_date.unwrap()); idx += 1; }
-    if idx < mask.len() && mask[idx] == 4 { q = q.bind(end_date.unwrap()); idx += 1; }
-    if idx < mask.len() && mask[idx] == 5 { q = q.bind(item_id.unwrap()); }
+    if idx < mask.len() && mask[idx] == 1 {
+        q = q.bind(collection_name.unwrap());
+        idx += 1;
+    }
+    if idx < mask.len() && mask[idx] == 2 {
+        q = q.bind(operation_type.unwrap());
+        idx += 1;
+    }
+    if idx < mask.len() && mask[idx] == 3 {
+        q = q.bind(start_date.unwrap());
+        idx += 1;
+    }
+    if idx < mask.len() && mask[idx] == 4 {
+        q = q.bind(end_date.unwrap());
+        idx += 1;
+    }
+    if idx < mask.len() && mask[idx] == 5 {
+        q = q.bind(item_id.unwrap());
+    }
     q = q.bind(limit).bind(offset);
 
     let rows = q.fetch_all(pool).await?;
 
-    let count_query = format!(
-        "SELECT COUNT(*) FROM collection_logs WHERE 1=1{filter_sql}"
-    );
+    let count_query =
+        format!("SELECT COUNT(*) FROM alcedocore_collection_logs WHERE 1=1{filter_sql}");
 
     let mut cq = sqlx::query_scalar::<_, i64>(&count_query);
     let mut idx: usize = 0;
-    if idx < mask.len() && mask[idx] == 1 { cq = cq.bind(collection_name.unwrap()); idx += 1; }
-    if idx < mask.len() && mask[idx] == 2 { cq = cq.bind(operation_type.unwrap()); idx += 1; }
-    if idx < mask.len() && mask[idx] == 3 { cq = cq.bind(start_date.unwrap()); idx += 1; }
-    if idx < mask.len() && mask[idx] == 4 { cq = cq.bind(end_date.unwrap()); idx += 1; }
-    if idx < mask.len() && mask[idx] == 5 { cq = cq.bind(item_id.unwrap()); }
+    if idx < mask.len() && mask[idx] == 1 {
+        cq = cq.bind(collection_name.unwrap());
+        idx += 1;
+    }
+    if idx < mask.len() && mask[idx] == 2 {
+        cq = cq.bind(operation_type.unwrap());
+        idx += 1;
+    }
+    if idx < mask.len() && mask[idx] == 3 {
+        cq = cq.bind(start_date.unwrap());
+        idx += 1;
+    }
+    if idx < mask.len() && mask[idx] == 4 {
+        cq = cq.bind(end_date.unwrap());
+        idx += 1;
+    }
+    if idx < mask.len() && mask[idx] == 5 {
+        cq = cq.bind(item_id.unwrap());
+    }
 
     let total = cq.fetch_one(pool).await?;
 

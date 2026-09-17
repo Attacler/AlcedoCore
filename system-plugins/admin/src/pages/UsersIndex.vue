@@ -46,7 +46,7 @@ async function handleDelete() {
 <template>
     <div>
         <CollectionData
-            collection-name="users"
+            collection-name="alcedo_users"
             title="Users"
             is-system-collection
             :data-source="dataSource"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
 import { useSettingsStore, CATEGORIES } from "@/stores/settingsStore";
+import { appPath } from "@/utils/appHeaders";
 
 const store = useSettingsStore();
 
@@ -52,7 +53,7 @@ onMounted(() => {
             <router-link
                 v-for="category in CATEGORIES"
                 :key="category.id"
-                :to="`/settings/${category.id}`"
+                :to="appPath(`/settings/${category.id}`)"
                 class="bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md hover:border-blue-300 transition-all group cursor-pointer"
             >
                 <div class="flex items-center gap-3">

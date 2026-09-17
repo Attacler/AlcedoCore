@@ -22,7 +22,7 @@ use tower_sessions::SessionManagerLayer;
 
 #[path = "common/mod.rs"]
 mod common;
-use common::{DEV_API_KEY, TestDb};
+use common::{with_default_app_headers, DEV_API_KEY, TestDb};
 
 /// Creates the test server backed by a fresh TestDb (full migrations applied),
 /// provisioning the dev API key so authenticated requests succeed.
@@ -36,7 +36,7 @@ async fn create_server() -> (axum_test::TestServer, TestDb) {
     let state = create_test_state(test_db.pool().clone()).await;
     let session_layer = create_session_layer().await;
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
     (server, test_db)
 }
 
@@ -44,13 +44,7 @@ async fn create_server() -> (axum_test::TestServer, TestDb) {
 const AUTH_HEADER: &str = "Bearer dev_test-key-for-tests-12345";
 
 async fn create_session_layer() -> SessionManagerLayer<RedisSessionStore> {
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    let client = redis::Client::open(url.as_str())
-        .expect("Invalid REDIS_URL for session store");
-    let conn = client.get_connection_manager()
-        .await
-        .expect("Failed to connect to Redis for session store. Start Redis or set REDIS_URL");
-    let store = RedisSessionStore::new(conn);
+    let store = RedisSessionStore::new(Arc::new(common::connect_redis_client().await));
     SessionManagerLayer::new(store)
         .with_name("alcedo_session")
         .with_same_site(SameSite::Strict)
@@ -61,36 +55,27 @@ async fn create_session_layer() -> SessionManagerLayer<RedisSessionStore> {
 
 /// Creates a minimal test AppState with nested_field_depth_limit = 5.
 async fn create_test_state(pool: PgPool) -> AppState {
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    let client = redis::Client::open(url.as_str())
-        .expect("Invalid REDIS_URL for session store");
-    let conn = client.get_connection_manager()
-        .await
-        .expect("Failed to connect to Redis for session store. Start Redis or set REDIS_URL");
     let dir = std::env::temp_dir().join("test-files");
     AppState {
         core: CoreState::for_pool(Some(pool.clone())),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
-        kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),
+        kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_disabled()),
         file_storage: Arc::new(file_storage_local::LocalFileStorage::new(
             dir.to_str().unwrap()
         ).unwrap()),
-        dev_mode: true,
         plugin_network: None,
         static_registry: None,
         registries: None,
         platform: None,
-        redis_connection: None,
-        rate_limit_redis: None,
-        kv_redis: None,
+        redis: None,
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,
-        session_store: RedisSessionStore::new(conn),
+        session_store: RedisSessionStore::new(Arc::new(common::connect_redis_client().await)),
         proxy_client: reqwest::Client::new(),
         rate_limit_auth_requests: 10,
         rate_limit_auth_window: 60,

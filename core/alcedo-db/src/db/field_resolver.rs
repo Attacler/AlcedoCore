@@ -8,13 +8,22 @@
 use crate::db::collections::{CollectionDefinition, FieldDefinition, FieldType};
 use crate::db::filter_compiler::quote;
 use crate::error::AppError;
+use crate::services::items::shape::{qualified_table_ref, PhysicalCatalog};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// Options for field resolution.
+#[derive(Default)]
 pub struct FieldResolverOptions {
     pub depth_limit: usize,
     pub backlink: bool,
     pub visited: HashSet<(String, String)>,
+    /// Schema of the base table, used to resolve physical FKs when no
+    /// collection metadata exists. Expected to be supplied together with
+    /// `physical`; qualification is skipped when either is absent.
+    pub schema: Option<String>,
+    /// Physical FK snapshot used as a fallback for relation detection.
+    pub physical: Option<Arc<PhysicalCatalog>>,
 }
 
 /// A resolved SELECT clause fragment for one relation group.
@@ -37,16 +46,22 @@ pub struct SelectClauseFragment {
 // ---------------------------------------------------------------------------
 
 /// The direction of a relationship relative to the current collection.
-enum Direction {
+///
+/// `target_schema` carries the resolved schema of the related table when it is
+/// known (from physical FK metadata), so joins can be schema-qualified. It is
+/// `None` when no schema context is available.
+pub enum Direction {
     /// M:1 forward — FK is on current collection, references target's PK.
     ManyToOne {
         target_collection: String,
+        target_schema: Option<String>,
         fk_column: String,
         target_pk_column: String,
     },
     /// 1:M reverse — FK is on target collection, points back to base's PK.
     OneToMany {
         target_collection: String,
+        target_schema: Option<String>,
         fk_column: String,
         base_pk_column: String,
     },
@@ -183,6 +198,8 @@ fn resolve_group(
         current_collection,
         current_def,
         all_collections,
+        options.schema.as_deref(),
+        options.physical.as_deref(),
     )?;
 
     // When backlink=false, skip reverse (1:M) relations instead of resolving them.
@@ -199,22 +216,26 @@ fn resolve_group(
     }
 
     // Determine target collection and column metadata
-    let (target_collection, fk_column, _pk_column) = match &direction {
+    let (target_collection, target_schema, fk_column, _pk_column) = match &direction {
         Direction::ManyToOne {
             target_collection,
+            target_schema,
             fk_column,
             target_pk_column,
         } => (
             target_collection.clone(),
+            target_schema.clone(),
             fk_column.clone(),
             target_pk_column.clone(),
         ),
         Direction::OneToMany {
             target_collection,
+            target_schema,
             fk_column,
             base_pk_column,
         } => (
             target_collection.clone(),
+            target_schema.clone(),
             fk_column.clone(),
             base_pk_column.clone(),
         ),
@@ -242,6 +263,7 @@ fn resolve_group(
         Direction::ManyToOne { .. } => Ok(build_m2o_subquery(
             &entries,
             &target_collection,
+            target_schema.as_deref(),
             &fk_column,
             base_table_ref,
             first_segment,
@@ -249,6 +271,7 @@ fn resolve_group(
         Direction::OneToMany { .. } => Ok(build_o2m_subquery(
             &entries,
             &target_collection,
+            target_schema.as_deref(),
             &fk_column,
             base_table_ref,
             first_segment,
@@ -349,6 +372,19 @@ fn strip_as_suffix(clause: &str) -> String {
 // Direction detection
 // ---------------------------------------------------------------------------
 
+/// Resolve the schema of a related table from the physical catalog, preferring
+/// the supplied base schema and falling back to the `alcedo` schema. Returns
+/// `None` when no base schema is supplied so callers emit a bare table.
+fn resolve_target_schema(
+    current_schema: Option<&str>,
+    physical: Option<&PhysicalCatalog>,
+    target_table: &str,
+) -> Option<String> {
+    let physical = physical?;
+    let base_schema = current_schema?;
+    physical.table_schema(target_table, base_schema)
+}
+
 /// Detect the direction of a relationship given a segment name and the current
 /// collection definition.
 ///
@@ -356,12 +392,16 @@ fn strip_as_suffix(clause: &str) -> String {
 ///    return `ManyToOne` with the FK column = field name.
 /// 2. **Reverse (1:M):** If `segment` matches a collection name, scan that
 ///    collection for a Relationship field pointing back to `current_collection`.
-/// 3. **Not found:** Return `UnprocessableEntity` (422).
-fn detect_direction(
+/// 3. **Physical fallback:** When no metadata resolves the relation, consult the
+///    physical FK catalog (M:1 then 1:M) using `current_schema`.
+/// 4. **Not found:** Return `UnprocessableEntity` (422).
+pub fn detect_direction(
     segment: &str,
     current_collection: &str,
     current_def: &CollectionDefinition,
     all_collections: &[CollectionDefinition],
+    current_schema: Option<&str>,
+    physical: Option<&PhysicalCatalog>,
 ) -> Result<Direction, AppError> {
     // 1. Try M:1 forward or 1:M reverse: segment is a relationship field on current collection
     if let Some(field) = current_def
@@ -382,6 +422,11 @@ fn detect_direction(
                         }) {
                             return Ok(Direction::OneToMany {
                                 target_collection: target.clone(),
+                                target_schema: resolve_target_schema(
+                                    current_schema,
+                                    physical,
+                                    target,
+                                ),
                                 fk_column: reverse_field.name.clone(),
                                 base_pk_column: "id".to_string(),
                             });
@@ -392,6 +437,7 @@ fn detect_direction(
                     // M2O or unknown: FK is on this collection (forward)
                     return Ok(Direction::ManyToOne {
                         target_collection: target.clone(),
+                        target_schema: resolve_target_schema(current_schema, physical, target),
                         fk_column: field.name.clone(),
                         target_pk_column: "id".to_string(),
                     });
@@ -409,13 +455,34 @@ fn detect_direction(
         }) {
             return Ok(Direction::OneToMany {
                 target_collection: target_def.name.clone(),
+                target_schema: resolve_target_schema(current_schema, physical, &target_def.name),
                 fk_column: reverse_field.name.clone(),
                 base_pk_column: "id".to_string(),
             });
         }
     }
 
-    // 3. Neither → 422 Unprocessable Entity
+    // 3. Physical fallback: no metadata matched, try the FK catalog.
+    if let (Some(schema), Some(physical)) = (current_schema, physical) {
+        if let Some(relation) = physical.many_to_one(schema, current_collection, segment) {
+            return Ok(Direction::ManyToOne {
+                target_collection: relation.target_table,
+                target_schema: Some(relation.target_schema),
+                fk_column: relation.fk_column,
+                target_pk_column: relation.pk_column,
+            });
+        }
+        if let Some(relation) = physical.one_to_many(schema, current_collection, segment) {
+            return Ok(Direction::OneToMany {
+                target_collection: relation.target_table,
+                target_schema: Some(relation.target_schema),
+                fk_column: relation.fk_column,
+                base_pk_column: relation.pk_column,
+            });
+        }
+    }
+
+    // 4. Neither → 422 Unprocessable Entity
     Err(AppError::UnprocessableEntity(format!(
         "Cannot resolve '{}' on collection '{}': not a relationship field and not a related collection",
         segment, current_collection
@@ -440,6 +507,7 @@ fn detect_direction(
 fn build_m2o_subquery(
     entries: &[JsonEntry],
     target_collection: &str,
+    target_schema: Option<&str>,
     fk_column: &str,
     base_table_ref: &str,
     alias: &str,
@@ -450,10 +518,12 @@ fn build_m2o_subquery(
         .map(|e| format!("'{}', {}", e.key, e.value_sql))
         .collect();
 
+    let table_ref = qualified_table_ref(target_schema, target_collection);
+
     let sql = format!(
         r#"(SELECT json_build_object({}) FROM {} AS {} WHERE {}."id" = {}.{}) AS "{}""#,
         kv_pairs.join(", "),
-        quote(target_collection),
+        table_ref,
         quote(&table_alias),
         quote(&table_alias),
         base_table_ref,
@@ -489,6 +559,7 @@ fn build_m2o_subquery(
 fn build_o2m_subquery(
     entries: &[JsonEntry],
     target_collection: &str,
+    target_schema: Option<&str>,
     fk_column: &str,
     base_table_ref: &str,
     alias: &str,
@@ -511,16 +582,18 @@ fn build_o2m_subquery(
         inner_fields.join(", ")
     };
 
+    let table_ref = qualified_table_ref(target_schema, target_collection);
+
     let sql = format!(
         r#"COALESCE(
   (SELECT json_agg("_sub") FROM (
-    SELECT {} FROM "{}" AS {}
+    SELECT {} FROM {} AS {}
     WHERE {}."{}" = {}."id"
   ) AS "_sub"),
   '[]'::json
 ) AS "{}""#,
         select_body,
-        target_collection,
+        table_ref,
         quote(&table_alias),
         quote(&table_alias),
         fk_column,
@@ -799,6 +872,7 @@ mod tests {
             depth_limit: 5,
             backlink: true,
             visited: HashSet::new(),
+            ..Default::default()
         };
 
         let fragments =
@@ -818,6 +892,7 @@ mod tests {
             depth_limit: 5,
             backlink: true,
             visited: HashSet::new(),
+            ..Default::default()
         };
 
         let fragments =
@@ -842,6 +917,7 @@ mod tests {
             depth_limit: 5,
             backlink: true,
             visited: HashSet::from([("articles".to_string(), "author".to_string())]),
+            ..Default::default()
         };
 
         let result = resolve_nested_fields(&fields, "articles", &collections, &mut options);
@@ -862,6 +938,7 @@ mod tests {
             depth_limit: 5,
             backlink: true,
             visited: HashSet::new(),
+            ..Default::default()
         };
 
         let fragments =
@@ -884,6 +961,7 @@ mod tests {
             depth_limit: 0,
             backlink: true,
             visited: HashSet::new(),
+            ..Default::default()
         };
 
         let result = resolve_nested_fields(&fields, "articles", &collections, &mut options);

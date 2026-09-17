@@ -8,6 +8,7 @@ import { createClientDataSource } from "@/utils/collectionDataSource";
 import { Drawer } from "primevue";
 import { useRouter } from "vue-router";
 import { useToast } from "@/composables/useToast";
+import { appPath } from "@/utils/appHeaders";
 
 const authStore = useAuthStore(),
     store = useRolesStore(),
@@ -45,7 +46,7 @@ async function handleCreate() {
             showCreateDialog.value = false;
             newRoleName.value = "";
             newRoleDescription.value = "";
-            router.push("/roles/" + response.id);
+            router.push(appPath("/roles/" + response.id));
         }
     } catch (e: any) {
         console.log(e);
@@ -83,7 +84,7 @@ async function handleDelete() {
                       }
                     : undefined
             "
-            :row-link-to="(r) => `/roles/${r.id}`"
+            :row-link-to="(r) => appPath(`/roles/${r.id}`)"
             @delete-item="confirmDelete"
         />
 

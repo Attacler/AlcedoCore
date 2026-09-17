@@ -28,8 +28,8 @@ pub async fn get_plugin_permissions(
 ) -> Result<Vec<PolicyPermission>, AppError> {
     let mut sql = String::from(
         "SELECT pp.id, pp.policy_id, pp.collection_name, pp.action, pp.fields, pp.filter, pp.field_validation \
-         FROM policy_permissions pp \
-         JOIN plugin_policies plp ON plp.policy_id = pp.policy_id \
+         FROM alcedocore_policy_permissions pp \
+         JOIN alcedocore_plugin_policies plp ON plp.policy_id = pp.policy_id \
          WHERE plp.plugin_slug = $1 AND pp.collection_name = $2",
     );
     if action.is_some() {
@@ -250,8 +250,15 @@ pub fn build_filter_clause_with_joins(
                     // Resolve the quoted field reference — handles dot-notation via JOINs
                     let quoted = if field.contains('.') && !field.starts_with('_') {
                         // Try to resolve via relationship joins. On failure, fall back to plain quoting.
-                        resolve_field_path(field, collection_name, all_collections, &mut joins)
-                            .unwrap_or_else(|_| quote_ident(field, table_prefix))
+                        resolve_field_path(
+                            field,
+                            collection_name,
+                            all_collections,
+                            &mut joins,
+                            None,
+                            None,
+                        )
+                        .unwrap_or_else(|_| quote_ident(field, table_prefix))
                     } else {
                         quote_ident(field, table_prefix)
                     };
@@ -370,7 +377,21 @@ pub fn build_field_expressions(
     let mut always_allowed = Vec::new();
     let mut extra_binds = Vec::new();
 
+    // System fields are always required by the frontend (row keys, timestamps)
+    // and are never governed by per-field policy restrictions.
+    const SYSTEM_FIELDS: [&str; 3] = ["id", "created_at", "updated_at"];
+
     for field in all_fields {
+        if SYSTEM_FIELDS.contains(&field.as_str()) {
+            let quoted_field = match table_prefix {
+                Some(prefix) => format!("\"{}\".\"{}\"", prefix, field),
+                None => format!("\"{}\"", field),
+            };
+            field_expressions.push(quoted_field);
+            always_allowed.push(field.clone());
+            continue;
+        }
+
         let mut rules_with_field: Vec<usize> = Vec::new();
 
         for (idx, perm) in permissions.iter().enumerate() {

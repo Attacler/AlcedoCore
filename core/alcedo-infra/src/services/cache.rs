@@ -1,33 +1,29 @@
-use crate::services::redis_session::RedisPool;
+use std::sync::Arc;
 
-pub async fn try_get(pool: &Option<RedisPool>, key: &str) -> Option<String> {
-    let mut conn = pool.as_ref()?.get().await.ok()?;
-    redis::cmd("GET")
-        .arg(key)
-        .query_async(&mut *conn)
-        .await
-        .ok()
+use crate::services::redis_client::RedisClient;
+
+pub async fn try_get(client: &Option<Arc<RedisClient>>, key: &str) -> Option<String> {
+    let client = client.as_ref()?;
+    client.get(key).await.ok().flatten()
 }
 
 /// Set a value in Redis cache with TTL (seconds). Silently ignores errors.
-pub async fn try_set(pool: &Option<RedisPool>, key: &str, value: &str, ttl: u64) {
-    if let Some(p) = pool {
-        if let Ok(mut conn) = p.get().await {
-            let _: Result<(), _> = redis::cmd("SETEX")
-                .arg(key)
-                .arg(ttl)
-                .arg(value)
-                .query_async(&mut *conn)
-                .await;
-        }
+pub async fn try_set(client: &Option<Arc<RedisClient>>, key: &str, value: &str, ttl: u64) {
+    if let Some(c) = client {
+        let _ = c.set(key, value, Some(ttl)).await;
     }
 }
 
 /// Delete a key from Redis cache. Silently ignores errors.
-pub async fn try_del(pool: &Option<RedisPool>, key: &str) {
-    if let Some(p) = pool {
-        if let Ok(mut conn) = p.get().await {
-            let _: Result<(), _> = redis::cmd("DEL").arg(key).query_async(&mut *conn).await;
-        }
+pub async fn try_del(client: &Option<Arc<RedisClient>>, key: &str) {
+    if let Some(c) = client {
+        let _ = c.del(key).await;
+    }
+}
+
+/// Delete all keys matching `prefix*`. Silently ignores errors.
+pub async fn try_del_prefix(client: &Option<Arc<RedisClient>>, prefix: &str) {
+    if let Some(c) = client {
+        let _ = c.del_prefix(prefix).await;
     }
 }

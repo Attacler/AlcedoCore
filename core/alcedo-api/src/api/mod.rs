@@ -1,4 +1,6 @@
 pub mod admin;
+pub mod apps;
+pub mod install;
 pub mod responses;
 pub mod auth;
 pub mod users;
@@ -13,6 +15,7 @@ pub mod query;
 pub mod collections;
 pub mod dev;
 pub mod registries;
+pub mod registry_proxy;
 pub mod settings;
 pub mod logs;
 pub mod permission_check;

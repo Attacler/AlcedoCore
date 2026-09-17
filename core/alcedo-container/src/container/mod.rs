@@ -2,7 +2,6 @@ use alcedo_db::queries::Registry;
 use async_trait::async_trait;
 use serde::Serialize;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
 
 use crate::error::AppError;
 
@@ -14,27 +13,9 @@ use crate::error::AppError;
 /// Docker → container ID, K8s → pod/service name, Railway → service ID.
 pub type DeploymentId = String;
 
-/// Events emitted by the platform runtime for lifecycle tracking.
-#[derive(Debug, Clone)]
-pub enum DeploymentEvent {
-    Started {
-        slug: String,
-        id: DeploymentId,
-    },
-    Stopped {
-        slug: String,
-        id: DeploymentId,
-        exit_code: i64,
-    },
-    HealthChanged {
-        slug: String,
-        healthy: bool,
-    },
-}
-
 /// Summary info about a running deployment.
 #[derive(Debug, Clone)]
-pub struct ContainerInfo {
+pub struct DeploymentInfo {
     pub id: String,
     pub name: String,
     pub status: String,
@@ -42,7 +23,7 @@ pub struct ContainerInfo {
 
 /// Detailed info about a specific deployment.
 #[derive(Debug, Clone)]
-pub struct ContainerDetails {
+pub struct DeploymentDetails {
     pub id: String,
     pub name: String,
     pub state: String,
@@ -57,12 +38,12 @@ pub struct InstanceInfo {
     pub id: String,
     pub status: String,
     pub pod_name: String,
-    pub container_id: Option<String>,
+    pub deployment_id: Option<String>,
 }
 
 /// CPU/memory stats snapshot for an instance.
 #[derive(Debug, Clone, Serialize)]
-pub struct ContainerStatsSnapshot {
+pub struct DeploymentStatsSnapshot {
     pub timestamp: String,
     pub cpu_percent: f64,
     pub memory_usage_bytes: i64,
@@ -77,83 +58,20 @@ pub struct ImageInfo {
     pub created: String,
 }
 
-// ---------------------------------------------------------------------------
-// ContainerRuntime trait — platform-agnostic container operations
-// ---------------------------------------------------------------------------
-
-/// Platform-agnostic container runtime operations.
-/// Each deployment backend (Docker/Swarm, K8s, Railway) implements this trait.
-#[async_trait]
-pub trait ContainerRuntime: Send + Sync {
-    async fn pull_image(&self, image: &str, registry: &Registry) -> Result<String, AppError>;
-    async fn create_container(
-        &self,
-        registry: &Registry,
-        slug: &str,
-        version: &str,
-        image: &str,
-        env: HashMap<String, String>,
-        network_mode: Option<&str>,
-    ) -> Result<String, AppError>;
-    async fn start_container(&self, container_id: &str) -> Result<(), AppError>;
-    async fn stop_container(&self, container_id: &str, timeout_secs: i64) -> Result<(), AppError>;
-    async fn remove_container(&self, container_id: &str, force: bool) -> Result<(), AppError>;
-    async fn list_containers(&self) -> Result<Vec<ContainerInfo>, AppError>;
-    async fn inspect_container(&self, container_id: &str) -> Result<ContainerDetails, AppError>;
-    async fn get_container_ip(
-        &self,
-        container_id: &str,
-        network_name: &str,
-    ) -> Result<Option<String>, AppError>;
-    async fn restart_container(&self, container_id: &str) -> Result<(), AppError>;
-    async fn inspect_image(&self, image_name: &str) -> Result<ImageInfo, AppError>;
-    async fn get_file_from_image(
-        &self,
-        registry: &Registry,
-        image_name: &str,
-        file_path: &str,
-    ) -> Result<String, AppError>;
-    async fn get_file_from_container(
-        &self,
-        container_id: &str,
-        path: &str,
-    ) -> Result<Vec<u8>, AppError>;
-    async fn list_directory_in_container(
-        &self,
-        container_id: &str,
-        path: &str,
-    ) -> Result<Vec<String>, AppError>;
-    async fn list_directory_recursive_in_container(
-        &self,
-        container_id: &str,
-        path: &str,
-    ) -> Result<Vec<String>, AppError>;
-    async fn copy_directory_from_container(
-        &self,
-        container_id: &str,
-        container_path: &str,
-        host_dest: &str,
-    ) -> Result<(), AppError>;
-    async fn copy_directory_from_image(
-        &self,
-        registry: &Registry,
-        image_name: &str,
-        container_path: &str,
-        host_dest: &str,
-    ) -> Result<(), AppError>;
-    async fn connect_container_to_network(
-        &self,
-        container_id: &str,
-        network_name: &str,
-        alias: Option<&str>,
-    ) -> Result<(), AppError>;
+/// Numeric scope used in platform resource names for a plugin install.
+/// A missing install (`None`) resolves to `0`.
+pub fn install_scope(install_id: Option<i64>) -> i64 {
+    install_id.unwrap_or(0)
 }
 
-// ---------------------------------------------------------------------------
-// DockerService trait — low-level Docker operations for the admin API
-// ---------------------------------------------------------------------------
+/// Canonical DNS/service name for a plugin install: `plugin_{slug}_{install_id_or_0}`.
+///
+/// Docker overlay network aliases and Swarm service names use this verbatim;
+/// K8s resource names replace `_` with `-` to satisfy RFC 1123.
+pub fn plugin_service_name(slug: &str, install_id: Option<i64>) -> String {
+    format!("plugin_{}_{}", slug, install_scope(install_id))
+}
 
-/// Low-level Docker operations needed by the admin/plugin API handlers.
 // ---------------------------------------------------------------------------
 // PluginPlatform trait — the single abstraction for all deployment targets
 // ---------------------------------------------------------------------------
@@ -177,10 +95,16 @@ pub trait PluginPlatform: Send + Sync {
         version: &str,
         image: &str,
         env: HashMap<String, String>,
+        install_id: Option<i64>,
     ) -> Result<DeploymentId, AppError>;
 
     /// Remove a deployment (stop + destroy).
     async fn remove(&self, id: &DeploymentId) -> Result<(), AppError>;
+
+    /// Best-effort removal of any existing deployment for a single install of
+    /// `slug` (stop + destroy), regardless of version. Implementations should
+    /// ignore "not found".
+    async fn ensure_absent(&self, slug: &str, install_id: Option<i64>) -> Result<(), AppError>;
 
     /// Restart a deployment.
     async fn restart(&self, id: &DeploymentId) -> Result<(), AppError>;
@@ -222,15 +146,11 @@ pub trait PluginPlatform: Send + Sync {
     /// Check whether the platform backend is healthy.
     async fn health_check(&self) -> Result<(), AppError>;
 
-    /// Subscribe to deployment lifecycle events.
-    /// The platform should emit events into the sender until cancelled.
-    async fn watch_events(&self, tx: mpsc::Sender<DeploymentEvent>) -> Result<(), AppError>;
-
     /// List all running deployments.
-    async fn list_deployments(&self) -> Result<Vec<ContainerInfo>, AppError>;
+    async fn list_deployments(&self) -> Result<Vec<DeploymentInfo>, AppError>;
 
     /// Inspect a single deployment.
-    async fn inspect(&self, id: &DeploymentId) -> Result<ContainerDetails, AppError>;
+    async fn inspect(&self, id: &DeploymentId) -> Result<DeploymentDetails, AppError>;
 
     /// List running instances (replicas/pods/tasks) for a deployment.
     async fn list_instances(&self, id: &DeploymentId) -> Result<Vec<InstanceInfo>, AppError>;
@@ -248,7 +168,7 @@ pub trait PluginPlatform: Send + Sync {
         &self,
         id: &DeploymentId,
         instance_id: &str,
-    ) -> Result<ContainerStatsSnapshot, AppError>;
+    ) -> Result<DeploymentStatsSnapshot, AppError>;
 
     /// List files in a directory within a container image (for preview/migrations).
     async fn list_directory_in_image(

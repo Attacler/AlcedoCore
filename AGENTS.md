@@ -84,6 +84,19 @@ docker compose down
 docker compose ps
 ```
 
+> **Breaking change — per-app-version migrations.** Core migrations now target
+> the `default010v1` schema and require integer-key `alcedo.*` source tables.
+> Global, non-app-bound tables (registries, plugins, plugin versions/recovery,
+> developer API keys, users, app↔plugin-version mapping) live in the `alcedo`
+> schema, applied from `core/core-migrations-global/001_init.{up,down}.sql`;
+> app-bound tables live in each per-app-version schema, applied from
+> `core/core-migrations/001_init.{up,down}.sql`. The pool `search_path` is
+> `"default010v1", "alcedo", public`, so unqualified queries resolve both.
+> Existing databases created before this change (UUID-key `alcedo.*` tables,
+> `default_app010version_1` schema) are **not** migrated. Reset the database
+> before starting: remove the Postgres data volume (or drop the `plugin_core`
+> database). For K8s, delete the Postgres PVC (`test-k8s-setup/04-postgres.yaml`).
+
 ## Plugin List Store Refresh
 
 `PluginList.vue` now calls `store.fetchPlugins()` on mount via `onMounted`. This ensures the
@@ -138,21 +151,73 @@ curl -X POST http://localhost:<port>/api/plugins/deploy \
     "version": "1.0.0",
     "image": "localhost:5000/hello-world:1.0.0",
     "registry_id": 1,
-    "env": {}
+    "env": {},
+    "scope": "app"
   }'
 ```
 
-**Note:** Use `/api/plugins/deploy`, not `/admin/plugins/deploy` (which returns 405).
+**Note:** `scope` is optional and defaults to `"app"` (`global` | `version` | `app`);
+see [Install Scopes](#install-scopes-global--version--app). Use `/api/plugins/deploy`,
+not `/admin/plugins/deploy` (which returns 405).
 `registry_id` is required — plugins always pull from a configured registry. The
-core seeds a default `local` registry (id 1, from `LOCAL_REGISTRY_URL`) on
-startup when the registries table is empty; list registries via
-`GET /api/registries`.
+core seeds two registries: `AlcedoSystemPlugins` (id 0, url `''`, the lowest id
+— default for bare/Docker-Hub-style image refs and system/static plugins) is
+seeded by the global core migration, and `local` is seeded at startup by
+`Registry::ensure_default` from `LOCAL_REGISTRY_URL` (default
+`http://localhost:5000`). List registries via `GET /api/registries`.
 
 ### Access via Proxy
 
 ```bash
 curl http://localhost:<port>/p/hello-world
 ```
+
+## Install Scopes (Global / Version / App)
+
+A plugin **install** (row in `alcedo.alcedo_plugins`) has one of three scopes,
+derived from which FK is set — a plugin's *install* scope is chosen at deploy
+time and is **separate** from its permission scopes (`plugins.scopes` in
+`manifest.json`, which only declares the granted permissions the plugin
+requests and has nothing to do with where it is installed):
+
+| Scope     | Binding                                   | Effective in                     |
+| --------- | ----------------------------------------- | -------------------------------- |
+| `global`  | neither FK set                            | every context                    |
+| `version` | `version_id` → `alcedo_versions`          | every app on that version        |
+| `app`     | `app_version_id` → `alcedo_apps_versions` | one app × version                |
+
+- **Schema:** `alcedo_plugins.version_id` (nullable) was added; a CHECK constraint
+  (`app_version_id IS NULL OR version_id IS NULL`) enforces one scope per row.
+  Uniqueness is enforced by three partial unique indexes: `uq_alcedo_plugins_global`
+  on `(slug) WHERE both NULL`, `uq_alcedo_plugins_version` on `(slug, version_id)
+  WHERE version_id IS NOT NULL`, and `uq_alcedo_plugins_app` on `(slug,
+  app_version_id) WHERE app_version_id IS NOT NULL`.
+- **Resolution:** in any request context exactly one install per slug is effective
+  (most-specific-wins: `app` > `version` > `global`). Context comes from `X-App` /
+  `X-Version` headers (or `?ac_app=` / `?ac_version=` for asset URLs that cannot
+  send headers). The version defaults to `production`; the app dimension is only
+  used when **explicitly** provided (`app_explicit`), so a headerless request
+  resolves at version level then global.
+- **Inherited installs are read-only in an app context.** When a request is in an
+  explicit app context and the resolved install is `version`/`global`-scoped, all
+  install-mutating handlers (`settings`, `scopes`, `enable`/`disable`, deploy,
+  update, delete, migrations run/rollback/upload, scale, stop/restart) reject it
+  with `403 Forbidden` for non-privileged callers. Supply of an explicit
+  `?install_id=<id>` does **not** bypass this rule: privilege is evaluated from
+  the caller identity, not the addressing mode. Only a privileged caller — a
+  global admin (`is_admin`/`users.all`) or a validated developer API key
+  (`x-alcedo-root`) — may write an inherited install. Reads are unaffected.
+  Manage the install from the global Plugins area, addressing it explicitly with
+  `?install_id=<id>`. **Creation is gated the same way:** in an app context a
+  non-privileged caller may only create `app`-scoped installs — `POST
+  /api/plugins/deploy` with scope `version`/`global` and the global `POST
+  /api/plugins` create both return `403`. Privileged callers and the global zone
+  (no app context) are unaffected.
+- **Breaking change / DB reset required.** Core migrations now target the
+  `default010v1` schema and the new `version_id` column/indexes. Existing databases
+  created before this change are **not** migrated — reset the database (remove the
+  Postgres data volume or drop `plugin_core`; for K8s delete the Postgres PVC) and
+  restart. This is the same per-app-version reset covered in the top-level note.
 
 ## Plugin Routing
 
@@ -180,6 +245,20 @@ auth middleware only gates `/api/*` paths.
   - Event callback URL `http://localhost:.../__events__` vs `http://plugin_{slug}:.../__events__`
 - In **dev mode**: plugins run with host network, reachable directly at `localhost:8000`
 - In **release mode**: plugins are on the Docker network, accessed via container IPs
+- Core tables are split by scope. Global tables live in the `alcedo` schema:
+  `alcedo_apps`, `alcedo_versions`, `alcedo_apps_versions`, `alcedo_registries`,
+  `alcedo_plugins`, `alcedo_plugin_versions`, `alcedo_plugin_recovery`,
+  `alcedo_developer_api_keys`, `alcedo_users`, and `alcedo_apps_plugin_versions`.
+  App-bound tables are prefixed `alcedocore_` (collections, menus, policies, roles,
+  files, logs, settings, event subscriptions, request/host/system logs) and live in
+  each per-app-version schema (e.g. `default010v1`).
+- The `users` system collection is stored as `alcedo_users`
+  (`alcedocore_collection_definitions.name`)
+- Runtime queries are unqualified and resolve via the pool `search_path`
+  (`"default010v1", "alcedo", public`); FKs from app-bound tables to global tables
+  are schema-qualified (`alcedo.alcedo_users`, `alcedo.alcedo_plugins`).
+- `alcedo_apps_plugin_versions` pins a plugin version per app×version
+  (data model only; runtime routing is deferred until per-request app context exists).
 - The dev session registry and `/api/dev/start`, `/api/dev/stop`, `/api/dev/complete-request`
   were removed. Only `/api/dev/request-id` remains — the CLI dev-proxy uses it to mint plugin
   auth tokens for a locally-run plugin.

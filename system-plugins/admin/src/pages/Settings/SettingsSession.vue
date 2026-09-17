@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import { useRouter } from "vue-router";
 import { useAuthStore } from "@/stores/authStore";
 import { useToast } from "@/composables/useToast";
+import { appPath } from "@/utils/appHeaders";
 
 const authStore = useAuthStore(),
     router = useRouter();
@@ -44,7 +45,7 @@ async function handleForceLogout() {
     <div class="space-y-6">
         <div class="flex items-center gap-3 mb-6">
             <router-link
-                to="/settings"
+                :to="appPath('/settings')"
                 class="material-symbols-outlined text-gray-400 hover:text-gray-600 transition-colors"
             >
                 arrow_back

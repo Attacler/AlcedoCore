@@ -1,12 +1,19 @@
-import { ref, readonly } from "vue";
-import { createClient } from "@alcedocore/sdk";
+import { ref, readonly, reactive } from "vue";
+import { createClient, type ClientOptions } from "@alcedocore/sdk";
 
 const isConnected = ref(true);
 
 export function useAlcedoClient(devServerUrl?: string) {
+    const sdkOptions = reactive<ClientOptions>({});
     const client = createClient(
         typeof window !== "undefined" ? window.location.origin : "",
+        sdkOptions,
     );
+
+    function setSdkContext(app?: string, version?: string) {
+        sdkOptions.app = app;
+        sdkOptions.version = version;
+    }
 
     const assets = devServerUrl
         ? {
@@ -19,6 +26,7 @@ export function useAlcedoClient(devServerUrl?: string) {
 
     return {
         client,
+        setSdkContext,
         isConnected: readonly(isConnected),
         assets,
     };

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { usePluginsStore, type PluginStore } from "@/stores/plugins";
 import { useToast } from "@/composables/useToast";
@@ -13,6 +13,7 @@ import Logs from "@/components/plugins/details/logs.vue";
 import Versions from "@/components/plugins/details/versions.vue";
 import Instances from "@/components/plugins/details/instances.vue";
 import Permissions from "@/components/plugins/details/Permissions.vue";
+import { appPath } from "@/utils/appHeaders";
 
 const route = useRoute(),
     router = useRouter(),
@@ -37,21 +38,54 @@ const allTabs = [
     "Instances",
     "Permissions",
 ];
+
+const inAppZone = computed(() => route.meta.appZone === true);
+/// In the app zone an install supplied by a broader scope must be read-only.
+const isInherited = computed(
+    () => inAppZone.value && plugin.value?.scope !== "app",
+);
+
+/// Read-only tabs offered for inherited (read-only) installs. Write surfaces
+/// (Schema, Settings, Permissions, Versions, Instances) are excluded because
+/// they contain migration/scale/deploy/restart/settings write actions.
+const readOnlyTabs = [
+    "Documentation",
+    "Frontend",
+    "Endpoints",
+    "Logs",
+];
+
 const availableTabs = computed(() => {
-    if (!plugin.value || plugin.value.status === "enabled") return allTabs;
-    return ["Versions"];
+    const tabs =
+        !plugin.value || plugin.value.status === "enabled"
+            ? allTabs
+            : ["Versions"];
+    if (!isInherited.value) return tabs;
+    return tabs.filter((tab) => readOnlyTabs.includes(tab));
 });
 
 const showDeleteModal = ref(false);
 
-onMounted(async () => {
+/// The install addressed by `?install_id=` (global zone), else null so the
+/// store falls back to context resolution (app zone).
+const installId = computed<number | null>(() => {
+    const raw = route.query.install_id;
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (value == null || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+});
+
+async function loadPlugin() {
     pluginLoading.value = true;
     pluginError.value = null;
     try {
         const name = route.params.name as string;
-        plugin.value = await store.fetchPluginDetail(name);
+        plugin.value = await store.fetchPluginDetail(name, installId.value);
         if (plugin.value.status === "disabled") {
             activeTab.value = "Versions";
+        } else {
+            activeTab.value = "Documentation";
         }
     } catch (e) {
         pluginError.value =
@@ -59,7 +93,18 @@ onMounted(async () => {
     } finally {
         pluginLoading.value = false;
     }
-});
+}
+
+onMounted(loadPlugin);
+
+// Hash-only navigation between two plugin detail routes keeps the same
+// component instance, so re-load when the slug or install id changes.
+watch(
+    () => [route.params.name, installId.value],
+    () => {
+        loadPlugin();
+    },
+);
 
 async function toggleEnable() {
     if (!plugin.value) return;
@@ -72,6 +117,7 @@ async function toggleEnable() {
         }
         plugin.value = await store.fetchPluginDetail(
             route.params.name as string,
+            installId.value,
         );
     } catch (e) {
         const msg = e instanceof Error ? e.message : "Failed to toggle plugin";
@@ -90,7 +136,7 @@ async function confirmDelete() {
     try {
         await store.deletePlugin(plugin.value!.name);
         toast.show(`Plugin "${plugin.value!.name}" deleted`, "success");
-        router.push("/plugins");
+        router.push(appPath("/plugins"));
     } catch (e) {
         toast.show(
             `Failed to delete: ${e instanceof Error ? e.message : "Unknown error"}`,
@@ -105,7 +151,7 @@ async function confirmDelete() {
 <template>
     <div class="p-6 flex flex-col grow">
         <router-link
-            to="/plugins"
+            :to="appPath('/plugins')"
             class="inline-block mb-4 text-blue-500 text-sm hover:underline"
             >← Back to Plugins</router-link
         >
@@ -122,6 +168,10 @@ async function confirmDelete() {
             <div class="flex w-full place-content-between">
                 <div>
                     <h1 class="text-2xl font-bold mb-3">{{ plugin.name }}</h1>
+                    <p v-if="isInherited" class="text-xs text-gray-500 mb-2">
+                        Inherited from a {{ plugin.scope }}-scoped install.
+                        Manage it from the global Plugins area.
+                    </p>
                     <div class="flex gap-2 items-center mb-2">
                         <span class="text-sm text-gray-500"
                             >v{{ plugin.version }}</span
@@ -146,6 +196,18 @@ async function confirmDelete() {
                             }"
                             >{{ plugin.status }}</span
                         >
+                        <span
+                            class="px-2 py-0.5 rounded-full text-xs font-medium capitalize"
+                            :class="{
+                                'bg-purple-100 text-purple-800':
+                                    plugin.scope === 'app',
+                                'bg-indigo-100 text-indigo-800':
+                                    plugin.scope === 'version',
+                                'bg-slate-100 text-slate-700':
+                                    plugin.scope === 'global',
+                            }"
+                            >{{ plugin.scope }}</span
+                        >
                     </div>
                     <div class="text-sm text-gray-500">
                         Created: {{ formatDate(plugin.created_at) }} | Updated:
@@ -156,7 +218,8 @@ async function confirmDelete() {
                     <Button
                         v-if="
                             plugin.status === 'enabled' &&
-                            plugin.plugin_type !== 'system'
+                            plugin.plugin_type !== 'system' &&
+                            !isInherited
                         "
                         :label="togglingEnable ? 'Disabling...' : 'Disable'"
                         severity="danger"
@@ -174,7 +237,7 @@ async function confirmDelete() {
                         @click="toggleEnable"
                     /> -->
                     <Button
-                        v-if="plugin.plugin_type === 'user'"
+                        v-if="plugin.plugin_type === 'user' && !isInherited"
                         label="Uninstall"
                         severity="danger"
                         size="small"

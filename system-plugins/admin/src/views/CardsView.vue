@@ -5,6 +5,7 @@ import { useSavedViewsStore } from "@/stores/savedViews";
 import type { FieldDefinition } from "@/stores/collections";
 import FieldNameLabel from "@/components/FieldNameLabel.vue";
 import { resolveTemplate } from "@/utils/templateResolver";
+import { appPath } from "@/utils/appHeaders";
 
 const FormFieldRenderer = inject("FormFieldRenderer");
 
@@ -90,7 +91,7 @@ function onCardClick(item: any) {
         router.push(props.rowLinkTo(item));
         return;
     }
-    router.push(`/detail/${collectionName.value}/${item.id}`);
+    router.push(appPath(`/detail/${collectionName.value}/${item.id}`));
 }
 </script>
 

@@ -12,6 +12,7 @@ import { withSystemFields } from "@/composables/useSystemFields";
 import FieldsSidebar from "@/components/collectionbuilder/fieldsSidebar.vue";
 import LayoutSwitcher from "@/components/collectionbuilder/layoutSwitcher.vue";
 import LayoutPreview from "@/components/collectionbuilder/layoutPreview.vue";
+import { appPath } from "@/utils/appHeaders";
 
 const route = useRoute(),
     store = useCollectionsStore();
@@ -180,7 +181,7 @@ watch(
     <div v-else-if="loadError" class="text-center py-12">
         <p class="text-red-500 mb-4">{{ loadError }}</p>
         <router-link
-            to="/collections"
+            :to="appPath('/collections')"
             class="text-blue-500 text-sm hover:underline"
             >&#8592; Back to Collections</router-link
         >

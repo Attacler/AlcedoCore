@@ -13,6 +13,9 @@ use tokio::sync::{broadcast, Semaphore};
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct EventSubscription {
     pub plugin_slug: String,
+    pub install_id: i64,
+    pub app_version_id: Option<i32>,
+    pub version_id: Option<i32>,
     pub event_type: String,
     pub callback_url: String,
 }
@@ -25,7 +28,7 @@ pub struct EventSubscription {
 pub fn spawn_event_forwarder(
     pool: Pool,
     mut rx: broadcast::Receiver<SystemEvent>,
-    redis_conn: Option<crate::services::redis_session::RedisPool>,
+    redis_conn: Option<Arc<crate::services::redis_client::RedisClient>>,
     max_concurrent: u32,
 ) {
     tokio::spawn(async move {
@@ -44,13 +47,25 @@ pub fn spawn_event_forwarder(
 
             // Fetch matching subscriptions
             let subscriptions: Vec<EventSubscription> = match sqlx::query_as(
-                "SELECT plugin_slug, event_type, callback_url FROM event_subscriptions WHERE event_type = $1"
+                "SELECT es.plugin_slug, es.install_id, es.event_type, es.callback_url, p.app_version_id, p.version_id
+                 FROM alcedocore_event_subscriptions es
+                 JOIN alcedo.alcedo_plugins p ON p.id = es.install_id
+                 WHERE es.event_type = $1"
             )
             .bind(&event_type)
             .fetch_all(&pool)
             .await
             {
                 Ok(subs) => subs,
+                Err(e) if crate::error::is_undefined_table(&e) => {
+                    // No app schema yet (fresh DB / global zone): subscriptions
+                    // table does not exist. Skip quietly rather than spamming.
+                    tracing::debug!(
+                        "[EVENT_FORWARDER] Subscriptions table unavailable; skipping {}",
+                        event_type
+                    );
+                    continue;
+                }
                 Err(e) => {
                     tracing::warn!("[EVENT_FORWARDER] Failed to query subscriptions: {}", e);
                     continue;
@@ -78,6 +93,9 @@ pub fn spawn_event_forwarder(
                 let url = sub.callback_url.clone();
                 let payload = event_json.clone();
                 let slug = sub.plugin_slug.clone();
+                let install_id = sub.install_id;
+                let app_version_id = sub.app_version_id;
+                let version_id = sub.version_id;
                 let et = event_type.clone();
                 let redis = redis_conn.clone();
 
@@ -92,27 +110,22 @@ pub fn spawn_event_forwarder(
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
 
-                    // Store plugin_req:{request_id} → {plugin_slug} in Redis (10 minute TTL)
-                    if let Some(ref pool) = redis {
-                        if let Ok(mut conn) = pool.get().await {
-                            let redis_key = format!("plugin_req:{}", request_id);
-                            let _: Result<(), _> = redis::cmd("SETEX")
-                                .arg(&redis_key)
-                                .arg(600u64)
-                                .arg(&slug)
-                                .query_async(&mut *conn)
-                                .await;
+                    // Store plugin_req:{request_id} → install identity in Redis (10 minute TTL)
+                    if let Some(ref client) = redis {
+                        let redis_key = format!("plugin_req:{}", request_id);
+                        let identity = serde_json::json!({
+                            "slug": &slug,
+                            "app_version_id": app_version_id,
+                            "version_id": version_id,
+                            "install_id": install_id,
+                        })
+                        .to_string();
+                        let _ = client.set(&redis_key, &identity, Some(600)).await;
 
-                            // Store source reference for event tracing
-                            if let Some(ref src) = source_request_id {
-                                let src_key = format!("plugin_req_src:{}", request_id);
-                                let _: Result<(), _> = redis::cmd("SETEX")
-                                    .arg(&src_key)
-                                    .arg(600u64)
-                                    .arg(src)
-                                    .query_async(&mut *conn)
-                                    .await;
-                            }
+                        // Store source reference for event tracing
+                        if let Some(ref src) = source_request_id {
+                            let src_key = format!("plugin_req_src:{}", request_id);
+                            let _ = client.set(&src_key, src, Some(600)).await;
                         }
                     }
 

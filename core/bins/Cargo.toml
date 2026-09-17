@@ -30,8 +30,6 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 config = "0.14"
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "macros", "chrono", "uuid", "migrate"] }
 reqwest = { version = "0.12", features = ["json"] }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
-deadpool = { version = "0.12", features = ["managed"] }
 once_cell = "1"
 bollard = "0.20"
 bollard-stubs = "=1.52.1-rc.29.1.3"

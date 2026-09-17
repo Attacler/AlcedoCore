@@ -17,7 +17,7 @@ const { options } = props.field;
         :readonly="readonly"
         :rows="options?.rows || undefined"
         :maxlength="options?.max_length || undefined"
-        :autoResize="!options.rows"
+        :autoResize="!options?.rows"
         fluid
         class="text-sm"
     />

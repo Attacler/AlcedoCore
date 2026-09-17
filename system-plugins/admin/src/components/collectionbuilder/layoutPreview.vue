@@ -485,26 +485,39 @@ function openFieldEditor(field: any) {
 }
 
 function replaceTempName(field: any) {
-    const tempName = field._tempName;
-    if (!tempName || !field.name || !/^[a-z][a-z0-9_]*$/.test(field.name))
-        return;
+    resolveTempNames();
+    if (field) delete field._tempName;
+}
+
+/**
+ * Replace every `__new_*` temp name in the section display_fields / column
+ * map with the real field name. Falls back to a name derived from the field's
+ * own `_tempName` so a field is always resolvable even when its temp entry was
+ * pushed by a slightly different drop.
+ */
+function resolveTempNames() {
+    const map = new Map<string, string>();
+    for (const f of fields.value) {
+        if (!f._tempName || !f.name) continue;
+        map.set(f._tempName, f.name);
+        const derived = `__new_${f._key}`;
+        if (derived !== f._tempName) map.set(derived, f.name);
+    }
     for (const section of sections.value) {
-        if (section.section_type === "field_group" && section.display_fields) {
-            const idx = section.display_fields.indexOf(tempName);
-            if (idx !== -1) {
-                section.display_fields[idx] = field.name;
-            }
-            if (
-                section._field_columns &&
-                section._field_columns[tempName] !== undefined
-            ) {
-                section._field_columns[field.name] =
-                    section._field_columns[tempName];
-                delete section._field_columns[tempName];
+        if (section.section_type !== "field_group" || !section.display_fields)
+            continue;
+        section.display_fields = (section.display_fields as string[]).map(
+            (n: string) => map.get(n) || n,
+        );
+        if (section._field_columns) {
+            for (const [temp, name] of map) {
+                if (section._field_columns[temp] !== undefined) {
+                    section._field_columns[name] = section._field_columns[temp];
+                    delete section._field_columns[temp];
+                }
             }
         }
     }
-    delete field._tempName;
 }
 
 function closeFieldEditor() {
@@ -1041,9 +1054,9 @@ watch(
                                     ? 'border-blue-400 bg-blue-50/50 text-blue-500'
                                     : 'border-gray-200 hover:border-blue-300'
                             "
-                            @dragover.prevent="onDragOverEmptySection(section)"
-                            @dragleave="onDragLeaveEmptySection(section)"
-                            @drop="onDropInSection($event, section)"
+@dragover.prevent="onDragOverEmptySection(section)"
+                             @dragleave="onDragLeaveEmptySection(section)"
+                             @drop.stop="onDropInSection($event, section)"
                         >
                             <template v-if="dragType || dragFieldKey"
                                 >Drop fields here</template

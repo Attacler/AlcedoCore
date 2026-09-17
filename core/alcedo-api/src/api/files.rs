@@ -1,4 +1,13 @@
 use alcedo_common::RequestIdentity;
+use alcedo_db::db::filter_condition::{
+    ComparisonOperator, FilterCondition, LogicOperator, SortField,
+};
+use alcedo_db::services::items::read::{ListRequest, OneRequest, UNBOUNDED_LIMIT};
+use alcedo_db::services::items::service::ItemsService;
+use alcedo_db::services::items::shape::TableRef;
+use alcedo_db::services::items::write::{
+    execute_create_for_table, execute_delete_for_table, execute_update_one_for_table,
+};
 use axum::{
     extract::{Multipart, Path, Query, State},
     http::StatusCode,
@@ -23,11 +32,58 @@ pub struct ListFilesParams {
     pub offset: Option<i64>,
 }
 
+/// Deserialize `folder_id` so missing (None), explicit null (Some(None) →
+/// move to root), and a folder UUID string (Some(Some(_))) stay
+/// distinguishable. Plain `Option<_>` collapses explicit null into None, so a
+/// custom visitor is required.
+fn deserialize_optional_folder_id<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct FolderIdVisitor;
+    impl<'de> serde::de::Visitor<'de> for FolderIdVisitor {
+        type Value = Option<Option<String>>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a folder UUID string, null, or missing")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Some(None))
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Some(None))
+        }
+
+        fn visit_some<D2>(self, deserializer: D2) -> Result<Self::Value, D2::Error>
+        where
+            D2: serde::Deserializer<'de>,
+        {
+            let s = String::deserialize(deserializer)?;
+            Ok(Some(Some(s)))
+        }
+    }
+    deserializer.deserialize_option(FolderIdVisitor)
+}
+
 #[derive(Deserialize)]
 pub struct UpdateFileMetadataBody {
     pub alt_text: Option<String>,
     pub filename: Option<String>,
-    pub folder_id: Option<serde_json::Value>,
+    // Double-option so missing (None), explicit null (Some(None) → move to
+    // root), and a folder UUID (Some(Some(_))) stay distinguishable. A plain
+    // `Option<Value>` would collapse explicit null into None.
+    #[serde(default, deserialize_with = "deserialize_optional_folder_id")]
+    pub folder_id: Option<Option<String>>,
 }
 
 #[derive(Deserialize)]
@@ -66,10 +122,10 @@ async fn check_file_permission(
     };
     if let Some(uid) = uid {
         let is_admin: bool = sqlx::query_scalar(
-            r#"SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN role_scopes rs ON rs.role_id = ur.role_id WHERE ur.user_id = $1 AND rs.scope = 'users.all')"#,
+            r#"SELECT EXISTS(SELECT 1 FROM alcedocore_user_roles ur JOIN alcedocore_role_scopes rs ON rs.role_id = ur.role_id WHERE ur.user_id = $1 AND rs.scope = 'users.all')"#,
         )
         .bind(uid)
-        .fetch_one(state.db()?)
+        .fetch_one(&state.db_for_headers(headers).await?)
         .await
         .unwrap_or(false);
         if is_admin {
@@ -78,10 +134,10 @@ async fn check_file_permission(
     }
 
     let link = sqlx::query_as::<_, (Uuid, String, String)>(
-        "SELECT item_id, collection_name, field_name FROM item_files WHERE file_id = $1 LIMIT 1",
+        "SELECT item_id, collection_name, field_name FROM alcedocore_item_files WHERE file_id = $1 LIMIT 1",
     )
     .bind(file_id)
-    .fetch_optional(state.db()?)
+    .fetch_optional(&state.db_for_headers(headers).await?)
     .await?;
 
     if let Some((_item_id, collection_name, _field_name)) = link {
@@ -101,7 +157,7 @@ async fn build_folder_path(pool: &sqlx::PgPool, folder_id: Uuid) -> Result<Strin
 
     while let Some(fid) = current_id {
         let row = sqlx::query_as::<_, (String, Option<Uuid>)>(
-            "SELECT name, parent_id FROM file_folders WHERE id = $1",
+            "SELECT name, parent_id FROM alcedocore_file_folders WHERE id = $1",
         )
         .bind(fid)
         .fetch_optional(pool)
@@ -122,12 +178,12 @@ async fn build_folder_path(pool: &sqlx::PgPool, folder_id: Uuid) -> Result<Strin
 async fn check_file_conflict(
     pool: &sqlx::PgPool,
     filename: &str,
-    folder_id: Uuid,
+    folder_id: Option<Uuid>,
     excluding_file_id: Option<Uuid>,
 ) -> Result<bool, AppError> {
     let exists = if let Some(exclude_id) = excluding_file_id {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2 AND id != $3)",
+            "SELECT EXISTS(SELECT 1 FROM alcedocore_file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2 AND id != $3)",
         )
         .bind(filename)
         .bind(folder_id)
@@ -136,7 +192,7 @@ async fn check_file_conflict(
         .await
     } else {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2)",
+            "SELECT EXISTS(SELECT 1 FROM alcedocore_file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2)",
         )
         .bind(filename)
         .bind(folder_id)
@@ -169,7 +225,7 @@ async fn validate_no_circular_ref(
                 ));
             }
             current = sqlx::query_scalar::<_, Option<Uuid>>(
-                "SELECT parent_id FROM file_folders WHERE id = $1",
+                "SELECT parent_id FROM alcedocore_file_folders WHERE id = $1",
             )
             .bind(cid)
             .fetch_optional(pool)
@@ -189,7 +245,7 @@ pub async fn upload_file(
     identity: RequestIdentity,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     let actor_id = crate::api::permission_check::extract_user_id_from_session(&state, &headers)
         .await?
@@ -244,13 +300,6 @@ pub async fn upload_file(
         }
     }
 
-    if let None = folder_id {
-        return Err(AppError::BadRequest(format!(
-            "The parameter folder_id is missing!"
-        )));
-    }
-    let folder_id = folder_id.unwrap();
-
     if let Some(ref coll) = collection_name {
         require_permission(&state, &identity, &headers, coll, "update").await?;
     }
@@ -260,22 +309,25 @@ pub async fn upload_file(
     let filename = filename.unwrap_or_else(|| "unnamed".to_string());
     let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
 
-    let folder_path = {
-        let folder_exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM file_folders WHERE id = $1)",
-        )
-        .bind(folder_id)
-        .fetch_one(db_pool)
-        .await
-        .map_err(|e| AppError::DatabaseError {
-            details: format!("Failed to check folder: {}", e),
-        })?;
+    let folder_path = match folder_id {
+        Some(fid) => {
+            let folder_exists = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM alcedocore_file_folders WHERE id = $1)",
+            )
+            .bind(fid)
+            .fetch_one(db_pool)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Failed to check folder: {}", e),
+            })?;
 
-        if !folder_exists {
-            return Err(AppError::NotFound("Folder not found".to_string()));
+            if !folder_exists {
+                return Err(AppError::NotFound("Folder not found".to_string()));
+            }
+
+            build_folder_path(db_pool, fid).await?
         }
-
-        build_folder_path(db_pool, folder_id).await?
+        None => String::new(),
     };
 
     if !overwrite {
@@ -288,7 +340,7 @@ pub async fn upload_file(
         }
     } else {
         let existing = sqlx::query_as::<_, (Uuid, String)>(
-            "SELECT id, storage_path FROM file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2",
+            "SELECT id, storage_path FROM alcedocore_file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2",
         )
         .bind(&filename)
         .bind(folder_id)
@@ -300,13 +352,20 @@ pub async fn upload_file(
 
         if let Some((existing_id, existing_path)) = existing {
             let _ = state.file_storage.delete(&existing_path).await;
-            sqlx::query("DELETE FROM file_metadata WHERE id = $1")
-                .bind(existing_id)
-                .execute(db_pool)
-                .await
-                .map_err(|e| AppError::DatabaseError {
-                    details: format!("Failed to delete existing file: {}", e),
-                })?;
+            let schema = state.schema_for_headers(&headers).await?;
+            let collection = "alcedocore_file_metadata".to_string();
+            let engine = ItemsService::for_global(&state.core, &collection);
+            let shape = engine
+                .privileged_write_shape(
+                    TableRef {
+                        schema: Some(schema),
+                        name: collection.clone(),
+                    },
+                    &[],
+                )
+                .await?;
+            execute_delete_for_table(db_pool, &shape, vec![serde_json::json!(existing_id.to_string())])
+                .await?;
         }
     }
 
@@ -324,52 +383,73 @@ pub async fn upload_file(
         .await
         .map_err(|e| AppError::Internal(format!("File storage upload failed: {}", e)))?;
 
-    let row = sqlx::query_as::<_, (
-        Uuid, String, String, i64, String, String, Option<String>, Option<String>, Option<Uuid>, Option<Uuid>,
-        chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>,
-    )>(
-        r#"INSERT INTO file_metadata (filename, mime_type, size_bytes, storage_provider, storage_path, sha256, uploaded_by, folder_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           RETURNING id, filename, mime_type, size_bytes, storage_provider, storage_path, sha256, alt_text, uploaded_by, folder_id, created_at, updated_at"#
-    )
-    .bind(&filename)
-    .bind(&mime_type)
-    .bind(file_data.len() as i64)
-    .bind("local")
-    .bind(&storage_path)
-    .bind(&sha256)
-    .bind(actor_id)
-    .bind(folder_id)
-    .fetch_one(db_pool)
-    .await
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Failed to insert file metadata: {}", e),
-    })?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let collection = "alcedocore_file_metadata".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let mut meta = serde_json::Map::new();
+    meta.insert("filename".to_string(), serde_json::json!(filename));
+    meta.insert("mime_type".to_string(), serde_json::json!(mime_type));
+    meta.insert(
+        "size_bytes".to_string(),
+        serde_json::json!(file_data.len() as i64),
+    );
+    meta.insert("storage_provider".to_string(), serde_json::json!("local"));
+    meta.insert(
+        "storage_path".to_string(),
+        serde_json::json!(storage_path),
+    );
+    meta.insert("sha256".to_string(), serde_json::json!(sha256));
+    meta.insert(
+        "uploaded_by".to_string(),
+        serde_json::json!(actor_id.to_string()),
+    );
+    if let Some(fid) = folder_id {
+        meta.insert("folder_id".to_string(), serde_json::json!(fid.to_string()));
+    }
+    let outcome = execute_create_for_table(db_pool, &shape, vec![meta]).await?;
+    let row = outcome
+        .affected
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("File insert returned no row".to_string()))?;
+
+    let file_id: Uuid = row
+        .get("id")
+        .and_then(|v| v.as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(|| AppError::Internal("Invalid file row: missing id".to_string()))?;
+    let event_filename = row
+        .get("filename")
+        .and_then(|v| v.as_str())
+        .unwrap_or(filename.as_str())
+        .to_string();
+    let event_mime = row
+        .get("mime_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or(mime_type.as_str())
+        .to_string();
+    let event_size = row
+        .get("size_bytes")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(file_data.len() as i64);
 
     state.event_bus.emit(SystemEvent::FileUploaded {
-        file_id: row.0,
-        filename: row.1.clone(),
-        size_bytes: row.3,
-        mime_type: row.2.clone(),
+        file_id,
+        filename: event_filename,
+        size_bytes: event_size,
+        mime_type: event_mime,
     });
 
-    let download_url = format!("/api/files/{}/download", row.0);
-
-    Ok(Json(json!({
-        "id": row.0,
-        "filename": row.1,
-        "mime_type": row.2,
-        "size_bytes": row.3,
-        "storage_provider": row.4,
-        "storage_path": row.5,
-        "sha256": row.6,
-        "alt_text": row.7,
-        "uploaded_by": row.8,
-        "folder_id": row.9,
-        "created_at": row.10,
-        "updated_at": row.11,
-        "download_url": download_url,
-    })))
+    Ok(Json(file_metadata_json(&row, file_id)))
 }
 
 pub async fn download_file(
@@ -378,26 +458,45 @@ pub async fn download_file(
     identity: RequestIdentity,
     Path(id): Path<Uuid>,
 ) -> Result<(StatusCode, [(&'static str, String); 2], Vec<u8>), AppError> {
-    let db_pool = state.db()?;
-
     check_file_permission(&state, &identity, &headers, &id, "read").await?;
 
-    let row = sqlx::query_as::<_, (String, String, String)>(
-        r#"SELECT storage_path, mime_type, filename FROM file_metadata WHERE id = $1"#,
-    )
-    .bind(id)
-    .fetch_optional(db_pool)
-    .await
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Failed to query file metadata: {}", e),
-    })?
-    .ok_or_else(|| AppError::NotFound(format!("File '{}' not found", id)))?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_file_metadata".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
 
-    let (storage_path, mime_type, filename) = row;
+    let row = engine
+        .read_one_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            OneRequest {
+                item_id: id.to_string(),
+                fields: vec!["storage_path".into(), "mime_type".into(), "filename".into()],
+                ..Default::default()
+            },
+        )
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("File '{}' not found", id)))?;
+
+    let storage_path = row
+        .get("storage_path")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::Internal("Invalid file row: missing storage_path".to_string()))?;
+    let mime_type = row
+        .get("mime_type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::Internal("Invalid file row: missing mime_type".to_string()))?;
+    let filename = row
+        .get("filename")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::Internal("Invalid file row: missing filename".to_string()))?;
 
     let file = state
         .file_storage
-        .download(&storage_path)
+        .download(storage_path)
         .await
         .map_err(|e| AppError::Internal(format!("File storage download failed: {}", e)))?
         .ok_or_else(|| AppError::NotFound("File data not found in storage".to_string()))?;
@@ -405,7 +504,7 @@ pub async fn download_file(
     Ok((
         StatusCode::OK,
         [
-            ("Content-Type", mime_type.clone()),
+            ("Content-Type", mime_type.to_string()),
             (
                 "Content-Disposition",
                 format!("attachment; filename=\"{}\"", filename),
@@ -417,156 +516,161 @@ pub async fn download_file(
 
 pub async fn get_file_metadata(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
+    let collection = "alcedocore_file_metadata".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
 
-    let row = sqlx::query_as::<_, (
-        Uuid, String, String, i64, String, String, Option<String>, Option<String>, Option<Uuid>, Option<Uuid>,
-        chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>,
-    )>(
-        r#"SELECT id, filename, mime_type, size_bytes, storage_provider, storage_path, sha256, alt_text, uploaded_by, folder_id, created_at, updated_at
-           FROM file_metadata WHERE id = $1"#
-    )
-    .bind(id)
-    .fetch_optional(db_pool)
-    .await
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Failed to query file metadata: {}", e),
-    })?
-    .ok_or_else(|| AppError::NotFound(format!("File '{}' not found", id)))?;
+    let row = engine
+        .read_one_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            OneRequest {
+                item_id: id.to_string(),
+                fields: file_metadata_fields(),
+                ..Default::default()
+            },
+        )
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("File '{}' not found", id)))?;
 
-    Ok(Json(json!({
-        "id": row.0,
-        "filename": row.1,
-        "mime_type": row.2,
-        "size_bytes": row.3,
-        "storage_provider": row.4,
-        "storage_path": row.5,
-        "sha256": row.6,
-        "alt_text": row.7,
-        "uploaded_by": row.8,
-        "folder_id": row.9,
-        "created_at": row.10,
-        "updated_at": row.11,
-        "download_url": format!("/api/files/{}/download", row.0),
-    })))
+    Ok(Json(file_metadata_json(&row, id)))
+}
+
+fn file_metadata_fields() -> Vec<String> {
+    vec![
+        "id".into(),
+        "filename".into(),
+        "mime_type".into(),
+        "size_bytes".into(),
+        "storage_provider".into(),
+        "storage_path".into(),
+        "sha256".into(),
+        "alt_text".into(),
+        "uploaded_by".into(),
+        "folder_id".into(),
+        "created_at".into(),
+        "updated_at".into(),
+    ]
+}
+
+fn file_metadata_json(row: &serde_json::Value, file_id: Uuid) -> serde_json::Value {
+    let get = |key: &str| row.get(key).cloned().unwrap_or(serde_json::Value::Null);
+    json!({
+        "id": get("id"),
+        "filename": get("filename"),
+        "mime_type": get("mime_type"),
+        "size_bytes": get("size_bytes"),
+        "storage_provider": get("storage_provider"),
+        "storage_path": get("storage_path"),
+        "sha256": get("sha256"),
+        "alt_text": get("alt_text"),
+        "uploaded_by": get("uploaded_by"),
+        "folder_id": get("folder_id"),
+        "created_at": get("created_at"),
+        "updated_at": get("updated_at"),
+        "download_url": format!("/api/files/{}/download", file_id),
+    })
 }
 
 pub async fn list_files(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<ListFilesParams>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
 
     let limit = params.limit.unwrap_or(50);
     let offset = params.offset.unwrap_or(0);
 
-    let mut where_conditions: Vec<String> = Vec::new();
-    let mut bind_values: Vec<serde_json::Value> = Vec::new();
-    let mut bind_idx = 1u32;
+    let mut conditions: Vec<FilterCondition> = Vec::new();
 
     if let Some(ref search) = params.search {
-        where_conditions.push(format!("fm.filename ILIKE ${}", bind_idx));
-        bind_values.push(serde_json::Value::String(format!("%{}%", search)));
-        bind_idx += 1;
+        conditions.push(FilterCondition::Rule {
+            field: "filename".into(),
+            operator: ComparisonOperator::Ilike,
+            value: Some(json!(search)),
+        });
     }
 
     if let Some(ref mime_type) = params.mime_type {
-        where_conditions.push(format!("fm.mime_type LIKE ${}", bind_idx));
-        bind_values.push(serde_json::Value::String(format!("{}%", mime_type)));
-        bind_idx += 1;
+        conditions.push(FilterCondition::Rule {
+            field: "mime_type".into(),
+            operator: ComparisonOperator::StartsWith,
+            value: Some(json!(mime_type)),
+        });
     }
 
     if let Some(ref folder_id) = params.folder_id {
         if folder_id.is_empty() {
-            where_conditions.push("fm.folder_id IS NULL".to_string());
+            conditions.push(FilterCondition::Rule {
+                field: "folder_id".into(),
+                operator: ComparisonOperator::IsNull,
+                value: None,
+            });
         } else {
             let fid = Uuid::parse_str(folder_id)
                 .map_err(|_| AppError::BadRequest("Invalid folder_id UUID".to_string()))?;
-            where_conditions.push(format!("fm.folder_id = ${}::uuid", bind_idx));
-            bind_values.push(serde_json::Value::String(fid.to_string()));
-            bind_idx += 1;
+            conditions.push(FilterCondition::Rule {
+                field: "folder_id".into(),
+                operator: ComparisonOperator::Eq,
+                value: Some(json!(fid.to_string())),
+            });
         }
     }
 
-    let where_clause = if where_conditions.is_empty() {
-        String::new()
+    let filter = if conditions.is_empty() {
+        None
     } else {
-        format!("WHERE {}", where_conditions.join(" AND "))
+        Some(FilterCondition::Group {
+            operator: LogicOperator::And,
+            conditions,
+        })
     };
 
-    let count_sql = format!("SELECT COUNT(*) FROM file_metadata fm {}", where_clause);
-    let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
-    for val in &bind_values {
-        count_q = crate::bind_json_value!(count_q, val);
-    }
-    let total = count_q
-        .fetch_one(db_pool)
-        .await
-        .map_err(|e| AppError::DatabaseError {
-            details: format!("Failed to count file metadata: {}", e),
-        })?;
+    let collection = "alcedocore_file_metadata".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let result = engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            ListRequest {
+                fields: file_metadata_fields(),
+                filter,
+                sort: vec![SortField {
+                    field: "created_at".into(),
+                    order: "desc".into(),
+                }],
+                limit: limit.max(0) as u64,
+                offset: offset.max(0) as u64,
+                ..Default::default()
+            },
+        )
+        .await?;
 
-    let data_sql = format!(
-        r#"SELECT fm.id, fm.filename, fm.mime_type, fm.size_bytes, fm.storage_provider, fm.storage_path, fm.sha256, fm.alt_text, fm.uploaded_by, fm.folder_id, fm.created_at, fm.updated_at
-           FROM file_metadata fm {}
-           ORDER BY fm.created_at DESC
-           LIMIT ${} OFFSET ${}"#,
-        where_clause,
-        bind_idx,
-        bind_idx + 1,
-    );
-    bind_values.push(serde_json::Value::Number(serde_json::Number::from(limit)));
-    bind_values.push(serde_json::Value::Number(serde_json::Number::from(offset)));
-
-    let mut data_q = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            String,
-            String,
-            i64,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<Uuid>,
-            Option<Uuid>,
-            chrono::DateTime<chrono::Utc>,
-            chrono::DateTime<chrono::Utc>,
-        ),
-    >(&data_sql);
-    for val in &bind_values {
-        data_q = crate::bind_json_value!(data_q, val);
-    }
-    let rows = data_q
-        .fetch_all(db_pool)
-        .await
-        .map_err(|e| AppError::DatabaseError {
-            details: format!("Failed to list file metadata: {}", e),
-        })?;
-
-    let data: Vec<serde_json::Value> = rows
-        .into_iter()
+    let data: Vec<serde_json::Value> = result
+        .items
+        .iter()
         .map(|row| {
-            json!({
-                "id": row.0,
-                "filename": row.1,
-                "mime_type": row.2,
-                "size_bytes": row.3,
-                "storage_provider": row.4,
-                "storage_path": row.5,
-                "sha256": row.6,
-                "alt_text": row.7,
-                "uploaded_by": row.8,
-                "folder_id": row.9,
-                "created_at": row.10,
-                "updated_at": row.11,
-                "download_url": format!("/api/files/{}/download", row.0),
-            })
+            let file_id = row
+                .get("id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .ok_or_else(|| AppError::Internal("Invalid file row: missing id".to_string()))?;
+            Ok(file_metadata_json(row, file_id))
         })
-        .collect();
+        .collect::<Result<_, AppError>>()?;
+    let total = result.total;
 
     Ok(Json(json!({ "data": data, "total": total })))
 }
@@ -576,13 +680,13 @@ pub async fn delete_file(
     headers: axum::http::HeaderMap,
     identity: RequestIdentity,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+) -> Result<StatusCode, AppError> {
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     check_file_permission(&state, &identity, &headers, &id, "update").await?;
 
     let row = sqlx::query_as::<_, (String, String)>(
-        r#"SELECT storage_path, filename FROM file_metadata WHERE id = $1"#,
+        r#"SELECT storage_path, filename FROM alcedocore_file_metadata WHERE id = $1"#,
     )
     .bind(id)
     .fetch_optional(db_pool)
@@ -598,31 +702,38 @@ pub async fn delete_file(
         .await
         .map_err(|e| AppError::Internal(format!("File storage delete failed: {}", e)))?;
 
-    sqlx::query("DELETE FROM file_metadata WHERE id = $1")
-        .bind(id)
-        .execute(db_pool)
-        .await
-        .map_err(|e| AppError::DatabaseError {
-            details: format!("Failed to delete file metadata: {}", e),
-        })?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let collection = "alcedocore_file_metadata".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    execute_delete_for_table(db_pool, &shape, vec![serde_json::json!(id.to_string())]).await?;
 
     state.event_bus.emit(SystemEvent::FileDeleted {
         file_id: id,
         filename: row.1.clone(),
     });
 
-    Ok(Json(json!({ "status":"success" })))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn update_file_metadata(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateFileMetadataBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     let current = sqlx::query_as::<_, (String, Option<Uuid>, String)>(
-        "SELECT filename, folder_id, storage_path FROM file_metadata WHERE id = $1",
+        "SELECT filename, folder_id, storage_path FROM alcedocore_file_metadata WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(db_pool)
@@ -635,13 +746,13 @@ pub async fn update_file_metadata(
     let (current_filename, current_folder_id, current_storage_path) = current;
     let new_filename = body.filename.as_deref().unwrap_or(&current_filename);
 
-    let new_folder_id: Option<Option<Uuid>> = match body.folder_id {
-        Some(serde_json::Value::Null) => Some(None),
-        Some(serde_json::Value::String(ref s)) if !s.is_empty() => {
+    let new_folder_id: Option<Option<Uuid>> = match &body.folder_id {
+        Some(None) => Some(None),
+        Some(Some(s)) if !s.is_empty() => {
             let fid = Uuid::parse_str(s)
                 .map_err(|_| AppError::BadRequest("Invalid folder_id UUID".to_string()))?;
             let exists = sqlx::query_scalar::<_, bool>(
-                "SELECT EXISTS(SELECT 1 FROM file_folders WHERE id = $1)",
+                "SELECT EXISTS(SELECT 1 FROM alcedocore_file_folders WHERE id = $1)",
             )
             .bind(fid)
             .fetch_one(db_pool)
@@ -659,18 +770,11 @@ pub async fn update_file_metadata(
 
     let resolved_folder_id = new_folder_id.unwrap_or(current_folder_id);
 
-    if let None = resolved_folder_id {
-        return Err(AppError::NotFound(
-            "The parameter 'folder_id' is required!".to_string(),
-        ));
-    }
-    let resolved_folder_id = resolved_folder_id.unwrap();
-
     let new_storage_path = if new_filename != current_filename || new_folder_id.is_some() {
         let mut actual_path = format!("{}-{}", Uuid::new_v4(), new_filename);
 
         let conflict_exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2 AND id != $3)",
+            "SELECT EXISTS(SELECT 1 FROM alcedocore_file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2 AND id != $3)",
         )
         .bind(new_filename)
         .bind(resolved_folder_id)
@@ -690,7 +794,10 @@ pub async fn update_file_metadata(
 
         if let Ok(Some((mime, data))) = state.file_storage.download(&current_storage_path).await {
             let _ = state.file_storage.delete(&current_storage_path).await;
-            let folder_path_for_storage = build_folder_path(db_pool, resolved_folder_id).await?;
+            let folder_path_for_storage = match resolved_folder_id {
+                Some(fid) => build_folder_path(db_pool, fid).await?,
+                None => String::new(),
+            };
 
             actual_path = state
                 .file_storage
@@ -704,61 +811,89 @@ pub async fn update_file_metadata(
         current_storage_path
     };
 
-    let row = sqlx::query_as::<_, (
-        Uuid, String, String, i64, String, String, Option<String>, Option<String>, Option<Uuid>, Option<Uuid>,
-        chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>,
-    )>(
-        r#"UPDATE file_metadata
-           SET alt_text = COALESCE($1, alt_text),
-               filename = COALESCE($2, filename),
-               folder_id = COALESCE($3, folder_id),
-               storage_path = $4,
-               updated_at = NOW()
-           WHERE id = $5
-           RETURNING id, filename, mime_type, size_bytes, storage_provider, storage_path, sha256, alt_text, uploaded_by, folder_id, created_at, updated_at"#
+    let schema = state.schema_for_headers(&headers).await?;
+    let collection = "alcedocore_file_metadata".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let mut body_map = serde_json::Map::new();
+    if let Some(alt_text) = &body.alt_text {
+        body_map.insert("alt_text".to_string(), serde_json::json!(alt_text));
+    }
+    if let Some(filename) = &body.filename {
+        body_map.insert("filename".to_string(), serde_json::json!(filename));
+    }
+    match &body.folder_id {
+        // Explicit null must be written as NULL, not omitted — otherwise the
+        // storage path (moved to root above) and folder_id diverge (old COALESCE bug).
+        Some(None) => {
+            body_map.insert("folder_id".to_string(), serde_json::Value::Null);
+        }
+        Some(Some(s)) if !s.is_empty() => {
+            body_map.insert("folder_id".to_string(), serde_json::json!(s));
+        }
+        _ => {}
+    }
+    body_map.insert(
+        "storage_path".to_string(),
+        serde_json::json!(new_storage_path),
+    );
+    let outcome = match execute_update_one_for_table(
+        db_pool,
+        &shape,
+        &serde_json::json!(id.to_string()),
+        &body_map,
     )
-    .bind(&body.alt_text)
-    .bind(&body.filename)
-    .bind(resolved_folder_id)
-    .bind(&new_storage_path)
-    .bind(id)
-    .fetch_optional(db_pool)
     .await
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Failed to update file metadata: {}", e),
-    })?
-    .ok_or_else(|| AppError::NotFound(format!("File '{}' not found", id)))?;
+    {
+        Ok(outcome) => outcome,
+        Err(AppError::NotFound(_)) => {
+            return Err(AppError::NotFound(format!("File '{}' not found", id)));
+        }
+        Err(e) => return Err(e),
+    };
+    let row = outcome
+        .affected
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::NotFound(format!("File '{}' not found", id)))?;
 
-    Ok(Json(json!({
-        "id": row.0,
-        "filename": row.1,
-        "mime_type": row.2,
-        "size_bytes": row.3,
-        "storage_provider": row.4,
-        "storage_path": row.5,
-        "sha256": row.6,
-        "alt_text": row.7,
-        "uploaded_by": row.8,
-        "folder_id": row.9,
-        "created_at": row.10,
-        "updated_at": row.11,
-        "download_url": format!("/api/files/{}/download", row.0),
-    })))
+    Ok(Json(file_metadata_json(&row, id)))
 }
 
 pub async fn batch_delete_files(
     State(state): State<Arc<AppState>>,
-    _headers: axum::http::HeaderMap,
+    headers: axum::http::HeaderMap,
     Json(body): Json<BatchDeleteFilesBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+
+    let schema = state.schema_for_headers(&headers).await?;
+    let collection = "alcedocore_file_metadata".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
 
     let mut deleted: i64 = 0;
     let mut errors: Vec<String> = Vec::new();
 
     for id in &body.ids {
         let row = match sqlx::query_as::<_, (String,)>(
-            "SELECT storage_path FROM file_metadata WHERE id = $1",
+            "SELECT storage_path FROM alcedocore_file_metadata WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(db_pool)
@@ -780,10 +915,7 @@ pub async fn batch_delete_files(
             continue;
         }
 
-        match sqlx::query("DELETE FROM file_metadata WHERE id = $1")
-            .bind(id)
-            .execute(db_pool)
-            .await
+        match execute_delete_for_table(db_pool, &shape, vec![serde_json::json!(id.to_string())]).await
         {
             Ok(_) => deleted += 1,
             Err(e) => {
@@ -800,14 +932,14 @@ pub async fn create_folder(
     headers: axum::http::HeaderMap,
     Json(body): Json<CreateFolderBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
     let actor_id = extract_user_id_from_session(&state, &headers)
         .await?
         .unwrap_or(Uuid::nil());
 
     if let Some(pid) = body.parent_id {
         let parent_exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM file_folders WHERE id = $1)",
+            "SELECT EXISTS(SELECT 1 FROM alcedocore_file_folders WHERE id = $1)",
         )
         .bind(pid)
         .fetch_one(db_pool)
@@ -822,7 +954,7 @@ pub async fn create_folder(
     }
 
     let sibling_conflict = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM file_folders WHERE name = $1 AND parent_id IS NOT DISTINCT FROM $2)",
+        "SELECT EXISTS(SELECT 1 FROM alcedocore_file_folders WHERE name = $1 AND parent_id IS NOT DISTINCT FROM $2)",
     )
     .bind(&body.name)
     .bind(body.parent_id)
@@ -840,7 +972,7 @@ pub async fn create_folder(
     }
 
     let file_conflict = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2)",
+        "SELECT EXISTS(SELECT 1 FROM alcedocore_file_metadata WHERE filename = $1 AND folder_id IS NOT DISTINCT FROM $2)",
     )
     .bind(&body.name)
     .bind(body.parent_id)
@@ -857,141 +989,210 @@ pub async fn create_folder(
         )));
     }
 
-    let row = sqlx::query_as::<
-        _,
-        (
-            Uuid,
-            String,
-            Option<Uuid>,
-            Option<Uuid>,
-            chrono::DateTime<chrono::Utc>,
-            chrono::DateTime<chrono::Utc>,
-        ),
-    >(
-        r#"INSERT INTO file_folders (name, parent_id, created_by)
-           VALUES ($1, $2, $3)
-           RETURNING id, name, parent_id, created_by, created_at, updated_at"#,
-    )
-    .bind(&body.name)
-    .bind(body.parent_id)
-    .bind(actor_id)
-    .fetch_one(db_pool)
-    .await
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Failed to create folder: {}", e),
-    })?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let collection = "alcedocore_file_folders".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let mut folder_map = serde_json::Map::new();
+    folder_map.insert("name".to_string(), serde_json::json!(body.name));
+    if let Some(pid) = body.parent_id {
+        folder_map.insert("parent_id".to_string(), serde_json::json!(pid.to_string()));
+    }
+    folder_map.insert(
+        "created_by".to_string(),
+        serde_json::json!(actor_id.to_string()),
+    );
+    let outcome = execute_create_for_table(db_pool, &shape, vec![folder_map]).await?;
+    let row = outcome
+        .affected
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("Folder insert returned no row".to_string()))?;
 
-    Ok(Json(json!({
-        "id": row.0,
-        "name": row.1,
-        "parent_id": row.2,
-        "created_by": row.3,
-        "created_at": row.4,
-        "updated_at": row.5,
-    })))
+    Ok(Json(folder_json(&row)))
 }
 
 pub async fn list_folders(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
     let parent_id = params
         .get("parent_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
 
-    let rows = if let Some(pid) = parent_id {
-        let pid = Uuid::parse_str(pid).map_err(|_| AppError::BadRequest("Invalid parent_id UUID".to_string()))?;
-        sqlx::query_as::<_, (Uuid, String, Option<Uuid>, Option<Uuid>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-            "SELECT id, name, parent_id, created_by, created_at, updated_at FROM file_folders WHERE parent_id = $1 ORDER BY name ASC",
-        )
-        .bind(pid)
-        .fetch_all(db_pool)
-        .await
-    } else {
-        sqlx::query_as::<_, (Uuid, String, Option<Uuid>, Option<Uuid>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-            "SELECT id, name, parent_id, created_by, created_at, updated_at FROM file_folders WHERE parent_id IS NULL ORDER BY name ASC",
-        )
-        .fetch_all(db_pool)
-        .await
-    }
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Failed to list folders: {}", e),
-    })?;
-
-    let data: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|r| {
-            json!({
-                "id": r.0,
-                "name": r.1,
-                "parent_id": r.2,
-                "created_by": r.3,
-                "created_at": r.4,
-                "updated_at": r.5,
-            })
+    let filter = if let Some(pid) = parent_id {
+        let pid = Uuid::parse_str(pid)
+            .map_err(|_| AppError::BadRequest("Invalid parent_id UUID".to_string()))?;
+        Some(FilterCondition::Rule {
+            field: "parent_id".into(),
+            operator: ComparisonOperator::Eq,
+            value: Some(json!(pid.to_string())),
         })
+    } else {
+        Some(FilterCondition::Rule {
+            field: "parent_id".into(),
+            operator: ComparisonOperator::IsNull,
+            value: None,
+        })
+    };
+
+    let collection = "alcedocore_file_folders".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let result = engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema),
+                name: collection.clone(),
+            },
+            ListRequest {
+                fields: folder_fields(),
+                filter,
+                sort: vec![SortField {
+                    field: "name".into(),
+                    order: "asc".into(),
+                }],
+                limit: UNBOUNDED_LIMIT,
+                ..Default::default()
+            },
+        )
+        .await?;
+
+    let data: Vec<serde_json::Value> = result
+        .items
+        .iter()
+        .map(|row| folder_json(row))
         .collect();
 
     Ok(Json(json!({ "data": data })))
 }
 
+fn folder_fields() -> Vec<String> {
+    vec![
+        "id".into(),
+        "name".into(),
+        "parent_id".into(),
+        "created_by".into(),
+        "created_at".into(),
+        "updated_at".into(),
+    ]
+}
+
+fn folder_json(row: &serde_json::Value) -> serde_json::Value {
+    let get = |key: &str| row.get(key).cloned().unwrap_or(serde_json::Value::Null);
+    json!({
+        "id": get("id"),
+        "name": get("name"),
+        "parent_id": get("parent_id"),
+        "created_by": get("created_by"),
+        "created_at": get("created_at"),
+        "updated_at": get("updated_at"),
+    })
+}
+
 pub async fn get_folder(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let pool = state.db_for_headers(&headers).await?;
+    let folders_collection = "alcedocore_file_folders".to_string();
+    let engine = ItemsService::for_global(&state.core, &folders_collection);
 
-    let folder = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, Option<Uuid>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "SELECT id, name, parent_id, created_by, created_at, updated_at FROM file_folders WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(db_pool)
-    .await
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Failed to query folder: {}", e),
-    })?
-    .ok_or_else(|| AppError::NotFound("Folder not found".to_string()))?;
+    let folder = engine
+        .read_one_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema.clone()),
+                name: folders_collection.clone(),
+            },
+            OneRequest {
+                item_id: id.to_string(),
+                fields: folder_fields(),
+                ..Default::default()
+            },
+        )
+        .await?
+        .ok_or_else(|| AppError::NotFound("Folder not found".to_string()))?;
 
-    let path = build_folder_path(db_pool, id).await?;
+    let path = build_folder_path(&pool, id).await?;
 
-    let subfolder_count =
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM file_folders WHERE parent_id = $1")
-            .bind(id)
-            .fetch_one(db_pool)
-            .await
-            .unwrap_or(0);
+    // limit 0 discards rows; the engine still runs the COUNT, so result.total is the count.
+    let subfolder_result = engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema.clone()),
+                name: folders_collection.clone(),
+            },
+            ListRequest {
+                fields: vec!["id".into()],
+                filter: Some(FilterCondition::Rule {
+                    field: "parent_id".into(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(json!(id.to_string())),
+                }),
+                limit: 0,
+                ..Default::default()
+            },
+        )
+        .await?;
+    let subfolder_count = subfolder_result.total;
 
-    let file_count =
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM file_metadata WHERE folder_id = $1")
-            .bind(id)
-            .fetch_one(db_pool)
-            .await
-            .unwrap_or(0);
+    let files_collection = "alcedocore_file_metadata".to_string();
+    let files_engine = ItemsService::for_global(&state.core, &files_collection);
+    let file_result = files_engine
+        .read_list_for_table(
+            &pool,
+            TableRef {
+                schema: Some(schema),
+                name: files_collection.clone(),
+            },
+            ListRequest {
+                fields: vec!["id".into()],
+                filter: Some(FilterCondition::Rule {
+                    field: "folder_id".into(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(json!(id.to_string())),
+                }),
+                limit: 0,
+                ..Default::default()
+            },
+        )
+        .await?;
+    let file_count = file_result.total;
 
-    Ok(Json(json!({
-        "id": folder.0,
-        "name": folder.1,
-        "parent_id": folder.2,
-        "created_by": folder.3,
-        "created_at": folder.4,
-        "updated_at": folder.5,
-        "path": path,
-        "subfolder_count": subfolder_count,
-        "file_count": file_count,
-    })))
+    let mut body = folder_json(&folder);
+    body["path"] = json!(path);
+    body["subfolder_count"] = json!(subfolder_count);
+    body["file_count"] = json!(file_count);
+
+    Ok(Json(body))
 }
 
 pub async fn update_folder(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateFolderBody>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     let current = sqlx::query_as::<_, (String, Option<Uuid>)>(
-        "SELECT name, parent_id FROM file_folders WHERE id = $1",
+        "SELECT name, parent_id FROM alcedocore_file_folders WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(db_pool)
@@ -1012,7 +1213,7 @@ pub async fn update_folder(
         validate_no_circular_ref(db_pool, id, new_parent_id).await?;
 
         let sibling_conflict = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM file_folders WHERE name = $1 AND parent_id IS NOT DISTINCT FROM $2 AND id != $3)",
+            "SELECT EXISTS(SELECT 1 FROM alcedocore_file_folders WHERE name = $1 AND parent_id IS NOT DISTINCT FROM $2 AND id != $3)",
         )
         .bind(new_name)
         .bind(new_parent_id)
@@ -1033,7 +1234,7 @@ pub async fn update_folder(
 
     if body.name.is_some() && body.name.as_deref() != Some(&old_name) {
         let sibling_conflict = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM file_folders WHERE name = $1 AND parent_id IS NOT DISTINCT FROM $2 AND id != $3)",
+            "SELECT EXISTS(SELECT 1 FROM alcedocore_file_folders WHERE name = $1 AND parent_id IS NOT DISTINCT FROM $2 AND id != $3)",
         )
         .bind(new_name)
         .bind(new_parent_id)
@@ -1052,17 +1253,56 @@ pub async fn update_folder(
         }
     }
 
-    sqlx::query(
-        "UPDATE file_folders SET name = $1, parent_id = $2, updated_at = NOW() WHERE id = $3",
+    let schema = state.schema_for_headers(&headers).await?;
+    let collection = "alcedocore_file_folders".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema.clone()),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let mut folder_map = serde_json::Map::new();
+    folder_map.insert("name".to_string(), serde_json::json!(new_name));
+    // None means no new parent was supplied (absent or explicit null), so the
+    // current parent is kept; NULL is only written when already at root.
+    match new_parent_id {
+        Some(pid) => {
+            folder_map.insert("parent_id".to_string(), serde_json::json!(pid.to_string()));
+        }
+        None => {
+            folder_map.insert("parent_id".to_string(), serde_json::Value::Null);
+        }
+    }
+    match execute_update_one_for_table(
+        db_pool,
+        &shape,
+        &serde_json::json!(id.to_string()),
+        &folder_map,
     )
-    .bind(new_name)
-    .bind(new_parent_id)
-    .bind(id)
-    .execute(db_pool)
     .await
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Failed to update folder: {}", e),
-    })?;
+    {
+        Ok(_) => {},
+        Err(AppError::NotFound(_)) => {
+            return Err(AppError::NotFound("Folder not found".to_string()));
+        }
+        Err(e) => return Err(e),
+    }
+
+    let files_collection = "alcedocore_file_metadata".to_string();
+    let files_engine = ItemsService::for_global(&state.core, &files_collection);
+    let files_shape = files_engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: files_collection.clone(),
+            },
+            &[],
+        )
+        .await?;
 
     let new_path = build_folder_path(db_pool, id).await?;
 
@@ -1071,7 +1311,7 @@ pub async fn update_folder(
         let mut queue = vec![id];
         while let Some(fid) = queue.pop() {
             let children: Vec<Uuid> =
-                sqlx::query_scalar("SELECT id FROM file_folders WHERE parent_id = $1")
+                sqlx::query_scalar("SELECT id FROM alcedocore_file_folders WHERE parent_id = $1")
                     .bind(fid)
                     .fetch_all(db_pool)
                     .await
@@ -1089,7 +1329,7 @@ pub async fn update_folder(
             let folder_path = build_folder_path(db_pool, fid).await?;
 
             let files: Vec<(Uuid, String)> =
-                sqlx::query_as("SELECT id, filename FROM file_metadata WHERE folder_id = $1")
+                sqlx::query_as("SELECT id, filename FROM alcedocore_file_metadata WHERE folder_id = $1")
                     .bind(fid)
                     .fetch_all(db_pool)
                     .await
@@ -1101,7 +1341,7 @@ pub async fn update_folder(
                 let new_storage_path = format!("{}/{}", folder_path, file_name);
 
                 let old_storage_path: String =
-                    sqlx::query_scalar("SELECT storage_path FROM file_metadata WHERE id = $1")
+                    sqlx::query_scalar("SELECT storage_path FROM alcedocore_file_metadata WHERE id = $1")
                         .bind(file_id)
                         .fetch_optional(db_pool)
                         .await
@@ -1119,22 +1359,24 @@ pub async fn update_folder(
                         .await;
                 }
 
-                sqlx::query(
-                    "UPDATE file_metadata SET storage_path = $1, updated_at = NOW() WHERE id = $2",
+                let mut file_map = serde_json::Map::new();
+                file_map.insert(
+                    "storage_path".to_string(),
+                    serde_json::json!(new_storage_path),
+                );
+                execute_update_one_for_table(
+                    db_pool,
+                    &files_shape,
+                    &serde_json::json!(file_id.to_string()),
+                    &file_map,
                 )
-                .bind(&new_storage_path)
-                .bind(file_id)
-                .execute(db_pool)
-                .await
-                .map_err(|e| AppError::DatabaseError {
-                    details: format!("Failed to update file storage_path: {}", e),
-                })?;
+                .await?;
             }
         }
     }
 
     let updated = sqlx::query_as::<_, (Uuid, String, Option<Uuid>, Option<Uuid>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "SELECT id, name, parent_id, created_by, created_at, updated_at FROM file_folders WHERE id = $1",
+        "SELECT id, name, parent_id, created_by, created_at, updated_at FROM alcedocore_file_folders WHERE id = $1",
     )
     .bind(id)
     .fetch_one(db_pool)
@@ -1156,14 +1398,15 @@ pub async fn update_folder(
 
 pub async fn delete_folder(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<DeleteFolderQuery>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
     let recursive = params.recursive.unwrap_or(false);
 
     let folder_exists =
-        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM file_folders WHERE id = $1)")
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM alcedocore_file_folders WHERE id = $1)")
             .bind(id)
             .fetch_one(db_pool)
             .await
@@ -1179,7 +1422,7 @@ pub async fn delete_folder(
     let mut queue = vec![id];
     while let Some(fid) = queue.pop() {
         let children: Vec<Uuid> =
-            sqlx::query_scalar("SELECT id FROM file_folders WHERE parent_id = $1")
+            sqlx::query_scalar("SELECT id FROM alcedocore_file_folders WHERE parent_id = $1")
                 .bind(fid)
                 .fetch_all(db_pool)
                 .await
@@ -1194,7 +1437,7 @@ pub async fn delete_folder(
     }
 
     let file_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM file_metadata WHERE folder_id = ANY($1)")
+        sqlx::query_scalar("SELECT COUNT(*) FROM alcedocore_file_metadata WHERE folder_id = ANY($1)")
             .bind(&all_folder_ids)
             .fetch_one(db_pool)
             .await
@@ -1207,10 +1450,34 @@ pub async fn delete_folder(
         )));
     }
 
+    let schema = state.schema_for_headers(&headers).await?;
+    let folders_collection = "alcedocore_file_folders".to_string();
+    let folders_engine = ItemsService::for_global(&state.core, &folders_collection);
+    let folders_shape = folders_engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema.clone()),
+                name: folders_collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let files_collection = "alcedocore_file_metadata".to_string();
+    let files_engine = ItemsService::for_global(&state.core, &files_collection);
+    let files_shape = files_engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: files_collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+
     if recursive {
         for &fid in &all_folder_ids {
             let files: Vec<(Uuid, String)> =
-                sqlx::query_as("SELECT id, storage_path FROM file_metadata WHERE folder_id = $1")
+                sqlx::query_as("SELECT id, storage_path FROM alcedocore_file_metadata WHERE folder_id = $1")
                     .bind(fid)
                     .fetch_all(db_pool)
                     .await
@@ -1220,32 +1487,28 @@ pub async fn delete_folder(
 
             for (file_id, storage_path) in files {
                 let _ = state.file_storage.delete(&storage_path).await;
-                let _ = sqlx::query("DELETE FROM file_metadata WHERE id = $1")
-                    .bind(file_id)
-                    .execute(db_pool)
-                    .await;
+                let _ = execute_delete_for_table(
+                    db_pool,
+                    &files_shape,
+                    vec![serde_json::json!(file_id.to_string())],
+                )
+                .await;
             }
         }
 
         for &fid in all_folder_ids.iter().rev() {
-            sqlx::query("DELETE FROM file_folders WHERE id = $1")
-                .bind(fid)
-                .execute(db_pool)
-                .await
-                .map_err(|e| AppError::DatabaseError {
-                    details: format!("Failed to delete folder: {}", e),
-                })?;
+            execute_delete_for_table(
+                db_pool,
+                &folders_shape,
+                vec![serde_json::json!(fid.to_string())],
+            )
+            .await?;
         }
     }
 
     if !recursive {
-        sqlx::query("DELETE FROM file_folders WHERE id = $1")
-            .bind(id)
-            .execute(db_pool)
-            .await
-            .map_err(|e| AppError::DatabaseError {
-                details: format!("Failed to delete folder: {}", e),
-            })?;
+        execute_delete_for_table(db_pool, &folders_shape, vec![serde_json::json!(id.to_string())])
+            .await?;
     }
 
     Ok(StatusCode::NO_CONTENT)

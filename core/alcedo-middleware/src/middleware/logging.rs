@@ -34,7 +34,14 @@ pub fn spawn_log_writer(pool: Pool) -> LoggingChannel {
             };
 
             if let Err(e) = RequestLog::insert(&pool, &log).await {
-                tracing::warn!(request_id = %entry.request_id, "Failed to insert request log (slug likely missing): {}", e);
+                if e.is_missing_relation() {
+                    tracing::debug!(
+                        request_id = %entry.request_id,
+                        "[LOG_WRITER] Skipped request log: app log table does not exist"
+                    );
+                } else {
+                    tracing::warn!(request_id = %entry.request_id, "Failed to insert request log (slug likely missing): {}", e);
+                }
             } else {
                 tracing::debug!("[LOG_WRITER] Inserted log for {}", entry.plugin_slug);
             }

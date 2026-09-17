@@ -6,9 +6,10 @@ const API = 'http://localhost:8080';
 const COMPOSE_DIR = '/root/.local/share/opencode/worktree/06feed497ddaf8a4b83d79cd50dad2b3ba1f9b21/happy-falcon';
 
 function psql(sql: string): string {
+  const flat = `SET search_path TO default010v1, public; ${sql}`.replace(/\n\s*/g, ' ').trim();
   return execSync(
     `docker compose exec -T postgres psql -U postgres -d plugin_core`,
-    { cwd: COMPOSE_DIR, encoding: 'utf-8', timeout: 10000, input: sql.replace(/\n\s*/g, ' ').trim() },
+    { cwd: COMPOSE_DIR, encoding: 'utf-8', timeout: 10000, input: flat },
   );
 }
 
@@ -39,12 +40,12 @@ async function api(method: string, path: string, body?: any, headers?: Record<st
 function createPlugin(slug: string, scopes: string[]) {
   const scopesJson = JSON.stringify(scopes);
   psql(`
-    INSERT INTO plugins (slug, image, plugin_type, system_plugin, enabled, env, resources, endpoints, documentation, settings_schema, settings, tags, granted_scopes)
-    VALUES ('${slug}', 'plugin-test:latest', 'dynamic', false, true, '{}', '{}', '[]', '[]', '{}', '{}', '[]', '${scopesJson}')
+    INSERT INTO alcedo_plugins (slug, image, plugin_type, system_plugin, enabled, env, resources, endpoints, documentation, settings_schema, settings, tags, granted_scopes, registry_id)
+    VALUES ('${slug}', 'plugin-test:latest', 'dynamic', false, true, '{}', '{}', '[]', '[]', '{}', '{}', '[]', '${scopesJson}', (SELECT id FROM alcedo_registries ORDER BY id LIMIT 1))
     ON CONFLICT (slug) DO UPDATE SET granted_scopes = '${scopesJson}'
   `);
   psql(`
-    INSERT INTO plugin_versions (slug, version, container_id, status, is_active, public_synced, pages_synced)
+    INSERT INTO alcedo_plugin_versions (slug, version, deployment_id, status, is_active, public_synced, pages_synced)
     VALUES ('${slug}', '1.0.0', 'test-container', 'running', true, false, false)
     ON CONFLICT (slug, version) DO NOTHING
   `);

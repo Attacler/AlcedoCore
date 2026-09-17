@@ -4,7 +4,7 @@ use file_storage_s3::S3FileStorage;
 use pcl::api;
 use pcl::config::AppConfig;
 use pcl::container::PluginPlatform;
-use pcl::db::{core_migrations::CoreMigrationRunner, Pool};
+use pcl::db::Pool;
 use pcl::error::AppError;
 use pcl::events::{
     spawn_cache_invalidator, spawn_collection_log_writer, spawn_event_forwarder,
@@ -15,13 +15,10 @@ use pcl::middleware::host_calls::spawn_host_call_writer;
 use pcl::middleware::logging::spawn_log_writer;
 use pcl::plugins::health::{AppState, CoreState};
 use pcl::plugins::inspector::DatabaseSchema;
-use pcl::providers::plugin_container::PluginContainerProviderImpl;
 use pcl::providers::registries::RegistriesProviderImpl;
-use pcl::providers::{PluginContainerProvider, RegistriesProvider};
-use pcl::services::file_sync::{FileSyncService, FileSyncServiceImpl};
-use platform_docker::docker_service::{DockerService, DockerServiceImpl};
+use pcl::providers::RegistriesProvider;
+use platform_docker::client::DockerClient;
 use platform_docker::platform::DockerPlatform;
-use platform_docker::runtime::DockerRuntime;
 use platform_docker::swarm::detect_swarm;
 use platform_docker::{init_docker, DOCKER};
 use std::env;
@@ -58,7 +55,7 @@ async fn main() -> Result<(), AppError> {
     init_docker(&config.docker_socket)?;
 
     // Ensure plugin Docker network exists
-    DockerServiceImpl
+    DockerClient
         .create_network_if_missing(&config.plugin_network)
         .await?;
     tracing::info!("Ensured Docker network '{}' exists", config.plugin_network);
@@ -78,53 +75,21 @@ async fn main() -> Result<(), AppError> {
     tracing::info!("Database connection established");
     let db_pool: Option<Pool> = Some(pool);
 
-    // Run pending core migrations
+    // System migrations first: create the alcedo.* source tables that
+    // run_app_migrations discovers app×versions from.
     if let Some(ref pool) = db_pool {
-        match CoreMigrationRunner::new(pool.clone()).run_pending().await {
-            Ok(executed) if executed.is_empty() => {
-                tracing::info!("No pending core migrations to apply");
-            }
-            Ok(executed) => {
-                tracing::info!(
-                    "Applied {} core migration(s): {}",
-                    executed.len(),
-                    executed.join(", ")
-                );
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Core migration failed: {}. Startup continuing without migrations.",
-                    e
-                );
-            }
-        }
-    }
+        pcl::run_system_migrations(pool)
+            .await
+            .map_err(|e| AppError::Internal(format!("System migration failed: {}", e)))?;
+        tracing::info!("System migrations applied/verified");
 
-    // Run system migrations (sqlx_migrator: alcedo.* source tables).
-    // Runs AFTER CoreMigrationRunner, which owns the table shapes —
-    // m00001 skips DDL for tables that already exist.
-    if let Some(ref pool) = db_pool {
-        match pcl::run_system_migrations(pool).await {
-            Ok(()) => tracing::info!("System migrations applied/verified"),
-            Err(e) => tracing::error!(
-                "System migration failed: {}. Startup continuing without system migrations.",
-                e
-            ),
-        }
-    }
-
-    // Migrate old menu_sections setting to new menus table
-    if let Some(ref pool) = db_pool {
-        match pcl::db::queries::menus::migrate_from_old_settings(pool).await {
-            Ok(true) => tracing::info!("Migrated old menu_sections setting to new menus table"),
-            Ok(false) => {} // Nothing to migrate
-            Err(e) => tracing::warn!("Failed to migrate old menu settings: {}", e),
-        }
+        pcl::run_app_migrations(pool, config.clone()).await?;
+        tracing::info!("App migrations applied/verified");
     }
 
     // Bootstrap admin user if configured
     if let Some(ref pool) = db_pool {
-        let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users")
+        let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alcedo_users")
             .fetch_one(pool)
             .await
             .unwrap_or(0);
@@ -161,80 +126,6 @@ async fn main() -> Result<(), AppError> {
                 "[AUTH] Users exist in database (count={}), skipping admin bootstrap",
                 user_count
             );
-        }
-    }
-
-    // Seed public role
-    if let Some(ref pool) = db_pool {
-        let public_role_exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM roles WHERE name = 'public')")
-                .fetch_one(pool)
-                .await
-                .unwrap_or(false);
-
-        if !public_role_exists {
-            sqlx::query("INSERT INTO roles (name, description, is_system) VALUES ($1, $2, $3)")
-                .bind("public")
-                .bind("Default scopes for unauthenticated requests and role fallback")
-                .bind(true)
-                .execute(pool)
-                .await?;
-            tracing::info!("[RBAC] Seeded public role with 0 scopes (empty fallback)");
-        }
-    }
-
-    // Seed default roles
-    if let Some(ref pool) = db_pool {
-        let admin_role_exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM roles WHERE name = 'admin')")
-                .fetch_one(pool)
-                .await
-                .unwrap_or(false);
-
-        if !admin_role_exists {
-            let admin_role: pcl::api::roles::Role = sqlx::query_as(
-                "INSERT INTO roles (name, description, is_system) VALUES ($1, $2, $3) RETURNING id, name, description, is_system, created_at, updated_at"
-            )
-            .bind("admin")
-            .bind("Full system access")
-            .bind(true)
-            .fetch_one(pool)
-            .await?;
-
-            let all_permissions = vec![
-                "users.all",
-                "roles.all",
-                "plugins.all",
-                "collections.all",
-                "settings.read.all",
-                "settings.write.all",
-                "kv.all",
-                "policies.all",
-            ];
-            for perm in &all_permissions {
-                sqlx::query("INSERT INTO role_scopes (role_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING")
-                    .bind(admin_role.id)
-                    .bind(perm)
-                    .execute(pool)
-                    .await?;
-            }
-            tracing::info!(
-                "[RBAC] Seeded admin role with {} permissions",
-                all_permissions.len()
-            );
-
-            if let (Some(ref admin_email), _) = (&config.admin_email, &config.admin_password) {
-                if let Ok(Some(user)) =
-                    pcl::services::auth::find_user_by_email(pool, admin_email).await
-                {
-                    sqlx::query("INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
-                        .bind(user.id)
-                        .bind(admin_role.id)
-                        .execute(pool)
-                        .await?;
-                    tracing::info!("[RBAC] Assigned admin role to user: {}", admin_email);
-                }
-            }
         }
     }
 
@@ -293,31 +184,16 @@ async fn main() -> Result<(), AppError> {
         Arc::new(RegistriesProviderImpl::new(pool.clone())) as Arc<dyn RegistriesProvider>
     });
 
-    let runtime: Arc<dyn pcl::container::ContainerRuntime> = Arc::new(DockerRuntime::new());
     let docker_platform: Arc<dyn PluginPlatform> = Arc::new(DockerPlatform::new(
-        db_pool.clone(),
-        runtime.clone(),
+        DockerClient,
         Arc::new(config.clone()),
     ));
-    let docker_service: Arc<dyn DockerService> = Arc::new(DockerServiceImpl);
-    let file_sync_service =
-        Arc::new(FileSyncServiceImpl::new(runtime.clone())) as Arc<dyn FileSyncService>;
-    let plugin_containers_provider = db_pool.as_ref().map(|pool| {
-        Arc::new(PluginContainerProviderImpl::new(
-            pool.clone(),
-            runtime.clone(),
-            Arc::new(config.clone()),
-            file_sync_service.clone(),
-        )) as Arc<dyn PluginContainerProvider>
-    });
 
     // Deploy system plugins from remote manifest if configured
     if let Some(url) = &config.system_plugins_url {
-        if let (Some(ref pool), Some(ref provider)) =
-            (db_pool.as_ref(), plugin_containers_provider.as_ref())
-        {
+        if let Some(ref pool) = db_pool.as_ref() {
             let deployer = pcl::plugins::system_deployer::SystemPluginDeployer::new(url.clone());
-            match deployer.deploy_all(pool, provider).await {
+            match deployer.deploy_all(pool, &docker_platform).await {
                 Ok(_) => {
                     tracing::info!("[SYSTEM_DEPLOYER] System plugin deployment completed");
                 }
@@ -331,28 +207,15 @@ async fn main() -> Result<(), AppError> {
         }
     }
 
-    let make_redis_conn = || async {
-        let client = redis::Client::open(config.redis_url.clone())
-            .map_err(|e| AppError::Internal(format!("Invalid Redis URL: {}", e)))?;
-        redis::aio::ConnectionManager::new(client)
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to connect to Redis: {}", e)))
-    };
-
-    // Main Redis connection pool
-    use pcl::services::redis_session::RedisPoolManager;
-    let redis_connection: Option<pcl::services::redis_session::RedisPool> =
+    let redis_client: Option<Arc<pcl::services::redis_client::RedisClient>> =
         if !config.redis_url.is_empty() {
-            match deadpool::managed::Pool::builder(RedisPoolManager::default())
-                .max_size(4)
-                .build()
-            {
-                Ok(pool) => {
-                    tracing::info!("Redis connection pool established (max_size=4)");
-                    Some(pool)
+            match pcl::services::redis_client::RedisClient::connect(&config.redis_url).await {
+                Ok(client) => {
+                    tracing::info!("Redis connection pool established");
+                    Some(Arc::new(client))
                 }
                 Err(e) => {
-                    tracing::error!("Failed to create Redis pool: {}", e);
+                    tracing::error!("Failed to create Redis client: {}", e);
                     None
                 }
             }
@@ -361,40 +224,15 @@ async fn main() -> Result<(), AppError> {
             None
         };
 
-    let rate_limit_redis: Option<Arc<tokio::sync::Mutex<redis::aio::ConnectionManager>>> =
-        if redis_connection.is_some() {
-            match make_redis_conn().await {
-                Ok(conn) => {
-                    tracing::info!("Rate limiter Redis connection established");
-                    Some(Arc::new(tokio::sync::Mutex::new(conn)))
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to connect rate limiter Redis: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-    let kv_redis: Option<Arc<tokio::sync::Mutex<redis::aio::ConnectionManager>>> =
-        if redis_connection.is_some() {
-            match make_redis_conn().await {
-                Ok(conn) => {
-                    tracing::info!("KV Redis connection established");
-                    Some(Arc::new(tokio::sync::Mutex::new(conn)))
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to connect KV Redis: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+    if let Some(client) = redis_client.as_ref() {
+        client
+            .ping()
+            .await
+            .map_err(|e| AppError::Internal(format!("Redis unreachable: {}", e)))?;
+    }
 
     let health_map = Arc::new(pcl::plugins::health::PluginHealthMap::new(
-        redis_connection.clone(),
+        redis_client.clone(),
     ));
 
     let logging_channel = db_pool.as_ref().map(|pool| spawn_log_writer(pool.clone()));
@@ -414,40 +252,28 @@ async fn main() -> Result<(), AppError> {
     }
 
     // Ensure an overlay network exists for plugin services
-    docker_service
-        .ensure_overlay_network(
-            &format!("{}-overlay", config.plugin_network),
-            Some(&std::env::var("HOSTNAME").unwrap_or_default()),
-        )
-        .await?;
+    platform_docker::services::ensure_overlay_network(
+        &DOCKER,
+        &format!("{}-overlay", config.plugin_network),
+        Some(&std::env::var("HOSTNAME").unwrap_or_default()),
+    )
+    .await?;
 
-    let kv_store: Arc<KvStore> = if let Some(ref redis_conn) = kv_redis {
-        let conn: redis::aio::ConnectionManager = redis_conn.lock().await.clone();
-        Arc::new(KvStore::new(conn))
-    } else if let Some(ref pool) = redis_connection {
-        if let Ok(conn) = pool.get().await {
-            Arc::new(KvStore::new(conn.clone()))
-        } else {
-            tracing::warn!(
-                "Failed to get Redis connection from pool — KV store will return errors"
-            );
+    let kv_store: Arc<KvStore> = match redis_client.as_ref() {
+        Some(client) => Arc::new(KvStore::new(client.clone())),
+        None => {
+            tracing::warn!("No Redis connection available — KV store will return errors");
             Arc::new(KvStore::new_disabled())
         }
-    } else {
-        tracing::warn!("No Redis connection available — KV store will return errors");
-        Arc::new(KvStore::new_disabled())
     };
 
     // Initialize session store in Redis
     use tower_sessions::cookie::SameSite;
-    let session_redis = redis::Client::open(config.redis_url.clone())
-        .map_err(|e| AppError::Internal(format!("Invalid Redis URL for session store: {}", e)))?
-        .get_connection_manager()
-        .await
-        .map_err(|e| {
-            AppError::Internal(format!("Failed to connect Redis for session store: {}", e))
-        })?;
-    let session_store = pcl::services::redis_session::RedisSessionStore::new(session_redis);
+    let session_store = pcl::services::redis_session::RedisSessionStore::new(
+        redis_client
+            .clone()
+            .ok_or_else(|| AppError::Internal("Redis is required for sessions".to_string()))?,
+    );
     let session_layer = tower_sessions::SessionManagerLayer::new(session_store.clone())
         .with_name("alcedo_session")
         .with_same_site(SameSite::Strict)
@@ -488,13 +314,11 @@ async fn main() -> Result<(), AppError> {
         health_map,
         db_pool,
         kv_store,
+        redis: redis_client.clone(),
         plugin_network: Some(config.plugin_network),
         static_registry: Some(static_reg),
         registries: registries_provider,
         platform: Some(docker_platform),
-        redis_connection,
-        rate_limit_redis,
-        kv_redis,
         logging_channel,
         host_call_channel,
         event_bus,
@@ -546,7 +370,7 @@ async fn main() -> Result<(), AppError> {
     // Spawn event forwarder if database is configured
     if let Some(ref pool) = state.db_pool {
         let rx = state.event_bus.subscribe();
-        let redis = state.redis_connection.clone();
+        let redis = state.redis.clone();
         spawn_event_forwarder(
             pool.clone(),
             rx,
@@ -557,7 +381,7 @@ async fn main() -> Result<(), AppError> {
     }
 
     // Spawn cache invalidator
-    spawn_cache_invalidator(state.event_bus.clone(), state.redis_connection.clone());
+    spawn_cache_invalidator(state.event_bus.clone(), state.redis.clone());
     tracing::info!("Cache invalidator spawned");
 
     let app = api::make_router(state.clone(), session_layer);

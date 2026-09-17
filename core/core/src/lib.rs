@@ -6,7 +6,7 @@
 //! | --------------------- | -------------------------------------------------------------------- |
 //! | `alcedo-common`       | `AppError`, `AuthLevel`, `AppConfig`, delegate macros, event bus      |
 //! |                       | channel types, `SystemEvent`                                          |
-//! | `alcedo-container`    | `ContainerRuntime`, `PluginPlatform`, container info types           |
+//! | `alcedo-container`    | `PluginPlatform`, deployment info types                               |
 //! | `alcedo-infra`        | Redis session store, KV store, cache, encryption                     |
 //! | `alcedo-db`           | SQL/data layer, queries, permissions, migrations, resilience         |
 //! | `alcedo-events`       | `EventBus`, background writers, event forwarder                      |
@@ -38,9 +38,11 @@ pub mod plugins {
 }
 
 /// sqlx_migrator-based system migrations (`alcedo.*` source tables).
-/// Call after `CoreMigrationRunner` at startup — the operation skips DDL
-/// for tables the SQL runner already created.
+/// Call before `run_app_migrations` at startup — the operation creates the
+/// source tables the app-migration discovery reads.
 pub use alcedo_db::system_migrations::run_system_migrations;
+pub use alcedo_db::app_migrations::{run_app_migrations, run_app_migrations_with_dir};
+pub use alcedo_db::global_migrations::{run_global_core_migrations, run_global_core_migrations_with_dir};
 
 pub mod services {
     pub use alcedo_services::services::*;

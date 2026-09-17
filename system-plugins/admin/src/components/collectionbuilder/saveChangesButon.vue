@@ -96,8 +96,16 @@ async function handleSave() {
                     default_filter: null,
                 };
                 if (sectionType === "field_group") {
-                    sectionPayload.display_fields =
-                        section.display_fields || [];
+                    const tempToName = new Map<string, string>();
+                    for (const f of fields.value) {
+                        if ((f as any)._tempName && f.name)
+                            tempToName.set((f as any)._tempName, f.name);
+                    }
+                    sectionPayload.display_fields = (
+                        section.display_fields || []
+                    )
+                        .map((n: string) => tempToName.get(n) || n)
+                        .filter((n: string) => !n.startsWith("__new_"));
                     sectionPayload.relation_field = null;
                     sectionPayload.view_type = null;
                     sectionPayload.item_limit = null;

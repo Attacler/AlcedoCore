@@ -12,14 +12,13 @@ use uuid::Uuid;
 use crate::db::queries::Plugin;
 use crate::error::AppError;
 use crate::plugins::health::AppState;
+use crate::proxy::{lookup_install_by_request_id, PluginRequestIdentity};
 use crate::services::scopes::{check_entity_scope, scope_matches, ScopeSource};
 
 const PUBLIC_PATHS: &[&str] = &[
     "/health",
     "/api/auth/login",
     "/api/auth/logout",
-    "/test",
-    "/test-state",
 ];
 
 fn request_path(req: &Request<Body>) -> String {
@@ -184,16 +183,52 @@ pub async fn auth_middleware(
     // Check developer API key (Authorization: Bearer <key>) — bypasses session auth.
     // Must run before the public-path early returns so the x-alcedo-root marker is
     // set for public-exempt paths (e.g. /api/plugins/{slug}/pages) too.
+    //
+    // Developer API keys are version-scoped: a key is root for requests that
+    // resolve to any app attached to the version it was issued for. The request
+    // context gives us an app×version id (`alcedo_apps_versions.id`); we map it
+    // to its underlying version (`alcedo_versions.id`) before matching keys.
+    // A key presented without a resolved app version — or against a different
+    // version — is rejected and never falls through to session auth.
     if let Some(auth_header) = request
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok())
     {
         if let Some(token) = auth_header.strip_prefix("Bearer ") {
+            let app_version_id = request
+                .extensions()
+                .get::<alcedo_common::context::RequestContext>()
+                .and_then(|ctx| ctx.app_version_id);
+
+            let Some(app_version_id) = app_version_id else {
+                return Err(AppError::Unauthorized(
+                    "Developer API key requires a resolved app version".to_string(),
+                ));
+            };
+
             if let Some(ref db_pool) = state.db_pool {
+                let version_id: Option<i32> = sqlx::query_scalar(
+                    "SELECT version_id FROM alcedo.alcedo_apps_versions WHERE id = $1",
+                )
+                .bind(app_version_id)
+                .fetch_optional(db_pool)
+                .await
+                .unwrap_or(None);
+
+                let Some(version_id) = version_id else {
+                    return Err(AppError::Unauthorized(
+                        "Developer API key requires a resolved version".to_string(),
+                    ));
+                };
+
                 let prefix = &token[..token.len().min(10)];
-                if let Ok(keys) =
-                    crate::db::queries::DeveloperApiKey::find_by_prefix(db_pool, prefix).await
+                if let Ok(keys) = crate::db::queries::DeveloperApiKey::find_by_prefix_and_version(
+                    db_pool,
+                    prefix,
+                    version_id,
+                )
+                .await
                 {
                     for key in keys {
                         if let Ok(true) =
@@ -214,6 +249,11 @@ pub async fn auth_middleware(
                     }
                 }
             }
+
+            // A key was presented but did not match this version (or no DB).
+            return Err(AppError::Unauthorized(
+                "Developer API key is scoped to a different version".to_string(),
+            ));
         }
     }
 
@@ -247,9 +287,11 @@ pub async fn auth_middleware(
     };
 
     // Set auth level for session-authenticated users (used by error sanitize middleware)
+    let mut is_global_admin = false;
     if let Some(uid) = user_id {
         if let Some(ref pool) = state.db_pool {
             if let Ok(Some(user)) = crate::services::auth::find_user_by_id(pool, uid).await {
+                is_global_admin = user.is_admin;
                 if user.is_admin {
                     request
                         .extensions_mut()
@@ -268,23 +310,24 @@ pub async fn auth_middleware(
         }
     }
 
-    // Resolve plugin slug from X-Request-ID for all /api/ requests (when there's
-    // no session user) so downstream permission checks can reuse it via the
-    // RequestIdentity extension instead of re-querying Redis per call.
-    let plugin_slug: Option<String> = if user_id.is_none() {
+    // Resolve the plugin install identity from X-Request-ID for all /api/
+    // requests (when there's no session user) so downstream permission checks
+    // can reuse the slug via the RequestIdentity extension and scope checks can
+    // use the install's app_version_id without depending on the context middleware.
+    let plugin_install: Option<PluginRequestIdentity> = if user_id.is_none() {
         if let Some(rid) = request
             .headers()
             .get("x-request-id")
             .and_then(|v| v.to_str().ok())
         {
-            // Backward compat: fall back to request-id-only resolution
-            crate::proxy::lookup_plugin_by_request_id(&state.redis_connection, rid).await
+            lookup_install_by_request_id(&state.redis, rid).await
         } else {
             None
         }
     } else {
         None
     };
+    let plugin_slug: Option<String> = plugin_install.as_ref().map(|i| i.slug.clone());
 
     request
         .extensions_mut()
@@ -293,47 +336,58 @@ pub async fn auth_middleware(
             plugin_slug: plugin_slug.clone(),
         });
 
+    // Scope gate for /api/* paths. Global admins (`is_admin` on the global
+    // users table) bypass scope checks entirely, consistent with
+    // `check_permission`. Non-admins resolve the pool from the request's app
+    // context (falling back to the default pool) so app-zone scopes resolve
+    // against the correct per-app-version schema.
     if let Some(perm) = required_permission(&path, &method) {
-        let pool = state
-            .db_pool
-            .as_ref()
-            .ok_or_else(|| AppError::Internal("Database not configured".to_string()))?;
+        if !is_global_admin {
+            let pool = state.db_for_headers(request.headers()).await?;
 
-        match user_id {
-            Some(uid) => {
-                if check_entity_scope(pool, ScopeSource::User { user_id: &uid }, perm)
-                    .await
-                    .is_err()
-                {
-                    check_entity_scope(pool, ScopeSource::Public, perm).await?;
+            match user_id {
+                Some(uid) => {
+                    if check_entity_scope(&pool, ScopeSource::User { user_id: &uid }, perm)
+                        .await
+                        .is_err()
+                    {
+                        check_entity_scope(&pool, ScopeSource::Public, perm).await?;
+                    }
                 }
-            }
-            None => {
-                let plugin_authorized = if let Some(ref slug) = plugin_slug {
-                    if let Ok(Some(plugin)) = Plugin::find_by_slug(pool, slug).await {
-                        let granted: Vec<String> =
-                            serde_json::from_value(plugin.granted_scopes).unwrap_or_default();
-                        granted.iter().any(|s| scope_matches(s, perm))
+                None => {
+                    let plugin_authorized = if let Some(ref slug) = plugin_slug {
+                        if let Ok(Some(plugin)) = Plugin::resolve_install_scoped(
+                            &pool,
+                            slug,
+                            plugin_install.as_ref().and_then(|i| i.app_version_id),
+                            plugin_install.as_ref().and_then(|i| i.version_id),
+                        )
+                        .await
+                        {
+                            let granted: Vec<String> =
+                                serde_json::from_value(plugin.granted_scopes).unwrap_or_default();
+                            granted.iter().any(|s| scope_matches(s, perm))
+                        } else {
+                            false
+                        }
                     } else {
                         false
-                    }
-                } else {
-                    false
-                };
+                    };
 
-                if plugin_authorized {
-                    request
-                        .extensions_mut()
-                        .insert(crate::error::AuthLevel::Plugin);
-                } else {
-                    request
-                        .extensions_mut()
-                        .insert(crate::error::AuthLevel::Public);
-                    check_entity_scope(pool, ScopeSource::Public, perm)
-                        .await
-                        .map_err(|_| {
-                            AppError::Unauthorized("Authentication required".to_string())
-                        })?;
+                    if plugin_authorized {
+                        request
+                            .extensions_mut()
+                            .insert(crate::error::AuthLevel::Plugin);
+                    } else {
+                        request
+                            .extensions_mut()
+                            .insert(crate::error::AuthLevel::Public);
+                        check_entity_scope(&pool, ScopeSource::Public, perm)
+                            .await
+                            .map_err(|_| {
+                                AppError::Unauthorized("Authentication required".to_string())
+                            })?;
+                    }
                 }
             }
         }

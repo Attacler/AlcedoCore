@@ -1,4 +1,4 @@
-use crate::{error::AppError, find_all_where_bind, find_by, find_by_two};
+use crate::{error::AppError, find_all_where_bind, find_by};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -46,59 +46,6 @@ pub struct PluginLogEntry {
 }
 
 impl RequestLog {
-    pub async fn find_by_plugin_slug(
-        db: &PgPool,
-        slug: &str,
-        limit: i64,
-        offset: i64,
-        method: Option<&str>,
-        status: Option<i32>,
-        date_from: Option<chrono::DateTime<chrono::Utc>>,
-        date_to: Option<chrono::DateTime<chrono::Utc>>,
-        path: Option<&str>,
-    ) -> Result<Vec<Self>, AppError> {
-        let mut query = String::from(
-            "SELECT id, request_id, plugin_slug, timestamp, method, path, status_code, duration_ms, client_ip, user_agent, source, request_body, request_headers, request_body_size, created_at
-             FROM request_logs WHERE plugin_slug = $1",
-        );
-        let mut param_idx = 2;
-
-        if method.is_some() {
-            query.push_str(&format!(" AND method = ${}", param_idx));
-            param_idx += 1;
-        }
-        if status.is_some() {
-            query.push_str(&format!(" AND status_code = ${}", param_idx));
-            param_idx += 1;
-        }
-        if date_from.is_some() {
-            query.push_str(&format!(" AND timestamp >= ${}", param_idx));
-            param_idx += 1;
-        }
-        if date_to.is_some() {
-            query.push_str(&format!(" AND timestamp <= ${}", param_idx));
-            param_idx += 1;
-        }
-        if path.is_some() {
-            query.push_str(&format!(" AND path = ${}", param_idx));
-            param_idx += 1;
-        }
-
-        query.push_str(&format!(" ORDER BY created_at DESC LIMIT ${} OFFSET ${}", param_idx, param_idx + 1));
-
-        let mut q = sqlx::query_as::<_, RequestLog>(&query);
-        q = q.bind(slug);
-        if let Some(m) = method { q = q.bind(m); }
-        if let Some(s) = status { q = q.bind(s); }
-        if let Some(d) = date_from { q = q.bind(d); }
-        if let Some(d) = date_to { q = q.bind(d); }
-        if let Some(p) = path { q = q.bind(p); }
-        q = q.bind(limit).bind(offset);
-
-        let rows = q.fetch_all(db).await?;
-        Ok(rows)
-    }
-
     pub async fn count_by_plugin_slug(
         db: &PgPool,
         slug: &str,
@@ -107,7 +54,8 @@ impl RequestLog {
         date_from: Option<chrono::DateTime<chrono::Utc>>,
         date_to: Option<chrono::DateTime<chrono::Utc>>,
     ) -> Result<i64, AppError> {
-        let mut query = String::from("SELECT COUNT(*) FROM request_logs WHERE plugin_slug = $1");
+        let mut query =
+            String::from("SELECT COUNT(*) FROM alcedocore_request_logs WHERE plugin_slug = $1");
         let mut param_idx = 2;
 
         if method.is_some() {
@@ -128,21 +76,29 @@ impl RequestLog {
 
         let mut q = sqlx::query_scalar::<_, i64>(&query);
         q = q.bind(slug);
-        if let Some(m) = method { q = q.bind(m); }
-        if let Some(s) = status { q = q.bind(s); }
-        if let Some(d) = date_from { q = q.bind(d); }
-        if let Some(d) = date_to { q = q.bind(d); }
+        if let Some(m) = method {
+            q = q.bind(m);
+        }
+        if let Some(s) = status {
+            q = q.bind(s);
+        }
+        if let Some(d) = date_from {
+            q = q.bind(d);
+        }
+        if let Some(d) = date_to {
+            q = q.bind(d);
+        }
 
         let count = q.fetch_one(db).await?;
         Ok(count)
     }
 
-    find_by!(find_by_request_id, "request_logs", "id, request_id, plugin_slug, timestamp, method, path, status_code, duration_ms, client_ip, user_agent, source, request_body, request_headers, request_body_size, created_at", "request_id");
-    find_by_two!(find_by_request_id_and_slug, "request_logs", "id, request_id, plugin_slug, timestamp, method, path, status_code, duration_ms, client_ip, user_agent, source, request_body, request_headers, request_body_size, created_at", "request_id", "plugin_slug");
+    find_by!(find_by_request_id, "alcedocore_request_logs", "id, request_id, plugin_slug, timestamp, method, path, status_code, duration_ms, client_ip, user_agent, source, request_body, request_headers, request_body_size, created_at", "request_id");
 
+    // Phase 5 deviation: background/internal log writer — runs with only a `Pool` (no `CoreState` for `TableShape` resolution), so row SQL stays bespoke.
     pub async fn insert(db: &PgPool, log: &RequestLog) -> Result<(), AppError> {
         sqlx::query(
-            "INSERT INTO request_logs (request_id, plugin_slug, timestamp, method, path, status_code, duration_ms, client_ip, user_agent, request_body, request_headers, request_body_size)
+            "INSERT INTO alcedocore_request_logs (request_id, plugin_slug, timestamp, method, path, status_code, duration_ms, client_ip, user_agent, request_body, request_headers, request_body_size)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(&log.request_id)
@@ -175,9 +131,10 @@ pub struct HostCallLog {
 }
 
 impl HostCallLog {
+    // Phase 5 deviation: background/internal log writer — runs with only a `Pool` (no `CoreState` for `TableShape` resolution), so row SQL stays bespoke.
     pub async fn insert(db: &PgPool, log: &HostCallLog) -> Result<(), AppError> {
         sqlx::query(
-            "INSERT INTO host_calls (parent_request_id, action_type, args_summary, result_summary, duration_ms)
+            "INSERT INTO alcedocore_host_calls (parent_request_id, action_type, args_summary, result_summary, duration_ms)
              VALUES ($1, $2, $3, $4, $5)"
         )
         .bind(&log.parent_request_id)
@@ -190,7 +147,13 @@ impl HostCallLog {
         Ok(())
     }
 
-    find_all_where_bind!(find_by_parent_request_id, "host_calls", "id, parent_request_id, action_type, args_summary, result_summary, duration_ms, created_at", "parent_request_id = $1", "created_at ASC");
+    find_all_where_bind!(
+        find_by_parent_request_id,
+        "alcedocore_host_calls",
+        "id, parent_request_id, action_type, args_summary, result_summary, duration_ms, created_at",
+        "parent_request_id = $1",
+        "created_at ASC"
+    );
 
     pub async fn find_by_slug_recent(
         db: &PgPool,
@@ -200,8 +163,8 @@ impl HostCallLog {
     ) -> Result<Vec<Self>, AppError> {
         let rows = sqlx::query_as::<_, HostCallLog>(
             "SELECT hc.id, hc.parent_request_id, hc.action_type, hc.args_summary, hc.result_summary, hc.duration_ms, hc.created_at
-             FROM host_calls hc
-             JOIN request_logs rl ON rl.request_id = hc.parent_request_id
+             FROM alcedocore_host_calls hc
+             JOIN alcedocore_request_logs rl ON rl.request_id = hc.parent_request_id
              WHERE rl.plugin_slug = $1
              AND hc.created_at >= $2 AND hc.created_at <= $3
              ORDER BY hc.created_at ASC"

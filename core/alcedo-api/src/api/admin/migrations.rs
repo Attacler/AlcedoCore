@@ -1,12 +1,14 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     Json,
 };
+use alcedo_common::context::ExtractContext;
 use std::sync::Arc;
 
 use crate::api::permission_check;
-use crate::db::plugin_migrations::{plugin_schema_name, PluginMigrationEngine};
+use crate::api::plugins::InstallOverride;
+use crate::db::plugin_migrations::{plugin_schema_name_for_scope, PluginMigrationEngine};
 use crate::db::queries::PluginVersion;
 use crate::db::schema::get_table_schemas;
 use crate::error::AppError;
@@ -16,12 +18,15 @@ pub async fn get_plugin_schema(
     headers: HeaderMap,
     Path(slug): Path<String>,
     State(state): State<Arc<PluginAppState>>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let db_pool = state.db()?;
 
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
-    let schema_name = plugin_schema_name(&slug);
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    let schema_name = plugin_schema_name_for_scope(&slug, plugin.app_version_id, plugin.version_id);
 
     let schema_exists: bool = sqlx::query_scalar(
         r#"SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)"#,
@@ -73,39 +78,103 @@ pub fn plugin_file_dir(slug: &str, version: &str, subdir: &str) -> Option<std::p
     None
 }
 
+/// Filesystem directory for admin-uploaded migrations belonging to a single
+/// install. Namespaced by install id so a plugin slug with several installs
+/// (global/version/app) cannot have one install's uploads shadow a sibling's.
+pub fn plugin_upload_migrations_dir(slug: &str, install_id: i64) -> std::path::PathBuf {
+    let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
+    std::path::Path::new(&plugins_dir)
+        .join("plugin-migrations")
+        .join(slug)
+        .join(format!("install-{}", install_id))
+}
+
+/// Resolve the migrations directory to read for a specific install.
+///
+/// Priority:
+/// 1. `{PLUGINS_DIR}/{slug}/{version}/migrations` (migrations extracted from the image)
+/// 2. `{PLUGINS_DIR}/{slug}/migrations` (local/extracted layout)
+/// 3. `{PLUGINS_DIR}/plugin-migrations/{slug}/install-{install_id}` (admin uploads,
+///    install-scoped)
+/// 4. `{PLUGINS_DIR}/plugin-migrations/{slug}` (legacy slug-shared upload dir,
+///    read-only backward compatibility)
+///
+/// Falls back to the (possibly absent) install-scoped dir so callers can
+/// distinguish "no migrations" via `exists()`.
+pub fn resolve_migrations_dir(
+    slug: &str,
+    install_id: i64,
+    version: Option<&str>,
+) -> std::path::PathBuf {
+    let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
+    let base = std::path::Path::new(&plugins_dir);
+
+    if let Some(ver) = version {
+        let path = base.join(slug).join(ver).join("migrations");
+        if path.exists() {
+            return path;
+        }
+    }
+    let path = base.join(slug).join("migrations");
+    if path.exists() {
+        return path;
+    }
+    let install_scoped = plugin_upload_migrations_dir(slug, install_id);
+    if install_scoped.exists() {
+        return install_scoped;
+    }
+    let legacy = base.join("plugin-migrations").join(slug);
+    if dir_has_sql_file(&legacy) {
+        return legacy;
+    }
+    install_scoped
+}
+
+/// True when `dir` exists and holds at least one top-level `.sql` file. Guards
+/// the legacy slug-shared fallback so a container directory created as the
+/// parent of install-scoped uploads is not mistaken for a migrations directory.
+fn dir_has_sql_file(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                    && entry
+                        .file_name()
+                        .to_string_lossy()
+                        .to_ascii_lowercase()
+                        .ends_with(".sql")
+            })
+        })
+        .unwrap_or(false)
+}
+
 pub async fn list_migrations(
     headers: HeaderMap,
     Path(slug): Path<String>,
     State(state): State<Arc<PluginAppState>>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<Vec<serde_json::Value>>, AppError> {
     let db_pool = state.db()?;
 
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
-    let version = PluginVersion::find_active(db_pool, &slug)
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    let version = PluginVersion::find_active_for_install(db_pool, plugin.id)
         .await?
         .map(|v| v.version);
-    let migrations_dir = match version {
-        Some(ref ver) => crate::api::admin::plugin_file_dir(&slug, ver, "migrations")
-            .unwrap_or_else(|| {
-                let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-                std::path::Path::new(&dir)
-                    .join("plugin-migrations")
-                    .join(&slug)
-            }),
-        None => {
-            let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-            std::path::Path::new(&dir)
-                .join("plugin-migrations")
-                .join(&slug)
-        }
-    };
+    let migrations_dir = resolve_migrations_dir(&slug, plugin.id, version.as_deref());
 
     if !migrations_dir.exists() {
         return Ok(Json(vec![]));
     }
 
-    let engine = PluginMigrationEngine::new(db_pool.clone(), migrations_dir, &slug);
+    let engine = PluginMigrationEngine::new_with_schema(
+        db_pool.clone(),
+        migrations_dir,
+        &slug,
+        plugin_schema_name_for_scope(&slug, plugin.app_version_id, plugin.version_id),
+    );
 
     let statuses = engine.get_migration_status().await?;
 
@@ -130,29 +199,20 @@ pub async fn list_migrations(
 }
 
 pub async fn run_migration(
+    headers: HeaderMap,
     Path(slug): Path<String>,
     State(state): State<Arc<PluginAppState>>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let db_pool = state.db()?;
 
-    let version = PluginVersion::find_active(db_pool, &slug)
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+    let version = PluginVersion::find_active_for_install(db_pool, plugin.id)
         .await?
         .map(|v| v.version);
-    let migrations_dir = match version {
-        Some(ref ver) => crate::api::admin::plugin_file_dir(&slug, ver, "migrations")
-            .unwrap_or_else(|| {
-                let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-                std::path::Path::new(&dir)
-                    .join("plugin-migrations")
-                    .join(&slug)
-            }),
-        None => {
-            let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-            std::path::Path::new(&dir)
-                .join("plugin-migrations")
-                .join(&slug)
-        }
-    };
+    let migrations_dir = resolve_migrations_dir(&slug, plugin.id, version.as_deref());
 
     if !migrations_dir.exists() {
         return Err(AppError::NotFound(format!(
@@ -161,12 +221,22 @@ pub async fn run_migration(
         )));
     }
 
-    let engine = PluginMigrationEngine::new(db_pool.clone(), migrations_dir, &slug);
+    let engine = PluginMigrationEngine::new_with_schema(
+        db_pool.clone(),
+        migrations_dir,
+        &slug,
+        plugin_schema_name_for_scope(&slug, plugin.app_version_id, plugin.version_id),
+    );
 
     match engine.run_migrations().await {
         Ok(ran) => {
-            PluginVersion::update_status(db_pool, &slug, &version.unwrap_or_default(), "running")
-                .await?;
+            PluginVersion::update_status(
+                db_pool,
+                plugin.id,
+                &version.unwrap_or_default(),
+                "running",
+            )
+            .await?;
             Ok(Json(serde_json::json!({
                 "success": ran.errors.is_empty(),
                 "applied": ran.applied,
@@ -186,32 +256,23 @@ pub async fn run_migration(
 }
 
 pub async fn rollback_migration(
+    headers: HeaderMap,
     Path((slug, target_version)): Path<(String, String)>,
     State(state): State<Arc<PluginAppState>>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let db_pool = state
         .db_pool
         .as_ref()
         .ok_or_else(|| AppError::BadRequest("Database not configured".to_string()))?;
 
-    let version = PluginVersion::find_active(db_pool, &slug)
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+    let version = PluginVersion::find_active_for_install(db_pool, plugin.id)
         .await?
         .map(|v| v.version);
-    let migrations_dir = match version {
-        Some(ref ver) => crate::api::admin::plugin_file_dir(&slug, ver, "migrations")
-            .unwrap_or_else(|| {
-                let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-                std::path::Path::new(&dir)
-                    .join("plugin-migrations")
-                    .join(&slug)
-            }),
-        None => {
-            let dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-            std::path::Path::new(&dir)
-                .join("plugin-migrations")
-                .join(&slug)
-        }
-    };
+    let migrations_dir = resolve_migrations_dir(&slug, plugin.id, version.as_deref());
 
     if !migrations_dir.exists() {
         return Err(AppError::NotFound(format!(
@@ -220,7 +281,12 @@ pub async fn rollback_migration(
         )));
     }
 
-    let engine = PluginMigrationEngine::new(db_pool.clone(), migrations_dir, &slug);
+    let engine = PluginMigrationEngine::new_with_schema(
+        db_pool.clone(),
+        migrations_dir,
+        &slug,
+        plugin_schema_name_for_scope(&slug, plugin.app_version_id, plugin.version_id),
+    );
 
     let rolled_back = engine.rollback_to(&target_version).await?;
 
@@ -241,13 +307,24 @@ pub async fn upload_migrations_handler(
     headers: HeaderMap,
     Path(slug): Path<String>,
     State(state): State<Arc<PluginAppState>>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
     Json(payload): Json<crate::api::admin::UploadMigrationsRequest>,
 ) -> Result<Json<crate::api::admin::UploadMigrationsResponse>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
-    let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-    let migrations_dir = std::path::Path::new(&plugins_dir)
-        .join("plugin-migrations")
-        .join(&slug);
+    let db_pool = state.db()?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(
+        &state,
+        &headers,
+        db_pool,
+        &slug,
+        &ctx,
+        q.install_id,
+    )
+    .await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+
+    let migrations_dir = plugin_upload_migrations_dir(&slug, plugin.id);
 
     std::fs::create_dir_all(&migrations_dir).map_err(AppError::Io)?;
 

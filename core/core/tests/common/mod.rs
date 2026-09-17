@@ -1,10 +1,12 @@
 use plugin_core::middleware::host_calls::spawn_host_call_writer;
 use plugin_core::plugins::health::{AppState, CoreState};
+use plugin_core::services::redis_client::RedisClient;
 use plugin_core::services::redis_session::RedisSessionStore;
 use redis::aio::ConnectionManager;
 use sqlx::PgPool;
 use std::sync::Arc;
 use testcontainers::runners::AsyncRunner;
+use testcontainers::ImageExt;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
@@ -16,10 +18,41 @@ use file_storage::FileStorage;
 /// Dev API key used by tests. Must match what's auto-inserted into the DB.
 pub const DEV_API_KEY: &str = "dev_test-key-for-tests-12345";
 
+/// Default app×version the test harness scopes dev keys and requests to.
+/// Mirrors `TestDb`'s `default010v1` schema and the seeded `default`/`v1` rows.
+pub const DEFAULT_TEST_APP: &str = "default";
+pub const DEFAULT_TEST_VERSION: &str = "v1";
+
+/// Wrap a router so every request carries default `X-App`/`X-Version` headers
+/// when the test didn't set them explicitly. Developer API keys are
+/// version-scoped, so requests must resolve to the `default`/`v1` app×version
+/// that the harness provisions the dev key against. Explicitly-set headers
+/// (e.g. `X-App: shop`) win.
+pub fn with_default_app_headers(router: axum::Router) -> axum::Router {
+    use axum::http::HeaderValue;
+    async fn inject_default_app_context(
+        mut request: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        if !request.headers().contains_key("x-app") {
+            request
+                .headers_mut()
+                .insert("x-app", HeaderValue::from_static(DEFAULT_TEST_APP));
+        }
+        if !request.headers().contains_key("x-version") {
+            request
+                .headers_mut()
+                .insert("x-version", HeaderValue::from_static(DEFAULT_TEST_VERSION));
+        }
+        next.run(request).await
+    }
+    router.layer(axum::middleware::from_fn(inject_default_app_context))
+}
+
 /// Start a disposable PostgreSQL container and return the pool + container handle.
 /// Used by tests that need fine-grained control over their own migrations.
 pub async fn start_postgres() -> Result<(PgPool, ContainerAsync<Postgres>), Box<dyn std::error::Error + Send + Sync>> {
-    let node = Postgres::default();
+    let node = Postgres::default().with_tag("16-alpine");
     let container = node.start().await?;
     let connection_string = format!(
         "postgres://postgres:postgres@{}:{}/postgres",
@@ -30,7 +63,7 @@ pub async fn start_postgres() -> Result<(PgPool, ContainerAsync<Postgres>), Box<
         .max_connections(5)
         .after_connect(|conn, _meta| {
             Box::pin(async move {
-                sqlx::query(r#"SET search_path TO "default_app010version_1", public"#)
+                sqlx::query(r#"SET search_path TO "default010v1", "alcedo", public"#)
                     .execute(conn)
                     .await?;
                 Ok(())
@@ -41,6 +74,80 @@ pub async fn start_postgres() -> Result<(PgPool, ContainerAsync<Postgres>), Box<
     Ok((pool, container))
 }
 
+/// Create the minimal collection-metadata tables the item engine reads.
+/// Shared by engine-level tests (read/list, nested-field resolution).
+pub async fn create_meta_tables(pool: &PgPool) {
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS "default010v1"."alcedocore_collection_definitions" (
+             name VARCHAR(59) PRIMARY KEY,
+             display_name TEXT,
+             is_system BOOLEAN NOT NULL DEFAULT false,
+             plugin_slug VARCHAR(255),
+             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+           )"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS "default010v1"."alcedocore_collection_fields" (
+             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+             collection_name VARCHAR(255) NOT NULL,
+             name VARCHAR(59) NOT NULL,
+             display_name VARCHAR(255),
+             field_type VARCHAR(50) NOT NULL,
+             required BOOLEAN NOT NULL DEFAULT false,
+             unique_constraint BOOLEAN NOT NULL DEFAULT false,
+             default_value JSONB,
+             display_type VARCHAR(50),
+             ordinal_position INT NOT NULL DEFAULT 0,
+             related_collection VARCHAR(255),
+             relationship_type VARCHAR(50),
+             display_field VARCHAR(255),
+             inline_parent_fields JSONB DEFAULT '[]'::jsonb,
+             options JSONB DEFAULT '[]'::jsonb,
+             is_system BOOLEAN NOT NULL DEFAULT false,
+             hidden BOOLEAN NOT NULL DEFAULT false,
+             input_component VARCHAR(50),
+             display_component VARCHAR(50),
+             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+             UNIQUE(collection_name, name)
+           )"#,
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Insert a collection field row for engine-level tests.
+pub async fn add_field(
+    pool: &PgPool,
+    collection: &str,
+    name: &str,
+    field_type: &str,
+    ordinal: i32,
+    related_collection: Option<&str>,
+    relationship_type: Option<&str>,
+) {
+    sqlx::query(
+        r#"INSERT INTO "default010v1"."alcedocore_collection_fields"
+             (collection_name, name, field_type, ordinal_position, related_collection, relationship_type)
+           VALUES ($1,$2,$3,$4,$5,$6)"#,
+    )
+    .bind(collection)
+    .bind(name)
+    .bind(field_type)
+    .bind(ordinal)
+    .bind(related_collection)
+    .bind(relationship_type)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Spin up a disposable PostgreSQL container and run the bootstrap SQL.
 pub struct TestDb {
     pool: PgPool,
@@ -49,7 +156,7 @@ pub struct TestDb {
 
 impl TestDb {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let node = Postgres::default();
+        let node = Postgres::default().with_tag("16-alpine");
         let container = node.start().await?;
         let connection_string = format!(
             "postgres://postgres:postgres@{}:{}/postgres",
@@ -60,7 +167,7 @@ impl TestDb {
             .max_connections(5)
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
-                    sqlx::query(r#"SET search_path TO "default_app010version_1", public"#)
+                    sqlx::query(r#"SET search_path TO "default010v1", "alcedo", public"#)
                         .execute(conn)
                         .await?;
                     Ok(())
@@ -77,84 +184,40 @@ impl TestDb {
             .execute(pool).await?;
 
         // Create the schemas and the app/version source tables, mirroring the
-        // core migration runner (alcedo-db/src/db/core_migrations.rs).
+        // app migration runner (alcedo-db/src/system_migrations/m00001_init.rs).
         sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "alcedo""#).execute(pool).await?;
-        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default_app010version_1""#).execute(pool).await?;
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default010v1""#).execute(pool).await?;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps" (
-                id UUID PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                api_name TEXT NOT NULL UNIQUE
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                api_name TEXT NOT NULL,
+                icon TEXT,
+                logo TEXT
             )"#,
         ).execute(pool).await?;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_versions" (
-                id UUID PRIMARY KEY,
+                id SERIAL PRIMARY KEY,
                 version_name TEXT NOT NULL
             )"#,
         ).execute(pool).await?;
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps_versions" (
-                app_id UUID NOT NULL REFERENCES "alcedo"."alcedo_apps"(id) ON DELETE CASCADE,
-                version_id UUID NOT NULL REFERENCES "alcedo"."alcedo_versions"(id) ON DELETE CASCADE,
-                PRIMARY KEY (app_id, version_id)
+                id SERIAL PRIMARY KEY,
+                app_id INTEGER NOT NULL REFERENCES "alcedo"."alcedo_apps"(id),
+                version_id INTEGER NOT NULL REFERENCES "alcedo"."alcedo_versions"(id)
             )"#,
         ).execute(pool).await?;
 
-        let migration_files: Vec<(&str, &str)> = vec![
-            ("001_create_plugins", include_str!("../../../core-migrations/001_create_plugins.up.sql")),
-            ("002_create_plugin_versions", include_str!("../../../core-migrations/002_create_plugin_versions.up.sql")),
-            ("003_create_schema_migrations", include_str!("../../../core-migrations/003_create_schema_migrations.up.sql")),
-            ("004_create_request_logs", include_str!("../../../core-migrations/004_create_request_logs.up.sql")),
-            ("005_create_registries", include_str!("../../../core-migrations/005_create_registries.up.sql")),
-            ("006_create_collection_definitions", include_str!("../../../core-migrations/006_create_collection_definitions.up.sql")),
-            ("007_create_saved_views", include_str!("../../../core-migrations/007_create_saved_views.up.sql")),
-            ("008_create_system_settings", include_str!("../../../core-migrations/008_create_system_settings.up.sql")),
-            ("009_add_request_body_capture", include_str!("../../../core-migrations/009_add_request_body_capture.up.sql")),
-            ("010_create_host_calls", include_str!("../../../core-migrations/010_create_host_calls.up.sql")),
-            ("011_activity_logs", include_str!("../../../core-migrations/011_activity_logs.up.sql")),
-            ("012_add_registry_fk", include_str!("../../../core-migrations/012_add_registry_fk.up.sql")),
-            ("013_create_collection_sections", include_str!("../../../core-migrations/013_create_collection_sections.up.sql")),
-            ("014_add_collection_display_name", include_str!("../../../core-migrations/014_add_collection_display_name.up.sql")),
-            ("015_create_policies", include_str!("../../../core-migrations/015_create_policies.up.sql")),
-            ("016_permission_action_single", include_str!("../../../core-migrations/016_permission_action_single.up.sql")),
-            ("017_plugin_scopes", include_str!("../../../core-migrations/017_plugin_scopes.up.sql")),
-            ("018_users", include_str!("../../../core-migrations/018_users.up.sql")),
-            ("019_roles_permissions", include_str!("../../../core-migrations/019_roles_permissions.up.sql")),
-            ("020_rename_role_permissions_to_role_scopes", include_str!("../../../core-migrations/020_rename_role_permissions_to_role_scopes.up.sql")),
-            ("021_role_policies", include_str!("../../../core-migrations/021_role_policies.up.sql")),
-            ("022_update_scope_names", include_str!("../../../core-migrations/022_update_scope_names.up.sql")),
-            ("023_seed_system_collections", include_str!("../../../core-migrations/023_seed_system_collections.up.sql")),
-            ("024_seed_users_fields", include_str!("../../../core-migrations/024_seed_users_fields.up.sql")),
-            ("025_add_request_log_source", include_str!("../../../core-migrations/025_add_request_log_source.up.sql")),
-            ("026_create_developer_api_keys", include_str!("../../../core-migrations/026_create_developer_api_keys.up.sql")),
-            ("027_create_collection_fields", include_str!("../../../core-migrations/027_create_collection_fields.up.sql")),
-            ("028_event_subscriptions", include_str!("../../../core-migrations/028_event_subscriptions.up.sql")),
-            ("029_add_request_id_to_logs", include_str!("../../../core-migrations/029_add_request_id_to_logs.up.sql")),
-            ("030_add_actor_to_system_logs", include_str!("../../../core-migrations/030_add_actor_to_system_logs.up.sql")),
-            ("031_add_registry_pull_url", include_str!("../../../core-migrations/031_add_registry_pull_url.up.sql")),
-            ("032_create_file_metadata", include_str!("../../../core-migrations/032_create_file_metadata.up.sql")),
-            ("033_create_item_files", include_str!("../../../core-migrations/033_create_item_files.up.sql")),
-            ("034_menus", include_str!("../../../core-migrations/034_menus.up.sql")),
-            ("035_create_plugin_recovery", include_str!("../../../core-migrations/035_create_plugin_recovery.up.sql")),
-            ("036_add_last_login_at", include_str!("../../../core-migrations/036_add_last_login_at.up.sql")),
-            ("037_add_dev_key_prefix_index", include_str!("../../../core-migrations/037_add_dev_key_prefix_index.up.sql")),
-            ("038_add_sections_fk", include_str!("../../../core-migrations/038_add_sections_fk.up.sql")),
-            ("039_create_collection_layouts", include_str!("../../../core-migrations/039_create_collection_layouts.up.sql")),
-            ("040_add_layout_id_to_sections", include_str!("../../../core-migrations/040_add_layout_id_to_sections.up.sql")),
-            ("041_create_file_folders", include_str!("../../../core-migrations/041_create_file_folders.up.sql")),
-            ("042_add_input_component", include_str!("../../../core-migrations/042_add_input_component.up.sql")),
-            ("043_add_display_component", include_str!("../../../core-migrations/043_add_display_component.up.sql")),
-            ("044_drop_saved_views_fk", include_str!("../../../core-migrations/044_drop_saved_views_fk.up.sql")),
-            ("045_seed_users_sections", include_str!("../../../core-migrations/045_seed_users_sections.up.sql")),
-            ("046_seed_users_collection_fields", include_str!("../../../core-migrations/046_seed_users_collection_fields.up.sql")),
-            ("047_registries_not_null", include_str!("../../../core-migrations/047_registries_not_null.up.sql")),
-        ];
-
-        for (_name, sql) in &migration_files {
-            // Route each migration into the per-app-version schema via search_path.
+        // Apply the global migration (non-app-bound tables) to the "alcedo" schema.
+        let global_migration_files: Vec<(&str, &str)> = vec![(
+            "001_init",
+            include_str!("../../../core-migrations-global/001_init.up.sql"),
+        )];
+        for (_name, sql) in &global_migration_files {
             let mut tx = pool.begin().await?;
-            sqlx::query(r#"SET search_path TO "default_app010version_1""#)
+            sqlx::query(r#"SET LOCAL search_path TO "alcedo", public"#)
                 .execute(&mut *tx).await?;
             for statement in split_sql_statements(sql) {
                 let trimmed = statement.trim();
@@ -165,19 +228,33 @@ impl TestDb {
             tx.commit().await?;
         }
 
-        // Plugins always pull from a configured registry — provide a default
-        // `local` registry (id 1) so plugin create/list/deploy tests pass a
-        // valid registry_id.
-        let reg_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM registries")
-            .fetch_one(pool)
-            .await?;
-        if reg_count == 0 {
-            sqlx::query(
-                r#"INSERT INTO registries (name, url, auth_type)
-                   VALUES ('local', 'http://localhost:5000', 'none')"#,
-            )
-            .execute(pool)
-            .await?;
+        // Production seeds a `local` registry from env (Registry::ensure_default).
+        // Mirror it so tests that use registry_id 1 (local) resolve.
+        sqlx::query(
+            r#"INSERT INTO alcedo_registries (name, url, pull_url, auth_type)
+               SELECT 'local', 'http://localhost:5000', NULL, 'none'
+               WHERE NOT EXISTS (SELECT 1 FROM alcedo_registries WHERE name = 'local')"#,
+        )
+        .execute(pool)
+        .await?;
+
+        let migration_files: Vec<(&str, &str)> = vec![(
+            "001_init",
+            include_str!("../../../core-migrations/001_init.up.sql"),
+        )];
+
+        for (_name, sql) in &migration_files {
+            // Route each migration into the per-app-version schema via search_path.
+            let mut tx = pool.begin().await?;
+            sqlx::query(r#"SET LOCAL search_path TO "default010v1", "alcedo", public"#)
+                .execute(&mut *tx).await?;
+            for statement in split_sql_statements(sql) {
+                let trimmed = statement.trim();
+                if !trimmed.is_empty() {
+                    sqlx::query(trimmed).execute(&mut *tx).await?;
+                }
+            }
+            tx.commit().await?;
         }
 
         Ok(())
@@ -278,21 +355,34 @@ impl TestRedis {
     }
 }
 
-/// Create a test session layer backed by a real Redis connection.
-pub async fn create_test_session_layer() -> SessionManagerLayer<RedisSessionStore> {
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    let client = redis::Client::open(url.as_str())
-        .expect("Invalid REDIS_URL for test session store");
-    let conn = client.get_connection_manager()
+/// Connect a `RedisClient` to an explicit URL. Panics when Redis is unreachable.
+pub async fn connect_redis_client_at(url: &str) -> RedisClient {
+    RedisClient::connect(url)
         .await
-        .expect("Failed to connect to Redis for test session store. Start Redis or set REDIS_URL");
-    let store = RedisSessionStore::new(conn);
+        .expect("Failed to connect to Redis for tests. Start Redis or set REDIS_URL")
+}
+
+/// Connect a `RedisClient` to `REDIS_URL` (defaults to `redis://127.0.0.1:6379`).
+pub async fn connect_redis_client() -> RedisClient {
+    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    connect_redis_client_at(&url).await
+}
+
+/// Create a test session layer backed by a real Redis connection at a URL.
+pub async fn create_test_session_layer_at(url: &str) -> SessionManagerLayer<RedisSessionStore> {
+    let store = RedisSessionStore::new(Arc::new(connect_redis_client_at(url).await));
     SessionManagerLayer::new(store)
         .with_name("alcedo_session")
         .with_same_site(SameSite::Strict)
         .with_http_only(true)
         .with_secure(false)
         .with_expiry(tower_sessions::Expiry::OnInactivity(Duration::seconds(3600)))
+}
+
+/// Create a test session layer backed by a real Redis connection.
+pub async fn create_test_session_layer() -> SessionManagerLayer<RedisSessionStore> {
+    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    create_test_session_layer_at(&url).await
 }
 
 /// Create a temporary local file storage for tests.
@@ -311,16 +401,13 @@ fn base_state(
         core: CoreState::for_pool(db_pool.clone()),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool,
-        kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),
+        kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_disabled()),
         file_storage: default_file_storage(),
-        dev_mode: true,
         plugin_network: None,
         static_registry: None,
         registries: None,
         platform: None,
-        redis_connection: None,
-        rate_limit_redis: None,
-        kv_redis: None,
+        redis: None,
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
@@ -337,13 +424,7 @@ fn base_state(
 }
 
 async fn connect_redis_session_store() -> RedisSessionStore {
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    let client = redis::Client::open(url.as_str())
-        .expect("Invalid REDIS_URL for session store");
-    let conn = client.get_connection_manager()
-        .await
-        .expect("Failed to connect to Redis for session store. Start Redis or set REDIS_URL");
-    RedisSessionStore::new(conn)
+    RedisSessionStore::new(Arc::new(connect_redis_client().await))
 }
 
 pub async fn create_test_state(_pool: PgPool, _session_store: RedisSessionStore) -> AppState {
@@ -358,31 +439,26 @@ pub async fn create_test_state_no_db() -> AppState {
     base_state(None, connect_redis_session_store().await)
 }
 
-pub async fn create_test_state_full(pool: PgPool, redis_conn_manager: ConnectionManager) -> AppState {
-    use deadpool::managed;
-    let mgr = plugin_core::services::redis_session::RedisPoolManager::default();
-    let deadpool = managed::Pool::builder(mgr).max_size(2).build().unwrap();
+pub async fn create_test_state_full(pool: PgPool, redis_url: &str) -> AppState {
+    let redis_client = Arc::new(connect_redis_client_at(redis_url).await);
     AppState {
         core: CoreState::for_pool(Some(pool.clone())),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
-        kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),
+        kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new(redis_client.clone())),
         file_storage: default_file_storage(),
-        dev_mode: true,
         plugin_network: None,
         static_registry: None,
         registries: None,
         platform: None,
-        redis_connection: Some(deadpool),
-        rate_limit_redis: Some(Arc::new(tokio::sync::Mutex::new(redis_conn_manager.clone()))),
-        kv_redis: Some(Arc::new(tokio::sync::Mutex::new(redis_conn_manager.clone()))),
+        redis: Some(redis_client.clone()),
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,
-        session_store: RedisSessionStore::new(redis_conn_manager),
+        session_store: RedisSessionStore::new(redis_client),
         proxy_client: reqwest::Client::new(),
         rate_limit_auth_requests: 10,
         rate_limit_auth_window: 60,
@@ -397,16 +473,13 @@ pub async fn create_test_state_with_host_calls(pool: PgPool) -> AppState {
         core: CoreState::for_pool(Some(pool.clone())),
         health_map: std::sync::Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
-        kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_test()),
+        kv_store: std::sync::Arc::new(plugin_core::kv::store::KvStore::new_disabled()),
         file_storage: default_file_storage(),
-        dev_mode: true,
         plugin_network: None,
         static_registry: None,
         registries: None,
         platform: None,
-        redis_connection: None,
-        rate_limit_redis: None,
-        kv_redis: None,
+        redis: None,
         logging_channel: None,
 host_call_channel: Some(host_channel),
         event_bus: Default::default(),
@@ -424,18 +497,19 @@ host_call_channel: Some(host_channel),
 
 pub async fn setup_test_plugin(pool: &PgPool, slug: &str) {
     sqlx::query(
-        "INSERT INTO plugins (slug, image, plugin_type, system_plugin, enabled, env, resources, endpoints, documentation, settings_schema, settings, tags)
-         VALUES ($1, 'test:latest', 'dynamic', false, true, '{}', '{}', '[]', '[]', '{}', '{}', '[]')
-         ON CONFLICT (slug) DO NOTHING"
+        "INSERT INTO alcedo_plugins (slug, app_version_id, image, plugin_type, system_plugin, enabled, env, resources, endpoints, documentation, settings_schema, settings, tags, registry_id)
+         VALUES ($1, NULL, 'test:latest', 'dynamic', false, true, '{}', '{}', '[]', '[]', '{}', '{}', '[]', (SELECT id FROM alcedo_registries ORDER BY id LIMIT 1))
+         ON CONFLICT (slug) WHERE app_version_id IS NULL AND version_id IS NULL DO NOTHING"
     )
     .bind(slug)
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO plugin_versions (slug, version, container_id, status, is_active, public_synced, pages_synced)
-         VALUES ($1, '1.0.0', 'test-container', 'running', true, false, false)
-         ON CONFLICT (slug, version) DO NOTHING"
+        "INSERT INTO alcedo_plugin_versions (install_id, slug, version, deployment_id, status, is_active, public_synced, pages_synced)
+         SELECT id, $1, '1.0.0', 'test-container', 'running', true, false, false
+         FROM alcedo_plugins WHERE slug = $1 AND app_version_id IS NULL
+         ON CONFLICT (install_id, version) DO NOTHING"
     )
     .bind(slug)
     .execute(pool)
@@ -452,6 +526,16 @@ pub fn unique_slug(prefix: &str) -> String {
     )
 }
 
+/// Resolve the id of a slug's global (unscoped) install. Used by tests that
+/// exercise the global-zone management path via `?install_id=`.
+pub async fn global_install_id(pool: &PgPool, slug: &str) -> i64 {
+    plugin_core::db::queries::Plugin::find_install(pool, slug, None)
+        .await
+        .expect("find global install query should succeed")
+        .expect("a global install should exist for the slug")
+        .id
+}
+
 /// Generate a unique collection name for test isolation.
 pub fn unique_name(prefix: &str) -> String {
     format!(
@@ -461,10 +545,22 @@ pub fn unique_name(prefix: &str) -> String {
     )
 }
 
+/// Populate the schema cache from the migrated database, mirroring production
+/// boot, so schema-aware services (ItemsService/TableShape) can resolve
+/// global `alcedo.*` tables before any handler reads through them.
+pub async fn refresh_schema(state: &AppState) {
+    let schema = plugin_core::plugins::inspector::DatabaseSchema::new()
+        .refresh(&state.core)
+        .await;
+    *state.core.schema.write().await = schema.into();
+}
+
 /// Helper — boot the whole test harness (TestDb + TestServer).
 pub async fn setup() -> (axum_test::TestServer, TestDb) {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     let state = create_test_state_with_pool(test_db.pool().clone()).await;
+
+    refresh_schema(&state).await;
 
     // Provision the dev API key so tests can authenticate
     let _ = plugin_core::services::auth::provision_dev_api_key(
@@ -474,6 +570,7 @@ pub async fn setup() -> (axum_test::TestServer, TestDb) {
 
     let session_layer = create_test_session_layer().await;
     let app = plugin_core::api::make_router(Arc::new(state), session_layer);
+    let app = with_default_app_headers(app);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
     (server, test_db)
 }

@@ -15,7 +15,7 @@ async fn setup() -> (axum_test::TestServer, TestDb) {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
     (server, test_db)
 }
 
@@ -52,11 +52,12 @@ async fn create_plugin_via_api(server: &axum_test::TestServer, slug: &str, image
 
 #[tokio::test]
 async fn test_plugin_disable_after_create() {
-    let (server, _test_db) = setup().await;
+    let (server, test_db) = setup().await;
     let slug = unique_slug("lifecycle-disable");
     create_plugin_via_api(&server, &slug, &format!("localhost:5000/{}:1.0.0", slug)).await;
 
-    let response = server.post(&format!("/api/plugins/{}/disable", slug))
+    let install_id = global_install_id(test_db.pool(), &slug).await;
+    let response = server.post(&format!("/api/plugins/{}/disable?install_id={}", slug, install_id))
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(response.status_code(), axum::http::StatusCode::OK, "Disable failed: {}: {}", response.status_code(), response.text());
@@ -80,11 +81,12 @@ async fn test_plugin_disable_after_create() {
 
 #[tokio::test]
 async fn test_plugin_enable_requires_container() {
-    let (server, _test_db) = setup().await;
+    let (server, test_db) = setup().await;
     let slug = unique_slug("lifecycle-enable");
     create_plugin_via_api(&server, &slug, &format!("localhost:5000/{}:1.0.0", slug)).await;
 
-    let response = server.post(&format!("/api/plugins/{}/enable", slug))
+    let install_id = global_install_id(test_db.pool(), &slug).await;
+    let response = server.post(&format!("/api/plugins/{}/enable?install_id={}", slug, install_id))
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(response.status_code(), axum::http::StatusCode::BAD_REQUEST,
@@ -101,8 +103,9 @@ async fn test_plugin_enable_disable_with_container() {
     let (server, test_db) = setup().await;
     let slug = unique_slug("lifecycle-full");
     setup_test_plugin(test_db.pool(), &slug).await;
+    let install_id = global_install_id(test_db.pool(), &slug).await;
 
-    let enable = server.post(&format!("/api/plugins/{}/enable", slug))
+    let enable = server.post(&format!("/api/plugins/{}/enable?install_id={}", slug, install_id))
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(enable.status_code(), axum::http::StatusCode::OK, "Enable failed: {}: {}", enable.status_code(), enable.text());
@@ -110,14 +113,14 @@ async fn test_plugin_enable_disable_with_container() {
     assert_eq!(enable_body.get("data").and_then(|d| d.get("status")).and_then(|s| s.as_str()), Some("running"),
         "enable should report running, got: {}", enable_body);
 
-    let status: (String,) = sqlx::query_as("SELECT status FROM plugin_versions WHERE slug = $1 AND is_active = TRUE")
+    let status: (String,) = sqlx::query_as("SELECT status FROM alcedo_plugin_versions WHERE slug = $1 AND is_active = TRUE")
         .bind(&slug)
         .fetch_one(test_db.pool())
         .await
         .expect("active version should exist");
     assert_eq!(status.0, "running", "enable should set the active version status to running");
 
-    let disable = server.post(&format!("/api/plugins/{}/disable", slug))
+    let disable = server.post(&format!("/api/plugins/{}/disable?install_id={}", slug, install_id))
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(disable.status_code(), axum::http::StatusCode::OK, "Disable failed: {}: {}", disable.status_code(), disable.text());
@@ -125,14 +128,14 @@ async fn test_plugin_enable_disable_with_container() {
     assert_eq!(disable_body.get("data").and_then(|d| d.get("status")).and_then(|s| s.as_str()), Some("stopped"),
         "disable should report stopped, got: {}", disable_body);
 
-    let status: (String,) = sqlx::query_as("SELECT status FROM plugin_versions WHERE slug = $1 AND is_active = TRUE")
+    let status: (String,) = sqlx::query_as("SELECT status FROM alcedo_plugin_versions WHERE slug = $1 AND is_active = TRUE")
         .bind(&slug)
         .fetch_one(test_db.pool())
         .await
         .expect("active version should exist");
     assert_eq!(status.0, "stopped", "disable should set the active version status to stopped");
 
-    let reenable = server.post(&format!("/api/plugins/{}/enable", slug))
+    let reenable = server.post(&format!("/api/plugins/{}/enable?install_id={}", slug, install_id))
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(reenable.status_code(), axum::http::StatusCode::OK, "Re-enable failed: {}: {}", reenable.status_code(), reenable.text());
@@ -145,7 +148,7 @@ async fn test_plugin_enable_disable_with_container() {
 
 #[tokio::test]
 async fn test_plugin_scopes_get_and_update() {
-    let (server, _test_db) = setup().await;
+    let (server, test_db) = setup().await;
     let slug = unique_slug("lifecycle-scopes");
     create_plugin_via_api(&server, &slug, &format!("localhost:5000/{}:1.0.0", slug)).await;
 
@@ -165,7 +168,8 @@ async fn test_plugin_scopes_get_and_update() {
     let update_payload = serde_json::json!({
         "scopes": ["kv.all", "db.query", "items.read"]
     });
-    let update = server.post(&format!("/api/plugins/{}/scopes", slug))
+    let install_id = global_install_id(test_db.pool(), &slug).await;
+    let update = server.post(&format!("/api/plugins/{}/scopes?install_id={}", slug, install_id))
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&update_payload)
         .await;
@@ -309,11 +313,12 @@ async fn test_plugin_preview_without_provider() {
 
 #[tokio::test]
 async fn test_plugin_redeploy_requires_platform() {
-    let (server, _test_db) = setup().await;
+    let (server, test_db) = setup().await;
     let slug = unique_slug("lifecycle-redeploy");
     create_plugin_via_api(&server, &slug, &format!("localhost:5000/{}:1.0.0", slug)).await;
 
-    let response = server.post(&format!("/api/plugins/{}/deploy", slug))
+    let install_id = global_install_id(test_db.pool(), &slug).await;
+    let response = server.post(&format!("/api/plugins/{}/deploy?install_id={}", slug, install_id))
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({ "version": "2.0.0" }))
         .await;
@@ -345,8 +350,8 @@ async fn test_plugin_runtime_info() {
         "runtime should report the plugin image, got: {}", data);
     assert_eq!(data.get("status").and_then(|s| s.as_str()), Some("stopped"),
         "a plugin created without a container should report status stopped, got: {}", data);
-    assert!(data.get("container_id").map(|c| c.is_null()).unwrap_or(false),
-        "container_id should be null without a container, got: {}", data);
+    assert!(data.get("deployment_id").map(|c| c.is_null()).unwrap_or(false),
+        "deployment_id should be null without a container, got: {}", data);
     assert!(data.get("tags").and_then(|t| t.as_array()).is_some(),
         "tags should be an array, got: {}", data);
     assert_eq!(data.get("size").and_then(|s| s.as_i64()), Some(0),
@@ -354,25 +359,20 @@ async fn test_plugin_runtime_info() {
 }
 
 #[tokio::test]
-async fn test_plugin_runtime_missing_plugin_reports_unknown() {
+async fn test_plugin_runtime_missing_plugin_not_found() {
     let (server, _test_db) = setup().await;
     let response = server.get("/api/plugins/nonexistent-lifecycle-plugin/runtime")
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
-    assert_eq!(response.status_code(), axum::http::StatusCode::OK,
-        "runtime for a missing plugin returns 200 with an unknown status, got: {}: {}", response.status_code(), response.text());
-    let body: serde_json::Value = serde_json::from_str(&response.text()).expect("Invalid JSON");
-    let data = body.get("data").expect("data field missing");
-    assert_eq!(data.get("status").and_then(|s| s.as_str()), Some("unknown"),
-        "runtime for a missing plugin should report unknown, got: {}", data);
-    assert_eq!(data.get("image").and_then(|i| i.as_str()), Some(""));
+    assert_eq!(response.status_code(), axum::http::StatusCode::NOT_FOUND,
+        "runtime for a missing plugin returns 404, got: {}: {}", response.status_code(), response.text());
 }
 
 // ── settings ───────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_plugin_settings_patch() {
-    let (server, _test_db) = setup().await;
+    let (server, test_db) = setup().await;
     let slug = unique_slug("lifecycle-settings");
     create_plugin_via_api(&server, &slug, &format!("localhost:5000/{}:1.0.0", slug)).await;
 
@@ -380,7 +380,8 @@ async fn test_plugin_settings_patch() {
         "theme": "dark",
         "rows_per_page": 25
     });
-    let patch = server.patch(&format!("/api/plugins/{}/settings", slug))
+    let install_id = global_install_id(test_db.pool(), &slug).await;
+    let patch = server.patch(&format!("/api/plugins/{}/settings?install_id={}", slug, install_id))
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&settings_payload)
         .await;
@@ -401,14 +402,12 @@ async fn test_plugin_settings_patch() {
 }
 
 #[tokio::test]
-async fn test_plugin_settings_patch_missing_plugin_acknowledged() {
+async fn test_plugin_settings_patch_missing_plugin_not_found() {
     let (server, _test_db) = setup().await;
     let patch = server.patch("/api/plugins/nonexistent-lifecycle-plugin/settings")
         .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({ "theme": "dark" }))
         .await;
-    assert_eq!(patch.status_code(), axum::http::StatusCode::OK,
-        "settings PATCH does not check existence, got: {}: {}", patch.status_code(), patch.text());
-    let body: serde_json::Value = serde_json::from_str(&patch.text()).expect("Invalid JSON");
-    assert_eq!(body.get("success").and_then(|s| s.as_bool()), Some(true));
+    assert_eq!(patch.status_code(), axum::http::StatusCode::NOT_FOUND,
+        "settings PATCH for a missing plugin returns 404, got: {}: {}", patch.status_code(), patch.text());
 }

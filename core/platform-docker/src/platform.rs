@@ -1,42 +1,31 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
 
 use crate::client::DockerClient;
 use alcedo_common::config::AppConfig;
 use alcedo_common::AppError;
 use alcedo_container::container::{
-    ContainerDetails, ContainerInfo, ContainerRuntime, ContainerStatsSnapshot, DeploymentEvent,
+    install_scope, plugin_service_name, DeploymentDetails, DeploymentInfo, DeploymentStatsSnapshot,
     DeploymentId, ImageInfo, InstanceInfo, PluginPlatform,
 };
-use alcedo_db::db::{queries::PluginVersion, Pool};
 use alcedo_db::queries::Registry;
 
 pub struct DockerPlatform {
-    db_pool: Option<Pool>,
-    runtime: Arc<dyn ContainerRuntime>,
+    client: DockerClient,
     config: Arc<AppConfig>,
 }
 
 impl DockerPlatform {
-    pub fn new(
-        db_pool: Option<Pool>,
-        runtime: Arc<dyn ContainerRuntime>,
-        config: Arc<AppConfig>,
-    ) -> Self {
-        Self {
-            db_pool,
-            runtime,
-            config,
-        }
+    pub fn new(client: DockerClient, config: Arc<AppConfig>) -> Self {
+        Self { client, config }
     }
 }
 
 #[async_trait]
 impl PluginPlatform for DockerPlatform {
     async fn ensure_image(&self, registry: &Registry, image: &str) -> Result<String, AppError> {
-        self.runtime.pull_image(image, registry).await
+        self.client.pull_image(image, registry).await
     }
 
     async fn deploy(
@@ -46,128 +35,62 @@ impl PluginPlatform for DockerPlatform {
         version: &str,
         image: &str,
         env: HashMap<String, String>,
+        install_id: Option<i64>,
     ) -> Result<DeploymentId, AppError> {
-        let image = self.runtime.pull_image(image, registry).await?;
-
-        // Extract and run migrations if a DB pool is available
-        if let Some(ref pool) = self.db_pool {
-            let plugins_dir =
-                std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-            let migrations_dir = std::path::Path::new(&plugins_dir)
-                .join("plugin-migrations")
-                .join(slug);
-            let migrations_dir_str = migrations_dir.to_string_lossy().to_string();
-
-            if migrations_dir.exists() {
-                let _ = std::fs::remove_dir_all(&migrations_dir);
-            }
-
-            match self
-                .runtime
-                .copy_directory_from_image(registry, &image, "/app/migrations", &migrations_dir_str)
-                .await
-            {
-                Ok(()) => {
-                    let has_migrations = if migrations_dir.exists() {
-                        std::fs::read_dir(&migrations_dir)
-                            .map(|mut d| d.any(|e| e.is_ok()))
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
-
-                    if has_migrations {
-                        tracing::info!(
-                            "Running migrations for plugin {} from {}",
-                            slug,
-                            migrations_dir_str,
-                        );
-                        alcedo_db::db::run_plugin_migrations(pool, slug, &migrations_dir_str)
-                            .await?;
-                    } else {
-                        tracing::info!("No migration files found for plugin {}", slug);
-                        let _ = std::fs::remove_dir_all(&migrations_dir);
-                    }
-                }
-                Err(AppError::Internal(e))
-                    if e.contains("No such") || e.contains("Could not find") =>
-                {
-                    tracing::info!(
-                        "No migrations/ directory in image {} for plugin {}",
-                        image,
-                        slug,
-                    );
-                }
-                Err(e) => return Err(e),
-            }
-
-            // Record plugin version in DB
-            let existing = PluginVersion::find_by_slug_and_version(pool, slug, version).await?;
-            if existing.is_none() {
-                let new_version = PluginVersion {
-                    slug: slug.to_string(),
-                    version: version.to_string(),
-                    container_id: None,
-                    status: "deploying".to_string(),
-                    is_active: true,
-                    deployed_at: Some(chrono::Utc::now()),
-                    public_synced: false,
-                    public_path: None,
-                    pages_synced: false,
-                    pages_path: None,
-                };
-                PluginVersion::insert(pool, &new_version).await?;
-            }
-        }
+        let image = self.client.pull_image(image, registry).await?;
 
         let network_mode = if self.config.dev_mode {
             Some("host")
         } else {
             None
         };
-        // Remove any existing container with the same name
-        let container_name = format!("{}-{}", slug, version);
-        let _ = self.runtime.remove_container(&container_name, true).await;
+        // Remove any existing container for THIS install's scope (not other
+        // installs of the same slug+version).
+        let scope = install_scope(install_id);
+        let container_name = format!("{}-{}-{}", slug, version, scope);
+        let _ = self.client.remove_container(&container_name, true).await;
 
-        let container_id = self
-            .runtime
-            .create_container(registry, slug, version, &image, env, network_mode)
+        let deployment_id = self
+            .client
+            .create_container(registry, slug, version, &image, env, network_mode, scope)
             .await?;
 
-        self.runtime.start_container(&container_id).await?;
+        self.client.start_container(&deployment_id).await?;
 
         if !self.config.dev_mode && !self.config.plugin_network.is_empty() {
-            self.runtime
+            self.client
                 .connect_container_to_network(
-                    &container_id,
+                    &deployment_id,
                     &self.config.plugin_network,
-                    Some(&format!("plugin_{}", slug)),
+                    Some(&plugin_service_name(slug, install_id)),
                 )
                 .await?;
         }
 
-        // Update DB with container ID
-        if let Some(ref pool) = self.db_pool {
-            let _ = PluginVersion::update_container_id(pool, slug, version, &container_id).await;
-            let _ = PluginVersion::update_status(pool, slug, version, "running").await;
-        }
-
-        Ok(container_id)
+        Ok(deployment_id)
     }
 
     async fn remove(&self, id: &DeploymentId) -> Result<(), AppError> {
         if crate::services::is_swarm_service_name(id) {
             crate::services::remove_plugin_service(&crate::DOCKER, id).await
         } else {
-            self.runtime.remove_container(id, true).await
+            self.client.remove_container(id, true).await
         }
+    }
+
+    async fn ensure_absent(&self, slug: &str, install_id: Option<i64>) -> Result<(), AppError> {
+        let name = plugin_service_name(slug, install_id);
+        if let Err(e) = self.remove(&name).await {
+            tracing::debug!("ensure_absent({}, {:?}): {}", slug, install_id, e);
+        }
+        Ok(())
     }
 
     async fn restart(&self, id: &DeploymentId) -> Result<(), AppError> {
         if crate::services::is_swarm_service_name(id) {
             crate::services::restart_plugin_service(&crate::DOCKER, id).await
         } else {
-            self.runtime.restart_container(id).await
+            self.client.restart_container(id).await
         }
     }
 
@@ -177,7 +100,7 @@ impl PluginPlatform for DockerPlatform {
         }
         // Resolve Swarm service names to actual container IDs
         let resolved_id = crate::services::resolve_for_exec(&crate::DOCKER, id).await;
-        self.runtime
+        self.client
             .get_container_ip(&resolved_id, &self.config.plugin_network)
             .await
     }
@@ -196,7 +119,7 @@ impl PluginPlatform for DockerPlatform {
         image: &str,
         path: &str,
     ) -> Result<String, AppError> {
-        self.runtime
+        self.client
             .get_file_from_image(registry, image, path)
             .await
     }
@@ -208,21 +131,21 @@ impl PluginPlatform for DockerPlatform {
         src: &str,
         dest: &str,
     ) -> Result<(), AppError> {
-        self.runtime
+        self.client
             .copy_directory_from_image(registry, image, src, dest)
             .await
     }
 
     async fn read_file(&self, id: &DeploymentId, path: &str) -> Result<Vec<u8>, AppError> {
         let resolved_id = crate::services::resolve_for_exec(&crate::DOCKER, id).await;
-        self.runtime
+        self.client
             .get_file_from_container(&resolved_id, path)
             .await
     }
 
     async fn list_directory(&self, id: &DeploymentId, path: &str) -> Result<Vec<String>, AppError> {
         let resolved_id = crate::services::resolve_for_exec(&crate::DOCKER, id).await;
-        self.runtime
+        self.client
             .list_directory_in_container(&resolved_id, path)
             .await
     }
@@ -231,18 +154,12 @@ impl PluginPlatform for DockerPlatform {
         DockerClient.health_check().await
     }
 
-    async fn watch_events(&self, _tx: mpsc::Sender<DeploymentEvent>) -> Result<(), AppError> {
-        // The existing Docker event watcher is spawned separately in main.rs.
-        // Future work can integrate more tightly with the stream here.
-        Ok(())
+    async fn list_deployments(&self) -> Result<Vec<DeploymentInfo>, AppError> {
+        self.client.list_containers().await
     }
 
-    async fn list_deployments(&self) -> Result<Vec<ContainerInfo>, AppError> {
-        self.runtime.list_containers().await
-    }
-
-    async fn inspect(&self, id: &DeploymentId) -> Result<ContainerDetails, AppError> {
-        self.runtime.inspect_container(id).await
+    async fn inspect(&self, id: &DeploymentId) -> Result<DeploymentDetails, AppError> {
+        self.client.inspect_container(id).await
     }
 
     async fn list_instances(&self, id: &DeploymentId) -> Result<Vec<InstanceInfo>, AppError> {
@@ -254,11 +171,11 @@ impl PluginPlatform for DockerPlatform {
                     id: t.task_id,
                     status: t.status,
                     pod_name: t.node_id.unwrap_or_default(),
-                    container_id: t.container_id,
+                    deployment_id: t.deployment_id,
                 })
                 .collect())
         } else {
-            let containers = self.runtime.list_containers().await?;
+            let containers = self.client.list_containers().await?;
             let instance = containers
                 .iter()
                 .find(|c| c.id == *id || c.name == *id)
@@ -266,7 +183,7 @@ impl PluginPlatform for DockerPlatform {
                     id: c.id.clone(),
                     status: c.status.clone(),
                     pod_name: String::new(),
-                    container_id: Some(c.id.clone()),
+                    deployment_id: Some(c.id.clone()),
                 });
             Ok(match instance {
                 Some(i) => vec![i],
@@ -296,7 +213,9 @@ impl PluginPlatform for DockerPlatform {
         let mut output = String::new();
         while let Some(chunk) = stream.next().await {
             match chunk {
-                Ok(LogOutput::StdOut { message }) | Ok(LogOutput::StdErr { message }) => {
+                Ok(LogOutput::StdOut { message })
+                | Ok(LogOutput::StdErr { message })
+                | Ok(LogOutput::Console { message }) => {
                     if let Ok(text) = String::from_utf8(message.to_vec()) {
                         output.push_str(&text);
                     }
@@ -304,12 +223,9 @@ impl PluginPlatform for DockerPlatform {
                 _ => {}
             }
         }
-        if output.is_empty() {
-            return Err(AppError::NotFound(format!(
-                "No logs found for instance {}",
-                instance_id
-            )));
-        }
+        // An empty log stream is a valid state (e.g. the container has produced
+        // no output yet); return it as-is so callers render an empty log view
+        // instead of treating it as a missing instance.
         Ok(output)
     }
 
@@ -317,7 +233,7 @@ impl PluginPlatform for DockerPlatform {
         &self,
         _id: &DeploymentId,
         instance_id: &str,
-    ) -> Result<ContainerStatsSnapshot, AppError> {
+    ) -> Result<DeploymentStatsSnapshot, AppError> {
         use bollard::query_parameters::StatsOptions;
         use futures_util::StreamExt;
 
@@ -369,7 +285,7 @@ impl PluginPlatform for DockerPlatform {
             .and_then(|m| m.usage)
             .unwrap_or(0) as i64;
 
-        Ok(ContainerStatsSnapshot {
+        Ok(DeploymentStatsSnapshot {
             timestamp: chrono::Utc::now().to_rfc3339(),
             cpu_percent,
             memory_usage_bytes: mem_usage,
@@ -388,6 +304,18 @@ impl PluginPlatform for DockerPlatform {
     }
 
     async fn inspect_image(&self, image: &str) -> Result<ImageInfo, AppError> {
-        self.runtime.inspect_image(image).await
+        self.client.inspect_image(image).await
+    }
+
+    /// URL plugins use to call back to the core.
+    ///
+    /// Defaults to `http://core:8080`, which resolves when the core runs as a
+    /// container joined to the plugin network (Docker Compose/K8s). When the
+    /// core runs directly on the host (no container named `core`), set
+    /// `PLUGIN_CORE_URL` to an address the plugin containers can reach
+    /// (e.g. the plugin network gateway: `http://172.x.0.1:8080`).
+    fn core_url(&self) -> String {
+        std::env::var("PLUGIN_CORE_URL")
+            .unwrap_or_else(|_| "http://core:8080".to_string())
     }
 }

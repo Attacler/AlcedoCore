@@ -11,18 +11,20 @@ use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use testcontainers::runners::AsyncRunner;
+use testcontainers::ImageExt;
 use testcontainers_modules::postgres::Postgres;
 use time::Duration;
 use tower_sessions::cookie::SameSite;
 use tower_sessions::SessionManagerLayer;
 
 use plugin_core::api::make_router;
+use plugin_core::db::split_sql_statements;
 use plugin_core::plugins::health::{AppState, CoreState};
 use plugin_core::services::redis_session::RedisSessionStore;
 
 #[path = "common/mod.rs"]
 mod common;
-use common::DEV_API_KEY;
+use common::{refresh_schema, with_default_app_headers, DEV_API_KEY};
 
 // ---------------------------------------------------------------------------
 // Shared test context
@@ -44,7 +46,7 @@ static CTX: tokio::sync::OnceCell<TestContext> = tokio::sync::OnceCell::const_ne
 /// and inserts a fixed set of rows for both `system_logs` and `collection_logs`.
 async fn get_ctx() -> &'static TestContext {
     CTX.get_or_init(|| async {
-        let container = Postgres::default().start().await.unwrap();
+        let container = Postgres::default().with_tag("16-alpine").start().await.unwrap();
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
         let conn_str = format!(
@@ -59,7 +61,7 @@ async fn get_ctx() -> &'static TestContext {
             .max_connections(5)
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
-                    sqlx::query(r#"SET search_path TO "default_app010version_1", public"#)
+                    sqlx::query(r#"SET search_path TO "default010v1", "alcedo", public"#)
                         .execute(conn)
                         .await?;
                     Ok(())
@@ -70,20 +72,22 @@ async fn get_ctx() -> &'static TestContext {
             .unwrap();
 
         // Create the schemas and app/version source tables, mirroring the
-        // core migration runner (alcedo-db/src/db/core_migrations.rs).
+        // app migration runner (alcedo-db/src/system_migrations/m00001_init.rs).
         sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "alcedo""#)
             .execute(&setup_pool)
             .await
             .unwrap();
-        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default_app010version_1""#)
+        sqlx::query(r#"CREATE SCHEMA IF NOT EXISTS "default010v1""#)
             .execute(&setup_pool)
             .await
             .unwrap();
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps" (
-                id UUID PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                api_name TEXT NOT NULL UNIQUE
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                api_name TEXT NOT NULL,
+                icon TEXT,
+                logo TEXT
             )"#,
         )
         .execute(&setup_pool)
@@ -91,7 +95,7 @@ async fn get_ctx() -> &'static TestContext {
         .unwrap();
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_versions" (
-                id UUID PRIMARY KEY,
+                id SERIAL PRIMARY KEY,
                 version_name TEXT NOT NULL
             )"#,
         )
@@ -100,9 +104,9 @@ async fn get_ctx() -> &'static TestContext {
         .unwrap();
         sqlx::query(
             r#"CREATE TABLE IF NOT EXISTS "alcedo"."alcedo_apps_versions" (
-                app_id UUID NOT NULL REFERENCES "alcedo"."alcedo_apps"(id) ON DELETE CASCADE,
-                version_id UUID NOT NULL REFERENCES "alcedo"."alcedo_versions"(id) ON DELETE CASCADE,
-                PRIMARY KEY (app_id, version_id)
+                id SERIAL PRIMARY KEY,
+                app_id INTEGER NOT NULL REFERENCES "alcedo"."alcedo_apps"(id),
+                version_id INTEGER NOT NULL REFERENCES "alcedo"."alcedo_versions"(id)
             )"#,
         )
         .execute(&setup_pool)
@@ -111,17 +115,31 @@ async fn get_ctx() -> &'static TestContext {
 
         // Run the migrations (split on `;` because sqlx does not support
         // multiple statements in a single `query()` call with PostgreSQL).
-        // `pgcrypto` is required by migration 026 (`gen_random_uuid()`).
+        // `pgcrypto` is required by 001_init (`gen_random_uuid()`).
         sqlx::query("CREATE EXTENSION IF NOT EXISTS pgcrypto")
             .execute(&setup_pool)
             .await
             .unwrap();
-        let migrations = [
-            include_str!("../../core-migrations/011_activity_logs.up.sql"),
-            include_str!("../../core-migrations/026_create_developer_api_keys.up.sql"),
-            include_str!("../../core-migrations/029_add_request_id_to_logs.up.sql"),
-            include_str!("../../core-migrations/030_add_actor_to_system_logs.up.sql"),
-        ];
+
+        // Global (alcedo schema) migrations first: the app migration's FKs
+        // reference alcedo.alcedo_users / alcedo.alcedo_plugins.
+        let global_migrations = [include_str!("../../core-migrations-global/001_init.up.sql")];
+        for migration in global_migrations {
+            let mut tx = setup_pool.begin().await.unwrap();
+            sqlx::query(r#"SET LOCAL search_path TO "alcedo", public"#)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            for statement in split_sql_statements(migration) {
+                let trimmed = statement.trim();
+                if !trimmed.is_empty() {
+                    sqlx::query(trimmed).execute(&mut *tx).await.unwrap();
+                }
+            }
+            tx.commit().await.unwrap();
+        }
+
+        let migrations = [include_str!("../../core-migrations/001_init.up.sql")];
         // Route migrations into the per-app-version schema via search_path.
         for migration in migrations {
             for statement in migration.split(';') {
@@ -137,7 +155,7 @@ async fn get_ctx() -> &'static TestContext {
         // -----------------------------------------------------------------------
         sqlx::query(
             r#"
-            INSERT INTO system_logs (action, target, description, metadata, created_at) VALUES
+            INSERT INTO alcedocore_system_logs (action, target, description, metadata, created_at) VALUES
                 ('setting_changed',     'site_name',      'Setting site_name changed',       '{}', '2026-05-26 10:00:00+00'::timestamptz),
                 ('setting_changed',     'theme',          'Setting theme changed',           '{}', '2026-05-27 10:00:00+00'::timestamptz),
                 ('collection_created',  'articles',       'Collection articles created',      '{}', '2026-05-25 10:00:00+00'::timestamptz),
@@ -155,7 +173,7 @@ async fn get_ctx() -> &'static TestContext {
         // -----------------------------------------------------------------------
         sqlx::query(
             r#"
-            INSERT INTO collection_logs (action, collection_name, item_id, diff, metadata, created_at) VALUES
+            INSERT INTO alcedocore_collection_logs (action, collection_name, item_id, diff, metadata, created_at) VALUES
                 ('item_created', 'articles',           '1'::jsonb, NULL, '{"collection_name":"articles"}'::jsonb,           '2026-05-26 10:00:00+00'::timestamptz),
                 ('item_updated', 'articles',           '2'::jsonb, '{"old":"a","new":"b"}'::jsonb, '{"collection_name":"articles"}'::jsonb,           '2026-05-27 10:00:00+00'::timestamptz),
                 ('item_created', 'posts',              '3'::jsonb, NULL, '{"collection_name":"posts"}'::jsonb,              '2026-05-25 10:00:00+00'::timestamptz),
@@ -185,7 +203,7 @@ async fn make_test_pool(conn_str: &str) -> PgPool {
         .max_connections(5)
         .after_connect(|conn, _meta| {
             Box::pin(async move {
-                sqlx::query(r#"SET search_path TO "default_app010version_1", public"#)
+                sqlx::query(r#"SET search_path TO "default010v1", "alcedo", public"#)
                     .execute(conn)
                     .await?;
                 Ok(())
@@ -201,13 +219,7 @@ async fn make_test_pool(conn_str: &str) -> PgPool {
 // ---------------------------------------------------------------------------
 
 async fn make_session_layer() -> SessionManagerLayer<RedisSessionStore> {
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    let client = redis::Client::open(url.as_str())
-        .expect("Invalid REDIS_URL for session store");
-    let conn = client.get_connection_manager()
-        .await
-        .expect("Failed to connect to Redis for session store. Start Redis or set REDIS_URL");
-    let store = RedisSessionStore::new(conn);
+    let store = RedisSessionStore::new(Arc::new(common::connect_redis_client().await));
     SessionManagerLayer::new(store)
         .with_name("alcedo_session")
         .with_same_site(SameSite::Strict)
@@ -217,36 +229,27 @@ async fn make_session_layer() -> SessionManagerLayer<RedisSessionStore> {
 }
 
 async fn make_test_state(pool: PgPool) -> AppState {
-    let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    let client = redis::Client::open(url.as_str())
-        .expect("Invalid REDIS_URL for session store");
-    let conn = client.get_connection_manager()
-        .await
-        .expect("Failed to connect to Redis for session store. Start Redis or set REDIS_URL");
     let dir = std::env::temp_dir().join("test-files");
     AppState {
         core: CoreState::for_pool(Some(pool.clone())),
         health_map: Arc::new(plugin_core::plugins::health::PluginHealthMap::new(None)),
         db_pool: Some(pool),
-        kv_store: Arc::new(plugin_core::kv::store::KvStore::new_test()),
+        kv_store: Arc::new(plugin_core::kv::store::KvStore::new_disabled()),
         file_storage: Arc::new(file_storage_local::LocalFileStorage::new(
             dir.to_str().unwrap()
         ).unwrap()),
-        dev_mode: true,
         plugin_network: None,
         static_registry: None,
         registries: None,
         platform: None,
-        redis_connection: None,
-        rate_limit_redis: None,
-        kv_redis: None,
+        redis: None,
         logging_channel: None,
         host_call_channel: None,
         event_bus: Default::default(),
         capture_body: false,
         capture_body_max_size: 10240,
         nested_field_depth_limit: 5,
-        session_store: RedisSessionStore::new(conn),
+        session_store: RedisSessionStore::new(Arc::new(common::connect_redis_client().await)),
         proxy_client: reqwest::Client::new(),
         rate_limit_auth_requests: 10,
         rate_limit_auth_window: 60,
@@ -266,12 +269,17 @@ fn parse_body(response: &axum_test::TestResponse) -> Value {
 async fn setup_log_server(ctx: &TestContext) -> TestServer {
     let pool = make_test_pool(&ctx.conn_str).await;
     let state = make_test_state(pool.clone()).await;
+    refresh_schema(&state).await;
     let _ = plugin_core::services::auth::provision_dev_api_key(
         &pool,
         Some(DEV_API_KEY.to_string()),
     ).await;
     let session_layer = make_session_layer().await;
-    TestServer::new(make_router(Arc::new(state), session_layer)).unwrap()
+    TestServer::new(with_default_app_headers(make_router(
+        Arc::new(state),
+        session_layer,
+    )))
+    .unwrap()
 }
 
 /// GET with the dev API key auth header attached.

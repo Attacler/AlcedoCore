@@ -12,11 +12,10 @@ use kube::api::{
 use kube::core::WatchEvent;
 use kube::{Api, Client};
 use std::collections::{BTreeMap, HashMap};
-use tokio::sync::mpsc;
 
 use alcedo_common::AppError;
 use alcedo_container::container::{
-    ContainerDetails, ContainerInfo, ContainerStatsSnapshot, DeploymentEvent, DeploymentId,
+    plugin_service_name, DeploymentDetails, DeploymentInfo, DeploymentStatsSnapshot, DeploymentId,
     ImageInfo, InstanceInfo, PluginPlatform,
 };
 use alcedo_db::queries::Registry;
@@ -25,12 +24,18 @@ const MANAGED_BY_LABEL: &str = "app.kubernetes.io/managed-by";
 const MANAGED_BY_VALUE: &str = "alcedo-core";
 const PART_OF_LABEL: &str = "app.kubernetes.io/part-of";
 
-fn plugin_labels(slug: &str) -> BTreeMap<String, String> {
+/// K8s resource name for a plugin install: `plugin-{slug}-{install_id_or_0}`
+/// with underscores replaced by hyphens to satisfy RFC 1123.
+fn plugin_k8s_name(slug: &str, install_id: Option<i64>) -> String {
+    plugin_service_name(slug, install_id).replace('_', "-")
+}
+
+fn plugin_labels(slug: &str, install_id: Option<i64>) -> BTreeMap<String, String> {
     let mut labels = BTreeMap::new();
     labels.insert(MANAGED_BY_LABEL.to_string(), MANAGED_BY_VALUE.to_string());
     labels.insert(
         PART_OF_LABEL.to_string(),
-        format!("plugin-{}", slug).replace('_', "-"),
+        plugin_k8s_name(slug, install_id),
     );
     labels
 }
@@ -192,11 +197,12 @@ impl PluginPlatform for K8sPlatform {
         _version: &str,
         image: &str,
         env: HashMap<String, String>,
+        install_id: Option<i64>,
     ) -> Result<DeploymentId, AppError> {
-        let labels = plugin_labels(slug);
+        let labels = plugin_labels(slug, install_id);
         let match_labels = labels.clone();
         // K8s resource names must follow RFC 1123: lowercase alphanumeric, '-' or '.'
-        let deployment_name = format!("plugin-{}", slug).replace('_', "-");
+        let deployment_name = plugin_k8s_name(slug, install_id);
 
         let env_vars: Vec<EnvVar> = env
             .into_iter()
@@ -260,7 +266,7 @@ impl PluginPlatform for K8sPlatform {
                 ..Default::default()
             },
             spec: Some(k8s_openapi::api::core::v1::ServiceSpec {
-                selector: Some(plugin_labels(slug)),
+                selector: Some(plugin_labels(slug, install_id)),
                 ports: vec![ServicePort {
                     port: 80,
                     target_port: Some(IntOrString::Int(8080)),
@@ -285,10 +291,25 @@ impl PluginPlatform for K8sPlatform {
         let deployments: Api<Deployment> = Api::namespaced(self.client.clone(), &self.namespace);
         let services: Api<Service> = Api::namespaced(self.client.clone(), &self.namespace);
         let _ = services.delete(id, &DeleteParams::default()).await;
-        deployments
-            .delete(id, &DeleteParams::default())
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to delete deployment: {}", e)))?;
+        if let Err(e) = deployments.delete(id, &DeleteParams::default()).await {
+            if let kube::Error::Api(api_err) = &e {
+                if api_err.code == 404 {
+                    return Ok(());
+                }
+            }
+            return Err(AppError::Internal(format!(
+                "Failed to delete deployment: {}",
+                e
+            )));
+        }
+        Ok(())
+    }
+
+    async fn ensure_absent(&self, slug: &str, install_id: Option<i64>) -> Result<(), AppError> {
+        let id = plugin_k8s_name(slug, install_id);
+        if let Err(e) = self.remove(&id).await {
+            tracing::debug!("ensure_absent({}, {:?}): {}", slug, install_id, e);
+        }
         Ok(())
     }
 
@@ -532,11 +553,7 @@ impl PluginPlatform for K8sPlatform {
         Ok(())
     }
 
-    async fn watch_events(&self, _tx: mpsc::Sender<DeploymentEvent>) -> Result<(), AppError> {
-        Ok(())
-    }
-
-    async fn list_deployments(&self) -> Result<Vec<ContainerInfo>, AppError> {
+    async fn list_deployments(&self) -> Result<Vec<DeploymentInfo>, AppError> {
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         let lp = ListParams::default().labels(MANAGED_BY_LABEL);
         let list = pods
@@ -557,7 +574,7 @@ impl PluginPlatform for K8sPlatform {
                 if name.is_empty() {
                     None
                 } else {
-                    Some(ContainerInfo {
+                    Some(DeploymentInfo {
                         id: name.clone(),
                         name,
                         status,
@@ -567,14 +584,14 @@ impl PluginPlatform for K8sPlatform {
             .collect())
     }
 
-    async fn inspect(&self, id: &DeploymentId) -> Result<ContainerDetails, AppError> {
+    async fn inspect(&self, id: &DeploymentId) -> Result<DeploymentDetails, AppError> {
         let pod_name = self.resolve_pod_for_id(id).await?;
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         let pod = pods
             .get(&pod_name)
             .await
             .map_err(|e| AppError::NotFound(format!("Pod not found: {}", e)))?;
-        Ok(ContainerDetails {
+        Ok(DeploymentDetails {
             id: pod.metadata.name.unwrap_or_default(),
             name: id.clone(),
             state: pod
@@ -620,7 +637,7 @@ impl PluginPlatform for K8sPlatform {
                     id: name.clone(),
                     status,
                     pod_name: name,
-                    container_id: p.status.and_then(|s| s.pod_ip),
+                    deployment_id: p.status.and_then(|s| s.pod_ip),
                 }
             })
             .collect())
@@ -648,7 +665,7 @@ impl PluginPlatform for K8sPlatform {
         &self,
         _id: &DeploymentId,
         instance_id: &str,
-    ) -> Result<ContainerStatsSnapshot, AppError> {
+    ) -> Result<DeploymentStatsSnapshot, AppError> {
         let url = format!(
             "/apis/metrics.k8s.io/v1beta1/namespaces/{}/pods/{}",
             self.namespace, instance_id,
@@ -665,7 +682,7 @@ impl PluginPlatform for K8sPlatform {
                 tracing::info!(
                     "[K8S_METRICS] Metrics API not available (metrics-server not installed)"
                 );
-                return Ok(ContainerStatsSnapshot {
+                return Ok(DeploymentStatsSnapshot {
                     timestamp: chrono::Utc::now().to_rfc3339(),
                     cpu_percent: 0.0,
                     memory_usage_bytes: 0,
@@ -683,7 +700,7 @@ impl PluginPlatform for K8sPlatform {
         let cpu_str = usage["cpu"].as_str().unwrap_or("0");
         let mem_str = usage["memory"].as_str().unwrap_or("0");
 
-        Ok(ContainerStatsSnapshot {
+        Ok(DeploymentStatsSnapshot {
             timestamp: chrono::Utc::now().to_rfc3339(),
             cpu_percent: parse_cpu_quantity(cpu_str) * 100.0,
             memory_usage_bytes: parse_memory_bytes(mem_str) as i64,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRouter, useRoute } from "vue-router";
 import { usePluginsStore } from "@/stores/plugins";
 import { useToast } from "@/composables/useToast";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
@@ -16,6 +16,7 @@ import {
     AccordionHeader,
 } from "primevue";
 import DynamicFormField from "@/components/plugins/DynamicFormField.vue";
+import { appPath } from "@/utils/appHeaders";
 
 interface ImageListItem {
     name: string;
@@ -40,6 +41,9 @@ const { client } = useAlcedoClient(),
     store = usePluginsStore(),
     toast = useToast(),
     router = useRouter();
+
+const route = useRoute();
+const inAppZone = computed(() => route.meta.appZone === true);
 
 const registries = ref<Array<{ id: number; name: string; url: string }>>([]),
     selectedRegistryId = ref(""),
@@ -90,6 +94,9 @@ const grantRootAccess = ref(false);
 
 const configSettings = ref<Record<string, any>>({});
 const installMode = ref<"install" | "install-and-start">("install-and-start");
+const installScope = ref<"global" | "version" | "app">(
+    inAppZone.value ? "app" : "global",
+);
 
 const settingsSchema = computed(
     () => previewManifest.value?.settings_schema || null,
@@ -233,6 +240,7 @@ async function startInstall() {
     installError.value = "";
 
     try {
+        const scope = inAppZone.value ? "app" : installScope.value;
         const body: Record<string, any> = {
             slug,
             version: selectedTag.value,
@@ -240,6 +248,7 @@ async function startInstall() {
             registry_id: Number(selectedRegistryId.value),
             env: {},
             start_container: installMode.value === "install-and-start",
+            scope,
         };
 
         if (Object.keys(configSettings.value).length) {
@@ -279,12 +288,12 @@ function retryInstall() {
 
 function viewPlugin() {
     if (pluginSlug.value) {
-        router.push(`/plugins/${encodeURIComponent(pluginSlug.value)}`);
+        router.push(appPath(`/plugins/${encodeURIComponent(pluginSlug.value)}`));
     }
 }
 
 function cancel() {
-    router.push("/plugins");
+    router.push(appPath("/plugins"));
 }
 
 function methodBadgeClass(m: string): string {
@@ -312,7 +321,7 @@ onMounted(async () => {
 <template>
     <div class="p-6 container mx-auto">
         <router-link
-            to="/plugins"
+            :to="appPath('/plugins')"
             class="inline-block mb-4 text-blue-500 text-sm hover:underline"
             >← Back to Plugins</router-link
         >
@@ -750,6 +759,36 @@ onMounted(async () => {
                             value="install-and-start"
                         />
                         <span class="text-sm">Install &amp; Start</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg border border-gray-200 p-4">
+                <h3 class="text-sm font-semibold text-gray-700 mb-2">
+                    Install Scope
+                </h3>
+                <template v-if="inAppZone">
+                    <p class="text-sm text-gray-600">
+                        App — this app ({{ route.params.appSlug }}) on this
+                        version only.
+                    </p>
+                </template>
+                <div v-else class="flex gap-4">
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <RadioButton
+                            v-model="installScope"
+                            input-id="scope-global"
+                            value="global"
+                        />
+                        <span class="text-sm">Global (all app versions)</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer">
+                        <RadioButton
+                            v-model="installScope"
+                            input-id="scope-version"
+                            value="version"
+                        />
+                        <span class="text-sm">Version (every app on this version)</span>
                     </label>
                 </div>
             </div>

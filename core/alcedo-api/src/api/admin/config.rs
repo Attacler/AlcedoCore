@@ -1,12 +1,14 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     Json,
 };
+use alcedo_common::context::ExtractContext;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::api::permission_check;
+use crate::api::plugins::InstallOverride;
 use crate::api::responses::ResponseEnvelope;
 use crate::db::queries::Plugin;
 use crate::error::AppError;
@@ -27,13 +29,13 @@ pub async fn get_plugin_scopes_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<ResponseEnvelope<ScopesResponse>>, AppError> {
     let db_pool = state.db()?;
 
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
-    let plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
     let granted: Vec<String> = serde_json::from_value(plugin.granted_scopes).unwrap_or_default();
 
     Ok(Json(ResponseEnvelope::success(ScopesResponse {
@@ -46,15 +48,19 @@ pub async fn update_plugin_scopes_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
     Json(payload): Json<UpdateScopesRequest>,
 ) -> Result<Json<ResponseEnvelope<ScopesResponse>>, AppError> {
     let db_pool = state.db()?;
 
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
+    let install = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &install).await?;
     let granted =
         serde_json::to_value(&payload.scopes).map_err(|e| AppError::Internal(e.to_string()))?;
-    sqlx::query("UPDATE plugins SET granted_scopes = $2, updated_at = NOW() WHERE slug = $1")
-        .bind(&slug)
+    sqlx::query("UPDATE alcedo_plugins SET granted_scopes = $2, updated_at = NOW() WHERE id = $1")
+        .bind(install.id)
         .bind(&granted)
         .execute(db_pool)
         .await?;
@@ -80,7 +86,7 @@ pub async fn update_plugin_scopes_handler(
                 &headers,
             )),
         });
-    let plugin = Plugin::find_by_slug(db_pool, &slug)
+    let plugin = Plugin::find_by_id(db_pool, install.id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
     let granted: Vec<String> = serde_json::from_value(plugin.granted_scopes).unwrap_or_default();
@@ -94,14 +100,14 @@ pub async fn get_plugin_settings(
     headers: HeaderMap,
     Path(slug): Path<String>,
     State(state): State<Arc<PluginAppState>>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let db_pool = state.db()?;
 
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
-    let plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
 
     Ok(Json(serde_json::json!({
         "settings": plugin.settings,
@@ -113,14 +119,19 @@ pub async fn update_plugin_settings(
     headers: HeaderMap,
     Path(slug): Path<String>,
     State(state): State<Arc<PluginAppState>>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let db_pool = state.db()?;
 
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
 
-    sqlx::query("UPDATE plugins SET settings = $2, updated_at = NOW() WHERE slug = $1")
-        .bind(&slug)
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+
+    sqlx::query("UPDATE alcedo_plugins SET settings = $2, updated_at = NOW() WHERE id = $1")
+        .bind(plugin.id)
         .bind(&body)
         .execute(db_pool)
         .await?;

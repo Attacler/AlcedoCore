@@ -40,8 +40,21 @@ pub struct AppliedMigration {
     pub file_name: String,
 }
 
+/// Marker separating the scope from the slug in scoped schema names.
+///
+/// Injectivity: `plugin_schema_name` only ever emits the slug alphabet
+/// `[A-Za-z0-9_-]` (see its assert below) — `$` is outside that alphabet, so a
+/// global schema name can never contain `$`. Scoped names always contain at
+/// least one `$`, and truncated scoped names contain two (`$<hash>$<scope>`),
+/// which keeps the global / scoped / truncated-scoped categories disjoint even
+/// when a slug ends in something that looks like a scope suffix (e.g. `foo_v1`).
+const SCOPE_DELIMITER: char = '$';
+
 pub fn plugin_schema_name(slug: &str) -> String {
-    // Validate slug contains only safe characters (SQL injection prevention)
+    // Validate slug contains only safe characters (SQL injection prevention).
+    // Note: this alphabet is `[A-Za-z0-9_-]` (Unicode letters/digits included)
+    // and deliberately excludes `$`, which `scoped_schema_name` relies on for
+    // injectivity. Do not add `$` here.
     assert!(
         slug.chars()
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
@@ -56,6 +69,85 @@ pub fn plugin_schema_name(slug: &str) -> String {
     let truncated: String = slug.chars().take(max_slug_chars).collect();
     let hash = truncated_hash(&slug, 6);
     format!("{}{}_{}", SCHEMA_PREFIX, truncated, hash)
+}
+
+/// Build a scoped plugin schema name: `plugin_{slug}${marker}{id}`.
+///
+/// `marker` is `a` (app version) or `v` (version); `id` is the corresponding
+/// row id. When the raw name would exceed the Postgres identifier limit we
+/// truncate the slug and embed a hash of the FULL `(slug, marker, id)` identity
+/// (`plugin_{trunc}${hash}${marker}{id}`), so distinct scopes never collapse to
+/// the same identifier and a truncated name can never equal an untruncated one
+/// (two `$` vs one `$`).
+fn scoped_schema_name(slug: &str, marker: char, id: i32) -> String {
+    let scope = format!("{}{}{}", SCOPE_DELIMITER, marker, id);
+    let raw = format!("{}{}{}", SCHEMA_PREFIX, slug, scope);
+    if raw.len() <= PG_MAX_IDENTIFIER_LEN {
+        return raw;
+    }
+    let hash = truncated_hash(&format!("{}{}{}", slug, marker, id), 6);
+    let reserved = SCHEMA_PREFIX.len() + 1 + hash.len() + scope.len();
+    let slug_keep = PG_MAX_IDENTIFIER_LEN.saturating_sub(reserved);
+    let truncated: String = slug.chars().take(slug_keep).collect();
+    format!("{}{}{}{}{}", SCHEMA_PREFIX, truncated, SCOPE_DELIMITER, hash, scope)
+}
+
+/// Schema for an app-version-scoped install.
+pub fn plugin_schema_name_for_install(slug: &str, app_version_id: Option<i32>) -> String {
+    match app_version_id {
+        None => plugin_schema_name(slug),
+        Some(av) => scoped_schema_name(slug, 'a', av),
+    }
+}
+
+/// Schema name for a plugin install scope. `app` wins over `version`; both
+/// `None` = global.
+pub fn plugin_schema_name_for_scope(
+    slug: &str,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
+) -> String {
+    if let Some(av) = app_version_id {
+        return plugin_schema_name_for_install(slug, Some(av));
+    }
+    if let Some(v) = version_id {
+        return scoped_schema_name(slug, 'v', v);
+    }
+    plugin_schema_name(slug)
+}
+
+/// Validate a plugin slug. Single source of truth shared by the create and
+/// deploy handlers so all plugins are named from the same alphabet.
+///
+/// Rules: non-empty, `<= 255` chars, and only `[a-z0-9_-]`. Lowercase-only
+/// keeps `plugin_schema_name`'s alphabet (and thus schema injectivity) closed
+/// under the slugs we ever accept.
+pub fn validate_plugin_slug(slug: &str) -> Result<(), String> {
+    if slug.is_empty() {
+        return Err("plugin slug must not be empty".to_string());
+    }
+    if slug.len() > 255 {
+        return Err("plugin slug must be at most 255 characters".to_string());
+    }
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
+        return Err(
+            "plugin slug may contain only lowercase letters, digits, '-' and '_'".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Whether `schema` is a schema name this module could have generated. Slugs
+/// contribute `[A-Za-z0-9_-]`; scoped names additionally use `$`. Used to guard
+/// schema names before they are interpolated into SQL.
+pub fn is_valid_schema_name(schema: &str) -> bool {
+    !schema.is_empty()
+        && schema
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == SCOPE_DELIMITER)
 }
 
 fn truncated_hash(input: &str, chars: usize) -> String {
@@ -157,7 +249,15 @@ pub struct PluginMigrationEngine {
 
 impl PluginMigrationEngine {
     pub fn new(pool: PgPool, migrations_dir: PathBuf, slug: &str) -> Self {
-        let schema = plugin_schema_name(slug);
+        Self::new_with_schema(pool, migrations_dir, slug, plugin_schema_name(slug))
+    }
+
+    pub fn new_with_schema(
+        pool: PgPool,
+        migrations_dir: PathBuf,
+        slug: &str,
+        schema: String,
+    ) -> Self {
         Self {
             pool,
             migrations_dir,
@@ -201,7 +301,7 @@ impl PluginMigrationEngine {
                 .map_err(|e| AppError::DatabaseError {
                     details: format!("Failed to begin transaction: {}", e),
                 })?;
-            let set_path = format!(r#"SET search_path TO "{}", public"#, self.schema);
+            let set_path = format!(r#"SET LOCAL search_path TO "{}", public"#, self.schema);
             sqlx::query(&set_path)
                 .execute(&mut *tx)
                 .await
@@ -415,7 +515,7 @@ impl PluginMigrationEngine {
             println!("Downcontent {:?}", down_content);
             if let Some(sql) = down_content {
                 let query_str = format!(
-                    r#"SET search_path TO "{}", public;
+                    r#"SET LOCAL search_path TO "{}", public;
 {}"#,
                     self.schema,
                     sql.trim()
@@ -486,5 +586,130 @@ impl PluginMigrationEngine {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod schema_name_tests {
+    use super::*;
+
+    #[test]
+    fn global_install_uses_plain_slug_schema() {
+        assert_eq!(
+            plugin_schema_name_for_install("hello-world", None),
+            "plugin_hello-world"
+        );
+    }
+
+    #[test]
+    fn app_install_uses_scope_delimiter() {
+        assert_eq!(
+            plugin_schema_name_for_install("hello-world", Some(1)),
+            "plugin_hello-world$a1"
+        );
+    }
+
+    #[test]
+    fn long_slug_respects_identifier_limit() {
+        let long = "a".repeat(60);
+        let name = plugin_schema_name_for_install(&long, Some(7));
+        assert!(name.len() <= PG_MAX_IDENTIFIER_LEN);
+        assert!(name.ends_with("$a7"));
+    }
+
+    #[test]
+    fn scope_global_uses_plain_slug_schema() {
+        assert_eq!(
+            plugin_schema_name_for_scope("hello-world", None, None),
+            "plugin_hello-world"
+        );
+    }
+
+    #[test]
+    fn scope_app_uses_marker_a() {
+        assert_eq!(
+            plugin_schema_name_for_scope("hello-world", Some(4), None),
+            "plugin_hello-world$a4"
+        );
+    }
+
+    #[test]
+    fn scope_version_uses_marker_v() {
+        assert_eq!(
+            plugin_schema_name_for_scope("hello-world", None, Some(9)),
+            "plugin_hello-world$v9"
+        );
+    }
+
+    #[test]
+    fn scope_app_wins_over_version() {
+        assert_eq!(
+            plugin_schema_name_for_scope("hello-world", Some(4), Some(9)),
+            "plugin_hello-world$a4"
+        );
+    }
+
+    #[test]
+    fn scope_version_respects_identifier_limit() {
+        let long = "a".repeat(60);
+        let name = plugin_schema_name_for_scope(&long, None, Some(7));
+        assert!(name.len() <= PG_MAX_IDENTIFIER_LEN);
+        assert!(name.ends_with("$v7"));
+    }
+
+    /// Regression: a slug ending in `_v1` must not collide with version 1 of
+    /// the same slug without the suffix. The global schema has no `$`; the
+    /// version schema always does.
+    #[test]
+    fn global_slug_resembling_scope_suffix_does_not_collide() {
+        let global = plugin_schema_name_for_scope("foo_v1", None, None);
+        let version = plugin_schema_name_for_scope("foo", None, Some(1));
+        assert_ne!(global, version);
+        assert!(!global.contains(SCOPE_DELIMITER));
+        assert!(version.contains(SCOPE_DELIMITER));
+    }
+
+    /// Two different scopes on the same long (truncated) slug must stay
+    /// distinct: the truncation hash covers the full `(slug, marker, id)`
+    /// identity, not just the slug.
+    #[test]
+    fn truncated_scopes_stay_distinct() {
+        let long = "a".repeat(60);
+        let app7 = plugin_schema_name_for_scope(&long, Some(7), None);
+        let app8 = plugin_schema_name_for_scope(&long, Some(8), None);
+        let ver7 = plugin_schema_name_for_scope(&long, None, Some(7));
+        assert!(app7.len() <= PG_MAX_IDENTIFIER_LEN);
+        assert!(app8.len() <= PG_MAX_IDENTIFIER_LEN);
+        assert!(ver7.len() <= PG_MAX_IDENTIFIER_LEN);
+        assert_ne!(app7, app8);
+        assert_ne!(app7, ver7);
+        assert_eq!(
+            app7.matches(SCOPE_DELIMITER).count(),
+            2,
+            "truncated scoped names carry both the hash and scope markers: {}",
+            app7
+        );
+    }
+
+    /// A truncated scoped name can never equal an untruncated scoped name for
+    /// a hand-picked slug that mimics the truncation layout (the latter has one
+    /// `$`, the former two).
+    #[test]
+    fn truncated_scoped_name_differs_from_crafted_untruncated() {
+        let long = "a".repeat(60);
+        let truncated = plugin_schema_name_for_scope(&long, None, Some(1));
+        let crafted = plugin_schema_name_for_scope("a_123456", None, Some(1));
+        assert_ne!(truncated, crafted);
+        assert_eq!(crafted.matches(SCOPE_DELIMITER).count(), 1);
+    }
+
+    #[test]
+    fn validate_plugin_slug_accepts_valid_and_rejects_invalid() {
+        assert!(validate_plugin_slug("hello-world_1").is_ok());
+        assert!(validate_plugin_slug("").is_err());
+        assert!(validate_plugin_slug("Upper").is_err());
+        assert!(validate_plugin_slug("bad.slug").is_err());
+        assert!(validate_plugin_slug(&"a".repeat(256)).is_err());
+        assert!(validate_plugin_slug(&"a".repeat(255)).is_ok());
     }
 }

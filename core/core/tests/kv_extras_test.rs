@@ -2,7 +2,6 @@
 mod common;
 use common::*;
 use plugin_core::api;
-use plugin_core::kv::store::KvStore;
 use plugin_core::plugins::health::AppState;
 use std::sync::Arc;
 use sqlx::PgPool;
@@ -12,7 +11,7 @@ const KV_SLUG: &str = "kv-extras-plugin";
 /// Insert a plugin row (plus active version) and grant it `kv.all`.
 async fn setup_plugin_with_kv_all(pool: &PgPool, slug: &str) {
     setup_test_plugin(pool, slug).await;
-    sqlx::query("UPDATE plugins SET granted_scopes = $2::jsonb WHERE slug = $1")
+    sqlx::query("UPDATE alcedo_plugins SET granted_scopes = $2::jsonb WHERE slug = $1")
         .bind(slug)
         .bind(serde_json::json!(["kv.all"]))
         .execute(pool)
@@ -20,16 +19,11 @@ async fn setup_plugin_with_kv_all(pool: &PgPool, slug: &str) {
         .unwrap();
 }
 
-/// Build an AppState whose `redis_connection` points at the SAME Redis the test
-/// writes `plugin_req:{id}` mappings into, and whose `kv_store` is backed by that
-/// Redis too (so TTL semantics are real, not the in-memory test stub).
+/// Build an AppState whose `redis` points at the SAME Redis the test writes
+/// `plugin_req:{id}` mappings into, and whose `kv_store` is backed by that
+/// Redis too (so TTL semantics are real).
 async fn create_kv_state(pool: PgPool, redis: &TestRedis) -> AppState {
-    use deadpool::managed;
-    let mut state = create_test_state_full(pool.clone(), redis.conn_manager.clone()).await;
-    let mgr = plugin_core::services::redis_session::RedisPoolManager::with_url(redis.url.clone());
-    state.redis_connection = Some(managed::Pool::builder(mgr).max_size(2).build().unwrap());
-    state.kv_store = Arc::new(KvStore::new(redis.conn_manager.clone()));
-    state
+    create_test_state_full(pool.clone(), &redis.url).await
 }
 
 /// Set up test server with a Redis-backed KV store + request-id→slug resolution.
@@ -46,7 +40,7 @@ async fn setup_kv() -> (axum_test::TestServer, TestDb, TestRedis) {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
     (server, test_db, test_redis)
 }
 
@@ -75,7 +69,6 @@ async fn put_kv(server: &axum_test::TestServer, redis: &TestRedis, key: &str, va
     let resp = server
         .put(&format!("/api/kv/{}", key))
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({"value": value}))
         .await;
     assert_eq!(
@@ -101,7 +94,6 @@ async fn test_kv_list_keys_and_exists() {
     let resp = server
         .get("/api/kv")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK, "list failed: {}", resp.text());
     let body = parse_body(&resp);
@@ -119,7 +111,6 @@ async fn test_kv_list_keys_and_exists() {
     let resp = server
         .get("/api/kv/foo/exists")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK, "exists failed: {}", resp.text());
     let body = parse_body(&resp);
@@ -129,7 +120,6 @@ async fn test_kv_list_keys_and_exists() {
     let resp = server
         .get("/api/kv/missing/exists")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK, "exists failed: {}", resp.text());
     let body = parse_body(&resp);
@@ -146,7 +136,6 @@ async fn test_kv_ttl() {
     let resp = server
         .get("/api/kv/nottl/ttl")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK, "ttl failed: {}", resp.text());
     let body = parse_body(&resp);
@@ -157,7 +146,6 @@ async fn test_kv_ttl() {
     let resp = server
         .put("/api/kv/expiring?ttl=60")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({"value": "y"}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK, "PUT failed: {}", resp.text());
@@ -166,7 +154,6 @@ async fn test_kv_ttl() {
     let resp = server
         .get("/api/kv/expiring/ttl")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
     let body = parse_body(&resp);
@@ -178,7 +165,6 @@ async fn test_kv_ttl() {
     let resp = server
         .get("/api/kv/absent/ttl")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
     let body = parse_body(&resp);
@@ -194,7 +180,6 @@ async fn test_kv_batch_roundtrip() {
     let resp = server
         .post("/api/kv/batch/set")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!([
             {"key": "b1", "value": "v1"},
             {"key": "b2", "value": "v2"},
@@ -210,7 +195,6 @@ async fn test_kv_batch_roundtrip() {
     let resp = server
         .post("/api/kv/batch/get")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({"keys": ["b1", "b2", "b3", "missing"]}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK, "batch get failed: {}", resp.text());
@@ -226,7 +210,6 @@ async fn test_kv_batch_roundtrip() {
     let resp = server
         .post("/api/kv/batch/delete")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({"keys": ["b1", "b2", "b3"]}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK, "batch delete failed: {}", resp.text());
@@ -238,7 +221,6 @@ async fn test_kv_batch_roundtrip() {
     let resp = server
         .post("/api/kv/batch/get")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({"keys": ["b1", "b2", "b3"]}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
@@ -253,7 +235,6 @@ async fn test_kv_batch_roundtrip() {
     let resp = server
         .get("/api/kv")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
     let body = parse_body(&resp);
@@ -279,7 +260,6 @@ async fn test_kv_increment_decrement() {
     let resp = server
         .post("/api/kv/counter/increment")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK, "increment failed: {}", resp.text());
@@ -291,7 +271,6 @@ async fn test_kv_increment_decrement() {
     let resp = server
         .post("/api/kv/counter/increment")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
@@ -303,7 +282,6 @@ async fn test_kv_increment_decrement() {
     let resp = server
         .post("/api/kv/counter/increment")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({"amount": 5}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
@@ -315,7 +293,6 @@ async fn test_kv_increment_decrement() {
     let resp = server
         .post("/api/kv/counter/decrement")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK, "decrement failed: {}", resp.text());
@@ -327,7 +304,6 @@ async fn test_kv_increment_decrement() {
     let resp = server
         .post("/api/kv/counter/decrement")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({"amount": 10}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);
@@ -339,7 +315,6 @@ async fn test_kv_increment_decrement() {
     let resp = server
         .post("/api/kv/brandnew/increment")
         .add_header("x-request-id", rid.as_str())
-        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
         .json(&serde_json::json!({}))
         .await;
     assert_eq!(resp.status_code(), axum::http::StatusCode::OK);

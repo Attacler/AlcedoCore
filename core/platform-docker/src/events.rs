@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 
 use alcedo_db::db::Pool;
 use alcedo_common::AppError;
-use alcedo_db::db::resilience::{find_slug_by_container_id, clear_restart};
+use alcedo_db::db::resilience::{find_install_id_by_deployment_id, clear_restart};
 use crate::DOCKER;
 use crate::client::DockerClient;
 
@@ -55,27 +55,27 @@ async fn handle_event(pool: &Pool, msg: bollard::models::EventMessage) {
         None => return,
     };
 
-    let container_id = match msg.actor.as_ref().and_then(|a| a.id.as_deref()) {
+    let deployment_id = match msg.actor.as_ref().and_then(|a| a.id.as_deref()) {
         Some(id) => id,
         None => return,
     };
 
     match action {
         "start" => {
-            tracing::info!(container_id = %container_id, "Plugin container started");
-            let slug = match find_slug_by_container_id(pool, container_id).await {
-                Ok(Some(s)) => s,
+            tracing::info!(deployment_id = %deployment_id, "Plugin container started");
+            let install_id = match find_install_id_by_deployment_id(pool, deployment_id).await {
+                Ok(Some(id)) => id,
                 _ => return,
             };
 
             let _ = sqlx::query(
-                "UPDATE plugin_versions SET status = 'running' WHERE container_id = $1"
+                "UPDATE alcedo_plugin_versions SET status = 'running' WHERE deployment_id = $1"
             )
-            .bind(container_id)
+            .bind(deployment_id)
             .execute(pool)
             .await;
 
-            let _ = clear_restart(pool, &slug).await;
+            let _ = clear_restart(pool, install_id).await;
         }
         "die" => {
             let exit_code = msg.actor.as_ref()
@@ -84,34 +84,34 @@ async fn handle_event(pool: &Pool, msg: bollard::models::EventMessage) {
                 .and_then(|v| v.parse::<i32>().ok())
                 .unwrap_or(-1);
 
-            tracing::info!(container_id = %container_id, exit_code = %exit_code, "Plugin container died");
+            tracing::info!(deployment_id = %deployment_id, exit_code = %exit_code, "Plugin container died");
 
             let _ = sqlx::query(
-                "UPDATE plugin_versions SET status = 'stopped' WHERE container_id = $1"
+                "UPDATE alcedo_plugin_versions SET status = 'stopped' WHERE deployment_id = $1"
             )
-            .bind(container_id)
+            .bind(deployment_id)
             .execute(pool)
             .await;
 
-            let _ = DockerClient.handle_container_exit(pool, container_id, exit_code).await;
+            let _ = DockerClient.handle_container_exit(pool, deployment_id, exit_code).await;
         }
         "stop" | "kill" => {
-            tracing::info!(container_id = %container_id, action = %action, "Plugin container stopped");
+            tracing::info!(deployment_id = %deployment_id, action = %action, "Plugin container stopped");
 
             let _ = sqlx::query(
-                "UPDATE plugin_versions SET status = 'stopped' WHERE container_id = $1"
+                "UPDATE alcedo_plugin_versions SET status = 'stopped' WHERE deployment_id = $1"
             )
-            .bind(container_id)
+            .bind(deployment_id)
             .execute(pool)
             .await;
         }
         "destroy" => {
-            tracing::info!(container_id = %container_id, "Plugin container destroyed");
+            tracing::info!(deployment_id = %deployment_id, "Plugin container destroyed");
 
             let _ = sqlx::query(
-                "UPDATE plugin_versions SET container_id = NULL, status = 'removed' WHERE container_id = $1"
+                "UPDATE alcedo_plugin_versions SET deployment_id = NULL, status = 'removed' WHERE deployment_id = $1"
             )
-            .bind(container_id)
+            .bind(deployment_id)
             .execute(pool)
             .await;
         }

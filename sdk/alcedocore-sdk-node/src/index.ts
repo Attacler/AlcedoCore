@@ -1,8 +1,9 @@
-export { createClient } from "./client";
-export type { ClientOptions } from "./client";
+export { createClient, resolveAppHeaders } from "./client";
+export type { ClientOptions, AppHeaderOptions } from "./client";
 
 export { createHealthResource } from "./health";
 export { createPluginsResource } from "./plugins";
+export type { PluginScope } from "./plugins";
 export { createMigrationsResource } from "./migrations";
 export { createSettingsResource } from "./settings";
 export { createUsageResource } from "./usage";

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from aiohttp import web
 
@@ -245,6 +246,12 @@ async def handle_items_delete(request: web.Request) -> web.Response:
 
 
 
+async def handle_events(request: web.Request) -> web.Response:
+    payload = await request.json()
+    print(f"[EVENT] ItemCreated payload: {json.dumps(payload)}")
+    return _json_response({"received": True, "type": payload.get("type")})
+
+
 def make_app() -> web.Application:
     app = web.Application()
 
@@ -257,6 +264,7 @@ def make_app() -> web.Application:
     app.router.add_get("/api/kv/ttl-demo", handle_ttl_demo)
     app.router.add_get("/api/kv/hello", handle_kv_hello)
     app.router.add_get("/", handle_root)
+    app.router.add_post("/__events__", handle_events)
 
     # Items CRUD via SDK proxy
     items_resource = app.router.add_resource("/api/items/{path:.*}")

@@ -3,6 +3,9 @@ import {
     PluginAssetsResponseSchema,
 } from "./zod-schemas.js";
 
+/** Plugin install scope. `global` = everywhere, `version` = every app on a version, `app` = one app × version. */
+export type PluginScope = "global" | "version" | "app";
+
 export function createPluginsResource(ky: any) {
     return {
         list: (options?: any) => ky.get("plugins", options).json(),
@@ -77,10 +80,12 @@ export function createPluginsResource(ky: any) {
             ky
                 .get(`plugins/${encodeURIComponent(name)}/versions`, options)
                 .json(),
-        deploy: (name: string, tag: string, options?: any) =>
+        // Re-deploying an existing install may require addressing it by `install_id`
+        // (server-side query param).
+        deploy: (name: string, tag: string, scope?: PluginScope, options?: any) =>
             ky
                 .post(`plugins/${encodeURIComponent(name)}/deploy`, {
-                    json: { tag },
+                    json: { tag, scope },
                     ...options,
                 })
                 .json(),
@@ -123,7 +128,7 @@ export function createPluginsResource(ky: any) {
             }),
         restart: (name: string, containerId?: string, options?: any) =>
             ky.post(`plugins/${encodeURIComponent(name)}/restart`, {
-                json: { container_id: containerId },
+                json: { deployment_id: containerId },
                 ...options,
             }),
         scopes: (slug: string, options?: any) =>

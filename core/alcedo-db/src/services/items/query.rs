@@ -1,6 +1,6 @@
 use sea_query::{
-    Alias, Condition, Expr, JoinType, Order, PostgresQueryBuilder, SelectStatement, SimpleExpr,
-    extension::postgres::PgExpr,
+    extension::postgres::PgExpr, Alias, Condition, Expr, JoinType, Order, PostgresQueryBuilder,
+    SelectStatement, SimpleExpr,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -14,6 +14,8 @@ use alcedo_common::error::AppError;
 use alcedo_common::state::{CoreDatabaseSchema, CoreState};
 
 use crate::db::Pool;
+use crate::db::collections::CollectionDefinition;
+use crate::db::field_resolver::{detect_direction, Direction};
 use crate::services::items::jsonvalue_simpleexpr::parse_value;
 
 const LIMIT_DEFAULT: u64 = 200;
@@ -43,7 +45,10 @@ async fn execute_sql(pool: &Pool, sql: &str) -> Result<Vec<Map<String, Value>>, 
         _ => vec![],
     };
 
-    Ok(items.iter().filter_map(|item| item.as_object().cloned()).collect())
+    Ok(items
+        .iter()
+        .filter_map(|item| item.as_object().cloned())
+        .collect())
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -64,7 +69,14 @@ pub struct Query {
 pub struct RemainingQuery {
     pub table: String,
     pub fields: Vec<String>,
+    /// Base-row key used to link related rows: the FK column for M:1, the base
+    /// PK column for 1:M.
     pub fk: String,
+    /// Output key for the expanded relation (the relation field name).
+    pub alias: String,
+    /// `Some(target_fk)` marks a 1:M relation: the column on the target table
+    /// that references the base PK.
+    pub fk_on_target: Option<String>,
     pub app_context: AppContext,
 }
 
@@ -80,41 +92,69 @@ impl Query {
         table: &String,
     ) -> Result<Vec<Map<String, Value>>, AppError> {
         let schema = state.schema.read().await.clone();
-        let (stmt, remaining_queries) = self.to_sql(table.as_str(), &schema, context)?;
+        let requested_fields = self.fields.clone();
+        let pool = state.pool()?;
+
+        // Collection definitions let the engine tell M:1 from 1:M. 1:M fields
+        // are virtual (no FK column exists on the base table), so direction can
+        // only be derived from the collection metadata. Absent outside an
+        // app×version schema (e.g. migration contexts), hence the default.
+        let all_collections = crate::db::collections::list_collections(pool)
+            .await
+            .unwrap_or_default();
+
+        let base_pk = schema
+            .columns
+            .iter()
+            .find(|c| c.table == *table && c.is_primary_key)
+            .map(|c| c.name.clone());
+
+        let (stmt, remaining_queries) =
+            self.to_sql(table.as_str(), &schema, context, &all_collections)?;
         // Because we can have relations (for example fields[]=customer.name) we will have a query that will need to execute after this one aka "remaining"
         let query_str = stmt.to_string(PostgresQueryBuilder);
 
-        let pool = state.pool()?;
         let mut rows = execute_sql(pool, &query_str).await?;
+
+        let has_one_to_many = remaining_queries.iter().any(|rq| rq.fk_on_target.is_some());
 
         // Lets execute the remaining queries based on the fk`s that came from our "base" query
         for rq in remaining_queries {
-            let fk_vals: Vec<String> = rows
+            let fk_vals: Vec<Value> = rows
                 .iter()
                 .filter_map(|row| row.get(&rq.fk))
-                .map(|v| v.to_string())
+                .cloned()
                 .collect();
 
             if fk_vals.is_empty() {
                 continue;
             }
 
-            let pk = match schema
+            let pk_name = match schema
                 .columns
                 .iter()
                 .find(|c| c.table == rq.table && c.is_primary_key)
             {
-                Some(v) => v,
+                Some(v) => v.name.clone(),
                 None => continue,
             };
 
+            // M:1 links on the target PK; 1:M links on the target FK column.
+            let (link_field, mut nested_fields) = match &rq.fk_on_target {
+                Some(target_fk) => (target_fk.clone(), rq.fields.clone()),
+                None => (pk_name.clone(), rq.fields.clone()),
+            };
+            if !nested_fields.iter().any(|f| f == &link_field) {
+                nested_fields.push(link_field.clone());
+            }
+
             // lets create a new Query object to fetch the relations
-            // we do this by a simple where fk in (id1,id2 ect)
+            // we do this by a simple where link_field in (id1,id2 ect)
             let mut field_filter = HashMap::new();
             field_filter.insert(
-                pk.name.clone(),
+                link_field,
                 FieldValue::Comparison(Comparison {
-                    _in: Some(fk_vals.into()),
+                    _in: Some(Value::Array(fk_vals)),
                     ..Default::default()
                 }),
             );
@@ -126,8 +166,6 @@ impl Query {
                 _or: None,
             };
 
-            let mut nested_fields = rq.fields.clone();
-            nested_fields.push(pk.name.clone());
             let mut nested_query = Query {
                 fields: nested_fields,
                 filter,
@@ -139,23 +177,61 @@ impl Query {
             let related_rows =
                 Box::pin(nested_query.execute_query(&rq.app_context, state, &rq.table)).await?;
 
-            // After we got the related rows, we will need to replace the "id" in the rows that we got from our first query
-            for row in rows.iter_mut() {
-                let fk_val = row.get(&rq.fk);
-                if let Some(val) = fk_val {
-                    let related_value = related_rows
-                        .iter()
-                        .find(|row| {
-                            row.get(&pk.name).unwrap_or(&Value::String("".to_string())) == val
-                        })
-                        .map(|v| v.clone());
+            match &rq.fk_on_target {
+                Some(target_fk) => {
+                    // 1:M: group related rows into an array under the relation key.
+                    for row in rows.iter_mut() {
+                        let Some(key) = row.get(&rq.fk).cloned() else {
+                            continue;
+                        };
+                        let matches: Vec<Value> = related_rows
+                            .iter()
+                            .filter(|rr| rr.get(target_fk) == Some(&key))
+                            .map(|rr| {
+                                let mut obj = rr.clone();
+                                // The link column was only fetched for grouping.
+                                obj.remove(target_fk);
+                                Value::Object(obj)
+                            })
+                            .collect();
+                        row.insert(rq.alias.clone(), Value::Array(matches));
+                    }
+                }
+                None => {
+                    // M:1: replace the FK value with the related object.
+                    for row in rows.iter_mut() {
+                        let Some(val) = row.get(&rq.fk).cloned() else {
+                            continue;
+                        };
+                        let related_value = related_rows
+                            .iter()
+                            .find(|row| {
+                                row.get(&pk_name).unwrap_or(&Value::String("".to_string())) == &val
+                            })
+                            .cloned();
 
-                    if let Some(val) = related_value {
-                        row.insert(rq.fk.clone(), val.into());
+                        if let Some(value) = related_value {
+                            row.insert(rq.alias.clone(), Value::Object(value));
+                        }
                     }
                 }
             }
         }
+
+        // `to_sql` adds the base PK so 1:M grouping has a key to link on; drop
+        // it again when the caller did not request it.
+        if has_one_to_many {
+            if let Some(pk) = &base_pk {
+                let requested = requested_fields.is_empty()
+                    || requested_fields.iter().any(|f| f == pk || f == "*");
+                if !requested {
+                    for row in rows.iter_mut() {
+                        row.remove(pk);
+                    }
+                }
+            }
+        }
+
         Ok(rows)
     }
 
@@ -168,13 +244,17 @@ impl Query {
         table: &str,
         schema: &CoreDatabaseSchema,
         context: &AppContext,
+        all_collections: &[CollectionDefinition],
     ) -> Result<(SelectStatement, Vec<RemainingQuery>), AppError> {
         let table_schema = schema
             .tables
             .iter()
             .find(|t| t.name == table && t.schema == context.schema_name());
         if let None = table_schema {
-            return Err(AppError::NotFound(format!("Collection '{}' not found", table)));
+            return Err(AppError::NotFound(format!(
+                "Collection '{}' not found",
+                table
+            )));
         }
         // because theoreticly someone could provide the joins trough the API, we will always overwrite this
         self.joins = vec![];
@@ -214,68 +294,128 @@ impl Query {
         let fields = &self.fields.clone();
 
         let mut related_fields: Vec<RemainingQuery> = vec![];
+        let base_def = all_collections.iter().find(|c| c.name == table);
 
         // based on the provided fields, we should fill the related_fields vector
         for field in fields {
-            // its a relation if the field contains a dot
-            let field = if field.contains(".") {
+            // A dot-notation field is a relation. M:1 relations have a physical
+            // FK column on the base table; 1:M relations are virtual and are
+            // resolved from the collection metadata below.
+            if field.contains(".") {
                 let relation_field = field.split(".").next().unwrap();
                 let len = relation_field.len() + 1;
                 let remaining: String = field.chars().skip(len).take(field.len() - len).collect();
 
-                let fk_table = schema.columns.iter().find(|col| {
+                let fk_column = schema.columns.iter().find(|col| {
                     col.table == table
                         && col.name == relation_field
                         && col.schema == context.schema_name()
                 });
 
-                if let None = fk_table {
-                    return Err(AppError::NotFound(format!(
-                        "Relation {} on collection {} not found",
-                        relation_field, table
-                    )));
+                match fk_column.and_then(|col| col.foreign_key.clone()) {
+                    // M:1 / 1:1 — FK lives on the base table.
+                    Some(fk_info) => {
+                        let find = related_fields
+                            .iter_mut()
+                            .find(|rel| rel.table == fk_info.table && rel.alias == relation_field);
+
+                        if let None = find {
+                            related_fields.push(RemainingQuery {
+                                fields: vec![remaining],
+                                table: fk_info.table,
+                                fk: relation_field.to_string(),
+                                alias: relation_field.to_string(),
+                                fk_on_target: None,
+                                //@TODO check for a better way of handling the app_name
+                                app_context: AppContext {
+                                    app_name: fk_info
+                                        .schema
+                                        .split_once("010")
+                                        .unwrap_or((&fk_info.schema, ""))
+                                        .0
+                                        .to_string(),
+                                    version: context.version.clone(),
+                                    request_source: context.request_source.clone(),
+                                },
+                            });
+                        } else {
+                            find.unwrap().fields.push(remaining);
+                        }
+
+                        stmt.column((Alias::new(table), Alias::new(relation_field)));
+                    }
+                    // No FK column on the base table — try a virtual 1:M relation.
+                    None => {
+                        let base_def = base_def.ok_or_else(|| {
+                            AppError::NotFound(format!(
+                                "Relation {} on collection {} not found",
+                                relation_field, table
+                            ))
+                        })?;
+
+                        let Direction::OneToMany {
+                            target_collection,
+                            fk_column,
+                            base_pk_column,
+                            ..
+                        } = detect_direction(
+                            relation_field,
+                            table,
+                            base_def,
+                            all_collections,
+                            None,
+                            None,
+                        )?
+                        else {
+                            return Err(AppError::NotFound(format!(
+                                "Relation {} on collection {} not found",
+                                relation_field, table
+                            )));
+                        };
+
+                        let find = related_fields.iter_mut().find(|rel| {
+                            rel.table == target_collection
+                                && rel.alias == relation_field
+                                && rel.fk == base_pk_column
+                        });
+
+                        if let None = find {
+                            related_fields.push(RemainingQuery {
+                                fields: vec![remaining],
+                                table: target_collection,
+                                fk: base_pk_column,
+                                alias: relation_field.to_string(),
+                                fk_on_target: Some(fk_column),
+                                app_context: AppContext {
+                                    app_name: context.app_name.clone(),
+                                    version: context.version.clone(),
+                                    request_source: context.request_source.clone(),
+                                },
+                            });
+                        } else {
+                            find.unwrap().fields.push(remaining);
+                        }
+                        // 1:M values are attached by the follow-up query; there
+                        // is no column to select on the base table.
+                    }
                 }
-                let fk_table = fk_table.unwrap();
-
-                if let None = fk_table.foreign_key {
-                    return Err(AppError::NotFound(format!(
-                        "Relation {} on collection {} not found",
-                        relation_field, table
-                    )));
-                }
-                let fk_info = fk_table.foreign_key.clone().unwrap();
-
-                let find = related_fields
-                    .iter_mut()
-                    .find(|rel| rel.table == fk_info.table);
-
-                if let None = find {
-                    related_fields.push(RemainingQuery {
-                        fields: vec![remaining],
-                        table: fk_info.table,
-                        fk: relation_field.to_string(),
-                        //@TODO check for a better way of handling the app_name
-                        app_context: AppContext {
-                            app_name: fk_info
-                                .schema
-                                .split_once("010")
-                                .unwrap_or((&fk_info.schema, ""))
-                                .0
-                                .to_string(),
-                            version: context.version.clone(),
-                            request_source: context.request_source.clone(),
-                        },
-                    });
-                } else {
-                    find.unwrap().fields.push(remaining);
-                }
-
-                relation_field
             } else {
-                field
-            };
+                stmt.column((Alias::new(table), Alias::new(field)));
+            }
+        }
 
-            stmt.column((Alias::new(table), Alias::new(field)));
+        // 1:M grouping links on the base PK, so it must be present in the
+        // result even when the caller did not ask for it.
+        if related_fields.iter().any(|rq| rq.fk_on_target.is_some()) {
+            if let Some(pk) = schema
+                .columns
+                .iter()
+                .find(|c| c.table == table && c.is_primary_key)
+            {
+                if !self.fields.iter().any(|f| f == &pk.name) {
+                    stmt.column((Alias::new(table), Alias::new(pk.name.clone())));
+                }
+            }
         }
 
         // Now we must also apply the filters which we do trough the add_filter fn

@@ -17,17 +17,22 @@ pub struct CollectionQueryRequest {
     pub backlink: bool,
 }
 
-fn return_true() -> bool { true }
+fn return_true() -> bool {
+    true
+}
 
 /// Walk through nested non-operator objects to build a dot-notation field path,
 /// then extract the operator and value at the leaf.
 /// e.g. `{"customer": {"name": {"_eq": "Acme"}}}` → field="customer.name", op="_eq", val="Acme"
 fn parse_nested_rule_path(mut field_path: String, val: Value) -> Result<FilterCondition, String> {
-    let obj = val.as_object().ok_or_else(|| {
-        format!("rule value for '{}' must be an object", field_path)
-    })?;
+    let obj = val
+        .as_object()
+        .ok_or_else(|| format!("rule value for '{}' must be an object", field_path))?;
     if obj.len() != 1 {
-        return Err(format!("rule for '{}' must have exactly one key", field_path));
+        return Err(format!(
+            "rule for '{}' must have exactly one key",
+            field_path
+        ));
     }
     let (key, inner_val) = obj.into_iter().next().unwrap();
 
@@ -38,7 +43,11 @@ fn parse_nested_rule_path(mut field_path: String, val: Value) -> Result<FilterCo
         let value = match operator {
             ComparisonOperator::IsNull | ComparisonOperator::IsNotNull => None,
             _ => {
-                if inner_val.is_null() { None } else { Some(inner_val.clone()) }
+                if inner_val.is_null() {
+                    None
+                } else {
+                    Some(inner_val.clone())
+                }
             }
         };
         return Ok(FilterCondition::Rule {
@@ -116,6 +125,7 @@ pub enum ComparisonOperator {
     Contains,
     StartsWith,
     EndsWith,
+    Ilike,
     In,
     NotIn,
     IsNull,
@@ -134,6 +144,7 @@ impl ComparisonOperator {
             Self::Contains => "_contains",
             Self::StartsWith => "_starts_with",
             Self::EndsWith => "_ends_with",
+            Self::Ilike => "_ilike",
             Self::In => "_in",
             Self::NotIn => "_nin",
             Self::IsNull => "_null",
@@ -152,6 +163,7 @@ impl ComparisonOperator {
             "_contains" => Some(Self::Contains),
             "_starts_with" => Some(Self::StartsWith),
             "_ends_with" => Some(Self::EndsWith),
+            "_ilike" => Some(Self::Ilike),
             "_in" => Some(Self::In),
             "_nin" => Some(Self::NotIn),
             "_null" => Some(Self::IsNull),
@@ -183,16 +195,26 @@ pub enum FilterCondition {
 impl Serialize for FilterCondition {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            FilterCondition::Group { operator, conditions } => {
+            FilterCondition::Group {
+                operator,
+                conditions,
+            } => {
                 let key = match operator {
                     LogicOperator::And => "_and",
                     LogicOperator::Or => "_or",
                 };
                 let mut map = Map::with_capacity(1);
-                map.insert(key.to_string(), serde_json::to_value(conditions).unwrap_or_default());
+                map.insert(
+                    key.to_string(),
+                    serde_json::to_value(conditions).unwrap_or_default(),
+                );
                 Value::Object(map).serialize(serializer)
             }
-            FilterCondition::Rule { field, operator, value } => {
+            FilterCondition::Rule {
+                field,
+                operator,
+                value,
+            } => {
                 let op_key = operator.as_str();
                 let inner_val = match value {
                     Some(v) if !v.is_null() => v.clone(),
@@ -233,7 +255,9 @@ impl<'de> Deserialize<'de> for FilterCondition {
 
 impl FilterCondition {
     fn from_json(val: Value) -> Result<Self, String> {
-        let obj = val.as_object().ok_or_else(|| "filter must be a JSON object".to_string())?;
+        let obj = val
+            .as_object()
+            .ok_or_else(|| "filter must be a JSON object".to_string())?;
         if obj.len() != 1 {
             return Err("filter object must have exactly one key".to_string());
         }
@@ -241,7 +265,9 @@ impl FilterCondition {
 
         match key.as_str() {
             "_and" | "_or" => {
-                let arr = inner.as_array().ok_or_else(|| format!("'{}' must be an array", key))?;
+                let arr = inner
+                    .as_array()
+                    .ok_or_else(|| format!("'{}' must be an array", key))?;
                 let operator = match key.as_str() {
                     "_and" => LogicOperator::And,
                     "_or" => LogicOperator::Or,
@@ -254,11 +280,12 @@ impl FilterCondition {
                             .map_err(|e| format!("condition {}: {}", i, e))?,
                     );
                 }
-                Ok(FilterCondition::Group { operator, conditions })
+                Ok(FilterCondition::Group {
+                    operator,
+                    conditions,
+                })
             }
-            field_name => {
-                parse_nested_rule_path(field_name.to_string(), inner.clone())
-            }
+            field_name => parse_nested_rule_path(field_name.to_string(), inner.clone()),
         }
     }
 }

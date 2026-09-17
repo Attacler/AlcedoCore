@@ -1,8 +1,8 @@
 use axum::{extract::State, http::HeaderMap, routing::post, Json, Router};
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use alcedo_common::context::ExtractContext;
 use crate::api::permission_check;
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
@@ -29,20 +29,43 @@ pub fn dev_router(state: Arc<PluginAppState>) -> Router {
 async fn request_id_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: HeaderMap,
+    ExtractContext(ctx): ExtractContext,
     Json(payload): Json<RequestIdPayload>,
 ) -> Result<Json<RequestIdResponse>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let request_id = uuid::Uuid::new_v4().to_string();
 
-    // Store request_id → plugin_slug mapping in Redis for permission enforcement
-    if let Some(ref pool) = state.redis_connection {
-        if let Ok(mut conn) = pool.get().await {
-            let redis_key = format!("plugin_req:{}", request_id);
-            let res = conn.set::<_, _, ()>(&redis_key, &payload.slug).await;
+    let db_pool = state.db()?;
+    let identity = match crate::api::install::resolve_install_for_context(
+        db_pool,
+        &payload.slug,
+        &ctx,
+    )
+    .await
+    {
+        Ok(install) => serde_json::json!({
+            "slug": install.slug,
+            "app_version_id": install.app_version_id,
+            "version_id": install.version_id,
+            "install_id": install.id,
+        }),
+        // A locally-run dev plugin may not be deployed yet; fall back to a
+        // slug-only global identity so its SDK callbacks still authenticate.
+        Err(AppError::NotFound(_)) => serde_json::json!({
+            "slug": payload.slug,
+            "app_version_id": null,
+            "version_id": null,
+            "install_id": null,
+        }),
+        Err(e) => return Err(e),
+    }
+    .to_string();
 
-            if let Err(e) = res {
-                tracing::error!("[DEV] Could not register dev requestID: {:?}", e);
-            }
+    // Store request_id → install identity in Redis for permission enforcement
+    if let Some(ref client) = state.redis {
+        let redis_key = format!("plugin_req:{}", request_id);
+        if let Err(e) = client.set(&redis_key, &identity, None).await {
+            tracing::error!("[DEV] Could not register dev requestID: {:?}", e);
         }
     }
 

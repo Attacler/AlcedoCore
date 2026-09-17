@@ -1,8 +1,6 @@
 pub mod client;
-pub mod docker_service;
 pub mod events;
 pub mod platform;
-pub mod runtime;
 pub mod services;
 pub mod swarm;
 

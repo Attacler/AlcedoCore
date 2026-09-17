@@ -6,8 +6,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+use alcedo_common::context::ExtractContext;
+use alcedo_container::container::plugin_service_name;
 use crate::api::permission_check;
 use crate::api::responses::ResponseEnvelope;
+use crate::db::plugin_migrations::{plugin_schema_name_for_scope, PluginMigrationEngine};
 use crate::db::queries::{Plugin, PluginVersion, Registry};
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
@@ -24,9 +27,17 @@ fn version_status(active_version: &Option<PluginVersion>) -> (String, String) {
     (version, status)
 }
 
+fn scope_label(plugin: &Plugin) -> String {
+    plugin.scope().to_string()
+}
+
 #[derive(Debug, Serialize)]
 pub struct PluginListItem {
+    pub id: i64,
     pub slug: String,
+    pub app_version_id: Option<i32>,
+    pub version_id: Option<i32>,
+    pub scope: String,
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub image: String,
@@ -45,16 +56,28 @@ pub struct ListPluginsResponse {
     pub offset: i64,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct InstallOverride {
+    pub install_id: Option<i64>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ListPluginsQuery {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    pub scope: Option<String>,
+    pub version_id: Option<i32>,
+    pub app_version_id: Option<i32>,
+    pub effective: Option<bool>,
+    pub version: Option<String>,
+    pub app: Option<String>,
 }
 
 pub async fn list_plugins_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
     Query(query): Query<ListPluginsQuery>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<ResponseEnvelope<ListPluginsResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
     let db_pool = state.db()?;
@@ -62,7 +85,92 @@ pub async fn list_plugins_handler(
     let limit = query.limit.unwrap_or(20).min(100);
     let offset = query.offset.unwrap_or(0);
 
+    // Empty picker params behave as no filter.
+    let app_filter = query.app.as_deref().filter(|s| !s.is_empty());
+    let version_filter = query.version.as_deref().filter(|s| !s.is_empty());
+
+    if let Some(s) = query.scope.as_deref() {
+        if !matches!(s, "global" | "version" | "app") {
+            return Err(AppError::BadRequest(format!(
+                "Invalid scope '{}': expected 'global', 'version', or 'app'",
+                s
+            )));
+        }
+    }
+
     let all_plugins = Plugin::find_all(db_pool).await?;
+
+    // Name-based picker filters. An install row carries either `app_version_id`
+    // or `version_id`, never both (CHECK constraint), so the app-name and
+    // version-name predicates must be ORed rather than applied independently.
+    let name_app_version_ids: Option<Vec<i32>> = if app_filter.is_some() {
+        Some(resolve_app_version_ids(db_pool, app_filter, version_filter).await?)
+    } else if version_filter.is_some() {
+        Some(resolve_app_version_ids(db_pool, None, version_filter).await?)
+    } else {
+        None
+    };
+    let name_version_id = if let Some(v) = version_filter {
+        sqlx::query_scalar::<_, i32>("SELECT id FROM alcedo.alcedo_versions WHERE version_name = $1")
+            .bind(v)
+            .fetch_optional(db_pool)
+            .await?
+    } else {
+        None
+    };
+
+    let all_plugins: Vec<Plugin> = all_plugins
+        .into_iter()
+        .filter(|p| query.scope.as_deref().map(|s| p.scope() == s).unwrap_or(true))
+        .filter(|p| query.version_id.map(|v| p.version_id == Some(v)).unwrap_or(true))
+        .filter(|p| query.app_version_id.map(|v| p.app_version_id == Some(v)).unwrap_or(true))
+        .filter(|p| match &name_app_version_ids {
+            None => true,
+            Some(ids) => {
+                let app_match = p.app_version_id.map(|av| ids.contains(&av)).unwrap_or(false);
+                let version_match = matches!(name_version_id, Some(vid) if p.version_id == Some(vid));
+                if app_filter.is_some() {
+                    app_match
+                } else {
+                    app_match || version_match
+                }
+            }
+        })
+        .collect();
+
+    // Effective mode: collapse to one install per slug, most-specific install
+    // applicable to the request context wins.
+    let all_plugins: Vec<Plugin> = if query.effective.unwrap_or(false) {
+        let av = ctx.app_version_id;
+        let vid = ctx.version_id;
+        let mut by_slug: std::collections::HashMap<String, Plugin> = std::collections::HashMap::new();
+        for p in all_plugins {
+            let applicable = (p.app_version_id.is_none() && p.version_id.is_none())
+                || (av.is_some() && p.app_version_id == av)
+                || (p.app_version_id.is_none() && vid.is_some() && p.version_id == vid);
+            if !applicable {
+                continue;
+            }
+            match by_slug.get(&p.slug) {
+                Some(existing) if existing.scope() == "app" => {}
+                Some(existing) if existing.scope() == "version" && p.scope() != "app" => {}
+                _ => {
+                    by_slug.insert(p.slug.clone(), p);
+                }
+            }
+        }
+        let mut collapsed: Vec<Plugin> = by_slug.into_values().collect();
+        collapsed.sort_by(|a, b| {
+            a.slug
+                .cmp(&b.slug)
+                .then(a.app_version_id.cmp(&b.app_version_id))
+                .then(a.version_id.cmp(&b.version_id))
+        });
+        collapsed
+    } else {
+        all_plugins
+    };
+
     let total = all_plugins.len() as i64;
 
     let mut plugins_list = Vec::new();
@@ -71,7 +179,7 @@ pub async fn list_plugins_handler(
         .skip(offset as usize)
         .take(limit as usize)
     {
-        let active_version = PluginVersion::find_active(db_pool, &plugin.slug)
+        let active_version = PluginVersion::find_active_for_install(db_pool, plugin.id)
             .await
             .ok()
             .flatten();
@@ -81,7 +189,11 @@ pub async fn list_plugins_handler(
             .unwrap_or_else(|| "unknown".to_string());
 
         plugins_list.push(PluginListItem {
+            id: plugin.id,
             slug: plugin.slug.clone(),
+            app_version_id: plugin.app_version_id,
+            version_id: plugin.version_id,
+            scope: scope_label(&plugin),
             display_name: plugin.display_name.clone(),
             description: plugin.description.clone(),
             image: plugin.image.clone(),
@@ -103,7 +215,11 @@ pub async fn list_plugins_handler(
 
 #[derive(Debug, Serialize)]
 pub struct PluginDetailResponse {
+    pub id: i64,
     pub slug: String,
+    pub app_version_id: Option<i32>,
+    pub version_id: Option<i32>,
+    pub scope: String,
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub image: String,
@@ -127,22 +243,27 @@ pub async fn get_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<ResponseEnvelope<PluginDetailResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
     let db_pool = state.db()?;
 
-    let plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug)
+    let active_version = PluginVersion::find_active_for_install(db_pool, plugin.id)
         .await
         .ok()
         .flatten();
     let (version, status) = version_status(&active_version);
+    let scope = scope_label(&plugin);
 
     Ok(Json(ResponseEnvelope::success(PluginDetailResponse {
+        id: plugin.id,
         slug: plugin.slug,
+        app_version_id: plugin.app_version_id,
+        version_id: plugin.version_id,
+        scope,
         display_name: plugin.display_name,
         description: plugin.description,
         image: plugin.image,
@@ -187,25 +308,27 @@ impl CreatePluginRequest {
 pub async fn create_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
+    ExtractContext(ctx): ExtractContext,
     Json(payload): Json<CreatePluginRequest>,
 ) -> Result<Json<ResponseEnvelope<PluginDetailResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
+
+    // Decision 8: `POST /api/plugins` always creates a global install, which
+    // belongs to the global zone. In an explicit app context only a privileged
+    // caller (global admin / validated developer API key) may create it;
+    // non-privileged callers should deploy with scope 'app' instead.
+    if ctx.app_version_id.is_some()
+        && !crate::api::install::caller_is_privileged(&state, &headers).await?
+    {
+        return Err(AppError::Forbidden(
+            "Only a global admin or developer key may create global installs; use scope 'app' in an app context.".to_string(),
+        ));
+    }
+
     let db_pool = state.db()?;
 
-    if payload.slug.is_empty() || payload.slug.len() > 255 {
-        return Err(AppError::BadRequest(
-            "Invalid slug: must be 1-255 characters".to_string(),
-        ));
-    }
-    if !payload
-        .slug
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(AppError::BadRequest(
-            "Invalid slug: must be alphanumeric with hyphens and underscores only".to_string(),
-        ));
-    }
+    crate::db::plugin_migrations::validate_plugin_slug(&payload.slug)
+        .map_err(AppError::BadRequest)?;
     if payload.image.is_empty() {
         return Err(AppError::BadRequest("Image is required".to_string()));
     }
@@ -219,17 +342,17 @@ pub async fn create_plugin_handler(
         })?;
     let resolved_image = registry.resolve_image(&payload.image);
 
-    let existing = Plugin::find_by_slug(db_pool, &payload.slug).await?;
-    if existing.is_some() {
-        return Err(AppError::Conflict(format!(
-            "Plugin {} already exists",
-            payload.slug
-        )));
+    let existing = Plugin::check_install_not_exists(db_pool, &payload.slug, None).await;
+    if let Err(e) = existing {
+        return Err(e);
     }
 
     let now = chrono::Utc::now();
     let plugin = Plugin {
+        id: 0,
         slug: payload.slug.clone(),
+        app_version_id: None,
+        version_id: None,
         image: resolved_image,
         plugin_type: "dynamic".to_string(),
         system_plugin: false,
@@ -253,10 +376,17 @@ pub async fn create_plugin_handler(
 
     Plugin::insert(db_pool, &plugin).await?;
 
+    let plugin = Plugin::find_install(db_pool, &payload.slug, None)
+        .await?
+        .ok_or_else(|| AppError::Internal("Install missing after insert".to_string()))?;
+    let install_id = plugin.id;
+
     let version = PluginVersion {
+        id: 0,
+        install_id,
         slug: payload.slug.clone(),
         version: "1.0.0".to_string(),
-        container_id: None,
+        deployment_id: None,
         status: "stopped".to_string(),
         is_active: true,
         deployed_at: Some(now),
@@ -267,8 +397,14 @@ pub async fn create_plugin_handler(
     };
     PluginVersion::insert(db_pool, &version).await?;
 
+    let scope = scope_label(&plugin);
+
     Ok(Json(ResponseEnvelope::success(PluginDetailResponse {
+        id: plugin.id,
         slug: plugin.slug,
+        app_version_id: plugin.app_version_id,
+        version_id: plugin.version_id,
+        scope,
         display_name: plugin.display_name,
         description: plugin.description,
         image: plugin.image,
@@ -321,7 +457,7 @@ pub struct LifecycleResponse {
     pub version: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_id: Option<String>,
+    pub deployment_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub new_scopes: Option<Vec<serde_json::Value>>,
 }
@@ -341,6 +477,27 @@ pub async fn resolve_plugin_registry_name(
         .flatten()
         .map(|reg| reg.name)
         .or_else(|| registry_host_from_image(&plugin.image))
+}
+
+/// Resolve the `alcedo_apps_versions.id` set for an optional app/version name pair.
+async fn resolve_app_version_ids(
+    db_pool: &sqlx::PgPool,
+    app: Option<&str>,
+    version: Option<&str>,
+) -> Result<Vec<i32>, AppError> {
+    let rows: Vec<(i32,)> = sqlx::query_as(
+        r#"SELECT av.id
+           FROM alcedo.alcedo_apps_versions av
+           JOIN alcedo.alcedo_apps a ON a.id = av.app_id
+           JOIN alcedo.alcedo_versions v ON v.id = av.version_id
+           WHERE ($1::text IS NULL OR a.api_name = $1)
+             AND ($2::text IS NULL OR v.version_name = $2)"#,
+    )
+    .bind(app)
+    .bind(version)
+    .fetch_all(db_pool)
+    .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
 }
 
 /// Derive the registry host from an image string, e.g. "localhost:5000" from
@@ -417,6 +574,8 @@ pub async fn get_plugin_versions_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<ResponseEnvelope<ListVersionsResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
     use reqwest::Client;
@@ -424,9 +583,7 @@ pub async fn get_plugin_versions_handler(
 
     let db_pool = state.db()?;
 
-    let plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
 
     // Determine registry URL: prefer registry_id lookup, fall back to parsing image string
     let registry_url_opt = match Registry::find_by_id(db_pool, plugin.registry_id).await {
@@ -548,7 +705,7 @@ pub async fn get_plugin_versions_handler(
     }
 
     // Always append the active DB version as a fallback so users see what's running
-    if let Ok(Some(active)) = PluginVersion::find_active(db_pool, &slug).await {
+    if let Ok(Some(active)) = PluginVersion::find_active_for_install(db_pool, plugin.id).await {
         let tag = active.version.clone();
         if !versions.iter().any(|v| v.tag == tag) {
             versions.push(VersionItem { tag, size: 0 });
@@ -565,15 +722,17 @@ pub async fn enable_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<ResponseEnvelope<LifecycleResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+    let install_id = plugin.id;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug)
+    let active_version = PluginVersion::find_active_for_install(db_pool, install_id)
         .await?
         .ok_or_else(|| {
             AppError::BadRequest(format!(
@@ -582,17 +741,22 @@ pub async fn enable_plugin_handler(
             ))
         })?;
 
-    let container_id = active_version.container_id.clone().ok_or_else(|| {
+    let deployment_id = active_version.deployment_id.clone().ok_or_else(|| {
         AppError::BadRequest(format!("Plugin {} has no container. Deploy first.", slug))
     })?;
 
     if let Some(ref platform) = state.platform {
-        let inspect: Result<alcedo_plugins::container::ContainerDetails, AppError> =
-            platform.inspect(&container_id).await;
+        let inspect: Result<alcedo_plugins::container::DeploymentDetails, AppError> =
+            platform.inspect(&deployment_id).await;
 
         if inspect.is_err() {
-            PluginVersion::update_status(db_pool, &slug, &active_version.version, "stopped")
-                .await?;
+            PluginVersion::update_status(
+                db_pool,
+                install_id,
+                &active_version.version,
+                "stopped",
+            )
+            .await?;
 
             return Err(AppError::BadRequest(format!(
                 "Plugin {} has no container. Deploy first.",
@@ -602,7 +766,7 @@ pub async fn enable_plugin_handler(
         if active_version.status == "running" {
             // For plugins with a platform (Docker/K8s), verify actual container state
             let container_running = platform
-                .inspect(&container_id)
+                .inspect(&deployment_id)
                 .await
                 .map(|d| d.state.to_lowercase() == "running")
                 .unwrap_or(false);
@@ -614,25 +778,30 @@ pub async fn enable_plugin_handler(
                 "Container for {} is dead but DB status is 'running'. Resetting status.",
                 slug
             );
-            PluginVersion::update_status(db_pool, &slug, &active_version.version, "stopped")
-                .await?;
+            PluginVersion::update_status(
+                db_pool,
+                install_id,
+                &active_version.version,
+                "stopped",
+            )
+            .await?;
             // Static plugins (no platform) don't have containers — just proceed
         }
 
-        if platform.is_replicated_service(&container_id).await {
-            platform.scale(&container_id, 1).await?;
+        if platform.is_replicated_service(&deployment_id).await {
+            platform.scale(&deployment_id, 1).await?;
         } else {
-            platform.restart(&container_id).await?;
+            platform.restart(&deployment_id).await?;
         }
     }
 
-    PluginVersion::update_status(db_pool, &slug, &active_version.version, "running").await?;
+    PluginVersion::update_status(db_pool, install_id, &active_version.version, "running").await?;
 
     Ok(Json(ResponseEnvelope::success(LifecycleResponse {
         slug: slug.clone(),
         version: active_version.version,
         status: "running".to_string(),
-        container_id: Some(container_id),
+        deployment_id: Some(deployment_id),
         new_scopes: None,
     })))
 }
@@ -641,21 +810,23 @@ pub async fn disable_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<ResponseEnvelope<LifecycleResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+    let install_id = plugin.id;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug)
+    let active_version = PluginVersion::find_active_for_install(db_pool, install_id)
         .await?
         .ok_or_else(|| AppError::BadRequest(format!("Plugin {} has no active version.", slug)))?;
 
     if active_version.status == "stopped" {
         // Verify actual container state
-        let container_running = match active_version.container_id.as_ref() {
+        let container_running = match active_version.deployment_id.as_ref() {
             Some(cid) => match state.platform.as_ref() {
                 Some(platform) => platform
                     .inspect(cid)
@@ -671,7 +842,7 @@ pub async fn disable_plugin_handler(
                 slug: slug.clone(),
                 version: active_version.version,
                 status: "stopped".to_string(),
-                container_id: active_version.container_id,
+                deployment_id: active_version.deployment_id,
                 new_scopes: None,
             })));
         }
@@ -681,24 +852,24 @@ pub async fn disable_plugin_handler(
         );
     }
 
-    let container_id = active_version
-        .container_id
+    let deployment_id = active_version
+        .deployment_id
         .clone()
         .ok_or_else(|| AppError::Internal("No container ID found".to_string()))?;
 
     if let Some(ref platform) = state.platform {
-        if platform.is_replicated_service(&container_id).await {
-            platform.scale(&container_id, 0).await?;
+        if platform.is_replicated_service(&deployment_id).await {
+            platform.scale(&deployment_id, 0).await?;
         }
     }
 
-    PluginVersion::update_status(db_pool, &slug, &active_version.version, "stopped").await?;
+    PluginVersion::update_status(db_pool, install_id, &active_version.version, "stopped").await?;
 
     Ok(Json(ResponseEnvelope::success(LifecycleResponse {
         slug: slug.clone(),
         version: active_version.version,
         status: "stopped".to_string(),
-        container_id: Some(container_id),
+        deployment_id: Some(deployment_id),
         new_scopes: None,
     })))
 }
@@ -707,14 +878,18 @@ pub async fn deploy_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
     Json(payload): Json<DeployPluginRequest>,
 ) -> Result<Json<ResponseEnvelope<LifecycleResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+    let install_id = plugin.id;
+    let app_version_id = plugin.app_version_id;
+    let version_id = plugin.version_id;
 
     // Plugins always pull from a configured registry — fall back to the
     // plugin's stored registry when the caller doesn't re-send it.
@@ -749,20 +924,40 @@ pub async fn deploy_plugin_handler(
 
     platform.ensure_image(&registry, &deploy_image).await?;
 
-    let container_id = PluginVersion::find_active(db_pool, &slug)
+    crate::api::admin::deployment::prepare_plugin_deployment(
+        &state,
+        db_pool,
+        &registry,
+        &slug,
+        &tag,
+        &deploy_image,
+        install_id,
+        app_version_id,
+        version_id,
+    )
+    .await?;
+
+    let old_id = PluginVersion::find_active_for_install(db_pool, install_id)
         .await?
-        .and_then(|v| v.container_id)
-        .unwrap_or_else(|| format!("plugin-{}", slug.replace('_', "-")));
-
-    let instances = platform.list_instances(&container_id).await?;
-
-    for instance in instances {
-        if let Some(cid) = instance.container_id {
-            platform.remove(&cid).await?;
+        .and_then(|v| v.deployment_id)
+        .filter(|s| !s.is_empty());
+    match old_id {
+        Some(id) => {
+            if let Err(e) = platform.remove(&id).await {
+                tracing::warn!(
+                    "Failed to remove previous deployment {} for {}: {}",
+                    id,
+                    slug,
+                    e
+                );
+            }
+        }
+        None => {
+            platform.ensure_absent(&slug, Some(install_id)).await.ok();
         }
     }
 
-    PluginVersion::update_status(db_pool, &slug, &tag, "deploying").await?;
+    PluginVersion::update_status(db_pool, install_id, &tag, "deploying").await?;
 
     // Read manifest from image to update plugin metadata
     let mut new_scopes_detected = Vec::new();
@@ -773,18 +968,28 @@ pub async fn deploy_plugin_handler(
         Ok(manifest_json) => {
             if let Ok(manifest) = serde_json::from_str::<serde_json::Value>(&manifest_json) {
                 // Preserve existing values if plugin already exists
-                let existing_settings: serde_json::Value = Plugin::find_by_slug(db_pool, &slug)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|p| p.settings)
-                    .unwrap_or(serde_json::json!({}));
-                let existing_granted: serde_json::Value = Plugin::find_by_slug(db_pool, &slug)
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|p| p.granted_scopes)
-                    .unwrap_or(serde_json::json!([]));
+                let existing_settings: serde_json::Value = Plugin::find_install_scoped(
+                    db_pool,
+                    &slug,
+                    app_version_id,
+                    version_id,
+                )
+                .await
+                .ok()
+                .flatten()
+                .map(|p| p.settings)
+                .unwrap_or(serde_json::json!({}));
+                let existing_granted: serde_json::Value = Plugin::find_install_scoped(
+                    db_pool,
+                    &slug,
+                    app_version_id,
+                    version_id,
+                )
+                .await
+                .ok()
+                .flatten()
+                .map(|p| p.granted_scopes)
+                .unwrap_or(serde_json::json!([]));
 
                 // Detect new scopes in this version
                 if let Some(manifest_scopes) = manifest.get("scopes").and_then(|s| s.as_array()) {
@@ -804,7 +1009,10 @@ pub async fn deploy_plugin_handler(
                     .cloned()
                     .unwrap_or(serde_json::json!([]));
                 let plugin_update = Plugin {
+                    id: 0,
                     slug: slug.clone(),
+                    app_version_id,
+                    version_id,
                     image: deploy_image.clone(),
                     plugin_type: manifest
                         .get("plugin_type")
@@ -856,6 +1064,9 @@ pub async fn deploy_plugin_handler(
                 if let Err(e) = Plugin::upsert(db_pool, &plugin_update).await {
                     tracing::warn!("Failed to upsert plugin record from manifest: {}", e);
                 }
+
+                crate::api::admin::register_event_subscriptions(db_pool, &state, &slug, &manifest, Some(install_id))
+                    .await;
             }
         }
         Err(e) => {
@@ -864,7 +1075,7 @@ pub async fn deploy_plugin_handler(
     }
 
     // Re-fetch plugin record after manifest update
-    let _plugin = Plugin::find_by_slug(db_pool, &slug)
+    let _plugin = Plugin::find_install_scoped(db_pool, &slug, app_version_id, version_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
 
@@ -902,25 +1113,32 @@ pub async fn deploy_plugin_handler(
     }
 
     // Deploy through platform or Docker fallback
-    let container_id = platform
-        .deploy(&registry, &slug, &tag, &deploy_image, env)
+    let deployment_id = platform
+        .deploy(&registry, &slug, &tag, &deploy_image, env, Some(install_id))
         .await?;
-    let prev_active = PluginVersion::find_active(db_pool, &slug).await?;
+    let prev_active = PluginVersion::find_active_for_install(db_pool, install_id).await?;
 
     // Try to update DB state; if this fails, clean up the running container
     if let Err(e) = async {
-        PluginVersion::set_active(db_pool, &slug, &tag).await?;
-        PluginVersion::update_container(db_pool, &slug, &tag, &container_id, "running").await
+        PluginVersion::set_active(db_pool, install_id, &tag).await?;
+        PluginVersion::update_deployment(
+            db_pool,
+            install_id,
+            &tag,
+            &deployment_id,
+            "running",
+        )
+        .await
     }
     .await
     {
-        let _ = platform.remove(&container_id).await;
+        let _ = platform.remove(&deployment_id).await;
         return Err(e);
     }
 
     if let Some(ref prev) = prev_active {
         if prev.version != tag {
-            PluginVersion::clear_container(db_pool, &slug, &prev.version).await?;
+            PluginVersion::clear_deployment(db_pool, install_id, &prev.version).await?;
         }
     }
 
@@ -931,9 +1149,11 @@ pub async fn deploy_plugin_handler(
         .map(|arr| arr.len())
         .unwrap_or(0);
     crate::api::proxy::cache_active_plugin(
-        &state.redis_connection,
+        &state.redis,
         &slug,
-        &container_id,
+        app_version_id,
+        plugin.version_id,
+        &deployment_id,
         &tag,
         endpoint_count,
     )
@@ -949,7 +1169,7 @@ pub async fn deploy_plugin_handler(
         slug: slug.clone(),
         version: tag.clone(),
         status: "running".to_string(),
-        container_id: Some(container_id),
+        deployment_id: Some(deployment_id),
         new_scopes,
     })))
 }
@@ -958,36 +1178,43 @@ pub async fn update_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
     Json(payload): Json<UpdatePluginRequest>,
 ) -> Result<Json<ResponseEnvelope<PluginDetailResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+    let install_id = plugin.id;
 
-    Plugin::update(
+    Plugin::update_by_id(
         db_pool,
-        &slug,
+        plugin.id,
         payload.display_name.as_ref(),
         payload.description.as_ref(),
         payload.tags.as_ref(),
     )
     .await?;
 
-    let updated_plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found after update: {}", slug)))?;
+    let updated_plugin =
+        crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id)
+            .await?;
 
-    let active_version = PluginVersion::find_active(db_pool, &slug)
+    let active_version = PluginVersion::find_active_for_install(db_pool, install_id)
         .await
         .ok()
         .flatten();
     let (version, status) = version_status(&active_version);
+    let scope = scope_label(&updated_plugin);
 
     Ok(Json(ResponseEnvelope::success(PluginDetailResponse {
+        id: updated_plugin.id,
         slug: updated_plugin.slug,
+        app_version_id: updated_plugin.app_version_id,
+        version_id: updated_plugin.version_id,
+        scope,
         display_name: updated_plugin.display_name,
         description: updated_plugin.description,
         image: updated_plugin.image,
@@ -1018,36 +1245,63 @@ pub async fn delete_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<ResponseEnvelope<DeletePluginResponse>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let _plugin = Plugin::find_by_slug(db_pool, &slug)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+    let install_id = plugin.id;
 
     // Clean up event subscriptions
-    let _ = sqlx::query("DELETE FROM event_subscriptions WHERE plugin_slug = $1")
-        .bind(&slug)
+    let _ = sqlx::query("DELETE FROM alcedocore_event_subscriptions WHERE install_id = $1")
+        .bind(install_id)
         .execute(db_pool)
         .await;
 
-    let versions = PluginVersion::find_all_by_slug(db_pool, &slug).await?;
+    let versions = PluginVersion::find_all_by_install(db_pool, install_id).await?;
     for version in &versions {
-        if let Some(container_id) = &version.container_id {
-            if !container_id.is_empty() {
+        if let Some(deployment_id) = &version.deployment_id {
+            if !deployment_id.is_empty() {
                 if let Some(ref platform) = state.platform {
-                    platform.remove(container_id).await.ok();
+                    platform.remove(deployment_id).await.ok();
                 }
             }
         }
     }
 
-    PluginVersion::delete_all_for_slug(db_pool, &slug).await?;
-    Plugin::delete_by_slug(db_pool, &slug).await?;
+    PluginVersion::delete_all_for_install(db_pool, install_id).await?;
+    Plugin::delete_by_id(db_pool, install_id).await?;
+
+    // Drop the install's scoped schema (best-effort). Files/rows are already
+    // gone; a failure here must not fail the uninstall, but should be visible.
+    let schema = plugin_schema_name_for_scope(&slug, plugin.app_version_id, plugin.version_id);
+    let schema_engine = PluginMigrationEngine::new_with_schema(
+        db_pool.clone(),
+        std::path::PathBuf::new(),
+        &slug,
+        schema.clone(),
+    );
+    if let Err(e) = schema_engine.drop_schema().await {
+        tracing::warn!(
+            "Failed to drop schema {} for plugin {} (install {}): {}",
+            schema,
+            slug,
+            install_id,
+            e
+        );
+    }
 
     // Remove from Redis cache
-    crate::api::proxy::delete_active_plugin_cache(&state.redis_connection, &slug).await;
+    crate::api::proxy::delete_active_plugin_cache(
+        &state.redis,
+        &slug,
+        plugin.app_version_id,
+        plugin.version_id,
+    )
+    .await;
 
     Ok(Json(ResponseEnvelope::success(DeletePluginResponse {
         deleted: true,
@@ -1059,22 +1313,25 @@ pub async fn get_plugin_instance_logs_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: axum::http::HeaderMap,
     Path((slug, instance_id)): Path<(String, String)>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Result<Json<Vec<String>>, AppError> {
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
 
     if let Some(ref platform) = state.platform {
-        // Use container_id from DB (set by platform.deploy()) — for K8s this is
+        // Use deployment_id from DB (set by platform.deploy()) — for K8s this is
         // the deployment name (hyphenated), not the constructed plugin_{slug}.
         let db_pool = state
             .db_pool
             .as_ref()
             .ok_or_else(|| AppError::Internal("Database not configured".to_string()))?;
-        let container_id = PluginVersion::find_active(db_pool, &slug)
+        let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+        let deployment_id = PluginVersion::find_active_for_install(db_pool, plugin.id)
             .await?
-            .and_then(|v| v.container_id)
-            .unwrap_or_else(|| format!("plugin_{}", slug));
+            .and_then(|v| v.deployment_id)
+            .unwrap_or_else(|| plugin_service_name(&slug, Some(plugin.id)));
         let logs = platform
-            .get_instance_logs(&container_id, &instance_id, 100)
+            .get_instance_logs(&deployment_id, &instance_id, 100)
             .await?;
         let lines: Vec<String> = logs.lines().map(|l| l.to_string()).collect();
         return Ok(Json(lines));

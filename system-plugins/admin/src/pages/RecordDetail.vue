@@ -15,6 +15,7 @@ import { withSystemFields } from "@/composables/useSystemFields";
 import { onUnmounted } from "vue";
 import RelationalSection from "@/components/RelationalSection.vue";
 import FormFieldRenderer from "@/components/FormFieldRenderer.vue";
+import { appPath } from "@/utils/appHeaders";
 
 const route = useRoute(),
     router = useRouter(),
@@ -49,6 +50,7 @@ const activeTab = ref("details"),
 const isEditing = ref(false),
     editValues = ref<Record<string, any>>({}),
     inlineParentEditValues = ref<Record<string, any>>({}),
+    inlineParentObjects = ref<Record<string, any>>({}),
     saving = ref(false);
 
 // Refs to mounted RecordForm instances (one per field_group section) for validate/getPayload
@@ -161,7 +163,7 @@ const inlineParentFields = computed(() => {
             | string[]
             | undefined;
         if (field.related_collection && inlineFields?.length) {
-            const parentObj = item.value[field.name + "__inline_parent"];
+            const parentObj = inlineParentObjects.value[field.name];
             if (parentObj && typeof parentObj === "object") {
                 const fields = inlineFields.map((fname) => ({
                     name: fname,
@@ -216,11 +218,33 @@ async function fetchRecord() {
         if (!item.value) {
             throw new Error(`Record with id "${itemId.value}" not found`);
         }
+        await loadInlineParents();
     } catch (e) {
         error.value = e instanceof Error ? e.message : "Failed to load record";
         item.value = null;
     } finally {
         loading.value = false;
+    }
+}
+
+async function loadInlineParents() {
+    inlineParentObjects.value = {};
+    const col = collection.value;
+    if (!col || !item.value) return;
+    for (const f of col.fields) {
+        const inlineFields = (f as any).inline_parent_fields as
+            | string[]
+            | undefined;
+        const related = (f as any).related_collection as string | undefined;
+        const fk = item.value[f.name];
+        if (!inlineFields?.length || !related || !fk || typeof fk !== "string")
+            continue;
+        try {
+            const res: any = await client.items.get(related, fk);
+            inlineParentObjects.value[f.name] = res.data || res;
+        } catch {
+            /* parent unavailable — leave inline fields empty */
+        }
     }
 }
 
@@ -249,7 +273,7 @@ function enterEditMode() {
     // Populate inline parent edit values
     for (const pf of inlineParentFields.value) {
         for (const f of pf.fields) {
-            const key = `__parent__${pf.fieldName}__${f.name}`;
+            const key = `${pf.fieldName}__${f.name}`;
             parentValues[key] = f.value ?? "";
         }
     }
@@ -326,7 +350,6 @@ const showParentConfirm = ref(false);
 
 async function doSave() {
     if (!item.value) return;
-    debugger;
     saving.value = true;
     showParentConfirm.value = false;
     try {
@@ -345,7 +368,22 @@ async function doSave() {
             if (!fieldChanged(payload[field.name], original))
                 delete payload[field.name];
         }
-        const parentPayload = { ...payload, ...inlineParentEditValues.value };
+        const parentPayload: Record<string, any> = { ...payload };
+        for (const pf of inlineParentFields.value) {
+            const edits: Record<string, any> = {};
+            for (const f of pf.fields) {
+                const key = `${pf.fieldName}__${f.name}`;
+                const cur = inlineParentEditValues.value[key];
+                const orig = originalInlineParentValues.value[key] ?? "";
+                if (cur !== orig) edits[f.name] = cur;
+            }
+            if (Object.keys(edits).length > 0) {
+                const parentId =
+                    inlineParentObjects.value[pf.fieldName]?.id ??
+                    item.value?.[pf.fieldName];
+                parentPayload[pf.fieldName] = { id: parentId, ...edits };
+            }
+        }
 
         // Single PATCH - backend handles parent + children atomically
         const hasParentChanges = Object.keys(parentPayload).length > 0;
@@ -357,6 +395,7 @@ async function doSave() {
             )) as any;
 
             await loadRecordData(collectionName.value, itemId.value);
+            await loadInlineParents();
         }
 
         await flushRelationalSections();
@@ -470,7 +509,7 @@ onUnmounted(() => {
     <div class="p-6 pl-0 grow flex flex-col">
         <!-- Back Navigation -->
         <router-link
-            :to="`/collections/${collectionName}/data`"
+            :to="appPath(`/collections/${collectionName}/data`)"
             class="inline-block mb-4 text-blue-500 text-sm hover:underline"
         >
             ← Back to {{ collectionName }}
@@ -723,10 +762,17 @@ onUnmounted(() => {
                                                     :field-name="
                                                         parentField.name
                                                     "
-                                                    v-model="
+                                                    :model-value="
+                                                        isEditing
+                                                            ? inlineParentEditValues[
+                                                                  `${pf.fieldName}__${parentField.name}`
+                                                              ]
+                                                            : parentField.value
+                                                    "
+                                                    @update:model-value="
                                                         inlineParentEditValues[
-                                                            `__parent__${pf.fieldName}__${parentField.name}`
-                                                        ]
+                                                            `${pf.fieldName}__${parentField.name}`
+                                                        ] = $event
                                                     "
                                                     :readonly="!isEditing"
                                                 />
@@ -804,7 +850,7 @@ onUnmounted(() => {
                                                 class="text-sm font-medium text-gray-700"
                                             >
                                                 <router-link
-                                                    :to="`/collections/${group.collection_name}/data`"
+                                                    :to="appPath(`/collections/${group.collection_name}/data`)"
                                                     class="text-blue-500 hover:underline"
                                                 >
                                                     {{ group.collection_name }}
@@ -851,7 +897,7 @@ onUnmounted(() => {
                                                 class="text-sm text-gray-600 flex items-center gap-2"
                                             >
                                                 <router-link
-                                                    :to="`/detail/${group.collection_name}/${refItem.id}`"
+                                                    :to="appPath(`/detail/${group.collection_name}/${refItem.id}`)"
                                                     class="text-blue-500 hover:underline font-mono text-xs truncate"
                                                 >
                                                     {{ refItem.id }}

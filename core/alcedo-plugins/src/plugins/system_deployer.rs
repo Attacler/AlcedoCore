@@ -4,10 +4,11 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use alcedo_container::container::PluginPlatform;
+
 use crate::db::queries::{Plugin, PluginVersion};
 use crate::db::Pool;
 use crate::error::AppError;
-use crate::providers::PluginContainerProvider;
 
 /// A single plugin entry from the remote manifest.
 #[derive(Debug, Clone, Deserialize)]
@@ -103,13 +104,18 @@ impl SystemPluginDeployer {
     pub async fn deploy_all(
         &self,
         db: &Pool,
-        container_provider: &Arc<dyn PluginContainerProvider>,
+        platform: &Arc<dyn PluginPlatform>,
     ) -> Result<(), AppError> {
         let manifest = self.fetch_manifest().await?;
 
         let configured_slugs: std::collections::HashSet<String> =
             manifest.plugins.iter().map(|p| p.slug.clone()).collect();
 
+        // Registry handle used to pull/inspect system plugin images. Its URL is
+        // empty because system images are referenced directly (Docker-Hub
+        // style). Do NOT persist this as a registry row — the global migration
+        // already seeds the `AlcedoSystemPlugins` registry, and inserting this
+        // placeholder on every startup created junk blank registries.
         let registry = Registry {
             auth_type: "none".to_string(),
             created_at: Some(DateTime::default()),
@@ -121,8 +127,6 @@ impl SystemPluginDeployer {
             url: "".to_string(),
             username: None,
         };
-        let res = Registry::insert(db, &registry).await;
-        println!("create system reg: {:?}", res);
 
         // Deploy or update each plugin from the manifest
         for plugin_cfg in &manifest.plugins {
@@ -141,23 +145,33 @@ impl SystemPluginDeployer {
                 }
             }
 
+            // System plugins deploy globally (app_version_id = NULL); resolve the
+            // install id so version lookups can be install-scoped.
+            let existing_plugin = Plugin::find_install(db, slug, None).await?;
+            let install_id = existing_plugin.as_ref().map(|p| p.id);
+
             // Check if already deployed with matching version
-            let needs_deploy = match PluginVersion::find_active(db, slug).await {
-                Ok(Some(active)) => {
-                    let version_match = active.version == plugin_cfg.version;
-                    let running = active.status == "running";
-                    if version_match && running {
-                        tracing::info!(
-                            "[SYSTEM_DEPLOYER] Plugin '{}' version {} already deployed and running",
-                            slug,
-                            plugin_cfg.version
-                        );
-                        false
-                    } else {
-                        true
+            let needs_deploy = match install_id {
+                Some(install_id) => {
+                    match PluginVersion::find_active_for_install(db, install_id).await {
+                        Ok(Some(active)) => {
+                            let version_match = active.version == plugin_cfg.version;
+                            let running = active.status == "running";
+                            if version_match && running {
+                                tracing::info!(
+                                    "[SYSTEM_DEPLOYER] Plugin '{}' version {} already deployed and running",
+                                    slug,
+                                    plugin_cfg.version
+                                );
+                                false
+                            } else {
+                                true
+                            }
+                        }
+                        _ => true,
                     }
                 }
-                _ => true,
+                None => true,
             };
 
             if needs_deploy {
@@ -168,10 +182,7 @@ impl SystemPluginDeployer {
                     plugin_cfg.image
                 );
                 // Pull image first so we can inspect the manifest
-                let system_image = match container_provider
-                    .pull_image(&plugin_cfg.image, &registry)
-                    .await
-                {
+                let system_image = match platform.ensure_image(&registry, &plugin_cfg.image).await {
                     Err(e) => {
                         tracing::error!(
                             "[SYSTEM_DEPLOYER] Failed to pull '{}' from registry '{}': {}",
@@ -188,8 +199,8 @@ impl SystemPluginDeployer {
                 };
 
                 // Read manifest from image to determine plugin type
-                let manifest_str = container_provider
-                    .get_file_from_image(&registry, &system_image, "/app/manifest.json")
+                let manifest_str = platform
+                    .read_file_from_image(&registry, &system_image, "/app/manifest.json")
                     .await
                     .map_err(|e| {
                         AppError::Internal(format!(
@@ -209,7 +220,7 @@ impl SystemPluginDeployer {
                 let is_static = plugin_type == "static";
 
                 // Ensure plugin record exists
-                let existing = Plugin::find_by_slug(db, slug).await?;
+                let existing = existing_plugin;
 
                 if let Some(plugin) = &existing {
                     if plugin.plugin_type == "static" && is_static {
@@ -221,13 +232,13 @@ impl SystemPluginDeployer {
                         // Already static but image says otherwise — keep it static
                     }
                     if !plugin.system_plugin {
-                        sqlx::query("UPDATE plugins SET system_plugin = true WHERE slug = $1")
+                        sqlx::query("UPDATE alcedo_plugins SET system_plugin = true WHERE slug = $1 AND app_version_id IS NULL")
                             .bind(slug)
                             .execute(db)
                             .await?;
                     }
                     if !plugin.enabled {
-                        sqlx::query("UPDATE plugins SET enabled = true WHERE slug = $1")
+                        sqlx::query("UPDATE alcedo_plugins SET enabled = true WHERE slug = $1 AND app_version_id IS NULL")
                             .bind(slug)
                             .execute(db)
                             .await?;
@@ -249,13 +260,8 @@ impl SystemPluginDeployer {
 
                     // Copy public/ directory from image to plugins/{slug}/public/
                     let public_dest = slug_dir.to_string_lossy().to_string();
-                    match container_provider
-                        .copy_directory_from_image(
-                            &registry,
-                            &system_image,
-                            "/app/public",
-                            &public_dest,
-                        )
+                    match platform
+                        .extract_from_image(&registry, &system_image, "/app/public", &public_dest)
                         .await
                     {
                         Ok(()) => tracing::info!(
@@ -273,7 +279,10 @@ impl SystemPluginDeployer {
                     let manifest = serde_json::from_str::<serde_json::Value>(&manifest_str).ok();
 
                     let new_plugin = Plugin {
+                        id: 0,
                         slug: slug.clone(),
+                        app_version_id: None,
+                        version_id: None,
                         image: system_image.clone(),
                         plugin_type: "static".to_string(),
                         system_plugin: true,
@@ -343,16 +352,27 @@ impl SystemPluginDeployer {
                     };
                     Plugin::upsert(db, &new_plugin).await?;
 
+                    let install_id = Plugin::find_install(db, slug, None)
+                        .await?
+                        .map(|p| p.id)
+                        .ok_or_else(|| {
+                            AppError::Internal(format!(
+                                "System plugin '{}' missing after upsert",
+                                slug
+                            ))
+                        })?;
+
                     // Create version record with public_path to the extracted files
                     let version_path = slug_dir.join("public").to_string_lossy().to_string();
                     let existing_version =
-                        PluginVersion::find_by_slug_and_version(db, slug, &plugin_cfg.version)
+                        PluginVersion::find_by_install_and_version(db, install_id, &plugin_cfg.version)
                             .await?;
                     if existing_version.is_none() {
                         sqlx::query(
-                            "INSERT INTO plugin_versions (slug, version, container_id, status, is_active, public_synced, public_path)
-                             VALUES ($1, $2, NULL, 'running', TRUE, TRUE, $3)"
+                            "INSERT INTO alcedo_plugin_versions (install_id, slug, version, deployment_id, status, is_active, public_synced, public_path)
+                             VALUES ($1, $2, $3, NULL, 'running', TRUE, TRUE, $4)"
                         )
+                        .bind(install_id)
                         .bind(slug)
                         .bind(&plugin_cfg.version)
                         .bind(&version_path)
@@ -390,15 +410,14 @@ impl SystemPluginDeployer {
                 );
 
                 // Stop and remove all versions
-                let versions = PluginVersion::find_all_by_slug(db, &plugin.slug).await?;
+                let versions = PluginVersion::find_all_by_install(db, plugin.id).await?;
                 for v in versions {
-                    if let Some(ref cid) = v.container_id {
-                        let _ = container_provider.stop_container(cid).await;
-                        let _ = container_provider.remove_container(cid, true).await;
+                    if let Some(ref cid) = v.deployment_id {
+                        let _ = platform.remove(cid).await;
                     }
                 }
-                PluginVersion::delete_all_for_slug(db, &plugin.slug).await?;
-                Plugin::delete_by_slug(db, &plugin.slug).await?;
+                PluginVersion::delete_all_for_install(db, plugin.id).await?;
+                Plugin::delete_by_id(db, plugin.id).await?;
                 removed_count += 1;
             }
         }

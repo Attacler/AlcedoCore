@@ -6,6 +6,7 @@ import DataTable from "primevue/datatable";
 import Column from "primevue/column";
 import { inject } from "vue";
 import { useDrawerStackStore } from "@/stores/drawerStack";
+import { appPath } from "@/utils/appHeaders";
 
 const FormFieldRenderer = inject("FormFieldRenderer"),
     useDisplayComponents = inject<any>("useDisplayComponents"),
@@ -97,7 +98,7 @@ function onRowClick(event: any) {
         return;
     }
     const collectionName = route.params.name as string;
-    router.push(`/detail/${collectionName}/${event.data.id}`);
+    router.push(appPath(`/detail/${collectionName}/${event.data.id}`));
 }
 
 const displayFields = computed(() => {
@@ -168,7 +169,7 @@ const displayFields = computed(() => {
                         </span>
                         <router-link
                             v-if="field.related_collection"
-                            :to="`/collections/${field.related_collection}/data`"
+                            :to="appPath(`/collections/${field.related_collection}/data`)"
                             class="text-blue-400 hover:text-blue-600 text-xs hover:underline"
                             :title="`Browse ${field.related_collection}`"
                             >browse</router-link
@@ -183,7 +184,7 @@ const displayFields = computed(() => {
                         />
                         <router-link
                             v-else
-                            :to="`/detail/${field.related_collection}/${slotProps.data[field.name]}`"
+                            :to="appPath(`/detail/${field.related_collection}/${slotProps.data[field.name]}`)"
                             class="text-blue-500 hover:text-blue-700 hover:underline font-medium"
                             :title="`View in ${field.related_collection}`"
                         >

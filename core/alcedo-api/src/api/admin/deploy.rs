@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::HeaderMap,
     Json,
 };
@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use alcedo_common::context::ExtractContext;
+use crate::api::admin::deployment::prepare_plugin_deployment;
 use crate::api::permission_check;
+use crate::api::plugins::InstallOverride;
 use crate::api::responses::ResponseEnvelope;
 use crate::db::queries::{Plugin, PluginVersion, Registry};
 use crate::error::AppError;
@@ -38,10 +41,16 @@ pub struct DeployPluginRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub granted_scopes: Option<Vec<String>>,
     pub registry_id: i32,
+    #[serde(default = "default_scope")]
+    pub scope: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_scope() -> String {
+    "app".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -82,19 +91,64 @@ pub struct UploadMigrationsResponse {
 pub struct DeployPluginResponse {
     pub slug: String,
     pub version: String,
-    pub container_id: Option<String>,
+    pub deployment_id: Option<String>,
 }
 
 pub async fn deploy_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: HeaderMap,
+    ExtractContext(ctx): ExtractContext,
     Json(payload): Json<DeployPluginRequest>,
 ) -> Result<Json<ResponseEnvelope<DeployPluginResponse>>, AppError> {
     let db_pool = state.db()?;
 
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
 
-    Plugin::check_not_exists(db_pool, &payload.slug).await?;
+    crate::db::plugin_migrations::validate_plugin_slug(&payload.slug)
+        .map_err(AppError::BadRequest)?;
+
+    let (app_version_id, version_id) = match payload.scope.as_str() {
+        "global" => (None, None),
+        "version" => (
+            None,
+            Some(ctx.version_id.ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "Scope 'version' requires a known version (got '{}'); use scope 'global' to install across all versions",
+                    ctx.app_context.version
+                ))
+            })?),
+        ),
+        "app" => {
+            let av = ctx.app_version_id.ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "Scope 'app' requires an app+version context (got {}/{}); use scope 'version' or 'global' instead",
+                    ctx.app_context.app_name, ctx.app_context.version
+                ))
+            })?;
+            (Some(av), None)
+        }
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "Invalid scope '{}': expected 'global', 'version', or 'app'",
+                other
+            )))
+        }
+    };
+
+    // Decision 8: broader-scope (`version`/`global`) installs are created and
+    // managed in the global zone. In an explicit app context only a privileged
+    // caller (global admin / validated developer API key) may create them;
+    // non-privileged callers must use scope 'app'.
+    if ctx.app_version_id.is_some()
+        && payload.scope != "app"
+        && !crate::api::install::caller_is_privileged(&state, &headers).await?
+    {
+        return Err(AppError::Forbidden(
+            "Only a global admin or developer key may create version/global installs; use scope 'app' in an app context.".to_string(),
+        ));
+    }
+
+    Plugin::check_install_not_exists_scoped(db_pool, &payload.slug, app_version_id, version_id).await?;
 
     let registry = Registry::find_by_id(db_pool, payload.registry_id)
         .await?
@@ -155,12 +209,17 @@ pub async fn deploy_plugin_handler(
     let granted = if let Some(ref scopes) = payload.granted_scopes {
         serde_json::to_value(scopes.clone()).unwrap_or(serde_json::json!([]))
     } else if let Some(ref pool) = state.db_pool {
-        crate::db::queries::Plugin::find_by_slug(pool, &payload.slug)
-            .await
-            .ok()
-            .flatten()
-            .map(|p| {
-                let existing = p.granted_scopes;
+        crate::db::queries::Plugin::find_install_scoped(
+            pool,
+            &payload.slug,
+            app_version_id,
+            version_id,
+        )
+        .await
+        .ok()
+        .flatten()
+        .map(|p| {
+            let existing = p.granted_scopes;
                 if existing.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
                     existing
                 } else {
@@ -174,18 +233,26 @@ pub async fn deploy_plugin_handler(
     let initial_settings = if let Some(ref s) = payload.settings {
         s.clone()
     } else if let Some(ref pool) = state.db_pool {
-        crate::db::queries::Plugin::find_by_slug(pool, &payload.slug)
-            .await
-            .ok()
-            .flatten()
-            .map(|p| p.settings)
-            .unwrap_or(serde_json::json!({}))
+        crate::db::queries::Plugin::find_install_scoped(
+            pool,
+            &payload.slug,
+            app_version_id,
+            version_id,
+        )
+        .await
+        .ok()
+        .flatten()
+        .map(|p| p.settings)
+        .unwrap_or(serde_json::json!({}))
     } else {
         serde_json::json!({})
     };
 
     let plugin_record = Plugin {
+        id: 0,
         slug: payload.slug.clone(),
+        app_version_id,
+        version_id,
         image: deploy_image.clone(),
         plugin_type: manifest_content
             .get("plugin_type")
@@ -235,35 +302,19 @@ pub async fn deploy_plugin_handler(
         tracing::warn!("Failed to upsert plugin record: {}", e);
     }
 
-    if let Some(events) = manifest_content.get("events").and_then(|v| v.as_array()) {
-        let callback_url = crate::api::admin::resolve_plugin_callback_url(&payload.slug, &state);
-        for event_val in events {
-            if let Some(event_type) = event_val.as_str() {
-                let result = sqlx::query(
-                    "INSERT INTO event_subscriptions (plugin_slug, event_type, callback_url)
-                             VALUES ($1, $2, $3)
-                             ON CONFLICT (plugin_slug, event_type) DO UPDATE SET callback_url = $3",
-                )
-                .bind(&payload.slug)
-                .bind(event_type)
-                .bind(&callback_url)
-                .execute(db_pool)
-                .await;
-                if let Err(e) = result {
-                    tracing::warn!(
-                        "Failed to register event subscription for {}: {}",
-                        event_type,
-                        e
-                    );
-                }
-            }
-        }
-        tracing::info!(
-            "Registered {} event subscriptions for plugin {}",
-            events.len(),
-            payload.slug
-        );
-    }
+    let plugin = Plugin::find_install_scoped(db_pool, &payload.slug, app_version_id, version_id)
+        .await?
+        .ok_or_else(|| AppError::Internal("Install missing after upsert".to_string()))?;
+    let install_id = plugin.id;
+
+    crate::api::admin::register_event_subscriptions(
+        db_pool,
+        &state,
+        &payload.slug,
+        &manifest_content,
+        Some(install_id),
+    )
+    .await;
 
     let mut env = payload.env.clone();
     let default_core_url = if state.core.config.dev_mode {
@@ -290,160 +341,26 @@ pub async fn deploy_plugin_handler(
         env.entry("REDIS_URL".to_string()).or_insert(redis_url);
     }
 
-    let container_id = if payload.start_container {
-        let plugins_dir = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-
-        let mount_base = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
-        let has_explicit_pvc = mount_base != "/var/lib/plugin-public";
-
-        if has_explicit_pvc {
-            let extract_base = std::path::Path::new(&mount_base)
-                .join(&payload.slug)
-                .join(&payload.version);
-
-            if let Some(ref platform) = state.platform {
-                let _ = platform
-                    .extract_from_image(
-                        &registry,
-                        &deploy_image,
-                        "/app/migrations",
-                        &extract_base.to_string_lossy(),
-                    )
-                    .await;
-            }
-            let migrations_dir = extract_base.join("migrations");
-            let nested = migrations_dir.join("migrations");
-            if nested.exists() && nested.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&nested) {
-                    for entry in entries.flatten() {
-                        let file_name = entry.file_name();
-                        let target = migrations_dir.join(&file_name);
-                        let _ = std::fs::rename(entry.path(), &target);
-                    }
-                }
-                let _ = std::fs::remove_dir_all(&nested);
-            }
-            if migrations_dir.exists() {
-                let has_migrations = std::fs::read_dir(&migrations_dir)
-                    .map(|mut d| d.any(|e| e.is_ok()))
-                    .unwrap_or(false);
-                if has_migrations {
-                    tracing::info!(
-                        "Running migrations for plugin {} from {:?}",
-                        payload.slug,
-                        migrations_dir
-                    );
-                    let _ = crate::db::run_plugin_migrations(
-                        db_pool,
-                        &payload.slug,
-                        &migrations_dir.to_string_lossy(),
-                    )
-                    .await;
-                    let schema_name =
-                        crate::db::plugin_migrations::plugin_schema_name(&payload.slug);
-                    let table_count: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = $1",
-                    )
-                    .bind(&schema_name)
-                    .fetch_one(db_pool)
-                    .await
-                    .unwrap_or(0);
-                    if table_count > 0 {
-                        tracing::info!(
-                            "Plugin {} schema '{}' has {} tables after migration",
-                            payload.slug,
-                            schema_name,
-                            table_count
-                        );
-                    }
-                } else {
-                    let _ = std::fs::remove_dir_all(&migrations_dir);
-                }
-            }
-
-            if let Some(ref platform) = state.platform {
-                for (src, extra_path) in &[
-                    ("/app/docs", ""),
-                    ("/app/pages/dist", "pages"),
-                    ("/app/public", ""),
-                ] {
-                    let dest = extract_base.clone().join(extra_path);
-
-                    let _ = platform
-                        .extract_from_image(&registry, &deploy_image, src, &dest.to_string_lossy())
-                        .await;
-                }
-            }
-        } else {
-            let plugins_path = std::path::Path::new(&plugins_dir);
-
-            let pages_dir = plugins_path.join(&payload.slug).join("pages");
-            if pages_dir.exists() {
-                let _ = std::fs::remove_dir_all(&pages_dir);
-            }
-            if let Some(ref platform) = state.platform {
-                let _ = platform
-                    .extract_from_image(
-                        &registry,
-                        &deploy_image,
-                        "/app/pages/dist",
-                        &pages_dir.to_string_lossy(),
-                    )
-                    .await;
-            }
-
-            let slug_dir = plugins_path.join(&payload.slug);
-            if let Some(ref platform) = state.platform {
-                let _ = platform
-                    .extract_from_image(
-                        &registry,
-                        &deploy_image,
-                        "/app/public",
-                        &slug_dir.to_string_lossy(),
-                    )
-                    .await;
-            }
-
-            let docs_dir = plugins_path.join(&payload.slug).join("docs");
-            if docs_dir.exists() {
-                let _ = std::fs::remove_dir_all(&docs_dir);
-            }
-            if let Some(ref platform) = state.platform {
-                let _ = platform
-                    .extract_from_image(
-                        &registry,
-                        &deploy_image,
-                        "/app/docs",
-                        &docs_dir.to_string_lossy(),
-                    )
-                    .await;
-            }
-
-            if let Ok(mount) = std::env::var("PLUGINS_DIR") {
-                let pvc_base = std::path::Path::new(&mount)
-                    .join(&payload.slug)
-                    .join(&payload.version);
-                if let Some(ref platform) = state.platform {
-                    for src in &["/app/docs", "/app/pages/dist", "/app/public"] {
-                        let _ = platform
-                            .extract_from_image(
-                                &registry,
-                                &deploy_image,
-                                src,
-                                &pvc_base.to_string_lossy(),
-                            )
-                            .await;
-                    }
-                }
-            }
-        }
+    let deployment_id = if payload.start_container {
+        prepare_plugin_deployment(
+            &state,
+            db_pool,
+            &registry,
+            &payload.slug,
+            &payload.version,
+            &deploy_image,
+            install_id,
+            app_version_id,
+            version_id,
+        )
+        .await?;
 
         let cid = {
             let existing_ver =
-                PluginVersion::find_by_slug_and_version(db_pool, &payload.slug, &payload.version)
+                PluginVersion::find_by_install_and_version(db_pool, install_id, &payload.version)
                     .await?;
             if let Some(ref v) = existing_ver {
-                if let Some(ref c) = v.container_id {
+                if let Some(ref c) = v.deployment_id {
                     if !c.is_empty() {
                         if let Some(ref platform) = state.platform {
                             let _ = platform.remove(c).await;
@@ -455,10 +372,7 @@ pub async fn deploy_plugin_handler(
             let platform = state.platform.as_ref().ok_or_else(|| {
                 AppError::Internal("No deployment platform configured".to_string())
             })?;
-            platform
-                .remove(&format!("plugin_{}", payload.slug))
-                .await
-                .ok();
+            platform.ensure_absent(&payload.slug, Some(install_id)).await.ok();
 
             let dep_id = platform
                 .deploy(
@@ -467,6 +381,7 @@ pub async fn deploy_plugin_handler(
                     &payload.version,
                     &deploy_image,
                     env.clone(),
+                    Some(install_id),
                 )
                 .await?;
             tracing::info!(
@@ -475,72 +390,41 @@ pub async fn deploy_plugin_handler(
                 payload.version,
                 dep_id
             );
-            let container_id: String = dep_id;
+            let deployment_id: String = dep_id;
 
-            if let Ok(Some(prev_active)) = PluginVersion::find_active(db_pool, &payload.slug).await
-            {
-                if prev_active.version != payload.version {
-                    let _ = PluginVersion::deactivate(db_pool, &payload.slug, &prev_active.version)
-                        .await;
+            let prev_active = PluginVersion::find_active_for_install(db_pool, install_id).await?;
+            PluginVersion::update_deployment(
+                db_pool,
+                install_id,
+                &payload.version,
+                &deployment_id,
+                "running",
+            )
+            .await?;
+            PluginVersion::set_active(db_pool, install_id, &payload.version).await?;
+            if let Some(ref prev) = prev_active {
+                if prev.version != payload.version {
+                    PluginVersion::clear_deployment(db_pool, install_id, &prev.version).await?;
                 }
             }
 
-            let existing_after =
-                PluginVersion::find_by_slug_and_version(db_pool, &payload.slug, &payload.version)
-                    .await?;
-            if existing_after.is_none() {
-                PluginVersion::insert(
-                    db_pool,
-                    &PluginVersion {
-                        slug: payload.slug.clone(),
-                        version: payload.version.clone(),
-                        container_id: Some(container_id.clone()),
-                        status: "running".to_string(),
-                        is_active: true,
-                        deployed_at: Some(chrono::Utc::now()),
-                        public_synced: false,
-                        public_path: None,
-                        pages_synced: false,
-                        pages_path: None,
-                    },
-                )
-                .await?;
-            } else {
-                let prev_active = PluginVersion::find_active(db_pool, &payload.slug).await?;
-                PluginVersion::update_container(
-                    db_pool,
-                    &payload.slug,
-                    &payload.version,
-                    &container_id,
-                    "running",
-                )
-                .await?;
-                PluginVersion::set_active(db_pool, &payload.slug, &payload.version).await?;
-                if let Some(ref prev) = prev_active {
-                    if prev.version != payload.version {
-                        PluginVersion::clear_container(db_pool, &payload.slug, &prev.version)
-                            .await?;
-                    }
-                }
-            }
+            let endpoint_count = plugin
+                .endpoints
+                .as_array()
+                .map(|arr| arr.len())
+                .unwrap_or(0);
+            crate::api::proxy::cache_active_plugin(
+                &state.redis,
+                &payload.slug,
+                app_version_id,
+                plugin.version_id,
+                &deployment_id,
+                &payload.version,
+                endpoint_count,
+            )
+            .await;
 
-            if let Some(ref pool) = state.db_pool {
-                if let Ok(Some(p)) =
-                    crate::db::queries::Plugin::find_by_slug(pool, &payload.slug).await
-                {
-                    let endpoint_count = p.endpoints.as_array().map(|arr| arr.len()).unwrap_or(0);
-                    crate::api::proxy::cache_active_plugin(
-                        &state.redis_connection,
-                        &payload.slug,
-                        &container_id,
-                        &payload.version,
-                        endpoint_count,
-                    )
-                    .await;
-                }
-            }
-
-            container_id
+            deployment_id
         };
 
         Some(cid)
@@ -556,7 +440,7 @@ pub async fn deploy_plugin_handler(
     Ok(Json(ResponseEnvelope::success(DeployPluginResponse {
         slug: payload.slug,
         version: payload.version,
-        container_id,
+        deployment_id,
     })))
 }
 
@@ -569,6 +453,8 @@ pub async fn stop_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
     Json(params): Json<StopPluginRequest>,
 ) -> Result<Json<ResponseEnvelope<StopPluginResponse>>, AppError> {
     tracing::info!("Stopping plugin: {} version: {:?}", slug, params.version);
@@ -577,16 +463,20 @@ pub async fn stop_plugin_handler(
 
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
 
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+    let install_id = plugin.id;
+
     let version = params.version.as_deref().unwrap_or("latest");
-    let version_record = PluginVersion::find_by_slug_and_version(db_pool, &slug, version).await?;
+    let version_record = PluginVersion::find_by_install_and_version(db_pool, install_id, version).await?;
 
     if let Some(ref record) = version_record {
         if record.is_active {
-            PluginVersion::deactivate(db_pool, &slug, version).await?;
+            PluginVersion::deactivate(db_pool, install_id, version).await?;
             tracing::info!("Set {} version {} as inactive", slug, version);
         }
 
-        PluginVersion::update_status(db_pool, &slug, version, "draining").await?;
+        PluginVersion::update_status(db_pool, install_id, version, "draining").await?;
         tracing::info!("Set {} version {} to draining", slug, version);
     }
 
@@ -598,24 +488,31 @@ pub async fn stop_plugin_handler(
 #[derive(Debug, Serialize)]
 pub struct RestartPluginResponse {
     pub restarted: bool,
-    pub container_id: String,
+    pub deployment_id: String,
 }
 
 pub async fn restart_plugin_handler(
     State(state): State<Arc<PluginAppState>>,
     headers: HeaderMap,
     Path(slug): Path<String>,
+    Query(q): Query<InstallOverride>,
+    ExtractContext(ctx): ExtractContext,
     Json(payload): Json<RestartPluginRequest>,
 ) -> Result<Json<ResponseEnvelope<RestartPluginResponse>>, AppError> {
     tracing::info!("Restarting plugin: {} version: {:?}", slug, payload.version);
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
 
+    let db_pool = state.db()?;
+    let plugin = crate::api::install::resolve_install_for_request_authorized(&state, &headers, db_pool, &slug, &ctx, q.install_id).await?;
+    crate::api::install::ensure_install_writable(&state, &headers, &ctx, &plugin).await?;
+    let install_id = plugin.id;
+
     let version = payload.version.as_deref().unwrap_or("latest");
     let version_record =
-        crate::db::queries::PluginVersion::find_by_slug_and_version(state.db()?, &slug, version)
+        crate::db::queries::PluginVersion::find_by_install_and_version(db_pool, install_id, version)
             .await?;
 
-    let container_id = version_record.and_then(|v| v.container_id).ok_or_else(|| {
+    let deployment_id = version_record.and_then(|v| v.deployment_id).ok_or_else(|| {
         AppError::NotFound(format!(
             "No container found for plugin {} version {}",
             slug, version
@@ -623,11 +520,11 @@ pub async fn restart_plugin_handler(
     })?;
 
     if let Some(ref platform) = state.platform {
-        platform.restart(&container_id).await?;
+        platform.restart(&deployment_id).await?;
     }
 
     Ok(Json(ResponseEnvelope::success(RestartPluginResponse {
         restarted: true,
-        container_id,
+        deployment_id,
     })))
 }

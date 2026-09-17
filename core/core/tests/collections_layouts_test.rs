@@ -361,6 +361,82 @@ async fn test_layout_roles_round_trip() {
         "PUT roles with invalid role id should 400, got: {}", put_bad_role.status_code());
 }
 
+#[tokio::test]
+async fn test_get_layout_roles_respects_collection_ownership() {
+    let (server, _test_db, name) = setup().await;
+
+    let fields = serde_json::json!([{"name": "email", "type": "string"}]);
+    let create_resp = create_collection(&server, &name, fields.clone()).await;
+    assert_eq!(create_resp.status_code(), StatusCode::CREATED);
+
+    let layout_id = create_layout(&server, &name, "OwnedLayout").await;
+
+    // Assign a role to the layout in the first collection
+    let role_name = format!("role_{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..8].to_string());
+    let role_resp = server
+        .post("/api/roles")
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&json!({ "name": role_name }))
+        .await;
+    assert_eq!(role_resp.status_code(), StatusCode::OK, "Create role failed: {}", role_resp.text());
+    let role_body: Value = serde_json::from_str(&role_resp.text()).expect("Invalid JSON");
+    let role_id = role_body.get("data").and_then(|d| d.get("id")).and_then(|v| v.as_str())
+        .expect("role id missing").to_string();
+
+    let put_resp = server
+        .put(&format!("/api/collections/{}/layouts/{}/roles", name, layout_id))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .json(&json!({ "role_ids": [role_id] }))
+        .await;
+    assert_eq!(put_resp.status_code(), StatusCode::OK, "Set layout roles failed: {}", put_resp.text());
+
+    // Confirm the role really is assigned in the owning collection
+    let own_resp = server
+        .get(&format!("/api/collections/{}/layouts/{}/roles", name, layout_id))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .await;
+    assert_eq!(own_resp.status_code(), StatusCode::OK, "Get owning-collection roles failed: {}", own_resp.text());
+    let own_body: Value = serde_json::from_str(&own_resp.text()).expect("Invalid JSON");
+    let own_roles = own_body.get("roles").and_then(|r| r.as_array())
+        .expect("roles should be an array");
+    assert!(!own_roles.is_empty(), "Owning collection should return the assigned role: {}", own_resp.text());
+
+    // A second collection must NOT see the first collection's layout roles,
+    // even though that layout has roles assigned in its owning collection
+    let other_name = format!("cl_{}", uuid::Uuid::new_v4().to_string().replace("-", "")[..8].to_string());
+    let other_resp = create_collection(&server, &other_name, fields.clone()).await;
+    assert_eq!(other_resp.status_code(), StatusCode::CREATED);
+
+    let cross_resp = server
+        .get(&format!("/api/collections/{}/layouts/{}/roles", other_name, layout_id))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .await;
+    assert_eq!(cross_resp.status_code(), StatusCode::OK,
+        "Cross-collection roles should 200, got: {}", cross_resp.status_code());
+    let cross_body: Value = serde_json::from_str(&cross_resp.text()).expect("Invalid JSON");
+    assert!(cross_body.get("roles").and_then(|r| r.as_array()).map_or(false, |r| r.is_empty()),
+        "Layout from another collection must not leak roles: {}", cross_resp.text());
+}
+
+#[tokio::test]
+async fn test_get_layout_roles_malformed_layout_id_returns_empty() {
+    let (server, _test_db, name) = setup().await;
+
+    let fields = serde_json::json!([{"name": "email", "type": "string"}]);
+    let create_resp = create_collection(&server, &name, fields).await;
+    assert_eq!(create_resp.status_code(), StatusCode::CREATED);
+
+    let resp = server
+        .get(&format!("/api/collections/{}/layouts/not-a-uuid/roles", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .await;
+    assert_eq!(resp.status_code(), StatusCode::OK,
+        "Malformed layout id should 200 with empty roles, got: {}", resp.status_code());
+    let body: Value = serde_json::from_str(&resp.text()).expect("Invalid JSON");
+    assert!(body.get("roles").and_then(|r| r.as_array()).map_or(false, |r| r.is_empty()),
+        "Malformed layout id should return an empty roles array: {}", resp.text());
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Layout sections: POST/GET sections, PATCH reorder, PUT/DELETE :section_id
 // ═══════════════════════════════════════════════════════════════════
@@ -492,4 +568,48 @@ async fn test_layout_sections_round_trip() {
         .await;
     assert_eq!(put_missing.status_code(), StatusCode::NOT_FOUND,
         "PUT on deleted section should 404, got: {}", put_missing.status_code());
+}
+// ═══════════════════════════════════════════════════════════════════
+// Layout self-heal: a collection created without a layout (e.g. via the
+// collections API) must still resolve so RecordDetail can render fields.
+// ═══════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_resolve_layout_self_heals_missing_layout() {
+    let (server, _test_db, name) = setup().await;
+
+    let fields = serde_json::json!([
+        {"name": "title", "type": "string"},
+        {"name": "body", "type": "text"}
+    ]);
+    let create_resp = create_collection(&server, &name, fields).await;
+    assert_eq!(create_resp.status_code(), StatusCode::CREATED, "{}", create_resp.text());
+
+    // No layout was ever created for this collection.
+    let resp = server
+        .get(&format!("/api/collections/{}/layout", name))
+        .add_header("Authorization", "Bearer dev_test-key-for-tests-12345")
+        .await;
+    assert_eq!(
+        resp.status_code(),
+        StatusCode::OK,
+        "resolve layout should self-heal a missing layout, got: {}",
+        resp.text()
+    );
+
+    let body: Value = serde_json::from_str(&resp.text()).expect("Invalid JSON");
+    let layout = body.get("layout").expect("layout present");
+    assert_eq!(layout.get("name").and_then(|v| v.as_str()), Some("Default"));
+
+    let sections = body
+        .get("sections")
+        .and_then(|v| v.as_array())
+        .expect("sections array");
+    assert!(!sections.is_empty(), "self-healed layout should have a fields section");
+    let display_fields = sections[0]
+        .get("display_fields")
+        .and_then(|v| v.as_array())
+        .expect("display_fields array");
+    let names: Vec<&str> = display_fields.iter().filter_map(|v| v.as_str()).collect();
+    assert!(names.contains(&"title") && names.contains(&"body"), "got {names:?}");
 }

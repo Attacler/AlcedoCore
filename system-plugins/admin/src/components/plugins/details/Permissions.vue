@@ -7,6 +7,7 @@ import { useRoute } from "vue-router";
 import { usePoliciesStore, Policy } from "@/stores/policies.ts";
 import { actionSeverity } from "@/utils/formatters.ts";
 import { Select } from "primevue";
+import { appPath } from "@/utils/appHeaders";
 
 const props = defineProps<{ plugin: PluginStore }>();
 
@@ -252,7 +253,7 @@ onMounted(() => {
                         <Column header="Policy">
                             <template #body="{ data }">
                                 <router-link
-                                    :to="`/policies/${data.policy_id}`"
+                                    :to="appPath(`/policies/${data.policy_id}`)"
                                     class="font-medium text-blue-600 hover:underline"
                                 >
                                     {{
@@ -311,7 +312,7 @@ onMounted(() => {
                         <Column header="Policy">
                             <template #body="{ data }">
                                 <router-link
-                                    :to="`/policies/${data.policy.id}`"
+                                    :to="appPath(`/policies/${data.policy.id}`)"
                                     class="font-medium text-blue-600 hover:underline"
                                 >
                                     {{

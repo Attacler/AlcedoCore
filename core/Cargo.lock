@@ -92,7 +92,6 @@ dependencies = [
  "mime_guess",
  "once_cell",
  "rand 0.8.6",
- "redis",
  "regex",
  "reqwest",
  "sea-query",
@@ -175,7 +174,6 @@ dependencies = [
  "alcedo-common",
  "alcedo-db",
  "alcedo-infra",
- "redis",
  "reqwest",
  "rstest",
  "serde",
@@ -199,9 +197,12 @@ dependencies = [
  "rand 0.8.6",
  "redis",
  "rmp-serde",
+ "serde",
+ "serde_json",
  "time",
  "tokio",
  "tower-sessions",
+ "tracing",
 ]
 
 [[package]]
@@ -215,7 +216,6 @@ dependencies = [
  "alcedo-services",
  "axum 0.7.9",
  "chrono",
- "redis",
  "rstest",
  "serde",
  "serde_json",
@@ -241,7 +241,6 @@ dependencies = [
  "axum 0.7.9",
  "chrono",
  "file-storage",
- "redis",
  "reqwest",
  "serde",
  "serde_json",
@@ -276,14 +275,12 @@ name = "alcedo-services"
 version = "0.1.0"
 dependencies = [
  "alcedo-common",
- "alcedo-container",
  "alcedo-db",
  "alcedo-infra",
  "argon2",
  "async-trait",
  "chrono",
  "file-storage",
- "redis",
  "sea-query",
  "serde",
  "serde_json",
@@ -309,11 +306,11 @@ dependencies = [
  "alcedo-services",
  "axum 0.7.9",
  "axum-test",
- "deadpool",
  "file-storage",
  "file-storage-local",
  "http 1.4.0",
  "hyper 1.9.0",
+ "rand 0.8.6",
  "redis",
  "reqwest",
  "rstest",
@@ -1189,14 +1186,12 @@ dependencies = [
  "bollard-stubs",
  "chrono",
  "config",
- "deadpool",
  "file-storage",
  "file-storage-local",
  "file-storage-s3",
  "once_cell",
  "platform-docker",
  "platform-k8s",
- "redis",
  "reqwest",
  "serde",
  "serde_json",
@@ -1805,6 +1800,9 @@ name = "deadpool-runtime"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
+dependencies = [
+ "tokio",
+]
 
 [[package]]
 name = "der"
@@ -4335,6 +4333,7 @@ dependencies = [
  "bytes",
  "encoding_rs",
  "futures-core",
+ "futures-util",
  "h2 0.4.14",
  "http 1.4.0",
  "http-body 1.0.1",
@@ -4356,12 +4355,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",
+ "tokio-util",
  "tower",
  "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -6434,6 +6435,19 @@ dependencies = [
  "indexmap 2.14.0",
  "wasm-encoder",
  "wasmparser",
+]
+
+[[package]]
+name = "wasm-streams"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

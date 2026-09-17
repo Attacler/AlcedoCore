@@ -85,6 +85,8 @@ pub fn make_router(
         .merge(super::auth::auth_router(state.clone()))
         // Users API — must be before proxy catch-all
         .merge(super::users::users_router(state.clone()))
+        // Apps/Versions API — must be before proxy catch-all
+        .merge(super::apps::apps_router(state.clone()))
         // Roles API
         .merge(super::roles::roles_router(state.clone()))
         // User-Roles API
@@ -269,7 +271,7 @@ pub fn make_router(
     ));
     // Rate limit middleware — inner layer (runs after CORS, before auth)
     router = router.layer(axum::middleware::from_fn_with_state(
-        state,
+        state.clone(),
         crate::middleware::rate_limit::rate_limit_middleware,
     ));
     // Security headers middleware — applied to all responses
@@ -280,6 +282,12 @@ pub fn make_router(
     // (response header + RequestId extension) for tracing and plugin auth.
     router = router.layer(axum::middleware::from_fn(
         crate::middleware::request_id::request_id_middleware,
+    ));
+    // Context middleware — attaches the RequestContext extension (X-App/X-Version)
+    // for all requests; runs before auth and handlers.
+    router = router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::context::context_middleware,
     ));
     // CORS middleware — handles preflight before auth/rate-limit
     let cors_origins = std::env::var("CORS_ORIGINS")
@@ -326,12 +334,24 @@ pub fn make_router(
         .unwrap_or(10 * 1024 * 1024); // default 10 MB
     router = router.layer(RequestBodyLimitLayer::new(max_body_size));
 
+    // Registry proxy is merged AFTER the body-limit layer so image layers
+    // (which exceed MAX_REQUEST_BODY_SIZE) stream through. It carries its own
+    // auth middleware to verify the developer key and set `x-alcedo-root`.
+    let registry_proxy = super::registry_proxy::registry_proxy_router(state.clone()).layer(
+        axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::auth::auth_middleware,
+        ),
+    );
+    router = router.merge(registry_proxy);
+
     tracing::info!("[MAKE_ROUTER] Router built");
     router
 }
 
 async fn catch_all_handler(
     State(state): State<Arc<AppState>>,
+    alcedo_common::context::ExtractContext(ctx): alcedo_common::context::ExtractContext,
     req: axum::http::Request<axum::body::Body>,
 ) -> Response {
     let db_pool = match state.db_pool.as_ref() {
@@ -368,6 +388,7 @@ async fn catch_all_handler(
             slug: slug.clone(),
             path: proxy_path,
         }),
+        alcedo_common::context::ExtractContext(ctx),
         request,
     )
     .await;

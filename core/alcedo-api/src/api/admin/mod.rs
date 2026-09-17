@@ -1,5 +1,6 @@
 pub mod config;
 pub mod deploy;
+pub mod deployment;
 pub mod docs;
 pub mod events;
 pub mod lifecycle;

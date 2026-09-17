@@ -1,23 +1,21 @@
 <script setup lang="ts">
-import { provide, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onMounted, provide } from "vue";
+import { useRoute } from "vue-router";
 import AppLayout from "@/components/AppLayout.vue";
+import GlobalLayout from "@/components/GlobalLayout.vue";
 import RelationalDrawer from "@/components/RelationalDrawer.vue";
-import { usePluginsStore } from "@/stores/plugins";
-import { useAuthStore } from "@/stores/authStore";
+import { registerSystemViewTypes } from "@/stores/plugins";
 import FormFieldRenderer from "./components/FormFieldRenderer.vue";
 import FieldNameLabel from "@/components/FieldNameLabel.vue";
 import { useDisplayComponents } from "@/composables/useDisplayComponents";
 
-const router = useRouter();
-const isLoginPage = ref(false);
+const route = useRoute();
 
-router.isReady().then(() => {
-    isLoginPage.value = router.currentRoute.value.name === "Login";
+const isLoginPage = computed(() => route.name === "Login");
+const isAppZone = computed(() => route.meta.appZone === true);
 
-    router.afterEach((to) => {
-        isLoginPage.value = to.name === "Login";
-    });
+onMounted(() => {
+    registerSystemViewTypes();
 });
 
 provide("FormFieldRenderer", FormFieldRenderer);
@@ -27,11 +25,8 @@ provide("useDisplayComponents", useDisplayComponents);
 </script>
 
 <template>
-    <template v-if="isLoginPage">
-        <router-view />
-    </template>
-    <template v-else>
-        <AppLayout />
-    </template>
+    <router-view v-if="isLoginPage" />
+    <GlobalLayout v-else-if="!isAppZone" />
+    <AppLayout v-else />
     <RelationalDrawer />
 </template>

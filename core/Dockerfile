@@ -40,6 +40,7 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /workspace/core/target/release/dockerswarm /usr/local/bin/
 COPY core/core-migrations /app/core-migrations/
+COPY core/core-migrations-global /app/core-migrations-global/
 
 ENV RUST_LOG=info
  

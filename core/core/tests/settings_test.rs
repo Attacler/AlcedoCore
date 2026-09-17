@@ -21,6 +21,8 @@ async fn setup_server() -> (axum_test::TestServer, TestDb) {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     let state = create_test_state_with_pool(test_db.pool().clone()).await;
 
+    refresh_schema(&state).await;
+
     let _ = plugin_core::services::auth::provision_dev_api_key(
         test_db.pool(),
         Some(DEV_API_KEY.to_string()),
@@ -28,6 +30,7 @@ async fn setup_server() -> (axum_test::TestServer, TestDb) {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
+    let app = with_default_app_headers(app);
     let server = axum_test::TestServer::new(app).expect("Failed to create test server");
     (server, test_db)
 }
@@ -140,6 +143,52 @@ async fn test_update_setting_with_description() {
     assert_eq!(body["description"], "UI theme");
 }
 
+#[tokio::test]
+async fn test_update_setting_preserves_description_when_absent() {
+    let (server, _test_db) = setup_server().await;
+
+    // First write WITH a description.
+    let response = server
+        .put("/api/settings/desc_key")
+        .add_header("Authorization", AUTH_HEADER)
+        .json(&serde_json::json!({
+            "value": "v1",
+            "description": "original description"
+        }))
+        .await;
+    assert_eq!(
+        response.status_code(),
+        axum::http::StatusCode::OK,
+        "PUT with description failed: {}",
+        response.text()
+    );
+    let body: serde_json::Value = serde_json::from_str(&response.text())
+        .expect("PUT response body is valid JSON");
+    assert_eq!(body["description"], "original description");
+
+    // Second write WITHOUT a description — the old one must survive
+    // (the engine Upsert's COALESCE preservation).
+    let response = server
+        .put("/api/settings/desc_key")
+        .add_header("Authorization", AUTH_HEADER)
+        .json(&serde_json::json!({ "value": "v2" }))
+        .await;
+    assert_eq!(
+        response.status_code(),
+        axum::http::StatusCode::OK,
+        "PUT without description failed: {}",
+        response.text()
+    );
+    let body: serde_json::Value = serde_json::from_str(&response.text())
+        .expect("PUT response body is valid JSON");
+    assert_eq!(body["value"], "v2");
+    assert_eq!(
+        body["description"], "original description",
+        "description should survive an update that omits it, got: {}",
+        body
+    );
+}
+
 // ---------------------------------------------------------------------------
 // POST /api/settings/batch
 // ---------------------------------------------------------------------------
@@ -204,11 +253,17 @@ async fn test_batch_update_empty_settings() {
 async fn test_developer_key_full_lifecycle() {
     let (server, _test_db) = setup_server().await;
 
-    // Create a developer key.
+    // Create a developer key, scoped to the default version the harness seeds.
+    let default_version_id = plugin_core::services::auth::ensure_default_version(_test_db.pool())
+        .await
+        .expect("default version should resolve");
     let response = server
         .post("/api/settings/developer/keys")
         .add_header("Authorization", AUTH_HEADER)
-        .json(&serde_json::json!({ "name": "test-key" }))
+        .json(&serde_json::json!({
+            "name": "test-key",
+            "version_id": default_version_id
+        }))
         .await;
     assert_eq!(
         response.status_code(),
@@ -223,6 +278,11 @@ async fn test_developer_key_full_lifecycle() {
     let raw_key = created["raw_key"].as_str().expect("created key missing raw_key");
     let key_prefix = created["key_prefix"].as_str().expect("created key missing key_prefix");
     assert_eq!(created["name"], "test-key");
+    assert_eq!(
+        created["version_id"],
+        default_version_id,
+        "created key should be scoped to the requested version_id"
+    );
     assert!(raw_key.starts_with("dev_"), "raw_key should start with dev_, got: {}", raw_key);
     assert_eq!(created["key_prefix"], raw_key[..10], "key_prefix should be raw_key[..10]");
     assert!(!key_prefix.is_empty());
@@ -246,6 +306,11 @@ async fn test_developer_key_full_lifecycle() {
         assert!(
             k.get("raw_key").is_none() || k["raw_key"].is_null(),
             "list endpoint must never expose raw_key, got: {}",
+            k
+        );
+        assert!(
+            k.get("key_hash").is_none(),
+            "list endpoint must never expose key_hash, got: {}",
             k
         );
     }
@@ -304,6 +369,95 @@ async fn test_developer_key_full_lifecycle() {
         "Revoked developer key should be rejected with 401, got: {}",
         authed.status_code()
     );
+}
+
+#[tokio::test]
+async fn test_create_developer_key_with_invalid_version_400() {
+    let (server, _test_db) = setup_server().await;
+
+    let response = server
+        .post("/api/settings/developer/keys")
+        .add_header("Authorization", AUTH_HEADER)
+        .json(&serde_json::json!({
+            "name": "bad-key",
+            "version_id": 999999
+        }))
+        .await;
+    assert_eq!(
+        response.status_code(),
+        axum::http::StatusCode::BAD_REQUEST,
+        "Creating a key for a nonexistent version_id should be 400, got: {}",
+        response.text()
+    );
+}
+
+#[tokio::test]
+async fn test_version_keys_endpoint_lists_only_that_version() {
+    let (server, test_db) = setup_server().await;
+    let default_version = plugin_core::services::auth::ensure_default_version(test_db.pool())
+        .await
+        .expect("default version should resolve");
+
+    // Create a second version and a dev key scoped to it, so the version
+    // filter is non-vacuous: the first version's key list must exclude it.
+    let second_version: i32 = sqlx::query_scalar(
+        "INSERT INTO alcedo.alcedo_versions (version_name) VALUES ($1) RETURNING id",
+    )
+    .bind("v2-test")
+    .fetch_one(test_db.pool())
+    .await
+    .expect("second version should be created");
+
+    let second_key = server
+        .post("/api/settings/developer/keys")
+        .add_header("Authorization", AUTH_HEADER)
+        .json(&serde_json::json!({
+            "name": "second-version-key",
+            "version_id": second_version
+        }))
+        .await;
+    assert_eq!(
+        second_key.status_code(),
+        axum::http::StatusCode::OK,
+        "POST /api/settings/developer/keys for second version failed: {}",
+        second_key.text()
+    );
+    let second_key_body: serde_json::Value = serde_json::from_str(&second_key.text())
+        .expect("second key response body is valid JSON");
+    let second_key_id = second_key_body["id"]
+        .as_str()
+        .expect("second key missing id");
+
+    let response = server
+        .get(&format!("/api/versions/{}/keys", default_version))
+        .add_header("Authorization", AUTH_HEADER)
+        .await;
+    assert_eq!(
+        response.status_code(),
+        axum::http::StatusCode::OK,
+        "GET /api/versions/:id/keys failed: {}",
+        response.text()
+    );
+    let keys: serde_json::Value = serde_json::from_str(&response.text())
+        .expect("version keys response body is valid JSON");
+    let keys = keys.as_array().expect("version keys should be an array");
+    assert!(
+        keys.iter().any(|k| k["key_prefix"] == "dev_test-k"),
+        "the seeded dev key should be listed for the default version, got: {}",
+        serde_json::to_string_pretty(&keys).unwrap()
+    );
+    assert!(
+        !keys.iter().any(|k| k["id"] == second_key_id),
+        "the second version's key must not leak into the first version's list, got: {}",
+        serde_json::to_string_pretty(&keys).unwrap()
+    );
+    for k in keys {
+        assert_eq!(
+            k["version_id"],
+            default_version,
+            "every listed key should belong to the requested version"
+        );
+    }
 }
 
 #[tokio::test]

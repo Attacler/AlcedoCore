@@ -16,7 +16,6 @@ alcedo-events = { path = "../alcedo-events" }
 alcedo-providers = { path = "../alcedo-providers" }
 file-storage = { path = "../file-storage" }
 axum = { version = "0.7" }
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

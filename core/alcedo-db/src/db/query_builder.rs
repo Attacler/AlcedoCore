@@ -153,7 +153,10 @@ pub fn validate_query_request(
                     sort.direction
                 )));
             }
-            let exists = table_schema.columns.iter().any(|c| c.column_name == sort.field);
+            let exists = table_schema
+                .columns
+                .iter()
+                .any(|c| c.column_name == sort.field);
             if !exists {
                 return Err(AppError::BadRequest(format!(
                     "Invalid sort column: '{}'. Not found in table '{}'",
@@ -182,17 +185,20 @@ pub(crate) fn build_select_query(
         sql.push_str(&extra_select.join(", "));
     } else if let Some(ref select_fields) = request.select {
         if select_fields.is_empty() {
-            let cols: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c.column_name)).collect();
+            let cols: Vec<String> = columns
+                .iter()
+                .map(|c| format!("\"{}\"", c.column_name))
+                .collect();
             sql.push_str(&cols.join(", "));
         } else {
-            let cols: Vec<String> = select_fields
-                .iter()
-                .map(|f| format!("\"{}\"", f))
-                .collect();
+            let cols: Vec<String> = select_fields.iter().map(|f| format!("\"{}\"", f)).collect();
             sql.push_str(&cols.join(", "));
         }
     } else {
-        let cols: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c.column_name)).collect();
+        let cols: Vec<String> = columns
+            .iter()
+            .map(|c| format!("\"{}\"", c.column_name))
+            .collect();
         sql.push_str(&cols.join(", "));
     }
 
@@ -273,12 +279,14 @@ fn build_where(
 
         Ok((clause, binds))
     } else {
-        let field = filter.field.as_ref().ok_or_else(|| {
-            AppError::BadRequest("Leaf filter missing 'field'".to_string())
-        })?;
-        let operator = filter.operator.as_ref().ok_or_else(|| {
-            AppError::BadRequest("Leaf filter missing 'operator'".to_string())
-        })?;
+        let field = filter
+            .field
+            .as_ref()
+            .ok_or_else(|| AppError::BadRequest("Leaf filter missing 'field'".to_string()))?;
+        let operator = filter
+            .operator
+            .as_ref()
+            .ok_or_else(|| AppError::BadRequest("Leaf filter missing 'operator'".to_string()))?;
 
         if !columns.iter().any(|c| c.column_name == *field) {
             return Err(AppError::BadRequest(format!(
@@ -291,14 +299,17 @@ fn build_where(
             FilterOperator::Null => Ok((format!("\"{}\" IS NULL", field), vec![])),
             FilterOperator::NotNull => Ok((format!("\"{}\" IS NOT NULL", field), vec![])),
             _ => {
-                let val = filter.value.as_ref().ok_or_else(|| {
-                    AppError::BadRequest("Filter missing 'value'".to_string())
-                })?;
+                let val = filter
+                    .value
+                    .as_ref()
+                    .ok_or_else(|| AppError::BadRequest("Filter missing 'value'".to_string()))?;
 
                 match operator {
                     FilterOperator::In | FilterOperator::NotIn => {
                         let arr = val.as_array().ok_or_else(|| {
-                            AppError::BadRequest("'in'/'not_in' operators require an array value".to_string())
+                            AppError::BadRequest(
+                                "'in'/'not_in' operators require an array value".to_string(),
+                            )
                         })?;
 
                         let binds: Vec<BindValue> = arr.iter().map(json_to_bind).collect();
@@ -316,7 +327,9 @@ fn build_where(
 
                         Ok((clause, binds))
                     }
-                    FilterOperator::Contains | FilterOperator::StartsWith | FilterOperator::EndsWith => {
+                    FilterOperator::Contains
+                    | FilterOperator::StartsWith
+                    | FilterOperator::EndsWith => {
                         let raw = json_to_string(val);
                         let pattern = match operator {
                             FilterOperator::Contains => format!("%{}%", raw),
@@ -324,11 +337,7 @@ fn build_where(
                             FilterOperator::EndsWith => format!("%{}", raw),
                             _ => unreachable!(),
                         };
-                        let clause = format!(
-                            "\"{}\" LIKE ${}::text",
-                            field,
-                            next_idx
-                        );
+                        let clause = format!("\"{}\" LIKE ${}::text", field, next_idx);
                         Ok((clause, vec![BindValue::String(pattern)]))
                     }
                     _ => {
@@ -396,15 +405,13 @@ pub async fn execute_query(
         }
     }
 
-    let result: (serde_json::Value,) = tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        db_query.fetch_one(pool),
-    )
-    .await
-    .map_err(|_| AppError::Internal("Query timeout after 60 seconds".to_string()))?
-    .map_err(|e| AppError::DatabaseError {
-        details: format!("Query execution failed: {}", e),
-    })?;
+    let result: (serde_json::Value,) =
+        tokio::time::timeout(std::time::Duration::from_secs(60), db_query.fetch_one(pool))
+            .await
+            .map_err(|_| AppError::Internal("Query timeout after 60 seconds".to_string()))?
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Query execution failed: {}", e),
+            })?;
 
     let rows: Vec<serde_json::Value> = match result.0 {
         serde_json::Value::Array(arr) => arr,
@@ -414,10 +421,13 @@ pub async fn execute_query(
     let row_count = rows.len();
     let truncated = row_count as u64 >= max_rows;
 
-    let columns = request
-        .select
-        .clone()
-        .unwrap_or_else(|| table_schema.columns.iter().map(|c| c.column_name.clone()).collect());
+    let columns = request.select.clone().unwrap_or_else(|| {
+        table_schema
+            .columns
+            .iter()
+            .map(|c| c.column_name.clone())
+            .collect()
+    });
 
     Ok(QueryResponse {
         columns,

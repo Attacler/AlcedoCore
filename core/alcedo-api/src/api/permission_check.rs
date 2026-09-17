@@ -14,6 +14,7 @@ use crate::middleware::logging::extract_request_id_from_headers;
 use crate::plugins::health::AppState;
 use crate::services::permissions::{self, PolicyPermission};
 use crate::services::scopes::{check_entity_scope, ScopeSource};
+use alcedo_middleware::proxy::lookup_install_by_request_id;
 
 pub enum PermissionCheck {
     Bypass,
@@ -41,6 +42,61 @@ impl PermissionCheck {
     }
 }
 
+/// True when the user has the global admin flag (`alcedo.alcedo_users.is_admin`).
+/// Runs on the default pool — the users table is global, not app-bound.
+pub(crate) async fn is_global_admin(
+    state: &Arc<AppState>,
+    user_id: Uuid,
+) -> Result<bool, AppError> {
+    Ok(
+        sqlx::query_scalar(r#"SELECT is_admin FROM alcedo.alcedo_users WHERE id = $1"#)
+            .bind(user_id)
+            .fetch_optional(state.db()?)
+            .await
+            .map_err(|e| AppError::Internal(format!("Admin check query failed: {}", e)))?
+            .unwrap_or(false),
+    )
+}
+
+/// True when the request carries a session identity that is a global admin:
+/// either the `is_admin` flag on the global users table or the `users.all`
+/// admin scope in the request's app schema. Developer API keys are deliberately
+/// excluded here — they are version-scoped root credentials and callers must
+/// bound them to their own version (`install_within_context_version`).
+pub async fn is_global_admin_caller(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<bool, AppError> {
+    let Some(user_id) = extract_user_id_from_session(state, headers).await? else {
+        return Ok(false);
+    };
+    if is_global_admin(state, user_id).await? {
+        return Ok(true);
+    }
+    let pool = state.db_for_headers(headers).await?;
+    let is_admin: bool = match sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+            SELECT 1 FROM alcedocore_user_roles ur
+            JOIN alcedocore_role_scopes rs ON rs.role_id = ur.role_id
+            WHERE ur.user_id = $1 AND rs.scope = 'users.all'
+        )"#,
+    )
+    .bind(user_id)
+    .fetch_one(&pool)
+    .await
+    {
+        Ok(v) => v,
+        Err(e) if crate::error::is_undefined_table(&e) => false,
+        Err(e) => {
+            return Err(AppError::Internal(format!(
+                "Admin check query failed: {}",
+                e
+            )))
+        }
+    };
+    Ok(is_admin)
+}
+
 pub async fn check_permission(
     state: &Arc<AppState>,
     identity: &RequestIdentity,
@@ -53,7 +109,7 @@ pub async fn check_permission(
     } else {
         // Fallback: middleware didn't resolve the slug (e.g. dev-key/public paths)
         let request_id = extract_request_id_from_headers(headers);
-        lookup_plugin_by_request_id(&state.redis_connection, &request_id).await
+        lookup_plugin_by_request_id(&state.redis, &request_id).await
     };
 
     // Developer API keys are root credentials: they bypass scope and
@@ -64,22 +120,19 @@ pub async fn check_permission(
     }
 
     if let Some(ref slug) = plugin_slug {
-        let db_pool = state.db()?;
+        let db_pool = state.db_for_headers(headers).await?;
 
         // Plugins with rootaccess.all bypass collection-level permission checks
-        if let Ok(Some(plugin)) = crate::db::queries::Plugin::find_by_slug(db_pool, slug).await {
-            let granted: Vec<String> =
-                serde_json::from_value(plugin.granted_scopes).unwrap_or_default();
-            if granted
-                .iter()
-                .any(|s| crate::services::scopes::scope_matches(s, "rootaccess.all"))
-            {
-                return Ok(PermissionCheck::Bypass);
-            }
+        let granted = resolve_install_granted_scopes(state, headers, &db_pool, slug).await;
+        if granted
+            .iter()
+            .any(|s| crate::services::scopes::scope_matches(s, "rootaccess.all"))
+        {
+            return Ok(PermissionCheck::Bypass);
         }
 
         let permissions =
-            permissions::get_plugin_permissions(db_pool, slug, collection_name, Some(action))
+            permissions::get_plugin_permissions(&db_pool, slug, collection_name, Some(action))
                 .await?;
 
         if permissions.is_empty() {
@@ -104,35 +157,50 @@ pub async fn check_permission(
     };
 
     if let Some(user_id) = user_id {
-        // Admin users bypass policy checks entirely
-        let is_admin: bool = sqlx::query_scalar(
+        // Global admins (is_admin flag on the global users table) bypass
+        // policy checks entirely — schema-independent.
+        if is_global_admin(state, user_id).await? {
+            return Ok(PermissionCheck::Bypass);
+        }
+
+        // App admins (users.all scope in the request's app schema) also bypass.
+        // A missing app schema (clean DB / global zone) is treated as not-admin.
+        let pool = state.db_for_headers(headers).await?;
+        let is_admin: bool = match sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(
-                SELECT 1 FROM user_roles ur
-                JOIN role_scopes rs ON rs.role_id = ur.role_id
+                SELECT 1 FROM alcedocore_user_roles ur
+                JOIN alcedocore_role_scopes rs ON rs.role_id = ur.role_id
                 WHERE ur.user_id = $1 AND rs.scope = 'users.all'
             )"#,
         )
         .bind(user_id)
-        .fetch_one(state.db()?)
+        .fetch_one(&pool)
         .await
-        .map_err(|e| AppError::Internal(format!("Admin check query failed: {}", e)))?;
+        {
+            Ok(v) => v,
+            Err(e) if crate::error::is_undefined_table(&e) => false,
+            Err(e) => {
+                return Err(AppError::Internal(format!(
+                    "Admin check query failed: {}",
+                    e
+                )))
+            }
+        };
 
         if is_admin {
             return Ok(PermissionCheck::Bypass);
         }
 
-        let db_pool = state.db()?;
-
-        let cache_key = format!("perm:{}:{}:{}", user_id, collection_name, action);
-        if let Some(cached) =
-            crate::services::cache::try_get(&state.redis_connection, &cache_key).await
-        {
+        let schema = state.schema_for_headers(headers).await?;
+        let cache_key = format!("perm:{}:{}:{}:{}", schema, user_id, collection_name, action);
+        if let Some(cached) = crate::services::cache::try_get(&state.redis, &cache_key).await {
             if let Ok(mut cached_permissions) =
                 serde_json::from_str::<Vec<PolicyPermission>>(&cached)
             {
                 let context = build_user_context(
-                    db_pool,
-                    &state.redis_connection,
+                    &pool,
+                    &state.redis,
+                    &schema,
                     &user_id,
                     &cached_permissions,
                 )
@@ -150,7 +218,20 @@ pub async fn check_permission(
         }
 
         let mut permissions =
-            get_role_policies_permissions(db_pool, &user_id, collection_name, Some(action)).await?;
+            match get_role_policies_permissions(&pool, &user_id, collection_name, Some(action))
+                .await
+            {
+                Ok(p) => p,
+                Err(e) if e.is_missing_relation() => {
+                    return Ok(PermissionCheck::Denied {
+                        reason: format!(
+                            "App schema unavailable; no permissions on collection '{}'",
+                            collection_name
+                        ),
+                    })
+                }
+                Err(e) => return Err(e),
+            };
 
         if permissions.is_empty() {
             return Ok(PermissionCheck::Denied {
@@ -162,8 +243,8 @@ pub async fn check_permission(
         }
 
         // Resolve {user.*} variables in policy filters (dynamic field resolution)
-        let context =
-            build_user_context(db_pool, &state.redis_connection, &user_id, &permissions).await?;
+        let context = build_user_context(&pool, &state.redis, &schema, &user_id, &permissions)
+            .await?;
         for perm in permissions.iter_mut() {
             if let Some(filter) = perm.filter.as_array_mut() {
                 crate::services::permissions::resolve_variables(filter, &context);
@@ -173,8 +254,7 @@ pub async fn check_permission(
         // Populate permission cache
         if !permissions.is_empty() {
             if let Ok(json) = serde_json::to_string(&permissions) {
-                crate::services::cache::try_set(&state.redis_connection, &cache_key, &json, 60)
-                    .await;
+                crate::services::cache::try_set(&state.redis, &cache_key, &json, 60).await;
             }
         }
 
@@ -185,8 +265,17 @@ pub async fn check_permission(
     }
 
     // Fallback: check the public role's collection permissions
-    let db_pool = state.db()?;
-    let permissions = get_public_role_policies(db_pool, collection_name, Some(action)).await?;
+    let db_pool = state.db_for_headers(headers).await?;
+    let permissions = match get_public_role_policies(&db_pool, collection_name, Some(action)).await
+    {
+        Ok(p) => p,
+        Err(e) if e.is_missing_relation() => {
+            return Ok(PermissionCheck::Denied {
+                reason: "App schema unavailable; authentication required".to_string(),
+            })
+        }
+        Err(e) => return Err(e),
+    };
     if permissions.is_empty() {
         Ok(PermissionCheck::Denied {
             reason: "Authentication required".to_string(),
@@ -257,15 +346,22 @@ pub async fn load_all_user_permissions(
         extract_user_id_from_session(state, headers).await?
     };
     if let Some(user_id) = user_id {
+        // Global admins (is_admin flag on the global users table) bypass
+        // policy checks entirely — schema-independent.
+        if is_global_admin(state, user_id).await? {
+            return Ok(vec![]);
+        }
+
+        let pool = state.db_for_headers(headers).await?;
         let is_admin: bool = sqlx::query_scalar(
             r#"SELECT EXISTS(
-                SELECT 1 FROM user_roles ur
-                JOIN role_scopes rs ON rs.role_id = ur.role_id
+                SELECT 1 FROM alcedocore_user_roles ur
+                JOIN alcedocore_role_scopes rs ON rs.role_id = ur.role_id
                 WHERE ur.user_id = $1 AND rs.scope = 'users.all'
             )"#,
         )
         .bind(user_id)
-        .fetch_one(state.db()?)
+        .fetch_one(&pool)
         .await
         .unwrap_or(false);
 
@@ -273,18 +369,18 @@ pub async fn load_all_user_permissions(
             return Ok(vec![]);
         }
 
-        let db_pool = state.db()?;
+        let db_pool = pool;
 
-        let cache_key = format!("perm:{}:{}:all", user_id, collection_name);
-        if let Some(cached) =
-            crate::services::cache::try_get(&state.redis_connection, &cache_key).await
-        {
+        let schema = state.schema_for_headers(headers).await?;
+        let cache_key = format!("perm:{}:{}:{}:all", schema, user_id, collection_name);
+        if let Some(cached) = crate::services::cache::try_get(&state.redis, &cache_key).await {
             if let Ok(mut cached_permissions) =
                 serde_json::from_str::<Vec<PolicyPermission>>(&cached)
             {
                 let context = build_user_context(
-                    db_pool,
-                    &state.redis_connection,
+                    &db_pool,
+                    &state.redis,
+                    &schema,
                     &user_id,
                     &cached_permissions,
                 )
@@ -299,10 +395,14 @@ pub async fn load_all_user_permissions(
         }
 
         let mut permissions =
-            get_role_policies_permissions(db_pool, &user_id, collection_name, None).await?;
+            match get_role_policies_permissions(&db_pool, &user_id, collection_name, None).await {
+                Ok(p) => p,
+                Err(e) if e.is_missing_relation() => return Ok(vec![]),
+                Err(e) => return Err(e),
+            };
 
-        let context =
-            build_user_context(db_pool, &state.redis_connection, &user_id, &permissions).await?;
+        let context = build_user_context(&db_pool, &state.redis, &schema, &user_id, &permissions)
+            .await?;
         for perm in permissions.iter_mut() {
             if let Some(filter) = perm.filter.as_array_mut() {
                 crate::services::permissions::resolve_variables(filter, &context);
@@ -312,8 +412,7 @@ pub async fn load_all_user_permissions(
         // Populate permission cache
         if !permissions.is_empty() {
             if let Ok(json) = serde_json::to_string(&permissions) {
-                crate::services::cache::try_set(&state.redis_connection, &cache_key, &json, 60)
-                    .await;
+                crate::services::cache::try_set(&state.redis, &cache_key, &json, 60).await;
             }
         }
 
@@ -389,7 +488,7 @@ pub async fn require_admin(
     if is_valid_dev_key(headers) {
         return Ok(());
     }
-    let db_pool = state.db()?;
+    let db_pool = state.db_for_headers(headers).await?;
     let uid = if let Some(uid) = identity.user_id {
         uid
     } else {
@@ -397,13 +496,38 @@ pub async fn require_admin(
             .await?
             .ok_or_else(|| AppError::Unauthorized("Authentication required".to_string()))?
     };
-    let is_admin: bool = sqlx::query_scalar(
-        r#"SELECT EXISTS(SELECT 1 FROM user_roles ur JOIN role_scopes rs ON rs.role_id = ur.role_id WHERE ur.user_id = $1 AND rs.scope = 'users.all')"#
+
+    // Global admins (is_admin flag on the global users table) bypass
+    // policy checks entirely — schema-independent.
+    if is_global_admin(state, uid).await? {
+        return Ok(());
+    }
+
+    let is_admin: bool = match sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(SELECT 1 FROM alcedocore_user_roles ur JOIN alcedocore_role_scopes rs ON rs.role_id = ur.role_id WHERE ur.user_id = $1 AND rs.scope = 'users.all')"#
     )
     .bind(uid)
-    .fetch_one(db_pool)
+    .fetch_one(&db_pool)
     .await
-    .map_err(|e| AppError::Internal(format!("Admin check query failed: {}", e)))?;
+    {
+        Ok(v) => v,
+        // Missing app schema (clean DB / global zone): fail closed as not-admin
+        // so the caller returns 403 rather than a 500.
+        Err(e) if crate::error::is_undefined_table(&e) => {
+            tracing::warn!(
+                "require_admin: app role tables unavailable ({}); treating user {} as non-admin",
+                e,
+                uid
+            );
+            false
+        }
+        Err(e) => {
+            return Err(AppError::Internal(format!(
+                "Admin check query failed: {}",
+                e
+            )))
+        }
+    };
     if !is_admin {
         return Err(AppError::Forbidden("Admin access required".to_string()));
     }
@@ -430,9 +554,9 @@ async fn get_role_policies_permissions(
 ) -> Result<Vec<PolicyPermission>, AppError> {
     let mut sql = String::from(
         "SELECT pp.id, pp.policy_id, pp.collection_name, pp.action, pp.fields, pp.filter, pp.field_validation \
-         FROM policy_permissions pp \
-         JOIN role_policies rp ON rp.policy_id = pp.policy_id \
-         JOIN user_roles ur ON ur.role_id = rp.role_id \
+         FROM alcedocore_policy_permissions pp \
+         JOIN alcedocore_role_policies rp ON rp.policy_id = pp.policy_id \
+         JOIN alcedocore_user_roles ur ON ur.role_id = rp.role_id \
          WHERE ur.user_id = $1 AND pp.collection_name = $2",
     );
     if action.is_some() {
@@ -455,9 +579,9 @@ async fn get_public_role_policies(
 ) -> Result<Vec<PolicyPermission>, AppError> {
     let mut sql = String::from(
         "SELECT pp.id, pp.policy_id, pp.collection_name, pp.action, pp.fields, pp.filter, pp.field_validation \
-         FROM policy_permissions pp \
-         JOIN role_policies rp ON rp.policy_id = pp.policy_id \
-         JOIN roles r ON r.id = rp.role_id \
+         FROM alcedocore_policy_permissions pp \
+         JOIN alcedocore_role_policies rp ON rp.policy_id = pp.policy_id \
+         JOIN alcedocore_roles r ON r.id = rp.role_id \
          WHERE r.name = 'public' AND pp.collection_name = $1",
     );
     if action.is_some() {
@@ -688,6 +812,36 @@ pub fn is_valid_dev_key(headers: &HeaderMap) -> bool {
     headers.contains_key("x-alcedo-root")
 }
 
+/// Resolve the granted scopes of the install a request maps to. Uses the
+/// `X-Request-ID` → install mapping to scope the lookup to the request's app
+/// version; falls back to the global install when the mapping is absent.
+async fn resolve_install_granted_scopes(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    db_pool: &PgPool,
+    slug: &str,
+) -> Vec<String> {
+    let request_id = extract_request_id_from_headers(headers);
+    let identity = lookup_install_by_request_id(&state.redis, &request_id)
+        .await
+        .filter(|inst| inst.slug == slug);
+    let (app_version_id, version_id) = identity
+        .as_ref()
+        .map(|inst| (inst.app_version_id, inst.version_id))
+        .unwrap_or((None, None));
+    match crate::db::queries::Plugin::resolve_install_scoped(
+        db_pool,
+        slug,
+        app_version_id,
+        version_id,
+    )
+    .await
+    {
+        Ok(Some(plugin)) => serde_json::from_value(plugin.granted_scopes).unwrap_or_default(),
+        _ => vec![],
+    }
+}
+
 /// Defence-in-depth helper: check the authenticated user (from session) has a given scope.
 /// Returns `Unauthorized` if no session, `Forbidden` if scope is missing.
 /// Skips all checks when `AuthLevel::Admin` or `AuthLevel::DeveloperApiKey` is present
@@ -701,12 +855,18 @@ pub async fn require_scope(
     if is_valid_dev_key(headers) {
         return Ok(());
     }
-    let db_pool = state.db()?;
+    let db_pool = state.db_for_headers(headers).await?;
 
     // Session users are scoped through their roles.
     if let Some(user_id) = extract_user_id_from_session(state, headers).await? {
+        // Global admins (is_admin on the global users table) bypass scope
+        // checks entirely — schema-independent, consistent with
+        // `check_permission`/`require_admin`.
+        if is_global_admin(state, user_id).await? {
+            return Ok(());
+        }
         return check_entity_scope(
-            db_pool,
+            &db_pool,
             ScopeSource::User { user_id: &user_id },
             required_scope,
         )
@@ -715,18 +875,11 @@ pub async fn require_scope(
 
     // Plugin callbacks carry identity via X-Request-ID → Redis slug mapping.
     if let Some(request_id) = headers.get("x-request-id").and_then(|v| v.to_str().ok()) {
-        if let Some(slug) = lookup_plugin_by_request_id(&state.redis_connection, request_id).await {
-            let plugin_authorized = if let Ok(Some(plugin)) =
-                crate::db::queries::Plugin::find_by_slug(db_pool, &slug).await
-            {
-                let granted: Vec<String> =
-                    serde_json::from_value(plugin.granted_scopes).unwrap_or_default();
-                granted
-                    .iter()
-                    .any(|s| crate::services::scopes::scope_matches(s, required_scope))
-            } else {
-                false
-            };
+        if let Some(slug) = lookup_plugin_by_request_id(&state.redis, request_id).await {
+            let granted = resolve_install_granted_scopes(state, headers, &db_pool, &slug).await;
+            let plugin_authorized = granted
+                .iter()
+                .any(|s| crate::services::scopes::scope_matches(s, required_scope));
 
             if plugin_authorized {
                 return Ok(());
@@ -753,12 +906,13 @@ pub async fn require_scope(
 /// Returns `{"user": { ... }}` suitable for `resolve_variables`.
 pub async fn build_user_context(
     db_pool: &PgPool,
-    redis: &Option<crate::services::redis_session::RedisPool>,
+    redis: &Option<std::sync::Arc<crate::services::redis_client::RedisClient>>,
+    schema: &str,
     user_id: &Uuid,
     permissions: &[PolicyPermission],
 ) -> Result<Value, AppError> {
     // ── Check user context cache first ──
-    let ctx_cache_key = format!("user_ctx:{}", user_id);
+    let ctx_cache_key = format!("user_ctx:{}:{}", schema, user_id);
     if let Some(cached) = crate::services::cache::try_get(redis, &ctx_cache_key).await {
         if let Ok(ctx) = serde_json::from_str::<Value>(&cached) {
             return Ok(ctx);
@@ -795,7 +949,7 @@ pub async fn build_user_context(
     let mut user_map: serde_json::Map<String, Value> = if !flat_fields.is_empty() {
         let cols: Vec<String> = flat_fields.iter().map(|f| format!("\"{}\"", f)).collect();
         let sql = format!(
-            "SELECT row_to_json(t.*) FROM (SELECT {} FROM users WHERE id = $1) t",
+            "SELECT row_to_json(t.*) FROM (SELECT {} FROM alcedo_users WHERE id = $1) t",
             cols.join(", "),
         );
         match sqlx::query_scalar::<_, Value>(&sql)
@@ -818,10 +972,11 @@ pub async fn build_user_context(
 
     // ── Phase 3: resolve dotted references via relationship joins ──
     if !dotted_refs.is_empty() {
-        let users_col = crate::db::collections::get_cached_collection(db_pool, redis, "users")
-            .await
-            .ok();
-        let all_cols = crate::db::collections::get_cached_collections(db_pool, redis)
+        let users_col =
+            crate::db::collections::get_cached_collection(db_pool, redis, schema, "alcedo_users")
+                .await
+                .ok();
+        let all_cols = crate::db::collections::get_cached_collections(db_pool, redis, schema)
             .await
             .ok();
 
@@ -857,7 +1012,7 @@ pub async fn build_user_context(
                 let quoted_tgt_fld = quote(target_field);
 
                 let sql = format!(
-                    "SELECT {} FROM {} WHERE id = (SELECT {} FROM users WHERE id = $1::uuid)",
+                    "SELECT {} FROM {} WHERE id = (SELECT {} FROM alcedo_users WHERE id = $1::uuid)",
                     quoted_tgt_fld, quoted_tgt_col, quoted_rel,
                 );
 

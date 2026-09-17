@@ -1,4 +1,6 @@
 use axum::{body::to_bytes, extract::State, http::HeaderMap, response::IntoResponse};
+use alcedo_common::context::ExtractContext;
+use alcedo_container::container::plugin_service_name;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -6,47 +8,63 @@ use crate::db::queries::PluginVersion;
 use crate::error::AppError;
 use crate::middleware;
 use crate::plugins::health::AppState as PluginAppState;
-use crate::services::redis_session::RedisPool;
+use crate::services::redis_client::RedisClient;
+
+/// Re-exported so existing `crate::api::proxy::lookup_plugin_by_request_id`
+/// call sites keep working after consolidating on the middleware implementation.
+pub use alcedo_middleware::proxy::lookup_plugin_by_request_id;
+
+fn active_cache_key(
+    slug: &str,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
+) -> String {
+    format!(
+        "plugin:active:{}:{}:{}",
+        slug,
+        app_version_id.unwrap_or(0),
+        version_id.unwrap_or(0)
+    )
+}
 
 /// Write active plugin metadata to Redis cache so the proxy handler can
 /// skip the two DB queries (find_active, find_by_slug) on every request.
 pub async fn cache_active_plugin(
-    redis: &Option<RedisPool>,
+    redis: &Option<Arc<RedisClient>>,
     slug: &str,
-    container_id: &str,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
+    deployment_id: &str,
     version: &str,
     endpoint_count: usize,
 ) {
-    if let Some(ref pool) = redis {
-        if let Ok(mut conn) = pool.get().await {
-            let key = format!("plugin:active:{}", slug);
-            let val = serde_json::json!({
-                "container_id": container_id,
-                "version": version,
-                "endpoint_count": endpoint_count,
-            });
-            let _: Result<(), _> = redis::cmd("SET")
-                .arg(&key)
-                .arg(val.to_string())
-                .query_async(&mut *conn)
-                .await;
-        }
+    if let Some(ref client) = redis {
+        let key = active_cache_key(slug, app_version_id, version_id);
+        let val = serde_json::json!({
+            "deployment_id": deployment_id,
+            "version": version,
+            "endpoint_count": endpoint_count,
+        });
+        let _ = client.set(&key, &val.to_string(), None).await;
     }
 }
 
-/// Remove active plugin cache entry — called on plugin delete.
-pub async fn delete_active_plugin_cache(redis: &Option<RedisPool>, slug: &str) {
-    if let Some(ref pool) = redis {
-        if let Ok(mut conn) = pool.get().await {
-            let key = format!("plugin:active:{}", slug);
-            let _: Result<(), _> = redis::cmd("DEL").arg(&key).query_async(&mut *conn).await;
-        }
+pub async fn delete_active_plugin_cache(
+    redis: &Option<Arc<RedisClient>>,
+    slug: &str,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
+) {
+    if let Some(ref client) = redis {
+        let _ = client
+            .del(&active_cache_key(slug, app_version_id, version_id))
+            .await;
     }
 }
 
 #[derive(serde::Deserialize)]
 struct ActivePluginCache {
-    container_id: String,
+    deployment_id: String,
     version: String,
     endpoint_count: usize,
 }
@@ -54,6 +72,7 @@ struct ActivePluginCache {
 pub async fn proxy_handler(
     State(state): State<Arc<PluginAppState>>,
     axum::extract::Path(path_info): axum::extract::Path<super::SlugPath>,
+    ExtractContext(ctx): ExtractContext,
     mut request: axum::http::Request<axum::body::Body>,
 ) -> Result<impl IntoResponse, AppError> {
     tracing::info!(
@@ -62,21 +81,24 @@ pub async fn proxy_handler(
         path_info.path
     );
 
-    // Try Redis cache first — avoids two DB queries on the hot path
-    let (container_id, _version, endpoint_count) = 'cache: {
-        if let Some(ref pool) = state.redis_connection {
-            if let Ok(mut conn) = pool.get().await {
-                let key = format!("plugin:active:{}", path_info.slug);
-                let raw: Option<String> = redis::cmd("GET")
-                    .arg(&key)
-                    .query_async(&mut *conn)
-                    .await
-                    .unwrap_or(None);
-                if let Some(raw) = raw {
-                    if let Ok(cached) = serde_json::from_str::<ActivePluginCache>(&raw) {
-                        tracing::debug!("[PROXY] Cache hit for {}", path_info.slug);
-                        break 'cache (cached.container_id, cached.version, cached.endpoint_count);
-                    }
+    let db_pool = match state.db_pool.as_ref() {
+        Some(pool) => pool,
+        None => return Err(AppError::Internal("Database not configured".to_string())),
+    };
+
+    let install = crate::api::install::resolve_install_for_context(db_pool, &path_info.slug, &ctx)
+        .await?;
+
+    // Try Redis cache first — avoids the active-version DB query on the hot path
+    let (deployment_id, _version, endpoint_count) = 'cache: {
+        if let Some(ref client) = state.redis {
+            let key =
+                active_cache_key(&path_info.slug, install.app_version_id, install.version_id);
+            let raw = client.get(&key).await.unwrap_or(None);
+            if let Some(raw) = raw {
+                if let Ok(cached) = serde_json::from_str::<ActivePluginCache>(&raw) {
+                    tracing::debug!("[PROXY] Cache hit for {}", path_info.slug);
+                    break 'cache (cached.deployment_id, cached.version, cached.endpoint_count);
                 }
             }
         }
@@ -85,12 +107,7 @@ pub async fn proxy_handler(
             path_info.slug
         );
 
-        let db_pool = match state.db_pool.as_ref() {
-            Some(pool) => pool,
-            None => return Err(AppError::Internal("Database not configured".to_string())),
-        };
-
-        let active_version = match PluginVersion::find_active(db_pool, &path_info.slug).await {
+        let active_version = match PluginVersion::find_active_for_install(db_pool, install.id).await {
             Ok(Some(v)) => v,
             Ok(None) => {
                 return Err(AppError::NotFound(format!(
@@ -102,23 +119,11 @@ pub async fn proxy_handler(
         };
 
         let cid = active_version
-            .container_id
+            .deployment_id
             .clone()
             .ok_or_else(|| AppError::Internal("No container ID for active version".to_string()))?;
 
-        let plugin = match crate::db::queries::Plugin::find_by_slug(db_pool, &path_info.slug).await
-        {
-            Ok(Some(p)) => p,
-            Ok(None) => {
-                return Err(AppError::NotFound(format!(
-                    "Plugin not found: {}",
-                    path_info.slug
-                )))
-            }
-            Err(e) => return Err(AppError::Internal(format!("Database error: {}", e))),
-        };
-
-        let ep_count = plugin
+        let ep_count = install
             .endpoints
             .as_array()
             .map(|arr| arr.len())
@@ -135,12 +140,12 @@ pub async fn proxy_handler(
 
     // Resolve container address — try platform first (works for both Docker and K8s)
     let container_address: String = if let Some(ref platform) = state.platform {
-        match platform.get_address(&container_id).await {
+        match platform.get_address(&deployment_id).await {
             Ok(Some(addr)) => addr,
-            _ => container_id.clone(),
+            _ => deployment_id.clone(),
         }
     } else {
-        container_id.clone()
+        deployment_id.clone()
     };
 
     let (target_url, parsed_url) = if state.core.config.dev_mode {
@@ -153,11 +158,11 @@ pub async fn proxy_handler(
     } else {
         // For Swarm services, use DNS name (resolved via overlay network)
         let is_swarm = match state.platform {
-            Some(ref platform) => platform.is_replicated_service(&container_id).await,
+            Some(ref platform) => platform.is_replicated_service(&deployment_id).await,
             None => false,
         };
         let container_ip = if is_swarm {
-            format!("plugin_{}", path_info.slug)
+            plugin_service_name(&path_info.slug, Some(install.id))
         } else {
             container_address.clone()
         };
@@ -197,17 +202,16 @@ pub async fn proxy_handler(
     // These requests never make SDK callbacks that need X-Request-ID auth.
     let is_static_asset = path_info.path.contains('.');
     if !is_static_asset {
-        // Store request_id → plugin_slug mapping in Redis for permission enforcement
-        if let Some(ref pool) = state.redis_connection {
-            if let Ok(mut conn) = pool.get().await {
-                let redis_key = format!("plugin_req:{}", request_id);
-                let _: Result<(), _> = redis::cmd("SETEX")
-                    .arg(&redis_key)
-                    .arg(900u64)
-                    .arg(&path_info.slug)
-                    .query_async(&mut *conn)
-                    .await;
-            }
+        if let Some(ref client) = state.redis {
+            let redis_key = format!("plugin_req:{}", request_id);
+            let identity = serde_json::json!({
+                "slug": &path_info.slug,
+                "app_version_id": install.app_version_id,
+                "version_id": install.version_id,
+                "install_id": install.id,
+            })
+            .to_string();
+            let _ = client.set(&redis_key, &identity, Some(900)).await;
         }
     }
 
@@ -329,21 +333,6 @@ pub async fn proxy_handler(
     }
 }
 
-/// Look up which plugin slug (if any) is associated with this X-Request-ID.
-/// Returns None if the request ID is not found in Redis (expired or never was a proxied request).
-pub async fn lookup_plugin_by_request_id(
-    pool: &Option<RedisPool>,
-    request_id: &str,
-) -> Option<String> {
-    let mut conn = pool.as_ref()?.get().await.ok()?;
-    let redis_key = format!("plugin_req:{}", request_id);
-    redis::cmd("GET")
-        .arg(&redis_key)
-        .query_async(&mut *conn)
-        .await
-        .ok()
-}
-
 /// Resolve the calling plugin's slug from the `X-Request-ID` header.
 /// Returns `Unauthorized` if the header is missing or the mapping is invalid.
 pub async fn resolve_slug(
@@ -354,7 +343,7 @@ pub async fn resolve_slug(
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| AppError::Unauthorized("Missing x-request-id header".to_string()))?;
-    lookup_plugin_by_request_id(&state.redis_connection, rid)
+    lookup_plugin_by_request_id(&state.redis, rid)
         .await
         .ok_or_else(|| AppError::Unauthorized(format!("Unknown request id: {}", rid)))
 }

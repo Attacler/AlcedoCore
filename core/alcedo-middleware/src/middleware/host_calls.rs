@@ -20,7 +20,14 @@ pub fn spawn_host_call_writer(pool: Pool) -> HostCallChannel {
                 created_at: chrono::Utc::now(),
             };
             if let Err(e) = HostCallLog::insert(&pool, &log).await {
-                tracing::error!(request_id = %log.parent_request_id, "Failed to insert host call: {}", e);
+                if e.is_missing_relation() {
+                    tracing::debug!(
+                        request_id = %log.parent_request_id,
+                        "[HOST_CALL_WRITER] Skipped host call: app log table does not exist"
+                    );
+                } else {
+                    tracing::error!(request_id = %log.parent_request_id, "Failed to insert host call: {}", e);
+                }
             }
         }
         tracing::info!("[HOST_CALL_WRITER] Task ending");

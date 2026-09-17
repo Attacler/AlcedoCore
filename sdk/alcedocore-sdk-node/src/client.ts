@@ -25,10 +25,28 @@ const DEFAULT_TIMEOUT = 30_000;
 export interface ClientOptions {
     timeout?: number;
     requestId?: string;
+    app?: string;
+    version?: string;
     retry?: {
         limit?: number;
         delay?: (attempt: number) => number;
     };
+}
+
+export interface AppHeaderOptions {
+    app?: string;
+    version?: string;
+}
+
+export function resolveAppHeaders(
+    defaults: AppHeaderOptions | undefined,
+    perCall: AppHeaderOptions | undefined,
+    headers: Headers,
+) {
+    const app = perCall?.app ?? defaults?.app;
+    const version = perCall?.version ?? defaults?.version;
+    if (app) headers.set("X-App", app);
+    if (version) headers.set("X-Version", version);
 }
 
 export function createClient(baseUrl: string, options: ClientOptions = {}) {
@@ -50,6 +68,12 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
                     const rid = state.options?.requestId ?? options.requestId;
 
                     if (rid) state.request.headers.set("X-Request-ID", rid);
+
+                    resolveAppHeaders(
+                        options,
+                        state.options,
+                        state.request.headers as Headers,
+                    );
                 }) as BeforeRequestHook,
             ],
         },

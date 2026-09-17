@@ -136,7 +136,7 @@ pub async fn list_fields_in_tx(
          unique_constraint, default_value, display_type, input_component, display_component, ordinal_position, \
          related_collection, relationship_type, display_field, inline_parent_fields, \
          options, is_system, hidden, created_at, updated_at \
-         FROM collection_fields \
+         FROM alcedocore_collection_fields \
          WHERE collection_name = $1 \
          ORDER BY ordinal_position ASC"
     )
@@ -155,7 +155,7 @@ pub async fn list_fields(pool: &Pool, collection_name: &str) -> Result<Vec<Field
          unique_constraint, default_value, display_type, input_component, display_component, ordinal_position, \
          related_collection, relationship_type, display_field, inline_parent_fields, \
          options, is_system, hidden, created_at, updated_at \
-         FROM collection_fields \
+         FROM alcedocore_collection_fields \
          WHERE collection_name = $1 \
          ORDER BY ordinal_position ASC"
     )
@@ -173,7 +173,7 @@ pub async fn replace_fields_in_tx(
     collection_name: &str,
     fields: &[FieldDefinition],
 ) -> Result<Vec<FieldRow>, AppError> {
-    sqlx::query("DELETE FROM collection_fields WHERE collection_name = $1")
+    sqlx::query("DELETE FROM alcedocore_collection_fields WHERE collection_name = $1")
         .bind(collection_name)
         .execute(&mut **tx)
         .await
@@ -203,7 +203,7 @@ pub async fn replace_fields_in_tx(
         };
 
         let inserted = sqlx::query_as::<_, FieldRow>(
-            "INSERT INTO collection_fields \
+            "INSERT INTO alcedocore_collection_fields \
              (collection_name, name, display_name, field_type, required, unique_constraint, \
               default_value, display_type, input_component, display_component, ordinal_position, related_collection, \
               relationship_type, display_field, inline_parent_fields, options, \
@@ -295,17 +295,18 @@ pub async fn delete_field(
     collection_name: &str,
     field_name: &str,
 ) -> Result<bool, AppError> {
-    let result =
-        sqlx::query("DELETE FROM collection_fields WHERE collection_name = $1 AND name = $2")
-            .bind(collection_name)
-            .bind(field_name)
-            .execute(pool)
-            .await
-            .map_err(|e| AppError::DatabaseError {
-                details: format!("Failed to delete field '{}': {}", field_name, e),
-            })?;
+    let result = sqlx::query(
+        "DELETE FROM alcedocore_collection_fields WHERE collection_name = $1 AND name = $2",
+    )
+    .bind(collection_name)
+    .bind(field_name)
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::DatabaseError {
+        details: format!("Failed to delete field '{}': {}", field_name, e),
+    })?;
 
-    sqlx::query("UPDATE collection_definitions SET updated_at = NOW() WHERE name = $1")
+    sqlx::query("UPDATE alcedocore_collection_definitions SET updated_at = NOW() WHERE name = $1")
         .bind(collection_name)
         .execute(pool)
         .await

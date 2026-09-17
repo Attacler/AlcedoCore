@@ -1,9 +1,11 @@
 pub type Pool = sqlx::postgres::PgPool;
 
-/// Per-app-version schema (app=`default_app`, separator=`010`, version=`version_1`)
+/// Per-app-version schema (app=`default`, separator=`010`, version=`v1`)
 /// into which all core migrations are applied and against which all application
 /// queries resolve via `search_path`.
-pub const DEFAULT_APP_VERSION_SCHEMA: &str = "default_app010version_1";
+pub const DEFAULT_APP_NAME: &str = "default";
+pub const DEFAULT_APP_VERSION: &str = "v1";
+pub const DEFAULT_APP_VERSION_SCHEMA: &str = "default010v1";
 
 /// Schema holding the app/version source tables.
 pub const ALCEDO_SCHEMA: &str = "alcedo";
@@ -12,13 +14,22 @@ pub const ALCEDO_SCHEMA: &str = "alcedo";
 /// per-app-version schema (with `public` as a fallback), so unqualified
 /// application queries resolve against the schema hosting the migrated tables.
 pub async fn connect_pool(db_url: &str) -> Result<Pool, sqlx::Error> {
+    connect_pool_for_schema(db_url, DEFAULT_APP_VERSION_SCHEMA).await
+}
+
+/// Build a pool whose connections default `search_path` to the given schema
+/// (with `alcedo` and `public` as fallbacks). Global `alcedo_*` tables resolve
+/// under any context because `alcedo` is always second in the path.
+pub async fn connect_pool_for_schema(db_url: &str, schema: &str) -> Result<Pool, sqlx::Error> {
+    let schema = schema.to_string();
     sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
-        .after_connect(|conn, _meta| {
+        .after_connect(move |conn, _meta| {
+            let schema = schema.clone();
             Box::pin(async move {
                 sqlx::query(&format!(
-                    r#"SET search_path TO "{}", public"#,
-                    DEFAULT_APP_VERSION_SCHEMA
+                    r#"SET search_path TO "{}", "alcedo", public"#,
+                    schema
                 ))
                 .execute(conn)
                 .await?;
@@ -145,29 +156,28 @@ pub fn quote_identifier(name: &str) -> String {
     buf
 }
 
-pub mod collections;
-pub mod collection_items;
-pub mod fields;
-pub mod core_migrations;
-pub mod filter_condition;
-pub mod filter_compiler;
-pub mod items;
-pub mod migrations;
-pub mod plugin_migrations;
-pub mod field_resolver;
 pub mod activity_logs;
-pub mod relational_crud;
+pub mod collection_items;
+pub mod collections;
+pub mod field_resolver;
+pub mod fields;
+pub mod filter_compiler;
+pub mod filter_condition;
+pub mod items;
+pub mod plugin_migrations;
 pub mod queries;
 pub mod query_builder;
+pub mod query_helpers;
+pub mod relational_crud;
+pub mod resilience;
+pub mod row_lock;
 pub mod saved_views;
 pub mod schema;
-pub mod row_lock;
-pub mod query_helpers;
-pub mod resilience;
+pub mod schema_migration;
 
-use std::path::PathBuf;
+use crate::db::plugin_migrations::{plugin_schema_name_for_scope, PluginMigrationEngine};
 use crate::error::AppError;
-use crate::db::plugin_migrations::PluginMigrationEngine;
+use std::path::PathBuf;
 
 #[cfg(test)]
 mod tests {
@@ -176,7 +186,10 @@ mod tests {
     #[test]
     fn splits_plain_statements() {
         let stmts = split_sql_statements("CREATE TABLE a (id int); INSERT INTO a VALUES (1);");
-        assert_eq!(stmts, vec!["CREATE TABLE a (id int)", "INSERT INTO a VALUES (1)"]);
+        assert_eq!(
+            stmts,
+            vec!["CREATE TABLE a (id int)", "INSERT INTO a VALUES (1)"]
+        );
     }
 
     #[test]
@@ -206,6 +219,18 @@ CREATE TABLE b (id int);
         assert_eq!(stmts[0], "INSERT INTO t VALUES ('a;b', 'it''s')");
         assert_eq!(stmts[1], "SELECT 1");
     }
+
+    #[test]
+    fn default_schema_matches_seed_constants() {
+        use alcedo_common::context::{AppContext, RequestSource};
+        let ctx = AppContext {
+            app_name: super::DEFAULT_APP_NAME.to_string(),
+            version: super::DEFAULT_APP_VERSION.to_string(),
+            request_source: RequestSource::Migration,
+        };
+        assert_eq!(ctx.schema_name(), super::DEFAULT_APP_VERSION_SCHEMA);
+        assert_eq!(super::DEFAULT_APP_VERSION_SCHEMA, "default010v1");
+    }
 }
 
 pub async fn run_plugin_migrations(
@@ -213,10 +238,25 @@ pub async fn run_plugin_migrations(
     slug: &str,
     migrations_dir: &str,
 ) -> Result<(), AppError> {
-    let engine = PluginMigrationEngine::new(
+    run_plugin_migrations_for_install(pool, slug, migrations_dir, None, None).await
+}
+
+/// Same but for a specific install scope. `(None, None)` = global schema
+/// `plugin_{slug}`, `(Some(av), _)` = app schema `plugin_{slug}_av{av}`,
+/// `(None, Some(v))` = version schema `plugin_{slug}_v{v}`.
+pub async fn run_plugin_migrations_for_install(
+    pool: &Pool,
+    slug: &str,
+    migrations_dir: &str,
+    app_version_id: Option<i32>,
+    version_id: Option<i32>,
+) -> Result<(), AppError> {
+    let schema = plugin_schema_name_for_scope(slug, app_version_id, version_id);
+    let engine = PluginMigrationEngine::new_with_schema(
         pool.clone(),
         PathBuf::from(migrations_dir),
         slug,
+        schema,
     );
 
     let result = engine.run_migrations().await?;
@@ -229,9 +269,10 @@ pub async fn run_plugin_migrations(
 
     if !result.applied.is_empty() {
         tracing::info!(
-            "Applied {} migration(s) for plugin {}",
+            "Applied {} migration(s) for plugin {} (schema {})",
             result.applied.len(),
-            slug
+            slug,
+            engine.schema_name()
         );
     }
 

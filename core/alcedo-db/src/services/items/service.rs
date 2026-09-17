@@ -5,7 +5,7 @@ use sea_query::{Alias, Expr, PostgresQueryBuilder, SimpleExpr};
 use serde_json::{Map, Value};
 use sqlx::{Postgres, Transaction};
 
-use alcedo_common::context::AppContext;
+use alcedo_common::context::{AppContext, RequestSource};
 use alcedo_common::error::AppError;
 use alcedo_common::state::CoreState;
 
@@ -16,20 +16,34 @@ use crate::services::tables::get_pk_key;
 pub struct ItemsService<'a> {
     core: &'a CoreState,
     collection: &'a String,
-    app_context: &'a AppContext,
+    app_context: AppContext,
 }
 
 impl ItemsService<'_> {
     pub fn new<'a>(
         core: &'a CoreState,
-        context: &'a AppContext,
+        context: &AppContext,
         collection: &'a String,
     ) -> ItemsService<'a> {
         return ItemsService {
             core,
             collection,
-            app_context: context,
+            app_context: context.clone(),
         };
+    }
+
+    /// Service bound to the global `alcedo` schema with the API request source,
+    /// for registry tables that live outside any app×version schema.
+    pub fn for_global<'a>(core: &'a CoreState, collection: &'a String) -> ItemsService<'a> {
+        ItemsService {
+            core,
+            collection,
+            app_context: AppContext {
+                app_name: crate::db::ALCEDO_SCHEMA.to_string(),
+                version: String::new(),
+                request_source: RequestSource::API,
+            },
+        }
     }
 
     pub async fn read_items_by_query(
@@ -37,8 +51,269 @@ impl ItemsService<'_> {
         mut query: Query,
     ) -> Result<Vec<Map<String, Value>>, AppError> {
         Ok(query
-            .execute_query(self.app_context, self.core, self.collection)
+            .execute_query(&self.app_context, self.core, self.collection)
             .await?)
+    }
+
+    pub async fn read_list(
+        &self,
+        pool: &crate::db::Pool,
+        request: crate::services::items::read::ListRequest,
+    ) -> Result<crate::services::items::read::ListResult, AppError> {
+        crate::services::items::read::execute_list(pool, self.collection, request).await
+    }
+
+    pub async fn read_one(
+        &self,
+        pool: &crate::db::Pool,
+        request: crate::services::items::read::OneRequest,
+    ) -> Result<Option<serde_json::Value>, AppError> {
+        crate::services::items::read::execute_one(pool, self.collection, request).await
+    }
+
+    /// List a physical or collection-backed table addressed by `reference`.
+    ///
+    /// The collection the service was constructed with is ignored for these
+    /// calls. The caller is responsible for authorization/allowlisting: the
+    /// engine only applies permissions present on the request, so this method
+    /// must not be exposed to caller-influenced [`crate::services::items::shape::TableRef`]s
+    /// without boundary checks.
+    pub async fn read_list_for_table(
+        &self,
+        pool: &crate::db::Pool,
+        reference: crate::services::items::shape::TableRef,
+        request: crate::services::items::read::ListRequest,
+    ) -> Result<crate::services::items::read::ListResult, AppError> {
+        let shape = crate::services::items::shape::TableShape::resolve(
+            self.core,
+            &self.app_context,
+            reference,
+        )
+        .await?;
+        crate::services::items::read::execute_list_for_table(pool, &shape, request).await
+    }
+
+    /// Fetch one row from the table addressed by `reference`.
+    ///
+    /// The collection the service was constructed with is ignored for these
+    /// calls. The caller is responsible for authorization/allowlisting: the
+    /// engine only applies permissions present on the request, so this method
+    /// must not be exposed to caller-influenced [`crate::services::items::shape::TableRef`]s
+    /// without boundary checks.
+    pub async fn read_one_for_table(
+        &self,
+        pool: &crate::db::Pool,
+        reference: crate::services::items::shape::TableRef,
+        request: crate::services::items::read::OneRequest,
+    ) -> Result<Option<serde_json::Value>, AppError> {
+        let shape = crate::services::items::shape::TableShape::resolve(
+            self.core,
+            &self.app_context,
+            reference,
+        )
+        .await?;
+        crate::services::items::read::execute_one_for_table(pool, &shape, request).await
+    }
+
+    pub async fn read_grouped(
+        &self,
+        pool: &crate::db::Pool,
+        request: crate::db::filter_condition::GroupedQueryRequest,
+        permissions: &[crate::services::permissions::PolicyPermission],
+    ) -> Result<crate::db::filter_condition::GroupedQueryResponse, AppError> {
+        crate::services::items::read::execute_grouped(pool, self.collection, request, permissions)
+            .await
+    }
+
+    /// Group the table addressed by `reference`.
+    ///
+    /// The collection the service was constructed with is ignored for these
+    /// calls. The caller is responsible for authorization/allowlisting: the
+    /// engine only applies permissions present on the request, so this method
+    /// must not be exposed to caller-influenced
+    /// [`crate::services::items::shape::TableRef`]s without boundary checks.
+    pub async fn read_grouped_for_table(
+        &self,
+        pool: &crate::db::Pool,
+        reference: crate::services::items::shape::TableRef,
+        request: crate::db::filter_condition::GroupedQueryRequest,
+        permissions: &[crate::services::permissions::PolicyPermission],
+    ) -> Result<crate::db::filter_condition::GroupedQueryResponse, AppError> {
+        let shape = crate::services::items::shape::TableShape::resolve(
+            self.core,
+            &self.app_context,
+            reference,
+        )
+        .await?;
+        crate::services::items::read::execute_grouped_for_table(pool, &shape, request, permissions)
+            .await
+    }
+
+    pub async fn read_references(
+        &self,
+        pool: &crate::db::Pool,
+        item_id: &str,
+        collection_filters: &std::collections::HashMap<
+            String,
+            Vec<crate::services::permissions::PolicyPermission>,
+        >,
+    ) -> Result<Vec<crate::db::collections::ReferencingGroup>, AppError> {
+        crate::services::items::read::execute_references(
+            pool,
+            self.collection,
+            item_id,
+            collection_filters,
+        )
+        .await
+    }
+
+    /// Resolve the write shape for `reference`, widening the writable allowlist
+    /// with server-managed columns the boundary is trusted to set (e.g.
+    /// `password_hash`). Used only by privileged `alcedo-api` write handlers; the
+    /// engine's default deny posture is preserved for everyone else.
+    pub async fn privileged_write_shape(
+        &self,
+        reference: crate::services::items::shape::TableRef,
+        extra_writable: &[&str],
+    ) -> Result<crate::services::items::shape::TableShape, AppError> {
+        let mut shape = crate::services::items::shape::TableShape::resolve(
+            self.core,
+            &self.app_context,
+            reference,
+        )
+        .await?;
+        if let Some(writable) = shape.writable.as_mut() {
+            for col in extra_writable {
+                if !writable.iter().any(|c| c == col) {
+                    writable.push(col.to_string());
+                }
+            }
+        }
+        Ok(shape)
+    }
+
+    /// Resolve the current collection name as a [`TableShape`] for write
+    /// dispatch. Returns `None` when the name is not materialized in the
+    /// schema, so the metadata-driven collection path stays in charge.
+    async fn resolve_write_shape(
+        &self,
+    ) -> Result<Option<crate::services::items::shape::TableShape>, AppError> {
+        use crate::services::items::shape::{TableRef, TableShape};
+
+        match TableShape::resolve(
+            self.core,
+            &self.app_context,
+            TableRef {
+                schema: None,
+                name: self.collection.clone(),
+            },
+        )
+        .await
+        {
+            Ok(shape) => Ok(Some(shape)),
+            Err(AppError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn create(
+        &self,
+        pool: &crate::db::Pool,
+        body: crate::db::collection_items::CreateItemsBody,
+    ) -> Result<crate::services::items::write::WriteOutcome, AppError> {
+        if let Some(shape) = self.resolve_write_shape().await? {
+            if shape.collection.is_none() {
+                let items = match &body {
+                    crate::db::collection_items::CreateItemsBody::Single(item) => {
+                        vec![item.clone()]
+                    }
+                    crate::db::collection_items::CreateItemsBody::Multiple(items) => items.clone(),
+                };
+                return crate::services::items::write::execute_create_for_table(pool, &shape, items)
+                    .await;
+            }
+        }
+
+        crate::services::items::write::execute_create(pool, self.collection, body).await
+    }
+
+    pub async fn update(
+        &self,
+        pool: &crate::db::Pool,
+        body: crate::db::collection_items::UpdateItemsBody,
+        perm_filter: Option<(String, Vec<serde_json::Value>)>,
+    ) -> Result<crate::services::items::write::WriteOutcome, AppError> {
+        if let Some(shape) = self.resolve_write_shape().await? {
+            if shape.collection.is_none() {
+                let filter: crate::db::filter_condition::FilterCondition =
+                    serde_json::from_value(body.filter.clone())
+                        .map_err(|e| AppError::BadRequest(format!("Invalid filter: {}", e)))?;
+                return crate::services::items::write::execute_bulk_update_for_table(
+                    pool, &shape, filter, &body.update, perm_filter,
+                )
+                .await;
+            }
+        }
+        crate::services::items::write::execute_update(pool, self.collection, body, perm_filter).await
+    }
+
+    pub async fn update_one(
+        &self,
+        pool: &crate::db::Pool,
+        id: &str,
+        body: &Map<String, Value>,
+        permissions: &[crate::services::permissions::PolicyPermission],
+    ) -> Result<crate::services::items::write::WriteOutcome, AppError> {
+        if let Some(shape) = self.resolve_write_shape().await? {
+            if shape.collection.is_none() {
+                let pk_value = Value::String(id.to_string());
+                return crate::services::items::write::execute_update_one_for_table(
+                    pool, &shape, &pk_value, body,
+                )
+                .await;
+            }
+        }
+
+        crate::services::items::write::execute_update_one(
+            pool,
+            self.collection,
+            id,
+            body,
+            permissions,
+        )
+        .await
+    }
+
+    pub async fn delete(
+        &self,
+        pool: &crate::db::Pool,
+        body: crate::db::collection_items::DeleteItemsBody,
+        perm_filter: Option<(String, Vec<serde_json::Value>)>,
+    ) -> Result<crate::services::items::write::WriteOutcome, AppError> {
+        if let Some(shape) = self.resolve_write_shape().await? {
+            if shape.collection.is_none() {
+                // Physical-table deletes intentionally do not apply `perm_filter`
+                // (Phase 5 system handlers pass None; boundary checks upstream).
+                // It is not forwarded to `execute_delete_for_table*`.
+                return match (&body.filter, &body.pk_values) {
+                    (None, Some(pks)) => {
+                        crate::services::items::write::execute_delete_for_table(pool, &shape, pks.clone())
+                            .await
+                    }
+                    (Some(filter), None) => {
+                        let filter: crate::db::filter_condition::FilterCondition =
+                            serde_json::from_value(filter.clone())
+                                .map_err(|e| AppError::BadRequest(format!("Invalid filter: {}", e)))?;
+                        crate::services::items::write::execute_delete_for_table_by_filter(pool, &shape, filter)
+                            .await
+                    }
+                    _ => Err(AppError::BadRequest(
+                        "Table deletes require pk_values OR a filter".to_string(),
+                    )),
+                };
+            }
+        }
+        crate::services::items::write::execute_delete(pool, self.collection, body, perm_filter).await
     }
 
     pub async fn update_items_by_query<'a>(
@@ -71,7 +346,7 @@ impl ItemsService<'_> {
         query.fields = vec![pk_name.clone()];
 
         let get_pks = query
-            .execute_query(self.app_context, self.core, self.collection)
+            .execute_query(&self.app_context, self.core, self.collection)
             .await?;
 
         let queries: Vec<Result<String, AppError>> = join_all(get_pks.iter().map(|item| {
@@ -219,7 +494,7 @@ impl ItemsService<'_> {
         query.fields = vec![pk_name.clone()];
 
         let get_pks = query
-            .execute_query(self.app_context, self.core, self.collection)
+            .execute_query(&self.app_context, self.core, self.collection)
             .await?;
 
         let pks: Vec<Value> = get_pks
@@ -302,9 +577,7 @@ impl ItemsService<'_> {
             columns.push(field);
             values.push(value);
         }
-        let pk = get_pk_key(&self.core.schema, self.collection.as_str()).await?;
         stmt.columns(columns.iter().map(|col| Alias::new(col)));
-        stmt.returning_col(Alias::new(pk.name.clone()));
         let _ = stmt.values(values);
 
         let sql = stmt.to_string(PostgresQueryBuilder);
@@ -370,7 +643,6 @@ impl ItemsService<'_> {
             values.push((Alias::new(field), value));
         }
         let pk = get_pk_key(&self.core.schema, self.collection.as_str()).await?;
-        stmt.returning_col(Alias::new(pk.name.clone()));
         stmt.values(values);
         stmt.and_where(Expr::eq(
             Expr::col(Alias::new(pk.name.clone())),

@@ -9,7 +9,7 @@ export function useSectionView() {
     /** Resolve a section's view component: builtins, plugin manifest views
      *  ("plugin:slug:name"), runtime-registered view types — fallback table. */
     function sectionViewComponent(viewType: string): Component {
-        return extensionRegistry.getView(viewType) ?? TableView;
+        return extensionRegistry.getView(viewType)?.component ?? TableView;
     }
 
     return { sectionViewComponent };

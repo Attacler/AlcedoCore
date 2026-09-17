@@ -1,4 +1,4 @@
-use crate::services::redis_session::RedisPool;
+use crate::services::redis_client::RedisClient;
 use crate::AppError;
 // Canonical definition lives in `super::appstate`; re-exported here so
 // existing `crate::plugins::health::AppState` imports keep working.
@@ -9,8 +9,6 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-pub type RedisConn = RedisPool;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub enum PluginHealthStatus {
@@ -25,21 +23,27 @@ pub enum PluginHealthStatus {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PluginHealthEntry {
+    /// `alcedo.alcedo_plugins.id` — the canonical install identity. A slug can
+    /// be installed globally and on multiple app versions, so health must be
+    /// keyed by install, not slug.
+    pub install_id: i64,
+    /// `alcedo.alcedo_apps_versions.id` for a version install; `None` for a global install.
+    pub app_version_id: Option<i32>,
     pub slug: String,
     pub status: PluginHealthStatus,
     pub last_check: String,
-    pub container_id: Option<String>,
+    pub deployment_id: Option<String>,
     pub restart_count: u8,
     pub last_restart_at: Option<String>,
 }
 
 pub struct PluginHealthMap {
-    inner: RwLock<HashMap<String, PluginHealthEntry>>,
-    redis: Option<RedisConn>,
+    inner: RwLock<HashMap<i64, PluginHealthEntry>>,
+    redis: Option<Arc<RedisClient>>,
 }
 
 impl PluginHealthMap {
-    pub fn new(redis: Option<RedisConn>) -> Self {
+    pub fn new(redis: Option<Arc<RedisClient>>) -> Self {
         Self {
             inner: RwLock::new(HashMap::new()),
             redis,
@@ -48,60 +52,68 @@ impl PluginHealthMap {
 
     pub async fn update_plugin_health(
         &self,
+        install_id: i64,
+        app_version_id: Option<i32>,
         slug: String,
         status: PluginHealthStatus,
-        container_id: Option<String>,
+        deployment_id: Option<String>,
     ) {
         let entry = PluginHealthEntry {
-            slug: slug.clone(),
+            install_id,
+            app_version_id,
+            slug,
             status,
             last_check: chrono::Utc::now().to_rfc3339(),
-            container_id,
+            deployment_id,
             restart_count: 0,
             last_restart_at: None,
         };
         self.store_in_redis(&entry).await;
         let mut guard = self.inner.write().await;
-        guard.insert(slug, entry);
+        guard.insert(install_id, entry);
     }
 
     pub async fn update_plugin_health_full(
         &self,
+        install_id: i64,
+        app_version_id: Option<i32>,
         slug: String,
         status: PluginHealthStatus,
-        container_id: Option<String>,
+        deployment_id: Option<String>,
         restart_count: u8,
         last_restart_at: Option<String>,
     ) {
         let entry = PluginHealthEntry {
-            slug: slug.clone(),
+            install_id,
+            app_version_id,
+            slug,
             status,
             last_check: chrono::Utc::now().to_rfc3339(),
-            container_id,
+            deployment_id,
             restart_count,
             last_restart_at,
         };
         self.store_in_redis(&entry).await;
         let mut guard = self.inner.write().await;
-        guard.insert(slug, entry);
+        guard.insert(install_id, entry);
     }
 
-    pub async fn get_plugin_health(&self, slug: &str) -> Option<PluginHealthEntry> {
-        if let Some(entry) = self.read_from_redis(slug).await {
+    pub async fn get_plugin_health(&self, install_id: i64) -> Option<PluginHealthEntry> {
+        if let Some(entry) = self.read_from_redis(install_id).await {
             return Some(entry);
         }
         let guard = self.inner.read().await;
-        guard.get(slug).cloned()
+        guard.get(&install_id).cloned()
     }
 
     pub async fn get_all_health(&self) -> Vec<PluginHealthEntry> {
         let mut result = std::collections::HashMap::new();
         for entry in self.read_all_from_redis().await {
-            result.insert(entry.slug.clone(), entry);
+            result.insert(entry.install_id, entry);
         }
         let guard = self.inner.read().await;
-        for (slug, entry) in guard.iter() {
-            result.entry(slug.clone()).or_insert_with(|| entry.clone());
+        for (install_id, entry) in guard.iter() {
+            result.entry(*install_id).or_insert_with(|| entry.clone());
         }
         result.into_values().collect()
     }
@@ -127,118 +139,98 @@ impl PluginHealthMap {
     }
 
     async fn store_in_redis(&self, entry: &PluginHealthEntry) {
-        if let Some(ref pool) = self.redis {
-            if let Ok(mut conn) = pool.get().await {
-                let key = format!("plugin_health:{}", entry.slug);
-                let _: Result<(), _> = redis::cmd("HMSET")
-                    .arg(&key)
-                    .arg("slug")
-                    .arg(&entry.slug)
-                    .arg("status")
-                    .arg(format!("{:?}", entry.status))
-                    .arg("last_check")
-                    .arg(&entry.last_check)
-                    .arg("container_id")
-                    .arg(entry.container_id.as_deref().unwrap_or(""))
-                    .arg("restart_count")
-                    .arg(entry.restart_count.to_string())
-                    .arg("last_restart_at")
-                    .arg(entry.last_restart_at.as_deref().unwrap_or(""))
-                    .query_async(&mut *conn)
-                    .await;
-                let _: Result<(), _> = redis::cmd("EXPIRE")
-                    .arg(&key)
-                    .arg(300i64)
-                    .query_async(&mut *conn)
-                    .await;
-                let _: () = redis::cmd("SADD")
-                    .arg("plugin_health:slugs")
-                    .arg(&entry.slug)
-                    .query_async(&mut *conn)
-                    .await
-                    .unwrap_or_default();
-            }
+        if let Some(ref client) = self.redis {
+            let key = format!("plugin_health:{}", entry.install_id);
+            let fields = vec![
+                ("install_id".to_string(), entry.install_id.to_string()),
+                (
+                    "app_version_id".to_string(),
+                    entry
+                        .app_version_id
+                        .map(|v| v.to_string())
+                        .unwrap_or_default(),
+                ),
+                ("slug".to_string(), entry.slug.clone()),
+                ("status".to_string(), format!("{:?}", entry.status)),
+                ("last_check".to_string(), entry.last_check.clone()),
+                (
+                    "deployment_id".to_string(),
+                    entry.deployment_id.clone().unwrap_or_default(),
+                ),
+                ("restart_count".to_string(), entry.restart_count.to_string()),
+                (
+                    "last_restart_at".to_string(),
+                    entry.last_restart_at.clone().unwrap_or_default(),
+                ),
+            ];
+            let _ = client.hset(&key, &fields).await;
+            let _ = client.expire(&key, 300).await;
+            let _ = client
+                .sadd("plugin_health:installs", &entry.install_id.to_string())
+                .await;
         }
     }
 
-    async fn read_from_redis(&self, slug: &str) -> Option<PluginHealthEntry> {
-        if let Some(ref pool) = self.redis {
-            let mut conn = pool.get().await.ok()?;
-            let key = format!("plugin_health:{}", slug);
-            let exists: bool = redis::cmd("EXISTS")
-                .arg(&key)
-                .query_async(&mut *conn)
-                .await
-                .unwrap_or(false);
-            if !exists {
-                return None;
-            }
-            let result: Result<Vec<String>, _> = redis::cmd("HMGET")
-                .arg(&key)
-                .arg("slug")
-                .arg("status")
-                .arg("last_check")
-                .arg("container_id")
-                .arg("restart_count")
-                .arg("last_restart_at")
-                .query_async(&mut *conn)
-                .await;
-            match result {
-                Ok(vals) if vals.len() >= 6 => {
-                    let status = match vals[1].as_str() {
-                        "Healthy" => PluginHealthStatus::Healthy,
-                        "Unhealthy" => PluginHealthStatus::Unhealthy,
-                        "Failed" => PluginHealthStatus::Failed,
-                        "Running" => PluginHealthStatus::Running,
-                        "Stopped" => PluginHealthStatus::Stopped,
-                        "Draining" => PluginHealthStatus::Draining,
-                        _ => PluginHealthStatus::Unknown,
-                    };
-                    Some(PluginHealthEntry {
-                        slug: vals[0].clone(),
-                        status,
-                        last_check: vals[2].clone(),
-                        container_id: if vals[3].is_empty() {
-                            None
-                        } else {
-                            Some(vals[3].clone())
-                        },
-                        restart_count: vals[4].parse().unwrap_or(0),
-                        last_restart_at: if vals[5].is_empty() {
-                            None
-                        } else {
-                            Some(vals[5].clone())
-                        },
-                    })
-                }
-                _ => None,
-            }
-        } else {
-            None
+    async fn read_from_redis(&self, install_id: i64) -> Option<PluginHealthEntry> {
+        let client = self.redis.as_ref()?;
+        let key = format!("plugin_health:{}", install_id);
+        let map = client.hgetall(&key).await.ok()?;
+        if map.is_empty() {
+            return None;
         }
+        let status = match map.get("status").map(String::as_str) {
+            Some("Healthy") => PluginHealthStatus::Healthy,
+            Some("Unhealthy") => PluginHealthStatus::Unhealthy,
+            Some("Failed") => PluginHealthStatus::Failed,
+            Some("Running") => PluginHealthStatus::Running,
+            Some("Stopped") => PluginHealthStatus::Stopped,
+            Some("Draining") => PluginHealthStatus::Draining,
+            _ => PluginHealthStatus::Unknown,
+        };
+        let deployment_id = map.get("deployment_id").cloned().filter(|s| !s.is_empty());
+        let restart_count = map
+            .get("restart_count")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let last_restart_at = map
+            .get("last_restart_at")
+            .cloned()
+            .filter(|s| !s.is_empty());
+        let app_version_id = map
+            .get("app_version_id")
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse().ok());
+        Some(PluginHealthEntry {
+            install_id,
+            app_version_id,
+            slug: map.get("slug").cloned().unwrap_or_default(),
+            status,
+            last_check: map.get("last_check").cloned().unwrap_or_default(),
+            deployment_id,
+            restart_count,
+            last_restart_at,
+        })
     }
 
     async fn read_all_from_redis(&self) -> Vec<PluginHealthEntry> {
-        if let Some(ref pool) = self.redis {
-            let mut conn = match pool.get().await {
-                Ok(c) => c,
-                Err(_) => return Vec::new(),
+        let Some(client) = self.redis.as_ref() else {
+            return Vec::new();
+        };
+        let installs: Vec<String> = client
+            .smembers("plugin_health:installs")
+            .await
+            .unwrap_or_default();
+        let mut entries = Vec::new();
+        for install_id in &installs {
+            let Ok(id) = install_id.parse::<i64>() else {
+                continue;
             };
-            let slugs: Vec<String> = redis::cmd("SMEMBERS")
-                .arg("plugin_health:slugs")
-                .query_async(&mut *conn)
-                .await
-                .unwrap_or_default();
-            let mut entries = Vec::new();
-            for slug in &slugs {
-                if let Some(entry) = self.read_from_redis(slug).await {
-                    entries.push(entry);
-                }
+            if let Some(entry) = self.read_from_redis(id).await {
+                entries.push(entry);
             }
-            entries
-        } else {
-            vec![]
         }
+        entries
     }
 }
 
@@ -279,14 +271,10 @@ pub async fn health_check(
         "no pool configured".to_string()
     };
 
-    let redis_status = if let Some(ref pool) = state.redis_connection {
-        match pool.get().await {
-            Ok(mut conn) => match redis::cmd("PING").query_async::<String>(&mut *conn).await {
-                Ok(ref reply) if reply == "PONG" => "reachable".to_string(),
-                Ok(reply) => format!("unexpected reply: {}", reply),
-                Err(e) => format!("unreachable: {}", e),
-            },
-            Err(e) => format!("pool error: {}", e),
+    let redis_status = if let Some(ref client) = state.redis {
+        match client.ping().await {
+            Ok(()) => "reachable".to_string(),
+            Err(e) => format!("unreachable: {}", e),
         }
     } else {
         "no redis connection configured".to_string()

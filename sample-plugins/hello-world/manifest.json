@@ -21,6 +21,9 @@
       "description": "Execute SQL writes on plugin schema"
     }
   ],
+  "events": [
+    "ItemCreated"
+  ],
   "image": "local/static",
   "env": {},
   "resources": {},

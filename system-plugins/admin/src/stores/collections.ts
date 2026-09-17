@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useAlcedoClient } from "../composables/useAlcedoClient";
+import { useAppContextStore } from "@/stores/appContext";
 import { withAsyncHandlingVoid } from "../utils/asyncUtils";
 
 export type FieldType =
@@ -80,6 +81,12 @@ export interface CollectionLayout {
 
 export const useCollectionsStore = defineStore("collections", () => {
     const { client } = useAlcedoClient();
+    const appContext = useAppContextStore();
+    // Scope cache keys by the active app context so switching apps never
+    // serves a previous app's collection definition (e.g. both apps have
+    // `notes` with different fields).
+    const cacheScope = () =>
+        `${appContext.appSlug ?? "global"}:${appContext.version ?? "default"}`;
     const collections = ref<Collection[]>([]),
         loading = ref(false),
         error = ref<string | null>(null),
@@ -101,11 +108,14 @@ export const useCollectionsStore = defineStore("collections", () => {
         deletedFieldNames.value = [];
     }
 
-    let fetchCollectionsPromise: Promise<void> | null = null; // Cache collection responses
+    // Per-scope collection-list promises so switching apps refetches.
+    const fetchCollectionsPromises: Record<string, Promise<void> | null> = {};
 
     async function fetchCollections(force = false) {
-        if (fetchCollectionsPromise && !force) return fetchCollectionsPromise;
-        fetchCollectionsPromise = withAsyncHandlingVoid(
+        const scope = cacheScope();
+        if (fetchCollectionsPromises[scope] && !force)
+            return fetchCollectionsPromises[scope];
+        fetchCollectionsPromises[scope] = withAsyncHandlingVoid(
             loading,
             error,
             async () => {
@@ -113,19 +123,24 @@ export const useCollectionsStore = defineStore("collections", () => {
                 collections.value = response.collections || [];
             },
         ).finally(() => {
-            fetchCollectionsPromise = null;
+            fetchCollectionsPromises[scope] = null;
         });
-        return fetchCollectionsPromise;
+        return fetchCollectionsPromises[scope];
     }
 
     async function getCollection(
         name: string,
         ignoreCache = false,
     ): Promise<Collection> {
-        if (!ignoreCache && name in collectionCache)
-            return await collectionCache[name];
+        const key = `${cacheScope()}:${name}`;
+        if (!ignoreCache && key in collectionCache)
+            return await collectionCache[key];
 
-        collectionCache[name] = new Promise(async (res, rej) => {
+        // Clear any stale definition from a previous app context before the
+        // scoped fetch resolves.
+        currentCollection.value = null;
+
+        collectionCache[key] = new Promise(async (res, rej) => {
             try {
                 const response = (await client.collections.get(name)) as any;
                 const data = response.data || response;
@@ -137,7 +152,7 @@ export const useCollectionsStore = defineStore("collections", () => {
             }
         });
 
-        return await collectionCache[name];
+        return await collectionCache[key];
     }
 
     async function createCollection(data: {

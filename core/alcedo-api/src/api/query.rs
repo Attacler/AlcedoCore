@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use alcedo_middleware::proxy::{lookup_install_by_request_id, PluginRequestIdentity};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use sqlparser::parser::Parser;
@@ -10,7 +11,7 @@ use sqlparser::ast::{Query, SetExpr, Statement};
 
 use crate::error::AppError;
 use crate::plugins::health::AppState;
-use crate::db::plugin_migrations::plugin_schema_name;
+use crate::db::plugin_migrations::{is_valid_schema_name, plugin_schema_name_for_scope};
 use crate::db::Pool;
 use crate::middleware;
 use crate::services::scopes::{check_entity_scope, ScopeSource};
@@ -31,6 +32,22 @@ pub struct QueryRequest {
 
 fn default_timeout() -> u64 { DEFAULT_QUERY_TIMEOUT_SECS }
 fn default_max_rows() -> u64 { DEFAULT_MAX_ROWS }
+
+/// Resolve the caller's install identity from the `X-Request-ID` → Redis mapping.
+/// The install's `app_version_id` scopes both the authorization check and the
+/// schema the query runs against.
+async fn resolve_install_identity(
+    state: &Arc<AppState>,
+    headers: &axum::http::HeaderMap,
+) -> Result<PluginRequestIdentity, AppError> {
+    let rid = headers
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| AppError::Unauthorized("Missing x-request-id header".to_string()))?;
+    lookup_install_by_request_id(&state.redis, rid)
+        .await
+        .ok_or_else(|| AppError::Unauthorized(format!("Unknown request id: {}", rid)))
+}
 
 #[derive(Debug, Serialize)]
 pub struct QueryResponse {
@@ -78,10 +95,10 @@ async fn execute_scoped_query(
     sqlx::query("SET TRANSACTION READ ONLY").execute(&mut *tx).await?;
 
     // Validate schema name contains only safe characters (SQL injection prevention)
-    if !schema.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if !is_valid_schema_name(schema) {
         return Err(AppError::BadRequest("Invalid schema name".to_string()));
     }
-    let set_path = format!(r#"SET search_path TO "{}", public"#, schema);
+    let set_path = format!(r#"SET LOCAL search_path TO "{}", public"#, schema);
     sqlx::query(&set_path).execute(&mut *tx).await?;
 
     let limited_query = format!(
@@ -127,10 +144,10 @@ async fn execute_scoped_write(
     let mut tx = pool.begin().await?;
 
     // Validate schema name contains only safe characters (SQL injection prevention)
-    if !schema.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if !is_valid_schema_name(schema) {
         return Err(AppError::BadRequest("Invalid schema name".to_string()));
     }
-    let set_path = format!(r#"SET search_path TO "{}", public"#, schema);
+    let set_path = format!(r#"SET LOCAL search_path TO "{}", public"#, schema);
     sqlx::query(&set_path).execute(&mut *tx).await?;
 
     let trimmed = query.trim().trim_end_matches(';');
@@ -168,14 +185,33 @@ pub async fn execute_handler(
     let db_pool = state.db()?;
 
     // Verify the caller's identity — slug must match the X-Request-ID → Redis mapping
-    let caller_slug = crate::api::proxy::resolve_slug(&state, &headers).await?;
-    if caller_slug != slug {
+    let caller = resolve_install_identity(&state, &headers).await?;
+    if caller.slug != slug {
         return Err(AppError::Forbidden("Plugin slug mismatch".to_string()));
     }
 
-    check_entity_scope(db_pool, ScopeSource::Plugin { slug: &slug }, "db.execute").await?;
+    check_entity_scope(
+        db_pool,
+        ScopeSource::Plugin {
+            slug: &slug,
+            app_version_id: caller.app_version_id,
+            version_id: caller.version_id,
+        },
+        "db.execute",
+    )
+    .await?;
 
-    let _version = crate::db::queries::PluginVersion::find_active(db_pool, &slug).await?
+    let install = crate::db::queries::Plugin::resolve_install_scoped(
+        db_pool,
+        &slug,
+        caller.app_version_id,
+        caller.version_id,
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+
+    let _version = crate::db::queries::PluginVersion::find_active_for_install(db_pool, install.id)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("No active version for plugin: {}", slug)))?;
 
     let dialect = PostgreSqlDialect {};
@@ -199,7 +235,7 @@ pub async fn execute_handler(
         }
     }
 
-    let schema = plugin_schema_name(&slug);
+    let schema = plugin_schema_name_for_scope(&slug, install.app_version_id, install.version_id);
     let start = std::time::Instant::now();
 
     let result = execute_scoped_write(db_pool, &schema, &payload.query, &payload.params).await;
@@ -268,14 +304,33 @@ pub async fn query_handler(
     let db_pool = state.db()?;
 
     // Verify the caller's identity — slug must match the X-Request-ID → Redis mapping
-    let caller_slug = crate::api::proxy::resolve_slug(&state, &headers).await?;
-    if caller_slug != slug {
+    let caller = resolve_install_identity(&state, &headers).await?;
+    if caller.slug != slug {
         return Err(AppError::Forbidden("Plugin slug mismatch".to_string()));
     }
 
-    check_entity_scope(db_pool, ScopeSource::Plugin { slug: &slug }, "db.query").await?;
+    check_entity_scope(
+        db_pool,
+        ScopeSource::Plugin {
+            slug: &slug,
+            app_version_id: caller.app_version_id,
+            version_id: caller.version_id,
+        },
+        "db.query",
+    )
+    .await?;
 
-    let _version = crate::db::queries::PluginVersion::find_active(db_pool, &slug).await?
+    let install = crate::db::queries::Plugin::resolve_install_scoped(
+        db_pool,
+        &slug,
+        caller.app_version_id,
+        caller.version_id,
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("Plugin not found: {}", slug)))?;
+
+    let _version = crate::db::queries::PluginVersion::find_active_for_install(db_pool, install.id)
+        .await?
         .ok_or_else(|| AppError::NotFound(format!("No active version for plugin: {}", slug)))?;
 
     let dialect = PostgreSqlDialect {};
@@ -305,7 +360,7 @@ pub async fn query_handler(
         }
     }
 
-    let schema = plugin_schema_name(&slug);
+    let schema = plugin_schema_name_for_scope(&slug, install.app_version_id, install.version_id);
     let timeout = payload.timeout_secs.min(60).max(1);
     let max_rows = payload.max_rows.min(100_000).max(1);
 

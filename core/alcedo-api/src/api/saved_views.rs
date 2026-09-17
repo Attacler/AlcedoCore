@@ -1,4 +1,8 @@
 use alcedo_common::RequestIdentity;
+use alcedo_db::db::filter_condition::{ComparisonOperator, FilterCondition, SortField};
+use alcedo_db::services::items::read::{ListRequest, UNBOUNDED_LIMIT};
+use alcedo_db::services::items::service::ItemsService;
+use alcedo_db::services::items::shape::TableRef;
 use axum::{
     extract::{Path, State},
     http::HeaderMap,
@@ -10,9 +14,31 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use crate::api::permission_check;
-use crate::db::saved_views::{self, CreateSavedViewRequest, UpdateSavedViewRequest};
+use crate::db::saved_views::{
+    self, CreateSavedViewRequest, SavedView, UpdateSavedViewRequest,
+};
 use crate::error::AppError;
 use crate::plugins::health::AppState;
+
+/// Resolve the privileged write shape for `alcedocore_saved_views` once per
+/// handler; the `db::saved_views` helpers take it for engine-routed writes.
+async fn saved_views_write_shape(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+) -> Result<alcedo_db::services::items::shape::TableShape, AppError> {
+    let schema = state.schema_for_headers(headers).await?;
+    let collection = "alcedocore_saved_views".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(schema),
+                name: "alcedocore_saved_views".to_string(),
+            },
+            &[],
+        )
+        .await
+}
 
 /// A path extractor for the collection name segment
 #[derive(serde::Deserialize)]
@@ -40,12 +66,53 @@ pub fn saved_views_router() -> Router<Arc<AppState>> {
 async fn list_views(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    identity: RequestIdentity,
+    _identity: RequestIdentity,
     Path(collection): Path<CollectionNamePath>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let schema = state.schema_for_headers(&headers).await?;
+    let db_pool = &state.db_for_headers(&headers).await?;
     // TODO: make sure that the user has access to the collection before accesing views
-    let views = saved_views::list_views(db_pool, &collection.name).await?;
+    let collection_name = "alcedocore_saved_views".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection_name);
+    let result = engine
+        .read_list_for_table(
+            db_pool,
+            TableRef {
+                schema: Some(schema),
+                name: "alcedocore_saved_views".to_string(),
+            },
+            ListRequest {
+                fields: vec![
+                    "id".into(),
+                    "collection_name".into(),
+                    "name".into(),
+                    "config".into(),
+                    "is_default".into(),
+                    "created_at".into(),
+                    "updated_at".into(),
+                ],
+                filter: Some(FilterCondition::Rule {
+                    field: "collection_name".into(),
+                    operator: ComparisonOperator::Eq,
+                    value: Some(serde_json::json!(collection.name)),
+                }),
+                sort: vec![SortField {
+                    field: "created_at".into(),
+                    order: "asc".into(),
+                }],
+                limit: UNBOUNDED_LIMIT,
+                ..Default::default()
+            },
+        )
+        .await?;
+    let views: Vec<SavedView> = result
+        .items
+        .into_iter()
+        .map(|v| {
+            serde_json::from_value(v)
+                .map_err(|e| AppError::Internal(format!("Invalid saved view row: {}", e)))
+        })
+        .collect::<Result<_, _>>()?;
     Ok(Json(json!({ "views": views })))
 }
 
@@ -57,7 +124,7 @@ async fn create_view(
     Path(collection): Path<CollectionNamePath>,
     Json(req): Json<CreateSavedViewRequest>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     let _pc = permission_check::require_permission(
         &state,
@@ -75,7 +142,8 @@ async fn create_view(
         ));
     }
 
-    let view = saved_views::create_view(db_pool, &collection.name, &req).await?;
+    let shape = saved_views_write_shape(&state, &headers).await?;
+    let view = saved_views::create_view(db_pool, &shape, &collection.name, &req).await?;
     Ok((StatusCode::CREATED, Json(json!(view))))
 }
 
@@ -87,7 +155,7 @@ async fn update_view(
     Path(path): Path<ViewPath>,
     Json(req): Json<UpdateSavedViewRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     let _pc = permission_check::require_permission(
         &state,
@@ -98,7 +166,8 @@ async fn update_view(
     )
     .await?;
 
-    let view = saved_views::update_view(db_pool, &path.id, &req).await?;
+    let shape = saved_views_write_shape(&state, &headers).await?;
+    let view = saved_views::update_view(db_pool, &shape, &path.id, &req).await?;
     Ok(Json(json!(view)))
 }
 
@@ -109,7 +178,7 @@ async fn delete_view(
     identity: RequestIdentity,
     Path(path): Path<ViewPath>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     let _pc = permission_check::require_permission(
         &state,
@@ -120,7 +189,8 @@ async fn delete_view(
     )
     .await?;
 
-    saved_views::delete_view(db_pool, &path.id).await?;
+    let shape = saved_views_write_shape(&state, &headers).await?;
+    saved_views::delete_view(db_pool, &shape, &path.id).await?;
     Ok(Json(json!({ "deleted": true })))
 }
 
@@ -131,7 +201,7 @@ async fn set_default_view(
     identity: RequestIdentity,
     Path(path): Path<ViewPath>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     let _pc = permission_check::require_permission(
         &state,
@@ -142,6 +212,7 @@ async fn set_default_view(
     )
     .await?;
 
-    let view = saved_views::set_default_view(db_pool, &path.id).await?;
+    let shape = saved_views_write_shape(&state, &headers).await?;
+    let view = saved_views::set_default_view(db_pool, &shape, &path.id).await?;
     Ok(Json(json!(view)))
 }

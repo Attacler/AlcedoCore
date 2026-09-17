@@ -11,11 +11,11 @@ test.describe('Plugin - Runtime Tab', () => {
     await page.click('button:has-text("Runtime")');
     await page.waitForTimeout(1000);
 
-    const hasRuntimeInfo = await page.locator('text="Container ID"').count();
+    const hasRuntimeInfo = await page.locator('text="Deployment ID"').count();
     const noRuntimeMsg = await page.locator('text="No runtime information available"').count();
 
     if (hasRuntimeInfo > 0) {
-      await expect(page.locator('text="Container ID"')).toBeVisible();
+      await expect(page.locator('text="Deployment ID"')).toBeVisible();
     } else {
       await expect(noRuntimeMsg).toBeGreaterThan(0);
     }

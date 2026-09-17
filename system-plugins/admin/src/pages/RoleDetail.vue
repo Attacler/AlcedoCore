@@ -8,6 +8,7 @@ import type { Role } from "@/stores/rolesStore";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useToast } from "@/composables/useToast";
 import { Column, DataTable } from "primevue";
+import { appPath } from "@/utils/appHeaders";
 
 const route = useRoute(),
     authStore = useAuthStore(),
@@ -32,7 +33,7 @@ onMounted(async () => {
         await loadRolePolicies();
     } else {
         toast.show("Failed to load role, redirecting to the overview.");
-        router.push("/roles");
+        router.push(appPath("/roles"));
     }
     loading.value = false;
 });
@@ -102,7 +103,7 @@ async function assignPolicies() {
     <div class="space-y-3 flex flex-col" v-if="role">
         <div class="flex items-center gap-3">
             <router-link
-                to="/roles"
+                :to="appPath('/roles')"
                 class="material-symbols-outlined text-gray-400 hover:text-gray-600 transition-colors"
             >
                 arrow_back

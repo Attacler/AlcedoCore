@@ -6,6 +6,7 @@ import { useMenuStore } from "./menuStore";
 export const useAuthStore = defineStore("auth", () => {
     const user = ref<UserInfo | null>(null);
     const scopes = ref<string[]>([]);
+    const isAdmin = ref(false);
     const loading = ref(false);
     const initialized = ref(false);
     const loginError = ref<string | null>(null);
@@ -18,6 +19,7 @@ export const useAuthStore = defineStore("auth", () => {
                 const data = await res.json();
                 user.value = data.user;
                 scopes.value = data.scopes || [];
+                isAdmin.value = data.is_admin === true;
                 const menuStore = useMenuStore();
                 menuStore.loadMyMenus();
             }
@@ -78,6 +80,26 @@ export const useAuthStore = defineStore("auth", () => {
         loginError.value = null;
     }
 
+    async function resolveLanding(): Promise<string> {
+        if (isAdmin.value) {
+            return "/apps";
+        }
+        // non-admin: fetch accessible apps
+        try {
+            const res = await fetch("/api/me/apps", { credentials: "include" });
+            if (!res.ok) return "/apps";
+            const data = await res.json();
+            const apps = data?.data ?? data ?? [];
+            if (apps.length === 1) {
+                const a = apps[0];
+                return `/app/${encodeURIComponent(a.api_name)}/${encodeURIComponent(a.version)}/dashboard`;
+            }
+            return "/apps";
+        } catch {
+            return "/apps";
+        }
+    }
+
     const displayName = computed(() => {
         return (
             user.value?.display_name ||
@@ -93,6 +115,7 @@ export const useAuthStore = defineStore("auth", () => {
     return {
         user,
         scopes,
+        isAdmin,
         loading,
         initialized,
         loginError,
@@ -101,6 +124,7 @@ export const useAuthStore = defineStore("auth", () => {
         logout,
         clearError,
         hasScope,
+        resolveLanding,
         displayName,
         userInitial,
     };

@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+// Metadata repository stays bespoke (raw SQL): these helpers take only a Pool
+// and are called by the item engine itself (read.rs, shape.rs, write.rs), so
+// routing them through ItemsService would invert the engine→repo dependency.
+// Do not migrate to the engine.
+
 /// The supported field types per COLL-07, plus Relationship (Phase 27) and Boolean
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -142,12 +147,43 @@ pub struct UpdateCollectionRequest {
 }
 
 const RESERVED_TABLE_NAMES: &[&str] = &[
-    "plugins",
-    "plugin_versions",
-    "registries",
-    "request_logs",
+    "alcedo_registries",
+    "alcedo_plugins",
+    "alcedo_plugin_versions",
+    "alcedo_plugin_recovery",
+    "alcedo_developer_api_keys",
+    "alcedo_users",
+    "alcedo_apps",
+    "alcedo_versions",
+    "alcedo_apps_versions",
+    "alcedo_apps_plugin_versions",
+    "alcedocore_request_logs",
+    "alcedocore_collection_definitions",
+    "alcedocore_collection_fields",
+    "alcedocore_saved_views",
+    "alcedocore_collection_sections",
+    "alcedocore_collection_layouts",
+    "alcedocore_collection_layout_roles",
+    "alcedocore_policies",
+    "alcedocore_policy_permissions",
+    "alcedocore_plugin_policies",
+    "alcedocore_roles",
+    "alcedocore_role_scopes",
+    "alcedocore_user_roles",
+    "alcedocore_role_policies",
+    "alcedocore_menus",
+    "alcedocore_menu_sections",
+    "alcedocore_menu_items",
+    "alcedocore_menu_roles",
+    "alcedocore_system_settings",
+    "alcedocore_system_logs",
+    "alcedocore_collection_logs",
+    "alcedocore_host_calls",
+    "alcedocore_event_subscriptions",
+    "alcedocore_file_metadata",
+    "alcedocore_file_folders",
+    "alcedocore_item_files",
     "schema_migrations",
-    "collection_definitions",
     "_sqlx_migrations",
 ];
 
@@ -285,10 +321,10 @@ pub async fn list_accessible_collections(
 
     let rows = sqlx::query_as::<_, (String, Option<String>, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
         r#"SELECT DISTINCT cd.name, cd.display_name, cd.is_system, cd.plugin_slug, cd.created_at, cd.updated_at
-           FROM collection_definitions cd
-           JOIN policy_permissions pp ON pp.collection_name = cd.name
-           JOIN role_policies rp ON rp.policy_id = pp.policy_id
-           JOIN user_roles ur ON ur.role_id = rp.role_id
+           FROM alcedocore_collection_definitions cd
+           JOIN alcedocore_policy_permissions pp ON pp.collection_name = cd.name
+           JOIN alcedocore_role_policies rp ON rp.policy_id = pp.policy_id
+           JOIN alcedocore_user_roles ur ON ur.role_id = rp.role_id
            WHERE ur.user_id = $1
            ORDER BY cd.is_system ASC, cd.name ASC"#
     )
@@ -317,7 +353,7 @@ pub async fn list_accessible_collections(
 /// List all collection definitions
 pub async fn list_collections(pool: &Pool) -> Result<Vec<CollectionDefinition>, AppError> {
     let rows = sqlx::query_as::<_, (String, Option<String>,  bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "SELECT name, display_name, is_system, plugin_slug, created_at, updated_at FROM collection_definitions ORDER BY updated_at DESC"
+        "SELECT name, display_name, is_system, plugin_slug, created_at, updated_at FROM alcedocore_collection_definitions ORDER BY updated_at DESC"
     )
     .fetch_all(pool)
     .await
@@ -346,7 +382,7 @@ pub async fn get_collection_in_tx(
     name: &str,
 ) -> Result<CollectionDefinition, AppError> {
     let row = sqlx::query_as::<_, (String, Option<String>, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "SELECT name, display_name, is_system, plugin_slug, created_at, updated_at FROM collection_definitions WHERE name = $1"
+        "SELECT name, display_name, is_system, plugin_slug, created_at, updated_at FROM alcedocore_collection_definitions WHERE name = $1"
     )
     .bind(name)
     .fetch_optional(&mut **tx)
@@ -371,7 +407,7 @@ pub async fn get_collection_in_tx(
 /// Get a single collection definition by name (pool-based)
 pub async fn get_collection(pool: &Pool, name: &str) -> Result<CollectionDefinition, AppError> {
     let row = sqlx::query_as::<_, (String, Option<String>, bool, Option<String>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>(
-        "SELECT name, display_name, is_system, plugin_slug, created_at, updated_at FROM collection_definitions WHERE name = $1"
+        "SELECT name, display_name, is_system, plugin_slug, created_at, updated_at FROM alcedocore_collection_definitions WHERE name = $1"
     )
     .bind(name)
     .fetch_optional(pool)
@@ -510,12 +546,15 @@ pub async fn get_referencing_items(
 }
 
 /// Like get_collection but uses Redis cache. Falls back to DB on cache miss or Redis error.
+/// The cache is scoped by app-version schema so same-named collections in
+/// different apps never leak definitions across apps.
 pub async fn get_cached_collection(
     pool: &Pool,
-    redis: &Option<crate::services::redis_session::RedisPool>,
+    redis: &Option<std::sync::Arc<crate::services::redis_client::RedisClient>>,
+    schema: &str,
     name: &str,
 ) -> Result<CollectionDefinition, AppError> {
-    let key = format!("schema:collection:{}", name);
+    let key = format!("schema:collection:{}:{}", schema, name);
     if let Some(cached) = crate::services::cache::try_get(redis, &key).await {
         if let Ok(collection) = serde_json::from_str(&cached) {
             return Ok(collection);
@@ -529,19 +568,22 @@ pub async fn get_cached_collection(
 }
 
 /// Like list_collections but uses Redis cache.
+/// The cache is scoped by app-version schema so collection lists never leak
+/// across apps.
 pub async fn get_cached_collections(
     pool: &Pool,
-    redis: &Option<crate::services::redis_session::RedisPool>,
+    redis: &Option<std::sync::Arc<crate::services::redis_client::RedisClient>>,
+    schema: &str,
 ) -> Result<Vec<CollectionDefinition>, AppError> {
-    let key = "schema:all";
-    if let Some(cached) = crate::services::cache::try_get(redis, key).await {
+    let key = format!("schema:all:{}", schema);
+    if let Some(cached) = crate::services::cache::try_get(redis, &key).await {
         if let Ok(collections) = serde_json::from_str(&cached) {
             return Ok(collections);
         }
     }
     let collections = list_collections(pool).await?;
     if let Ok(json) = serde_json::to_string(&collections) {
-        crate::services::cache::try_set(redis, key, &json, 300).await;
+        crate::services::cache::try_set(redis, &key, &json, 300).await;
     }
     Ok(collections)
 }

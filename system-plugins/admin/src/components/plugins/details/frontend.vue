@@ -4,6 +4,7 @@ import { withAsyncHandlingVoid } from "@/utils/asyncUtils";
 import { ref } from "vue";
 import { onMounted } from "vue";
 import { useRoute } from "vue-router";
+import { appPath } from "@/utils/appHeaders";
 
 const props = defineProps<{ plugin: PluginStore }>();
 
@@ -59,7 +60,7 @@ onMounted(() => {
                 <router-link
                     v-for="page in frontendManifest.pages"
                     :key="page.path"
-                    :to="`/p/${route.params.name}${page.path}`"
+                    :to="appPath(`/p/${route.params.name}${page.path}`)"
                     class="block p-4 border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-blue-300 transition-colors"
                 >
                     <div class="flex items-center gap-3">

@@ -95,6 +95,10 @@ impl CoreDatabaseSchema {
 pub struct CoreState {
     /// `None` when no database is configured (mirrors `AppState::db_pool`).
     pub pool: Option<Pool>,
+    /// Lazily-created pools keyed by app-version schema name.
+    pub pools: Arc<tokio::sync::RwLock<std::collections::HashMap<String, Pool>>>,
+    /// DATABASE_URL, needed to lazily create per-schema pools.
+    pub db_url: Option<String>,
     pub schema: Arc<RwLock<CoreDatabaseSchema>>,
     pub config: AppConfig,
     pub logging_channel: Option<LoggingChannel>,
@@ -105,6 +109,8 @@ impl CoreState {
     pub fn new(pool: Option<Pool>, config: AppConfig) -> Self {
         Self {
             pool,
+            pools: Default::default(),
+            db_url: config.database_url.clone().filter(|s| !s.is_empty()),
             schema: Arc::new(RwLock::new(CoreDatabaseSchema::new())),
             config,
             logging_channel: None,

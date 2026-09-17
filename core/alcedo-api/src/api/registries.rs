@@ -1,3 +1,10 @@
+use alcedo_db::db::filter_condition::SortField;
+use alcedo_db::services::items::read::{ListRequest, OneRequest};
+use alcedo_db::services::items::service::ItemsService;
+use alcedo_db::services::items::shape::TableRef;
+use alcedo_db::services::items::write::{
+    execute_create_for_table, execute_delete_for_table, execute_update_one_for_table,
+};
 use axum::{
     extract::{Path, Query, State},
     http::HeaderMap,
@@ -12,7 +19,6 @@ use std::time::Duration;
 use crate::api::permission_check;
 use crate::api::responses::ResponseEnvelope;
 use crate::db::activity_logs::SystemLogEntry;
-use crate::db::queries::Registry;
 use crate::error::AppError;
 use crate::middleware::logging::extract_request_id_from_headers;
 use crate::plugins::health::AppState as PluginAppState;
@@ -106,7 +112,63 @@ pub struct ListImagesResponse {
     pub images: Vec<ImageListItem>,
 }
 
-fn to_list_item(r: &Registry) -> RegistryListItem {
+/// A row from the **global** `alcedo.alcedo_registries` table. Username and
+/// password are read explicitly so `has_credentials` can be derived, but are
+/// never serialized (the response structs don't carry them).
+#[derive(Deserialize)]
+struct RegistryRow {
+    id: i32,
+    name: String,
+    url: String,
+    pull_url: Option<String>,
+    auth_type: String,
+    username: Option<String>,
+    password: Option<String>,
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+const REGISTRY_COLUMNS: &str =
+    "id, name, url, pull_url, auth_type, username, password, created_at, updated_at";
+
+fn registry_fields() -> Vec<String> {
+    REGISTRY_COLUMNS.split(", ").map(String::from).collect()
+}
+
+fn row_from_value(value: serde_json::Value) -> Result<RegistryRow, AppError> {
+    serde_json::from_value::<RegistryRow>(value)
+        .map_err(|e| AppError::Internal(format!("Invalid registry row: {}", e)))
+}
+
+/// Fetch a registry row through the item engine's global `alcedo.alcedo_registries`
+/// read path. Returns `NotFound` when the id does not exist.
+async fn fetch_registry_row(
+    state: &Arc<PluginAppState>,
+    pool: &sqlx::PgPool,
+    id: i32,
+) -> Result<RegistryRow, AppError> {
+    let collection = "alcedo_registries".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    engine
+        .read_one_for_table(
+            pool,
+            TableRef {
+                schema: Some("alcedo".to_string()),
+                name: "alcedo_registries".to_string(),
+            },
+            OneRequest {
+                item_id: id.to_string(),
+                fields: registry_fields(),
+                ..Default::default()
+            },
+        )
+        .await?
+        .map(row_from_value)
+        .transpose()?
+        .ok_or_else(|| AppError::NotFound(format!("Registry not found: {}", id)))
+}
+
+fn to_list_item(r: &RegistryRow) -> RegistryListItem {
     RegistryListItem {
         id: r.id,
         name: r.name.clone(),
@@ -120,7 +182,7 @@ fn to_list_item(r: &Registry) -> RegistryListItem {
     }
 }
 
-fn to_detail_response(r: &Registry) -> RegistryDetailResponse {
+fn to_detail_response(r: &RegistryRow) -> RegistryDetailResponse {
     RegistryDetailResponse {
         id: r.id,
         name: r.name.clone(),
@@ -142,18 +204,37 @@ pub async fn list_registries_handler(
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
     let db_pool = state.db()?;
 
-    let limit = query.limit.unwrap_or(20).min(100);
-    let offset = query.offset.unwrap_or(0);
+    let limit = query.limit.unwrap_or(20).max(0).min(100);
+    let offset = query.offset.unwrap_or(0).max(0);
 
-    let all_registries = Registry::find_all(db_pool).await?;
-    let total = all_registries.len() as i64;
+    let collection = "alcedo_registries".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let result = engine
+        .read_list_for_table(
+            db_pool,
+            TableRef {
+                schema: Some("alcedo".to_string()),
+                name: "alcedo_registries".to_string(),
+            },
+            ListRequest {
+                fields: registry_fields(),
+                sort: vec![SortField {
+                    field: "name".to_string(),
+                    order: "asc".to_string(),
+                }],
+                limit: limit as u64,
+                offset: offset as u64,
+                ..Default::default()
+            },
+        )
+        .await?;
+    let total = result.total;
 
-    let registries: Vec<RegistryListItem> = all_registries
+    let registries: Vec<RegistryListItem> = result
+        .items
         .into_iter()
-        .skip(offset as usize)
-        .take(limit as usize)
-        .map(|r| to_list_item(&r))
-        .collect();
+        .map(|v| row_from_value(v).map(|r| to_list_item(&r)))
+        .collect::<Result<_, _>>()?;
 
     Ok(Json(ResponseEnvelope::success(ListRegistriesResponse {
         registries,
@@ -171,9 +252,7 @@ pub async fn get_registry_handler(
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
     let db_pool = state.db()?;
 
-    let registry = Registry::find_by_id(db_pool, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Registry not found: {}", id)))?;
+    let registry = fetch_registry_row(&state, db_pool, id).await?;
 
     Ok(Json(ResponseEnvelope::success(to_detail_response(
         &registry,
@@ -204,26 +283,40 @@ pub async fn create_registry_handler(
         ));
     }
 
-    let now = chrono::Utc::now();
-    let new_id = Registry::insert(
-        db_pool,
-        &Registry {
-            id: 0,
-            name: payload.name,
-            url: payload.url,
-            pull_url: payload.pull_url,
-            auth_type: payload.auth_type,
-            username: payload.username,
-            password: payload.password,
-            created_at: Some(now),
-            updated_at: Some(now),
-        },
-    )
-    .await?;
-
-    let created = Registry::find_by_id(db_pool, new_id)
-        .await?
-        .ok_or_else(|| AppError::Internal("Failed to fetch created registry".to_string()))?;
+    let collection = "alcedo_registries".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(alcedo_db::db::ALCEDO_SCHEMA.to_string()),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let mut map = serde_json::Map::new();
+    map.insert("name".into(), serde_json::json!(payload.name));
+    map.insert("url".into(), serde_json::json!(payload.url));
+    if let Some(pull) = &payload.pull_url {
+        map.insert("pull_url".into(), serde_json::json!(pull));
+    }
+    map.insert("auth_type".into(), serde_json::json!(payload.auth_type));
+    if let Some(user) = &payload.username {
+        map.insert("username".into(), serde_json::json!(user));
+    }
+    if let Some(password) = &payload.password {
+        let encrypted = crate::services::encryption::encrypt(password).map_err(|e| {
+            AppError::Internal(format!("Failed to encrypt registry credentials: {}", e))
+        })?;
+        map.insert("password".into(), serde_json::json!(encrypted));
+    }
+    let outcome = execute_create_for_table(state.db()?, &shape, vec![map]).await?;
+    let row = outcome
+        .affected
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Internal("registry insert returned no row".to_string()))?;
+    let created = row_from_value(row)?;
 
     let actor_id = crate::api::permission_check::extract_user_id_from_session(&state, &headers)
         .await?
@@ -255,9 +348,7 @@ pub async fn update_registry_handler(
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let _existing = Registry::find_by_id(db_pool, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Registry not found: {}", id)))?;
+    let _existing = fetch_registry_row(&state, db_pool, id).await?;
 
     if let Some(ref auth_type) = payload.auth_type {
         if !CreateRegistryRequest::validate_auth_type(auth_type) {
@@ -266,21 +357,60 @@ pub async fn update_registry_handler(
             ));
         }
     }
-    Registry::update(
-        db_pool,
-        id,
-        payload.name.as_ref(),
-        payload.url.as_ref(),
-        payload.pull_url.as_ref(),
-        payload.auth_type.as_ref(),
-        payload.username.as_ref(),
-        payload.password.as_ref(),
-    )
-    .await?;
 
-    let updated = Registry::find_by_id(db_pool, id)
-        .await?
+    let collection = "alcedo_registries".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(alcedo_db::db::ALCEDO_SCHEMA.to_string()),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let mut map = serde_json::Map::new();
+    if let Some(name) = &payload.name {
+        map.insert("name".into(), serde_json::json!(name));
+    }
+    if let Some(url) = &payload.url {
+        map.insert("url".into(), serde_json::json!(url));
+    }
+    if let Some(pull_url) = &payload.pull_url {
+        map.insert("pull_url".into(), serde_json::json!(pull_url));
+    }
+    if let Some(auth_type) = &payload.auth_type {
+        map.insert("auth_type".into(), serde_json::json!(auth_type));
+    }
+    if let Some(username) = &payload.username {
+        map.insert("username".into(), serde_json::json!(username));
+    }
+    if let Some(password) = &payload.password {
+        let encrypted = crate::services::encryption::encrypt(password).map_err(|e| {
+            AppError::Internal(format!("Failed to encrypt registry credentials: {}", e))
+        })?;
+        map.insert("password".into(), serde_json::json!(encrypted));
+    }
+    let outcome = match execute_update_one_for_table(
+        db_pool,
+        &shape,
+        &serde_json::json!(id),
+        &map,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(AppError::NotFound(_)) => {
+            return Err(AppError::NotFound(format!("Registry not found: {}", id)));
+        }
+        Err(e) => return Err(e),
+    };
+    let row = outcome
+        .affected
+        .into_iter()
+        .next()
         .ok_or_else(|| AppError::NotFound(format!("Registry not found after update: {}", id)))?;
+    let updated = row_from_value(row)?;
 
     let actor_id = crate::api::permission_check::extract_user_id_from_session(&state, &headers)
         .await?
@@ -311,11 +441,23 @@ pub async fn delete_registry_handler(
     permission_check::require_scope(&state, &headers, "plugins.write").await?;
     let db_pool = state.db()?;
 
-    let existing = Registry::find_by_id(db_pool, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Registry not found: {}", id)))?;
+    let existing = fetch_registry_row(&state, db_pool, id).await?;
 
-    Registry::delete_by_id(db_pool, id).await?;
+    let collection = "alcedo_registries".to_string();
+    let engine = ItemsService::for_global(&state.core, &collection);
+    let shape = engine
+        .privileged_write_shape(
+            TableRef {
+                schema: Some(alcedo_db::db::ALCEDO_SCHEMA.to_string()),
+                name: collection.clone(),
+            },
+            &[],
+        )
+        .await?;
+    let outcome = execute_delete_for_table(db_pool, &shape, vec![serde_json::json!(id)]).await?;
+    if outcome.affected_count == 0 {
+        return Err(AppError::NotFound(format!("Registry not found: {}", id)));
+    }
 
     let actor_id = crate::api::permission_check::extract_user_id_from_session(&state, &headers)
         .await?
@@ -347,9 +489,7 @@ pub async fn health_check_registry_handler(
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
     let db_pool = state.db()?;
 
-    let registry = Registry::find_by_id(db_pool, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Registry not found: {}", id)))?;
+    let registry = fetch_registry_row(&state, db_pool, id).await?;
 
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
@@ -439,9 +579,15 @@ pub async fn list_registry_images_handler(
     permission_check::require_scope(&state, &headers, "plugins.read").await?;
     let db_pool = state.db()?;
 
-    let registry = Registry::find_by_id(db_pool, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Registry not found: {}", id)))?;
+    let registry = fetch_registry_row(&state, db_pool, id).await?;
+
+    // A registry with no URL (e.g. the seeded system registry) has no image
+    // catalog; return an empty list instead of failing to build the request.
+    if registry.url.trim().is_empty() {
+        return Ok(Json(ResponseEnvelope::success(ListImagesResponse {
+            images: Vec::new(),
+        })));
+    }
 
     // Fetch image catalog from registry
     let client = Client::builder()

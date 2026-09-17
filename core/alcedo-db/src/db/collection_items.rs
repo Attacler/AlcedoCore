@@ -5,8 +5,8 @@
 //! metadata stored in the database. Field validation rejects unknown field names
 //! and reserved system columns (`id`, `created_at`, `updated_at`) for write operations.
 
-use serde::{Deserialize, Serialize};
 use sea_query::{Expr, Order, PostgresQueryBuilder, Query, SimpleExpr};
+use serde::{Deserialize, Serialize};
 
 use crate::db::collections::{get_collection, CollectionDefinition, FieldDefinition, FieldType};
 use crate::db::filter_compiler::compile_filter;
@@ -86,11 +86,7 @@ pub fn validate_fields_for_write(
     keys: &[String],
     collection: &CollectionDefinition,
 ) -> Result<(), AppError> {
-    let valid_names: Vec<&str> = collection
-        .fields
-        .iter()
-        .map(|f| f.name.as_str())
-        .collect();
+    let valid_names: Vec<&str> = collection.fields.iter().map(|f| f.name.as_str()).collect();
 
     for key in keys {
         if RESERVED_COLUMNS.contains(&key.as_str()) {
@@ -167,7 +163,8 @@ pub fn coerce_value(value: serde_json::Value, field_type: &FieldType) -> serde_j
                 }
             }
             serde_json::Value::Array(arr) => {
-                let uuids: Vec<String> = arr.iter()
+                let uuids: Vec<String> = arr
+                    .iter()
                     .filter_map(|v| v.as_str().map(|s| s.to_string()))
                     .collect();
                 if uuids.is_empty() {
@@ -181,9 +178,7 @@ pub fn coerce_value(value: serde_json::Value, field_type: &FieldType) -> serde_j
         },
         FieldType::Bool => match value {
             serde_json::Value::Bool(_) => value,
-            serde_json::Value::String(s) => {
-                serde_json::Value::Bool(s == "true" || s == "1")
-            }
+            serde_json::Value::String(s) => serde_json::Value::Bool(s == "true" || s == "1"),
             serde_json::Value::Number(n) => {
                 serde_json::Value::Bool(n.as_i64().map_or(false, |i| i != 0))
             }
@@ -228,7 +223,8 @@ pub async fn query_items(
 
     // Build col_name -> field_type map for UUID cast detection in filter bindings.
     // Include implicit columns (id, created_at, updated_at) with their fixed types.
-    let mut col_type_map: std::collections::HashMap<String, FieldType> = std::collections::HashMap::new();
+    let mut col_type_map: std::collections::HashMap<String, FieldType> =
+        std::collections::HashMap::new();
     for f in &collection.fields {
         col_type_map.insert(f.name.clone(), f.field_type.clone());
     }
@@ -240,13 +236,16 @@ pub async fn query_items(
     let offset = query.offset.unwrap_or(0);
 
     // Find relationship fields with display_field configured for display value fetching
-    let display_fields: Vec<&FieldDefinition> = collection.fields.iter()
+    let display_fields: Vec<&FieldDefinition> = collection
+        .fields
+        .iter()
         .filter(|f| f.field_type == FieldType::Relationship && f.display_field.is_some())
         .collect();
 
     // -- Build SELECT with sea-query ---------------------------------------
     // Exclude hidden fields from query results
-    let visible_fields: Vec<&FieldDefinition> = collection.fields.iter().filter(|f| !f.hidden).collect();
+    let visible_fields: Vec<&FieldDefinition> =
+        collection.fields.iter().filter(|f| !f.hidden).collect();
     let mut select = Query::select();
     for field in &visible_fields {
         select.expr(Expr::col(sea_query::Alias::new(&field.name)));
@@ -272,7 +271,9 @@ pub async fn query_items(
                     bind_values.push(serde_json::Value::String(format!("%{}%", search_term)));
                 } else {
                     let placeholder = match col_type_map.get(key.as_str()) {
-                        Some(FieldType::Uuid) | Some(FieldType::Relationship) => format!("${}::uuid", idx),
+                        Some(FieldType::Uuid) | Some(FieldType::Relationship) => {
+                            format!("${}::uuid", idx)
+                        }
                         Some(FieldType::Datetime) => format!("${}::timestamptz", idx),
                         _ => format!("${}", idx),
                     };
@@ -309,11 +310,12 @@ pub async fn query_items(
         q = crate::bind_json_value!(q, val);
     }
 
-    let (result,): (serde_json::Value,) = q.fetch_one(pool).await.map_err(|e| {
-        AppError::DatabaseError {
-            details: format!("Collection items query failed: {}", e),
-        }
-    })?;
+    let (result,): (serde_json::Value,) =
+        q.fetch_one(pool)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Collection items query failed: {}", e),
+            })?;
 
     let items = match result {
         serde_json::Value::Array(arr) => arr,
@@ -321,90 +323,11 @@ pub async fn query_items(
     };
 
     if items.is_empty() || display_fields.is_empty() {
-        return augment_items_with_inline_parents(pool, &items, &collection, collection_name).await;
+        return Ok(items);
     }
 
     // Augment items with display values (internal call, no permission checking)
-    let augmented = augment_items_with_display_values(pool, &items, &display_fields, collection_name, None).await?;
-    augment_items_with_inline_parents(pool, &augmented, &collection, collection_name).await
-}
-
-/// Augment items with inline parent field data for relationship fields
-/// that have `inline_parent_fields` configured.
-pub async fn augment_items_with_inline_parents(
-    pool: &Pool,
-    items: &[serde_json::Value],
-    collection: &CollectionDefinition,
-    _collection_name: &str,
-) -> Result<Vec<serde_json::Value>, AppError> {
-    if items.is_empty() {
-        return Ok(items.to_vec());
-    }
-
-    let inline_fields: Vec<&FieldDefinition> = collection.fields.iter()
-        .filter(|f| {
-            f.field_type == FieldType::Relationship
-                && f.inline_parent_fields.as_ref().is_some_and(|v| !v.is_empty())
-        })
-        .collect();
-
-    if inline_fields.is_empty() {
-        return Ok(items.to_vec());
-    }
-
-    let mut augmented: Vec<serde_json::Value> = items.to_vec();
-
-    for field in &inline_fields {
-        let target = field.related_collection.as_ref().expect("related_collection required");
-        let parent_fields = field.inline_parent_fields.as_ref().expect("checked above");
-
-        let uuids: Vec<String> = items.iter()
-            .filter_map(|item| item.get(&field.name))
-            .filter_map(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect();
-
-        if uuids.is_empty() {
-            continue;
-        }
-
-        let parent_cols: Vec<String> = parent_fields.iter()
-            .map(|f| format!("\"{}\"", f))
-            .collect();
-
-        // Use parameterized bindings instead of string interpolation to
-        // prevent SQL injection via crafted UUID field values.
-        let placeholders: Vec<String> = (1..=uuids.len())
-            .map(|i| format!("${}::uuid", i))
-            .collect();
-
-        let sql = format!(
-            "SELECT row_to_json(\"_p\".*) FROM (SELECT {} FROM \"{}\" WHERE \"id\" IN ({})) AS \"_p\"",
-            parent_cols.join(", "),
-            target,
-            placeholders.join(", ")
-        );
-
-        let mut query = sqlx::query_as::<_, (serde_json::Value,)>(&sql);
-        for uuid_str in &uuids {
-            query = query.bind(uuid_str.as_str());
-        }
-        let rows: Vec<(serde_json::Value,)> = query.fetch_all(pool).await
-            .map_err(|e| AppError::DatabaseError {
-                details: format!("Inline parent query failed: {}", e),
-            })?;
-
-        let parent_objects: Vec<serde_json::Value> = rows.into_iter().map(|r| r.0).collect();
-
-        for (item, parent_obj) in augmented.iter_mut().zip(parent_objects.iter()) {
-            if let Some(obj) = item.as_object_mut() {
-                obj.insert(format!("{}__inline_parent", field.name), parent_obj.clone());
-            }
-        }
-    }
-
-    Ok(augmented)
+    augment_items_with_display_values(pool, &items, &display_fields, collection_name, None).await
 }
 
 /// Resolve File field values (UUID[]) to full file metadata objects.
@@ -445,40 +368,57 @@ pub async fn augment_items_with_file_metadata(
 
     let sql = format!(
         r#"SELECT id, filename, mime_type, size_bytes, storage_provider, storage_path, sha256, alt_text, uploaded_by, created_at, updated_at
-           FROM file_metadata WHERE id IN ({})"#,
+           FROM alcedocore_file_metadata WHERE id IN ({})"#,
         placeholders.join(", ")
     );
 
-    let mut query = sqlx::query_as::<_, (
-        uuid::Uuid, String, String, i64, String, String, Option<String>, Option<String>,
-        Option<uuid::Uuid>, chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>,
-    )>(&sql);
+    let mut query = sqlx::query_as::<
+        _,
+        (
+            uuid::Uuid,
+            String,
+            String,
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<uuid::Uuid>,
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+        ),
+    >(&sql);
     for id_str in &all_file_ids {
         query = query.bind(id_str.as_str());
     }
-    let rows = query.fetch_all(pool).await.map_err(|e| {
-        AppError::DatabaseError {
+    let rows = query
+        .fetch_all(pool)
+        .await
+        .map_err(|e| AppError::DatabaseError {
             details: format!("File metadata query failed: {}", e),
-        }
-    })?;
+        })?;
 
     // Build a map: file UUID -> metadata JSON object
-    let mut file_map: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+    let mut file_map: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
     for row in rows {
-        file_map.insert(row.0.to_string(), serde_json::json!({
-            "id": row.0,
-            "filename": row.1,
-            "mime_type": row.2,
-            "size_bytes": row.3,
-            "storage_provider": row.4,
-            "storage_path": row.5,
-            "sha256": row.6,
-            "alt_text": row.7,
-            "uploaded_by": row.8,
-            "created_at": row.9,
-            "updated_at": row.10,
-            "download_url": format!("/api/files/{}/download", row.0),
-        }));
+        file_map.insert(
+            row.0.to_string(),
+            serde_json::json!({
+                "id": row.0,
+                "filename": row.1,
+                "mime_type": row.2,
+                "size_bytes": row.3,
+                "storage_provider": row.4,
+                "storage_path": row.5,
+                "sha256": row.6,
+                "alt_text": row.7,
+                "uploaded_by": row.8,
+                "created_at": row.9,
+                "updated_at": row.10,
+                "download_url": format!("/api/files/{}/download", row.0),
+            }),
+        );
     }
 
     // Replace raw UUID arrays with file metadata objects
@@ -486,13 +426,18 @@ pub async fn augment_items_with_file_metadata(
     for item in augmented.iter_mut() {
         for field in file_fields {
             if let Some(serde_json::Value::Array(ids)) = item.get(&field.name) {
-                let metadata_objects: Vec<serde_json::Value> = ids.iter()
+                let metadata_objects: Vec<serde_json::Value> = ids
+                    .iter()
                     .filter_map(|id_val| id_val.as_str().and_then(|s| file_map.get(s)))
                     .cloned()
                     .collect();
                 if !metadata_objects.is_empty() {
-                    item.as_object_mut()
-                        .map(|obj| obj.insert(field.name.clone(), serde_json::Value::Array(metadata_objects)));
+                    item.as_object_mut().map(|obj| {
+                        obj.insert(
+                            field.name.clone(),
+                            serde_json::Value::Array(metadata_objects),
+                        )
+                    });
                 }
             }
         }
@@ -521,22 +466,31 @@ pub async fn augment_items_with_display_values(
     let mut augmented: Vec<serde_json::Value> = items.to_vec();
 
     for field in display_fields {
-        let target = field.related_collection.as_ref().expect("related_collection required");
+        let target = field
+            .related_collection
+            .as_ref()
+            .expect("related_collection required");
 
         // Permission check: skip if caller has no read permission on the related collection
         let has_perm = permissions_map
-            .map(|m| m.get(target.as_str())
-                .map(|perms| crate::services::permissions::authorize_action(perms, "read"))
-                .unwrap_or(false))
+            .map(|m| {
+                m.get(target.as_str())
+                    .map(|perms| crate::services::permissions::authorize_action(perms, "read"))
+                    .unwrap_or(false)
+            })
             .unwrap_or(true); // true when no permission checking (direct API call)
         if !has_perm {
             continue;
         }
 
-        let display_col = field.display_field.as_ref().expect("display_field required");
+        let display_col = field
+            .display_field
+            .as_ref()
+            .expect("display_field required");
 
         // Extract all UUID values for this field
-        let uuids: Vec<String> = items.iter()
+        let uuids: Vec<String> = items
+            .iter()
             .filter_map(|item| item.get(&field.name))
             .filter_map(|v| v.as_str())
             .filter(|s| !s.is_empty())
@@ -549,34 +503,43 @@ pub async fn augment_items_with_display_values(
 
         // Use parameterized bindings instead of string interpolation to
         // prevent SQL injection via crafted UUID field values.
-        let placeholders: Vec<String> = (1..=uuids.len())
-            .map(|i| format!("${}::uuid", i))
-            .collect();
+        let placeholders: Vec<String> =
+            (1..=uuids.len()).map(|i| format!("${}::uuid", i)).collect();
 
         // Batch query: fetch display values for all referenced UUIDs
         let sql = format!(
             "SELECT \"id\"::text, \"{}\" FROM \"{}\" WHERE \"id\" IN ({})",
-            display_col, target, placeholders.join(", ")
+            display_col,
+            target,
+            placeholders.join(", ")
         );
 
         let mut query = sqlx::query_as::<_, (String, Option<String>)>(&sql);
         for uuid_str in &uuids {
             query = query.bind(uuid_str.as_str());
         }
-        let rows: Vec<(String, Option<String>)> = query.fetch_all(pool).await
-            .map_err(|e| AppError::DatabaseError {
-                details: format!("Display value query failed: {}", e),
-            })?;
+        let rows: Vec<(String, Option<String>)> =
+            query
+                .fetch_all(pool)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    details: format!("Display value query failed: {}", e),
+                })?;
 
-        let display_map: std::collections::HashMap<String, String> = rows.into_iter()
+        let display_map: std::collections::HashMap<String, String> = rows
+            .into_iter()
             .filter_map(|(id, val)| val.map(|v| (id, v)))
             .collect();
 
         for item in augmented.iter_mut() {
             if let Some(val) = item.get(&field.name).and_then(|v| v.as_str()) {
                 if let Some(display_val) = display_map.get(val) {
-                    item.as_object_mut()
-                        .map(|obj| obj.insert(format!("{}__display_value", field.name), serde_json::Value::String(display_val.clone())));
+                    item.as_object_mut().map(|obj| {
+                        obj.insert(
+                            format!("{}__display_value", field.name),
+                            serde_json::Value::String(display_val.clone()),
+                        )
+                    });
                 }
             }
         }
@@ -593,7 +556,9 @@ pub async fn count_items(
 ) -> Result<i64, AppError> {
     let collection = resolve_collection_fields(pool, collection_name).await?;
 
-    let col_type_map: std::collections::HashMap<&str, &FieldType> = collection.fields.iter()
+    let col_type_map: std::collections::HashMap<&str, &FieldType> = collection
+        .fields
+        .iter()
         .map(|f| (f.name.as_str(), &f.field_type))
         .collect();
 
@@ -601,25 +566,33 @@ pub async fn count_items(
 
     let filter_clauses: Vec<String> = if let Some(ref filter_json) = filter {
         if let Some(obj) = filter_json.as_object() {
-            obj.iter().map(|(key, val)| {
-                let idx = bind_values.len() as u32 + 1;
-                let quoted_key = super::quote_identifier(key);
-                let val_str = val.as_str().unwrap_or("");
-                if let Some(search_term) = val_str.strip_prefix("contains:") {
-                    bind_values.push(serde_json::Value::String(format!("%{}%", search_term)));
-                    format!("{} LIKE ${}", quoted_key, idx)
-                } else {
-                    let placeholder = match col_type_map.get(key.as_str()) {
-                        Some(FieldType::Uuid) | Some(FieldType::Relationship) => format!("${}::uuid", idx),
-                        Some(FieldType::Datetime) => format!("${}::timestamptz", idx),
-                        _ => format!("${}", idx),
-                    };
-                    bind_values.push(val.clone());
-                    format!("{} = {}", quoted_key, placeholder)
-                }
-            }).collect()
-        } else { vec![] }
-    } else { vec![] };
+            obj.iter()
+                .map(|(key, val)| {
+                    let idx = bind_values.len() as u32 + 1;
+                    let quoted_key = super::quote_identifier(key);
+                    let val_str = val.as_str().unwrap_or("");
+                    if let Some(search_term) = val_str.strip_prefix("contains:") {
+                        bind_values.push(serde_json::Value::String(format!("%{}%", search_term)));
+                        format!("{} LIKE ${}", quoted_key, idx)
+                    } else {
+                        let placeholder = match col_type_map.get(key.as_str()) {
+                            Some(FieldType::Uuid) | Some(FieldType::Relationship) => {
+                                format!("${}::uuid", idx)
+                            }
+                            Some(FieldType::Datetime) => format!("${}::timestamptz", idx),
+                            _ => format!("${}", idx),
+                        };
+                        bind_values.push(val.clone());
+                        format!("{} = {}", quoted_key, placeholder)
+                    }
+                })
+                .collect()
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
 
     let where_clause = if filter_clauses.is_empty() {
         String::new()
@@ -627,16 +600,22 @@ pub async fn count_items(
         format!(" WHERE {}", filter_clauses.join(" AND "))
     };
 
-    let count_sql = format!("SELECT COUNT(*) FROM \"{}\"{}", collection_name, where_clause);
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM \"{}\"{}",
+        collection_name, where_clause
+    );
 
     let mut q = sqlx::query_scalar::<_, i64>(&count_sql);
     for val in &bind_values {
         q = crate::bind_json_value!(q, val);
     }
 
-    let count = q.fetch_one(pool).await.map_err(|e| AppError::DatabaseError {
-        details: format!("Collection count query failed: {}", e),
-    })?;
+    let count = q
+        .fetch_one(pool)
+        .await
+        .map_err(|e| AppError::DatabaseError {
+            details: format!("Collection count query failed: {}", e),
+        })?;
 
     Ok(count)
 }
@@ -663,7 +642,9 @@ pub async fn grouped_query_items(
     let _collection = resolve_collection_fields(pool, collection_name).await?;
 
     // Build col_name -> field_type map for UUID cast detection in filter bindings
-    let col_type_map: std::collections::HashMap<&str, &FieldType> = _collection.fields.iter()
+    let col_type_map: std::collections::HashMap<&str, &FieldType> = _collection
+        .fields
+        .iter()
         .map(|f| (f.name.as_str(), &f.field_type))
         .collect();
 
@@ -690,7 +671,10 @@ pub async fn grouped_query_items(
     if !extra_permissions.is_empty() {
         let (perm_clause, perm_binds) =
             crate::services::permissions::build_filter_clause_with_offset(
-                extra_permissions, bind_values.len() as usize, None, Some(&_collection),
+                extra_permissions,
+                bind_values.len() as usize,
+                None,
+                Some(&_collection),
             );
         if !perm_clause.is_empty() {
             if where_clause.is_empty() {
@@ -702,25 +686,13 @@ pub async fn grouped_query_items(
         }
     }
 
-    // Build sort clause for within-group ordering
-    let order_clause = if let Some(ref sort_fields) = request.sort {
-        if !sort_fields.is_empty() {
-            let sorts: Vec<String> = sort_fields.iter().map(|s| {
-                let quoted = super::quote_identifier(&s.field);
-                let dir = if s.order.to_lowercase() == "desc" { "DESC" } else { "ASC" };
-                format!("{} {}", quoted, dir)
-            }).collect();
-            format!(" ORDER BY {}", sorts.join(", "))
-        } else {
-            String::new()
-        }
-    } else {
-        String::new()
-    };
+    let order_clause = build_grouped_order_clause(&request.sort);
 
     // Build visible column list (excluding hidden fields)
-    let visible_fields: Vec<&FieldDefinition> = _collection.fields.iter().filter(|f| !f.hidden).collect();
-    let mut all_cols: Vec<String> = visible_fields.iter()
+    let visible_fields: Vec<&FieldDefinition> =
+        _collection.fields.iter().filter(|f| !f.hidden).collect();
+    let mut all_cols: Vec<String> = visible_fields
+        .iter()
         .map(|f| format!(r#""{0}"."{1}""#, collection_name, f.name))
         .collect();
     for col in &["id", "created_at", "updated_at"] {
@@ -728,6 +700,134 @@ pub async fn grouped_query_items(
     }
     let col_list = all_cols.join(", ");
 
+    let table = format!(r#""{}""#, collection_name);
+
+    execute_grouped_sql(
+        pool,
+        &table,
+        &col_list,
+        &group_by_quoted,
+        &where_clause,
+        &order_clause,
+        limit,
+        offset,
+        &bind_values,
+    )
+    .await
+}
+
+/// Grouped query for a table resolved as a
+/// [`TableShape`](crate::services::items::shape::TableShape).
+///
+/// Collection-backed shapes delegate to [`grouped_query_items`] so hidden-field
+/// metadata behaves identically. Definition-less (physical) shapes project every
+/// column in the shape and have no collection metadata; permissions are not
+/// supported on that path (matching the flat read path).
+pub async fn grouped_query_items_for_table(
+    pool: &Pool,
+    shape: &crate::services::items::shape::TableShape,
+    request: GroupedQueryRequest,
+    extra_permissions: &[crate::services::permissions::PolicyPermission],
+) -> Result<GroupedQueryResponse, AppError> {
+    if let Some(collection) = &shape.collection {
+        return grouped_query_items(pool, &collection.name, request, extra_permissions).await;
+    }
+
+    if !extra_permissions.is_empty() {
+        return Err(AppError::BadRequest(
+            "Permissions are not supported for physical table reads".to_string(),
+        ));
+    }
+
+    let limit = request.limit.unwrap_or(50);
+    let offset = request.offset.unwrap_or(0);
+    let group_by_quoted = super::quote_identifier(&request.group_by);
+
+    let col_type_map = shape.col_type_map_ref();
+
+    let mut bind_values: Vec<serde_json::Value> = Vec::new();
+    let where_clause = match request.filter {
+        Some(ref filter_cond) => {
+            let clause = compile_filter(filter_cond, &col_type_map, &mut bind_values)?;
+            if clause.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", clause)
+            }
+        }
+        None => String::new(),
+    };
+
+    let order_clause = build_grouped_order_clause(&request.sort);
+
+    let col_list = shape
+        .columns
+        .iter()
+        .map(|c| {
+            format!(
+                "{}.{}",
+                super::quote_identifier(&shape.name),
+                super::quote_identifier(&c.name)
+            )
+        })
+        .collect::<Vec<String>>()
+        .join(", ");
+
+    let table = crate::services::items::shape::qualified_table(&shape.schema, &shape.name);
+
+    execute_grouped_sql(
+        pool,
+        &table,
+        &col_list,
+        &group_by_quoted,
+        &where_clause,
+        &order_clause,
+        limit,
+        offset,
+        &bind_values,
+    )
+    .await
+}
+
+/// Build the within-group `ORDER BY` clause shared by both grouped paths.
+fn build_grouped_order_clause(
+    sort: &Option<Vec<crate::db::filter_condition::SortField>>,
+) -> String {
+    if let Some(sort_fields) = sort {
+        if !sort_fields.is_empty() {
+            let sorts: Vec<String> = sort_fields
+                .iter()
+                .map(|s| {
+                    let quoted = super::quote_identifier(&s.field);
+                    let dir = if s.order.to_lowercase() == "desc" {
+                        "DESC"
+                    } else {
+                        "ASC"
+                    };
+                    format!("{} {}", quoted, dir)
+                })
+                .collect();
+            return format!(" ORDER BY {}", sorts.join(", "));
+        }
+    }
+    String::new()
+}
+
+/// Execute the shared grouped query against a quoted table expression.
+///
+/// The SQL shape and the `'__gsd_null__'` NULL sentinel are shared by the
+/// collection and shape-based paths.
+async fn execute_grouped_sql(
+    pool: &Pool,
+    table: &str,
+    col_list: &str,
+    group_by_quoted: &str,
+    where_clause: &str,
+    order_clause: &str,
+    limit: u64,
+    offset: u64,
+    bind_values: &[serde_json::Value],
+) -> Result<GroupedQueryResponse, AppError> {
     // Main grouped query: SELECT group_by_field, count, json_agg of items
     // Uses COALESCE with a sentinel string to preserve NULL group values.
     // Uses a subquery to exclude hidden fields from row_to_json.
@@ -738,31 +838,27 @@ pub async fn grouped_query_items(
                 CAST(COUNT(*) AS bigint) AS group_count,
                 COALESCE(json_agg(row_to_json("_inner".*) {2}), '[]'::json) AS group_items
             FROM (
-                SELECT {6} FROM "{1}" {3}
+                SELECT {6} FROM {1} {3}
             ) AS "_inner"
             GROUP BY {0}
             ORDER BY group_value
             LIMIT {4} OFFSET {5}
         ) AS "_grp""#,
-        group_by_quoted,
-        collection_name,
-        order_clause,
-        where_clause,
-        limit,
-        offset,
-        col_list,
+        group_by_quoted, table, order_clause, where_clause, limit, offset, col_list,
     );
 
     let mut data_q = sqlx::query_as::<_, (serde_json::Value,)>(&data_sql);
-    for val in &bind_values {
+    for val in bind_values {
         data_q = crate::bind_json_value!(data_q, val);
     }
 
-    let (data_result,): (serde_json::Value,) = data_q.fetch_one(pool).await.map_err(|e| {
-        AppError::DatabaseError {
-            details: format!("Grouped query failed: {}", e),
-        }
-    })?;
+    let (data_result,): (serde_json::Value,) =
+        data_q
+            .fetch_one(pool)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Grouped query failed: {}", e),
+            })?;
 
     let raw_groups: Vec<serde_json::Value> = match data_result {
         serde_json::Value::Array(arr) => arr,
@@ -770,44 +866,48 @@ pub async fn grouped_query_items(
     };
 
     // Convert raw SQL results into GroupResult structs
-    let groups: Vec<GroupResult> = raw_groups.iter().map(|g| {
-        let group_value = g.get("group_value")
-            .and_then(|v| v.as_str())
-            .filter(|s| *s != "__gsd_null__")
-            .map(|s| s.to_string());
+    let groups: Vec<GroupResult> = raw_groups
+        .iter()
+        .map(|g| {
+            let group_value = g
+                .get("group_value")
+                .and_then(|v| v.as_str())
+                .filter(|s| *s != "__gsd_null__")
+                .map(|s| s.to_string());
 
-        let count = g.get("group_count")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+            let count = g.get("group_count").and_then(|v| v.as_i64()).unwrap_or(0);
 
-        let items = g.get("group_items")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default();
+            let items = g
+                .get("group_items")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
 
-        GroupResult {
-            value: group_value,
-            count,
-            items,
-        }
-    }).collect();
+            GroupResult {
+                value: group_value,
+                count,
+                items,
+            }
+        })
+        .collect();
 
     // Count query: total distinct groups
     let count_sql = format!(
-        "SELECT COUNT(*) FROM (SELECT 1 FROM \"{0}\" {1} GROUP BY {2}) AS \"_cnt\"",
-        collection_name, where_clause, group_by_quoted
+        "SELECT COUNT(*) FROM (SELECT 1 FROM {0} {1} GROUP BY {2}) AS \"_cnt\"",
+        table, where_clause, group_by_quoted
     );
 
     let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
-    for val in &bind_values {
+    for val in bind_values {
         count_q = crate::bind_json_value!(count_q, val);
     }
 
-    let total = count_q.fetch_one(pool).await.map_err(|e| {
-        AppError::DatabaseError {
+    let total = count_q
+        .fetch_one(pool)
+        .await
+        .map_err(|e| AppError::DatabaseError {
             details: format!("Grouped count query failed: {}", e),
-        }
-    })?;
+        })?;
 
     Ok(GroupedQueryResponse { groups, total })
 }
@@ -856,9 +956,8 @@ pub async fn create_items(
     let field_names: std::collections::HashSet<&str> =
         collection.fields.iter().map(|f| f.name.as_str()).collect();
     let has_relational_keys = items.iter().any(|item| {
-        item.iter().any(|(k, v)| {
-            !field_names.contains(k.as_str()) || v.is_object() || v.is_array()
-        })
+        item.iter()
+            .any(|(k, v)| !field_names.contains(k.as_str()) || v.is_object() || v.is_array())
     });
 
     let all_collections = if has_relational_keys {
@@ -884,7 +983,10 @@ pub async fn create_items(
         if let Some(ref all_cols) = all_collections {
             for key in &keys {
                 let is_o2m = match relational_crud::detect_crud_direction(
-                    key, &collection.name, &collection, all_cols,
+                    key,
+                    &collection.name,
+                    &collection,
+                    all_cols,
                 ) {
                     Ok(CrudDirection::OneToMany { .. }) => {
                         matches!(item.get(key), Some(v) if v.is_object() || v.is_array())
@@ -927,11 +1029,17 @@ pub async fn create_items(
         return Err(AppError::BadRequest("No fields provided".to_string()));
     }
 
-    let col_type_map: std::collections::HashMap<&str, &FieldType> = collection.fields.iter()
+    let col_type_map: std::collections::HashMap<&str, &FieldType> = collection
+        .fields
+        .iter()
         .map(|f| (f.name.as_str(), &f.field_type))
         .collect();
 
-    let quoted_cols_str = all_cols.iter().map(|c| super::quote_identifier(c)).collect::<Vec<_>>().join(", ");
+    let quoted_cols_str = all_cols
+        .iter()
+        .map(|c| super::quote_identifier(c))
+        .collect::<Vec<_>>()
+        .join(", ");
     let quoted_table = super::quote_identifier(collection_name);
 
     let mut tx = pool.begin().await.map_err(|e| AppError::DatabaseError {
@@ -949,7 +1057,8 @@ pub async fn create_items(
             &collection,
             &mut scalar_maps,
             all_cols,
-        ).await?;
+        )
+        .await?;
         for (p, m) in parsed.iter_mut().zip(scalar_maps) {
             p.scalar = m;
         }
@@ -966,8 +1075,14 @@ pub async fn create_items(
         for item in chunk {
             let mut row_placeholders: Vec<String> = Vec::with_capacity(all_cols.len());
             for col_name in &all_cols {
-                let val = item.scalar.get(col_name.as_str()).cloned().unwrap_or(serde_json::Value::Null);
-                let field_type = collection.fields.iter()
+                let val = item
+                    .scalar
+                    .get(col_name.as_str())
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let field_type = collection
+                    .fields
+                    .iter()
                     .find(|f| &f.name == col_name.as_str())
                     .map(|f| &f.field_type);
                 let coerced_val = match field_type {
@@ -1005,17 +1120,18 @@ pub async fn create_items(
             q = crate::bind_json_value!(q, val);
         }
 
-        let rows: Vec<(serde_json::Value,)> = q.fetch_all(&mut *tx).await.map_err(|e| {
-            AppError::DatabaseError {
-                details: format!("Collection items batch insert failed: {}", e),
-            }
-        })?;
+        let rows: Vec<(serde_json::Value,)> =
+            q.fetch_all(&mut *tx)
+                .await
+                .map_err(|e| AppError::DatabaseError {
+                    details: format!("Collection items batch insert failed: {}", e),
+                })?;
         for (row,) in rows {
             results.push(row);
         }
     }
 
-    // Insert into item_files for File field values
+    // Insert into alcedocore_item_files for File field values
     for (item, result) in parsed.iter().zip(results.iter()) {
         let item_id = result.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if item_id.is_empty() {
@@ -1028,7 +1144,7 @@ pub async fn create_items(
             if let Some(raw) = item.scalar.get(&field.name) {
                 for fid in file_ids_from_value(raw) {
                     sqlx::query(
-                        "INSERT INTO item_files (item_id, collection_name, field_name, file_id) VALUES ($1::uuid, $2, $3, $4::uuid) ON CONFLICT DO NOTHING"
+                        "INSERT INTO alcedocore_item_files (item_id, collection_name, field_name, file_id) VALUES ($1::uuid, $2, $3, $4::uuid) ON CONFLICT DO NOTHING"
                     )
                     .bind(item_id)
                     .bind(collection_name)
@@ -1061,7 +1177,8 @@ pub async fn create_items(
             &parent_id,
             &item.relational,
             all_cols,
-        ).await?;
+        )
+        .await?;
     }
 
     tx.commit().await.map_err(|e| AppError::DatabaseError {
@@ -1078,19 +1195,21 @@ pub async fn create_items(
 /// map keys may refer to any column (including system columns) since they're
 /// used for row selection, not writes.
 ///
-/// Returns the count of affected rows.
+/// Returns the count of affected rows and the updated rows.
 pub async fn update_items(
     pool: &Pool,
     collection_name: &str,
     body: UpdateItemsBody,
     perm_filter: Option<(String, Vec<serde_json::Value>)>,
-) -> Result<u64, AppError> {
+) -> Result<(u64, Vec<serde_json::Value>), AppError> {
     let collection = resolve_collection_fields(pool, collection_name).await?;
 
     // Build col_name -> field_type map for UUID cast detection.
     // System fields (id, created_at, updated_at) are not in collection.fields
     // but must be handled for WHERE clause casts.
-    let mut col_type_map: std::collections::HashMap<&str, &FieldType> = collection.fields.iter()
+    let mut col_type_map: std::collections::HashMap<&str, &FieldType> = collection
+        .fields
+        .iter()
         .map(|f| (f.name.as_str(), &f.field_type))
         .collect();
     col_type_map.insert("id", &FieldType::Uuid);
@@ -1134,9 +1253,10 @@ pub async fn update_items(
 
     // -- WHERE clauses (from filter JSON object) ---------------------------
     // UUID-typed filter columns also get $N::uuid cast.
-    let filter_obj = body.filter.as_object().ok_or_else(|| {
-        AppError::BadRequest("Filter must be a JSON object".to_string())
-    })?;
+    let filter_obj = body
+        .filter
+        .as_object()
+        .ok_or_else(|| AppError::BadRequest("Filter must be a JSON object".to_string()))?;
 
     // Validate filter keys — reject dot-notation paths (they need JOIN-based
     // resolution and can't be used as simple column names in WHERE).
@@ -1184,7 +1304,9 @@ pub async fn update_items(
     }
 
     // Check if any File fields are being updated — need to manage item_files
-    let file_fields_updated: Vec<&str> = collection.fields.iter()
+    let file_fields_updated: Vec<&str> = collection
+        .fields
+        .iter()
         .filter(|f| f.field_type == FieldType::File && update_keys.contains(&f.name))
         .map(|f| f.name.as_str())
         .collect();
@@ -1197,10 +1319,7 @@ pub async fn update_items(
     let affected_ids: Vec<String> = if file_fields_updated.is_empty() {
         vec![]
     } else {
-        let id_sql = format!(
-            "SELECT id::text FROM {} WHERE {}",
-            quoted_table, full_where,
-        );
+        let id_sql = format!("SELECT id::text FROM {} WHERE {}", quoted_table, full_where,);
         let mut id_q = sqlx::query_scalar::<_, String>(&id_sql);
         for val in &all_bind_values {
             id_q = crate::bind_json_value!(id_q, val);
@@ -1210,21 +1329,22 @@ pub async fn update_items(
                 id_q = crate::bind_json_value!(id_q, val);
             }
         }
-        id_q.fetch_all(&mut *tx).await.map_err(|e| {
-            AppError::DatabaseError {
+        id_q.fetch_all(&mut *tx)
+            .await
+            .map_err(|e| AppError::DatabaseError {
                 details: format!("Failed to query item IDs for update: {}", e),
-            }
-        })?
+            })?
     };
 
     let sql = format!(
-        "UPDATE {} SET {} WHERE {}",
+        "UPDATE {} SET {} WHERE {} RETURNING row_to_json({}.*)",
         quoted_table,
         set_clauses.join(", "),
         full_where,
+        quoted_table,
     );
 
-    let mut q = sqlx::query(&sql);
+    let mut q = sqlx::query_as::<_, (serde_json::Value,)>(&sql);
     for val in &all_bind_values {
         q = crate::bind_json_value!(q, val);
     }
@@ -1234,16 +1354,21 @@ pub async fn update_items(
         }
     }
 
-    let result = q.execute(&mut *tx).await.map_err(|e| AppError::DatabaseError {
-        details: format!("Collection items update failed: {}", e),
-    })?;
+    let rows: Vec<(serde_json::Value,)> =
+        q.fetch_all(&mut *tx)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Collection items update failed: {}", e),
+            })?;
+    let count = rows.len() as u64;
+    let items: Vec<serde_json::Value> = rows.into_iter().map(|(v,)| v).collect();
 
     // Handle item_files for File fields being updated
     if !file_fields_updated.is_empty() {
         for item_id in &affected_ids {
             // Delete old item_files entries for this item + field combination
             for field_name in &file_fields_updated {
-                sqlx::query("DELETE FROM item_files WHERE item_id = $1::uuid AND field_name = $2")
+                sqlx::query("DELETE FROM alcedocore_item_files WHERE item_id = $1::uuid AND field_name = $2")
                     .bind(item_id)
                     .bind(field_name)
                     .execute(&mut *tx)
@@ -1256,7 +1381,7 @@ pub async fn update_items(
                 if let Some(raw) = body.update.get(*field_name) {
                     for fid in file_ids_from_value(raw) {
                         sqlx::query(
-                            "INSERT INTO item_files (item_id, collection_name, field_name, file_id) VALUES ($1::uuid, $2, $3, $4::uuid) ON CONFLICT DO NOTHING"
+                            "INSERT INTO alcedocore_item_files (item_id, collection_name, field_name, file_id) VALUES ($1::uuid, $2, $3, $4::uuid) ON CONFLICT DO NOTHING"
                         )
                         .bind(item_id)
                         .bind(collection_name)
@@ -1277,7 +1402,7 @@ pub async fn update_items(
         details: format!("Transaction commit failed: {}", e),
     })?;
 
-    Ok(result.rows_affected())
+    Ok((count, items))
 }
 
 /// Delete items by filter or primary-key values.
@@ -1299,6 +1424,10 @@ pub async fn delete_items(
     // Resolve schema (validate collection exists).
     let _collection = resolve_collection_fields(pool, collection_name).await?;
 
+    let mut tx = pool.begin().await.map_err(|e| AppError::DatabaseError {
+        details: format!("Transaction begin failed: {}", e),
+    })?;
+
     let quoted_table = super::quote_identifier(collection_name);
     let mut bind_values: Vec<serde_json::Value> = Vec::new();
 
@@ -1317,15 +1446,20 @@ pub async fn delete_items(
             if pk_values.is_empty() {
                 return Err(AppError::BadRequest("No pk_values provided".to_string()));
             }
-            let placeholders: Vec<String> =
-                (1..=pk_values.len()).map(|i| format!("${}::uuid", i)).collect();
+            let placeholders: Vec<String> = (1..=pk_values.len())
+                .map(|i| format!("${}::uuid", i))
+                .collect();
             bind_values = pk_values;
-            format!("{} IN ({})", super::quote_identifier("id"), placeholders.join(", "))
+            format!(
+                "{} IN ({})",
+                super::quote_identifier("id"),
+                placeholders.join(", ")
+            )
         }
         (Some(filter), None) => {
-            let obj = filter.as_object().ok_or_else(|| {
-                AppError::BadRequest("Filter must be a JSON object".to_string())
-            })?;
+            let obj = filter
+                .as_object()
+                .ok_or_else(|| AppError::BadRequest("Filter must be a JSON object".to_string()))?;
             if obj.is_empty() {
                 return Err(AppError::BadRequest(
                     "Filter must have at least one condition".to_string(),
@@ -1375,22 +1509,31 @@ pub async fn delete_items(
         }
     }
 
-    let rows: Vec<(serde_json::Value,)> = q.fetch_all(pool).await.map_err(|e| AppError::DatabaseError {
-        details: format!("Collection items delete failed: {}", e),
-    })?;
+    let rows: Vec<(serde_json::Value,)> =
+        q.fetch_all(&mut *tx)
+            .await
+            .map_err(|e| AppError::DatabaseError {
+                details: format!("Collection items delete failed: {}", e),
+            })?;
 
     let count = rows.len() as u64;
     let items: Vec<serde_json::Value> = rows.into_iter().map(|(v,)| v).collect();
 
     // Clean up item_files junction table for deleted items
     if !items.is_empty() {
-        let item_ids: Vec<String> = items.iter()
-            .filter_map(|item| item.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        let item_ids: Vec<String> = items
+            .iter()
+            .filter_map(|item| {
+                item.get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            })
             .collect();
         if !item_ids.is_empty() {
-            let placeholders: Vec<String> = (1..=item_ids.len()).map(|i| format!("${}", i)).collect();
+            let placeholders: Vec<String> =
+                (1..=item_ids.len()).map(|i| format!("${}", i)).collect();
             let delete_sql = format!(
-                "DELETE FROM item_files WHERE item_id IN ({}) AND collection_name = ${}",
+                "DELETE FROM alcedocore_item_files WHERE item_id IN ({}) AND collection_name = ${}",
                 placeholders.join(", "),
                 item_ids.len() + 1
             );
@@ -1399,9 +1542,13 @@ pub async fn delete_items(
                 delete_q = delete_q.bind(uuid::Uuid::parse_str(id).unwrap_or_default());
             }
             delete_q = delete_q.bind(collection_name);
-            let _ = delete_q.execute(pool).await;
+            let _ = delete_q.execute(&mut *tx).await;
         }
     }
+
+    tx.commit().await.map_err(|e| AppError::DatabaseError {
+        details: format!("Transaction commit failed: {}", e),
+    })?;
 
     Ok((count, items))
 }

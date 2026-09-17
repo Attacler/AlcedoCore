@@ -75,7 +75,7 @@ async fn test_deploy_creates_deployment_and_service() {
     let image = "nginx:alpine";
 
     let deployment_id =
-        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new()).await
+        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new(), None).await
             .expect("Deploy should succeed");
     assert!(!deployment_id.is_empty(), "Deploy should return a deployment ID");
 
@@ -110,7 +110,7 @@ async fn test_deploy_with_env_vars() {
     env.insert("MY_VAR".to_string(), "my_value".to_string());
     env.insert("ANOTHER_VAR".to_string(), "42".to_string());
 
-    let deployment_id = platform.deploy(&test_registry(), &slug, &version, image, env).await
+    let deployment_id = platform.deploy(&test_registry(), &slug, &version, image, env, None).await
         .expect("Deploy should succeed");
 
     // Verify env vars in the Deployment spec via kube API
@@ -165,7 +165,7 @@ async fn test_remove_cleans_up() {
     let image = "nginx:alpine";
 
     let deployment_id =
-        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new()).await
+        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new(), None).await
             .expect("Deploy should succeed");
 
     let client = kube::Client::try_default().await.unwrap();
@@ -206,7 +206,7 @@ async fn test_restart() {
     let image = "nginx:alpine";
 
     let deployment_id =
-        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new()).await
+        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new(), None).await
             .expect("Deploy should succeed");
     assert!(
         wait_for_pod_ready(&platform, &deployment_id).await,
@@ -238,7 +238,7 @@ async fn test_get_address() {
     let image = "nginx:alpine";
 
     let deployment_id =
-        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new()).await
+        platform.deploy(&test_registry(), &slug, &version, image, HashMap::new(), None).await
             .expect("Deploy should succeed");
     assert!(
         wait_for_pod_ready(&platform, &deployment_id).await,

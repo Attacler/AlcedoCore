@@ -87,7 +87,7 @@ pub(crate) async fn list_collections(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     // Developer API keys are root — they see all collections
     if crate::api::permission_check::is_valid_dev_key(&headers) {
@@ -99,18 +99,35 @@ pub(crate) async fn list_collections(
     let (user_id, is_admin) = if let Some(uid) =
         crate::api::permission_check::extract_user_id_from_session(&state, &headers).await?
     {
-        let admin: bool = sqlx::query_scalar(
+        // Global admins (`alcedo.alcedo_users.is_admin`) bypass policy checks
+        // regardless of the app schema — schema-independent.
+        let global_is_admin = permission_check::is_global_admin(&state, uid).await?;
+
+        // App-schema admins have the `users.all` scope in their app role. On a
+        // clean DB / global zone the app-bound tables may not exist; treat a
+        // missing relation as not-admin instead of returning a 500.
+        let app_role_admin: bool = match sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(
-                SELECT 1 FROM user_roles ur
-                JOIN role_scopes rs ON rs.role_id = ur.role_id
+                SELECT 1 FROM alcedocore_user_roles ur
+                JOIN alcedocore_role_scopes rs ON rs.role_id = ur.role_id
                 WHERE ur.user_id = $1 AND rs.scope = 'users.all'
             )"#,
         )
         .bind(uid)
         .fetch_one(db_pool)
         .await
-        .map_err(|e| AppError::Internal(format!("Admin check query failed: {}", e)))?;
-        (Some(uid), admin)
+        {
+            Ok(v) => v,
+            Err(e) if crate::error::is_undefined_table(&e) => false,
+            Err(e) => {
+                return Err(AppError::Internal(format!(
+                    "Admin check query failed: {}",
+                    e
+                )))
+            }
+        };
+
+        (Some(uid), global_is_admin || app_role_admin)
     } else {
         (None, false)
     };
@@ -142,7 +159,7 @@ pub(crate) async fn get_collection(
     identity: RequestIdentity,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     // Check if user has policy permissions on this collection,
     // or if they're an admin (users.all scope).
@@ -232,14 +249,14 @@ pub(crate) async fn get_collection(
 /// Per COLL-03: creates {name} PostgreSQL table with implicit UUID PK + timestamps.
 /// Per COLL-04: all DDL via sea-query (CollectionBuilder).
 /// Per COLL-06: per-collection Mutex prevents concurrent DDL.
-/// Atomic: CREATE TABLE + INSERT INTO collection_definitions in a single PG transaction.
+/// Atomic: CREATE TABLE + INSERT INTO alcedocore_collection_definitions in a single PG transaction.
 pub(crate) async fn create_collection(
     State(state): State<Arc<AppState>>,
     headers: axum::http::HeaderMap,
     identity: RequestIdentity,
     Json(req): Json<CreateCollectionRequest>,
 ) -> Result<(axum::http::StatusCode, Json<Value>), AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     // Require admin access (users.all) for collection CRUD
     permission_check::require_admin(&state, &identity, &headers).await?;
@@ -247,7 +264,13 @@ pub(crate) async fn create_collection(
     // Validate name per COLL-02
     validate_collection_name(&req.name)?;
 
-    let system_names = ["users", "roles", "plugins", "collections", "settings"];
+    let system_names = [
+        "alcedo_users",
+        "alcedocore_roles",
+        "alcedo_plugins",
+        "collections",
+        "settings",
+    ];
     if system_names.contains(&req.name.as_str()) {
         return Err(AppError::BadRequest(format!(
             "'{}' is a reserved system collection name",
@@ -278,15 +301,15 @@ pub(crate) async fn create_collection(
             AppError::Conflict(format!("Table '{}' already exists: {}", req.name, e))
         })?;
 
-    // Insert metadata into collection_definitions (without fields column — now in collection_fields table)
-    sqlx::query("INSERT INTO collection_definitions (name, display_name) VALUES ($1, $2)")
+    // Insert metadata into alcedocore_collection_definitions (without fields column — now in collection_fields table)
+    sqlx::query("INSERT INTO alcedocore_collection_definitions (name, display_name) VALUES ($1, $2)")
         .bind(&req.name)
         .bind(&req.display_name)
         .execute(&mut *tx)
         .await
         .map_err(|e| {
             if let sqlx::Error::Database(ref db_err) = e {
-                if db_err.constraint() == Some("collection_definitions_pkey") {
+                if db_err.constraint() == Some("alcedocore_collection_definitions_pkey") {
                     return AppError::Conflict(format!("Collection '{}' already exists", req.name));
                 }
             }
@@ -295,7 +318,7 @@ pub(crate) async fn create_collection(
             }
         })?;
 
-    // Insert fields into collection_fields table
+    // Insert fields into alcedocore_collection_fields table
     if !req.fields.is_empty() {
         crate::db::fields::replace_fields_in_tx(&mut tx, &req.name, &req.fields).await?;
     }
@@ -384,7 +407,7 @@ pub(crate) async fn update_collection(
     Path(name): Path<String>,
     Json(req): Json<UpdateCollectionRequest>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     let _pc = permission_check::require_permission(&state, &identity, &headers, &name, "update").await?;
 
@@ -673,7 +696,7 @@ pub(crate) async fn update_collection(
 
     // Update display_name if provided
     if let Some(ref dn) = req.display_name {
-        sqlx::query("UPDATE collection_definitions SET display_name = $1 WHERE name = $2")
+        sqlx::query("UPDATE alcedocore_collection_definitions SET display_name = $1 WHERE name = $2")
             .bind(dn)
             .bind(&name)
             .execute(&mut *tx)
@@ -686,7 +709,7 @@ pub(crate) async fn update_collection(
     // Replace fields in collection_fields table
     crate::db::fields::replace_fields_in_tx(&mut tx, &name, &desired_fields).await?;
 
-    sqlx::query("UPDATE collection_definitions SET updated_at = NOW() WHERE name = $1")
+    sqlx::query("UPDATE alcedocore_collection_definitions SET updated_at = NOW() WHERE name = $1")
         .bind(&name)
         .execute(&mut *tx)
         .await
@@ -741,7 +764,7 @@ pub(crate) async fn delete_collection(
     identity: RequestIdentity,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     // Require admin access
     permission_check::require_admin(&state, &identity, &headers).await?;
@@ -772,7 +795,7 @@ pub(crate) async fn delete_collection(
     crate::db::row_lock::lock_collection(&mut *tx, &name).await?;
 
     // Delete metadata row first — if no rows match, the collection doesn't exist
-    let result = sqlx::query("DELETE FROM collection_definitions WHERE name = $1")
+    let result = sqlx::query("DELETE FROM alcedocore_collection_definitions WHERE name = $1")
         .bind(&name)
         .execute(&mut *tx)
         .await
@@ -819,7 +842,7 @@ pub(crate) async fn get_create_policy(
     identity: RequestIdentity,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
 
     let pc = permission_check::check_permission(&state, &identity, &headers, &name, "create").await?;
     match pc {
@@ -891,11 +914,6 @@ pub(crate) async fn get_create_policy(
 ///
 /// All nested CRUD is transactional — the entire PATCH is atomic (RCRUD-06).
 ///
-/// Supports inline parent field editing (Phase 75):
-/// - Fields prefixed with `__parent__{field_name}` are treated as parent field updates
-/// - These require `_row_version` in the body for optimistic locking
-/// - Parent updates happen in the same transaction
-///
 /// Response shape:
 /// ```json
 /// { "updated": { ... } }
@@ -933,7 +951,7 @@ pub(crate) async fn check_relational_permissions(
         target_collection: &str,
         ref_id: &str,
     ) -> Result<(), AppError> {
-        let db_pool = state.db()?;
+        let db_pool = &state.db_for_headers(headers).await?;
 
         // Load user's permissions on the target collection.
         // Returns empty vec for admin (users.all scope) — skip check for admins.
@@ -1038,10 +1056,6 @@ pub(crate) async fn check_relational_permissions(
     }
 
     for (key, val) in body.iter() {
-        if key.starts_with("__parent__") {
-            continue; // handled separately in the __parent__ loop
-        }
-
         let dir = match crate::db::relational_crud::detect_crud_direction(
             key,
             &collection.name,

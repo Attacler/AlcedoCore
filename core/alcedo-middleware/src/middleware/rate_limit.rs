@@ -22,8 +22,8 @@ pub async fn rate_limit_middleware(
         return Ok(next.run(request).await);
     }
 
-    let client_ip = extract_client_ip_from_headers(request.headers())
-        .unwrap_or_else(|| "unknown".to_string());
+    let client_ip =
+        extract_client_ip_from_headers(request.headers()).unwrap_or_else(|| "unknown".to_string());
 
     let (max_requests, window_seconds) = if path.starts_with("/api/auth") {
         (state.rate_limit_auth_requests, state.rate_limit_auth_window)
@@ -31,7 +31,7 @@ pub async fn rate_limit_middleware(
         (state.rate_limit_api_requests, state.rate_limit_api_window)
     };
 
-    if let Some(ref redis) = state.rate_limit_redis {
+    if let Some(ref redis) = state.redis {
         match check_rate_limit(redis, path, &client_ip, max_requests, window_seconds).await {
             Ok((true, _)) => {}
             Ok((false, _)) => {

@@ -90,7 +90,7 @@ impl StaticPluginRegistry {
                     }
                 };
 
-                let existing = match sqlx::query_as::<_, (String,)>("SELECT plugin_type FROM plugins WHERE slug = $1")
+                let existing = match sqlx::query_as::<_, (String,)>("SELECT plugin_type FROM alcedo_plugins WHERE slug = $1 AND app_version_id IS NULL")
                     .bind(&slug)
                     .fetch_optional(&mut *tx)
                     .await
@@ -146,6 +146,10 @@ impl StaticPluginRegistry {
                     .cloned()
                     .unwrap_or(serde_json::json!({}));
 
+                let tags = manifest.get("tags")
+                    .cloned()
+                    .unwrap_or(serde_json::json!([]));
+
                 let pages = manifest.get("pages")
                     .cloned()
                     .unwrap_or(serde_json::json!([]));
@@ -167,10 +171,37 @@ impl StaticPluginRegistry {
                     })
                     .unwrap_or(serde_json::json!([]));
 
+                // Static/system plugins always belong to the default (lowest-id)
+                // registry, which the init migration seeds as `AlcedoSystemPlugins`
+                // (id 0) and requires (`registry_id` is NOT NULL).
+                let registry_id: i32 = match sqlx::query_scalar::<_, i32>(
+                    "SELECT id FROM alcedo_registries ORDER BY id LIMIT 1",
+                )
+                .fetch_optional(&mut *tx)
+                .await
+                {
+                    Ok(Some(id)) => id,
+                    Ok(None) => {
+                        tracing::error!(
+                            "[STATIC] Cannot register system plugin {}: no registry configured",
+                            slug
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "[STATIC] Failed to resolve registry for system plugin {}: {}",
+                            slug,
+                            e
+                        );
+                        continue;
+                    }
+                };
+
                 let result = sqlx::query(
-                    "INSERT INTO plugins (slug, image, plugin_type, system_plugin, env, resources, display_name, description, pages, endpoints, documentation, settings_schema, settings, enabled, requested_scopes, granted_scopes)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-                     ON CONFLICT (slug) DO UPDATE SET
+                    "INSERT INTO alcedo_plugins (slug, app_version_id, image, plugin_type, system_plugin, env, resources, display_name, description, pages, endpoints, documentation, settings_schema, settings, tags, enabled, requested_scopes, granted_scopes, registry_id)
+                     VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                     ON CONFLICT (slug) WHERE app_version_id IS NULL AND version_id IS NULL DO UPDATE SET
                        image = EXCLUDED.image,
                        plugin_type = EXCLUDED.plugin_type,
                        system_plugin = EXCLUDED.system_plugin,
@@ -183,10 +214,12 @@ impl StaticPluginRegistry {
                        documentation = EXCLUDED.documentation,
                        settings_schema = EXCLUDED.settings_schema,
                        settings = EXCLUDED.settings,
+                       tags = EXCLUDED.tags,
                        enabled = EXCLUDED.enabled,
                        requested_scopes = EXCLUDED.requested_scopes,
-                       granted_scopes = EXCLUDED.granted_scopes
-                     WHERE plugins.plugin_type = 'static'"
+                       granted_scopes = EXCLUDED.granted_scopes,
+                       registry_id = EXCLUDED.registry_id
+                     WHERE alcedo_plugins.plugin_type = 'static'"
                 )
                 .bind(&slug)
                 .bind(&image)
@@ -201,9 +234,11 @@ impl StaticPluginRegistry {
                 .bind(&documentation)
                 .bind(&settings_schema)
                 .bind(&settings)
+                .bind(&tags)
                 .bind(enabled)
                 .bind(&requested_scopes)
                 .bind(&granted_scopes)
+                .bind(registry_id)
                 .execute(&mut *tx)
                 .await;
 
@@ -221,14 +256,28 @@ impl StaticPluginRegistry {
                     }
                 }
 
-                let version_path = path.join("public").to_string_lossy().to_string();
-                if let Err(e) = sqlx::query(
-                    "INSERT INTO plugin_versions (slug, version, container_id, status, is_active, public_synced, public_path)
-                     VALUES ($1, $2, NULL, 'running', TRUE, TRUE, $3)
-                     ON CONFLICT (slug, version) DO NOTHING"
+                let install_id: i64 = match sqlx::query_scalar(
+                    "SELECT id FROM alcedo_plugins WHERE slug = $1 AND app_version_id IS NULL",
                 )
                 .bind(&slug)
-                .bind("1.0.0")
+                .fetch_one(&mut *tx)
+                .await
+                {
+                    Ok(id) => id,
+                    Err(e) => {
+                        tracing::error!("[STATIC] Failed to resolve install id for system plugin {}: {}", slug, e);
+                        continue;
+                    }
+                };
+
+                let version_path = path.join("public").to_string_lossy().to_string();
+                if let Err(e) = sqlx::query(
+                    "INSERT INTO alcedo_plugin_versions (install_id, slug, version, deployment_id, status, is_active, public_synced, public_path)
+                     VALUES ($1, $2, '1.0.0', NULL, 'running', TRUE, TRUE, $3)
+                     ON CONFLICT (install_id, version) DO NOTHING"
+                )
+                .bind(install_id)
+                .bind(&slug)
                 .bind(&version_path)
                 .execute(&mut *tx)
                 .await

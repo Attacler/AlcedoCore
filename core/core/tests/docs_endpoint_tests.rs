@@ -76,10 +76,10 @@ mod list_plugin_docs_error_tests {
     use plugin_core::error::AppError;
 
     /// Test that `list_plugin_docs` returns 404 when plugin doesn't exist.
-    /// The handler first calls `Plugin::find_by_slug`, which returns `Ok(None)` for non-existent slugs.
+    /// The handler first calls `Plugin::resolve_install`, which returns `Ok(None)` for non-existent slugs.
     #[tokio::test]
     async fn test_list_plugin_docs_not_found() {
-        // When slug doesn't exist, Plugin::find_by_slug returns Ok(None)
+        // When slug doesn't exist, Plugin::resolve_install returns Ok(None)
         // The handler converts this to Err(AppError::NotFound(...))
         let slug = "nonexistent-plugin-12345";
 
@@ -95,10 +95,10 @@ mod list_plugin_docs_error_tests {
     }
 
     /// Test that `list_plugin_docs` returns 404 when plugin has no active version.
-    /// After finding the plugin, it calls `PluginVersion::find_active` which returns `Ok(None)` when no active version exists.
+    /// After finding the install, it calls `PluginVersion::find_active_for_install` which returns `Ok(None)` when no active version exists.
     #[tokio::test]
     async fn test_list_plugin_docs_no_active_version() {
-        // When plugin exists but has no active version, find_active returns Ok(None)
+        // When plugin exists but has no active version, find_active_for_install returns Ok(None)
         let slug = "plugin-without-active-version";
 
         // Simulate the handler's error conversion logic for no active version
@@ -115,17 +115,19 @@ mod list_plugin_docs_error_tests {
         assert!(error_msg.contains(slug));
     }
 
-    /// Test that `list_plugin_docs` returns 404 when container_id is missing.
-    /// Even with an active version, if container_id is None, we get NotFound.
+    /// Test that `list_plugin_docs` returns 404 when deployment_id is missing.
+    /// Even with an active version, if deployment_id is None, we get NotFound.
     #[tokio::test]
-    async fn test_list_plugin_docs_no_container_id() {
+    async fn test_list_plugin_docs_no_deployment_id() {
         let slug = "plugin-with-active-version-but-no-container";
 
-        // Simulate a plugin version with no container_id
+        // Simulate a plugin version with no deployment_id
         let version = PluginVersion {
+            id: 0,
+            install_id: 0,
             slug: slug.to_string(),
             version: "1.0.0".to_string(),
-            container_id: None,
+            deployment_id: None,
             status: "running".to_string(),
             is_active: true,
             deployed_at: None,
@@ -135,7 +137,7 @@ mod list_plugin_docs_error_tests {
             pages_path: None,
         };
 
-        let result = version.container_id.ok_or_else(|| {
+        let result = version.deployment_id.ok_or_else(|| {
             AppError::NotFound(format!("No container for plugin: {}", slug))
         });
 

@@ -20,7 +20,7 @@ async fn create_coll(pool: &PgPool, name: &str, fields: Vec<FieldDefinition>) {
     let sql = CollectionBuilder::build_create_table_stmt(name, &fields).unwrap();
     let mut tx = pool.begin().await.unwrap();
     sqlx::query(&sql).execute(&mut *tx).await.unwrap();
-    sqlx::query("INSERT INTO collection_definitions (name, display_name) VALUES ($1, $2)")
+    sqlx::query("INSERT INTO alcedocore_collection_definitions (name, display_name) VALUES ($1, $2)")
         .bind(name)
         .bind(name)
         .execute(&mut *tx)
@@ -137,6 +137,7 @@ async fn test_e2e_nested_field_selection() {
             depth_limit: 5,
             backlink: true,
             visited: Default::default(),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -151,6 +152,7 @@ async fn test_e2e_nested_field_selection() {
             depth_limit: 5,
             backlink: true,
             visited: Default::default(),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -168,6 +170,7 @@ async fn test_e2e_nested_field_selection() {
             depth_limit: 2,
             backlink: true,
             visited: Default::default(),
+            ..Default::default()
         },
     );
     assert!(r.is_err(), "Depth limit exceeded should error");
@@ -446,7 +449,7 @@ async fn test_e2e_relational_sections() {
     .await;
 
     let (layout_id,): (uuid::Uuid,) = sqlx::query_as(
-        "INSERT INTO collection_layouts (collection_name, name, is_default, ordinal_position)
+        "INSERT INTO alcedocore_collection_layouts (collection_name, name, is_default, ordinal_position)
          VALUES ('e2e_test_coll', 'Default', true, 0) RETURNING id"
     )
     .fetch_one(p)
@@ -454,7 +457,7 @@ async fn test_e2e_relational_sections() {
     .unwrap();
 
     sqlx::query(
-        "INSERT INTO collection_sections (collection_name, name, relation_field, view_type, item_limit, ordinal_position, layout_id)
+        "INSERT INTO alcedocore_collection_sections (collection_name, name, relation_field, view_type, item_limit, ordinal_position, layout_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)"
     )
     .bind("e2e_test_coll")
@@ -469,7 +472,7 @@ async fn test_e2e_relational_sections() {
     .unwrap();
 
     let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT name, relation_field, view_type FROM collection_sections WHERE collection_name = $1"
+        "SELECT name, relation_field, view_type FROM alcedocore_collection_sections WHERE collection_name = $1"
     ).bind("e2e_test_coll").fetch_all(p).await.unwrap();
 
     assert_eq!(rows.len(), 1, "Should have 1 section");
@@ -591,47 +594,5 @@ async fn test_e2e_parent_field_inlining() {
     assert!(ipf.contains(&"name".into()), "Should contain name");
     assert!(ipf.contains(&"website".into()), "Should contain website");
 
-    // Create test data and verify augment_items_with_inline_parents
-    sqlx::query(
-        "INSERT INTO e2e_companies (name, website) VALUES ('BigCorp', 'https://bigcorp.com')",
-    )
-    .execute(p)
-    .await
-    .unwrap();
-    let (co_id,): (uuid::Uuid,) = sqlx::query_as("SELECT id FROM e2e_companies LIMIT 1")
-        .fetch_one(p)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO e2e_staff (name, company_id) VALUES ('Diana', $1)")
-        .bind(co_id)
-        .execute(p)
-        .await
-        .unwrap();
-
-    let items = plugin_core::db::collection_items::query_items(
-        p,
-        "e2e_staff",
-        plugin_core::db::collection_items::CollectionItemsQuery {
-            limit: Some(100),
-            offset: Some(0),
-            filter: None,
-            sort_field: None,
-            sort_order: None,
-        },
-    )
-    .await
-    .unwrap();
-    assert!(!items.is_empty(), "Should have items");
-
-    let augmented = plugin_core::db::collection_items::augment_items_with_inline_parents(
-        p,
-        &items,
-        &coll,
-        "e2e_staff",
-    )
-    .await
-    .unwrap();
-    assert_eq!(augmented.len(), items.len(), "Should preserve count");
-
-    println!("TEST-06 passed: parent field inlining");
+    println!("TEST-06 passed: inline_parent_fields metadata; inline-parent rendering now uses nested M:1 reads");
 }

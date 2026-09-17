@@ -12,6 +12,7 @@ import type { User } from "@/types/user";
 type UserData = User & { $permissions?: Record<string, unknown> };
 import Password from "primevue/password";
 import Select from "primevue/select";
+import MultiSelect from "primevue/multiselect";
 
 const route = useRoute(),
     router = useRouter(),
@@ -39,6 +40,161 @@ const recordFormRef = ref<any>(null),
 const userRoles = ref<Role[]>([]),
     selectedRoleId = ref<string | null>(null),
     roleError = ref<string | null>(null);
+
+interface AppAccessEntry {
+    app_id: number;
+    app_name: string;
+    api_name: string;
+    version: string;
+    roles: string[];
+}
+
+interface AppVersionOption {
+    key: string;
+    label: string;
+    api_name: string;
+    version: string;
+}
+
+const appAccess = ref<AppAccessEntry[]>([]),
+    appAccessLoading = ref(false),
+    appAccessError = ref<string | null>(null),
+    appVersionOptions = ref<AppVersionOption[]>([]),
+    selectedAppKey = ref<string | null>(null),
+    appRoles = ref<{ id: string; name: string }[]>([]),
+    selectedAppRoleIds = ref<string[]>([]),
+    appRolesLoading = ref(false),
+    appAccessSaving = ref(false);
+
+const selectedAppVersion = computed(
+    () =>
+        appVersionOptions.value.find((o) => o.key === selectedAppKey.value) ??
+        null,
+);
+
+async function readJson(
+    method: string,
+    path: string,
+    opts?: Record<string, unknown>,
+): Promise<any> {
+    const res = await client.request(method, path, opts);
+    if (res && typeof res.json === "function") {
+        return res.json();
+    }
+    return res;
+}
+
+async function loadAppAccess() {
+    if (!user.value || !authStore.isAdmin) return;
+    appAccessLoading.value = true;
+    appAccessError.value = null;
+    try {
+        const res = await readJson(
+            "get",
+            `/users/${user.value.id}/app-access`,
+        );
+        appAccess.value = (res?.data ?? res ?? []) as AppAccessEntry[];
+    } catch (e: any) {
+        appAccessError.value = e?.message || "Failed to load app access";
+    } finally {
+        appAccessLoading.value = false;
+    }
+}
+
+async function loadAppOptions() {
+    if (!authStore.isAdmin) return;
+    try {
+        const res = await readJson("get", "/me/apps");
+        const entries = (res?.data ?? res ?? []) as AppAccessEntry[];
+        appVersionOptions.value = entries.map((e) => ({
+            key: `${e.api_name}::${e.version}`,
+            label: `${e.app_name} (${e.version})`,
+            api_name: e.api_name,
+            version: e.version,
+        }));
+    } catch (e: any) {
+        appAccessError.value = e?.message || "Failed to load apps";
+    }
+}
+
+async function loadAppRoles() {
+    appRoles.value = [];
+    selectedAppRoleIds.value = [];
+    const target = selectedAppVersion.value;
+    if (!target) return;
+    appRolesLoading.value = true;
+    appAccessError.value = null;
+    try {
+        const res = await readJson("get", "/roles", {
+            app: target.api_name,
+            version: target.version,
+        });
+        const data = res?.data ?? res ?? [];
+        appRoles.value = (Array.isArray(data) ? data : []) as {
+            id: string;
+            name: string;
+        }[];
+        const existing = appAccess.value.find(
+            (a) =>
+                a.api_name === target.api_name && a.version === target.version,
+        );
+        if (existing) {
+            const granted = new Set(existing.roles);
+            selectedAppRoleIds.value = appRoles.value
+                .filter((r) => granted.has(r.name))
+                .map((r) => r.id);
+        }
+    } catch (e: any) {
+        appAccessError.value = e?.message || "Failed to load roles";
+    } finally {
+        appRolesLoading.value = false;
+    }
+}
+
+async function saveAppAccess() {
+    const target = selectedAppVersion.value;
+    if (!user.value || !target) return;
+    appAccessSaving.value = true;
+    appAccessError.value = null;
+    try {
+        await client.request("put", `/users/${user.value.id}/app-access`, {
+            json: {
+                app: target.api_name,
+                version: target.version,
+                role_ids: selectedAppRoleIds.value,
+            },
+        });
+        await loadAppAccess();
+        await loadAppRoles();
+    } catch (e: any) {
+        appAccessError.value = e?.message || "Failed to save app access";
+    } finally {
+        appAccessSaving.value = false;
+    }
+}
+
+async function revokeAppAccess(entry: AppAccessEntry) {
+    if (!user.value) return;
+    appAccessError.value = null;
+    try {
+        await client.request("put", `/users/${user.value.id}/app-access`, {
+            json: {
+                app: entry.api_name,
+                version: entry.version,
+                role_ids: [],
+            },
+        });
+        await loadAppAccess();
+        if (
+            selectedAppVersion.value?.api_name === entry.api_name &&
+            selectedAppVersion.value?.version === entry.version
+        ) {
+            selectedAppRoleIds.value = [];
+        }
+    } catch (e: any) {
+        appAccessError.value = e?.message || "Failed to revoke access";
+    }
+}
 
 const isNew = computed(() => route.name === "UserNew");
 
@@ -77,6 +233,9 @@ watch(
                 is_admin: fetched.is_admin,
             };
             await loadUserRoles();
+            if (authStore.isAdmin) {
+                await Promise.all([loadAppAccess(), loadAppOptions()]);
+            }
         } else {
             loadError.value = "User not found";
         }
@@ -266,7 +425,7 @@ async function handleDelete() {
                 <template #content>
                     <RecordForm
                         ref="recordFormRef"
-                        collection-name="users"
+                        collection-name="alcedo_users"
                         v-model="editValues"
                         :field-readonly="
                             (field: any) => !canEditField(field.name)
@@ -359,6 +518,111 @@ async function handleDelete() {
                         </div>
                         <div v-if="roleError" class="text-sm text-red-600">
                             {{ roleError }}
+                        </div>
+                    </div>
+                </template>
+            </Card>
+
+            <!-- App Access Card (global admins only) -->
+            <Card v-if="!isNew && authStore.isAdmin">
+                <template #title>
+                    <div class="flex items-center gap-2">
+                        <span class="material-symbols-outlined text-teal-500"
+                            >apps</span
+                        >
+                        <span>App Access</span>
+                    </div>
+                </template>
+                <template #content>
+                    <div class="space-y-4">
+                        <div
+                            v-if="appAccessLoading"
+                            class="text-sm text-gray-500"
+                        >
+                            Loading...
+                        </div>
+                        <template v-else>
+                            <div
+                                v-if="appAccess.length === 0"
+                                class="text-sm text-gray-500"
+                            >
+                                No app access assigned.
+                            </div>
+                            <div
+                                v-for="entry in appAccess"
+                                :key="entry.api_name + '@' + entry.version"
+                                class="flex items-center gap-2 flex-wrap"
+                            >
+                                <Button
+                                    icon="pi pi-times"
+                                    text
+                                    rounded
+                                    severity="danger"
+                                    size="small"
+                                    title="Revoke access"
+                                    @click="revokeAppAccess(entry)"
+                                />
+                                <span class="font-medium text-gray-900">{{
+                                    entry.app_name
+                                }}</span>
+                                <span class="text-xs text-gray-500"
+                                    >({{ entry.version }})</span
+                                >
+                                <template v-if="entry.roles.length">
+                                    <Tag
+                                        v-for="role in entry.roles"
+                                        :key="role"
+                                        :value="role"
+                                        severity="info"
+                                    />
+                                </template>
+                                <span v-else class="text-sm text-gray-500"
+                                    >No roles</span
+                                >
+                            </div>
+                        </template>
+
+                        <div class="pt-3 border-t border-gray-100 space-y-2">
+                            <p class="text-sm font-medium text-gray-700">
+                                Grant or update access
+                            </p>
+                            <div class="flex flex-wrap items-center gap-2">
+                                <Select
+                                    v-model="selectedAppKey"
+                                    :options="appVersionOptions"
+                                    optionLabel="label"
+                                    optionValue="key"
+                                    placeholder="Select app & version"
+                                    class="w-64"
+                                    showClear
+                                    @change="loadAppRoles"
+                                />
+                                <MultiSelect
+                                    v-model="selectedAppRoleIds"
+                                    :options="appRoles"
+                                    optionLabel="name"
+                                    optionValue="id"
+                                    placeholder="Select roles"
+                                    class="w-64"
+                                    display="chip"
+                                    :loading="appRolesLoading"
+                                    :disabled="!selectedAppKey"
+                                />
+                                <Button
+                                    icon="pi pi-check"
+                                    label="Save"
+                                    size="small"
+                                    :disabled="!selectedAppKey"
+                                    :loading="appAccessSaving"
+                                    @click="saveAppAccess"
+                                />
+                            </div>
+                            <div
+                                v-if="appAccessError"
+                                class="text-sm text-red-600"
+                            >
+                                {{ appAccessError }}
+                            </div>
                         </div>
                     </div>
                 </template>

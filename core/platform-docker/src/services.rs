@@ -1,29 +1,10 @@
-use std::collections::HashMap;
 use bollard::Docker;
 use bollard::models::{
-    ServiceSpec, ServiceSpecMode, ServiceSpecModeReplicated,
-    TaskSpec, TaskSpecContainerSpec, NetworkAttachmentConfig,
-    EndpointSpec, EndpointSpecModeEnum,
-    TaskSpecResources, ResourceObject, Limit,
+    ServiceSpecMode, ServiceSpecModeReplicated,
 };
-use bollard::query_parameters::{ListServicesOptions, ListTasksOptions, UpdateServiceOptions};
+use bollard::query_parameters::{ListTasksOptions, UpdateServiceOptions};
 use serde::Serialize;
 use alcedo_common::AppError;
-
-#[derive(Debug, Clone)]
-pub struct PluginResourceLimits {
-    pub cpu_limit: i64,
-    pub memory_limit: i64,
-}
-
-impl Default for PluginResourceLimits {
-    fn default() -> Self {
-        Self {
-            cpu_limit: 0,
-            memory_limit: 0,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ServiceInstanceInfo {
@@ -31,93 +12,72 @@ pub struct ServiceInstanceInfo {
     pub slot: i64,
     pub status: String,
     pub desired_state: String,
-    pub container_id: Option<String>,
+    pub deployment_id: Option<String>,
     pub node_id: Option<String>,
 }
 
-pub async fn create_plugin_service(
+pub async fn ensure_overlay_network(
     docker: &Docker,
-    slug: &str,
-    image: &str,
-    env: &HashMap<String, String>,
     network_name: &str,
-    resource_limits: Option<PluginResourceLimits>,
-    replicas: i64,
-) -> Result<String, AppError> {
-    let service_name = format!("plugin_{}", slug);
+    hostname: Option<&str>,
+) -> Result<(), AppError> {
+    use bollard::models::NetworkCreateRequest;
+    use bollard::query_parameters::ListNetworksOptions;
 
-    let env_vars: Vec<String> = env
-        .iter()
-        .map(|(k, v)| format!("{}={}", k, v))
-        .collect();
-
-    let task_resources = resource_limits.filter(|r| r.cpu_limit > 0 || r.memory_limit > 0).map(|r| TaskSpecResources {
-        limits: Some(Limit {
-            nano_cpus: if r.cpu_limit > 0 { Some(r.cpu_limit) } else { None },
-            memory_bytes: if r.memory_limit > 0 { Some(r.memory_limit) } else { None },
-            pids: None,
-        }),
-        reservations: Some(ResourceObject {
-            nano_cpus: if r.cpu_limit > 0 { Some(r.cpu_limit) } else { None },
-            memory_bytes: if r.memory_limit > 0 { Some(r.memory_limit) } else { None },
-            generic_resources: None,
-        }),
-        swap_bytes: None,
-        memory_swappiness: None,
+    let networks = docker
+        .list_networks(None::<ListNetworksOptions>)
+        .await
+        .map_err(|e| AppError::DockerError {
+            details: e.to_string(),
+        })?;
+    let has_overlay = networks.iter().any(|n| {
+        n.name.as_deref() == Some(network_name) && n.driver.as_deref() == Some("overlay")
     });
-
-    let spec = ServiceSpec {
-        name: Some(service_name.clone()),
-        labels: Some(HashMap::from([("alcedocore.plugin".to_string(), slug.to_string())])),
-        task_template: Some(TaskSpec {
-            container_spec: Some(TaskSpecContainerSpec {
-                image: Some(image.to_string()),
-                env: Some(env_vars),
+    if !has_overlay {
+        docker
+            .create_network(NetworkCreateRequest {
+                name: network_name.to_string(),
+                driver: Some("overlay".to_string()),
+                scope: Some("swarm".to_string()),
+                attachable: Some(true),
                 ..Default::default()
-            }),
-            networks: if network_name.is_empty() {
-                None
-            } else {
-                Some(vec![NetworkAttachmentConfig {
-                    target: Some(network_name.to_string()),
-                    ..Default::default()
-                }])
-            },
-            resources: task_resources,
-            ..Default::default()
-        }),
-        mode: Some(ServiceSpecMode {
-            replicated: Some(ServiceSpecModeReplicated {
-                replicas: Some(replicas as i64),
-            }),
-            global: None,
-            replicated_job: None,
-            global_job: None,
-        }),
-        endpoint_spec: Some(EndpointSpec {
-            mode: Some(EndpointSpecModeEnum::VIP),
-            ports: None,
-        }),
-        ..Default::default()
-    };
+            })
+            .await
+            .map_err(|e| AppError::DockerError {
+                details: e.to_string(),
+            })?;
+    }
 
-    match docker.create_service(spec, None).await {
-        Ok(response) => {
-            let service_id = response.id.unwrap_or_else(|| service_name.clone());
-            tracing::info!(
-                slug = %slug,
-                service_name = %service_name,
-                service_id = %service_id,
-                replicas = %replicas,
-                "Created Docker Swarm service"
-            );
-            Ok(service_id)
-        }
-        Err(e) => {
-            tracing::error!(slug = %slug, error = %e, "Failed to create Docker Swarm service");
-            Err(AppError::DockerError { details: e.to_string() })
+    if let Some(hostname) = hostname {
+        if !hostname.is_empty() {
+            use bollard::models::{EndpointSettings, NetworkConnectRequest};
+            let _ = docker
+                .disconnect_network(
+                    network_name,
+                    bollard::models::NetworkDisconnectRequest {
+                        container: hostname.to_string(),
+                        force: Some(true),
+                    },
+                )
+                .await;
+            if let Err(e) = docker
+                .connect_network(
+                    network_name,
+                    NetworkConnectRequest {
+                        container: hostname.to_string(),
+                        endpoint_config: Some(EndpointSettings {
+                            aliases: Some(vec!["core".to_string()]),
+                            ..Default::default()
+                        }),
+                    },
+                )
+                .await
+            {
+                tracing::warn!("Failed to connect core container to overlay network: {}", e);
+            }
         }
     }
+    Ok(())
 }
 
 pub async fn restart_plugin_service(docker: &Docker, service_name: &str) -> Result<(), AppError> {
@@ -228,7 +188,7 @@ pub async fn get_service_tasks(docker: &Docker, service_name: &str) -> Result<Ve
                 desired_state: t.desired_state.clone()
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "unknown".to_string()),
-                container_id: t.status.as_ref()
+                deployment_id: t.status.as_ref()
                     .and_then(|s| s.container_status.as_ref())
                     .and_then(|cs| cs.container_id.clone()),
                 node_id: t.node_id.clone(),
@@ -255,46 +215,13 @@ pub async fn remove_plugin_service(docker: &Docker, service_name: &str) -> Resul
     }
 }
 
-pub async fn list_plugin_services(docker: &Docker) -> Result<Vec<String>, AppError> {
-    let options = ListServicesOptions {
-        ..Default::default()
-    };
-
-    match docker.list_services(Some(options)).await {
-        Ok(services) => {
-            let plugin_services: Vec<String> = services
-                .iter()
-                .filter_map(|s| s.spec.as_ref())
-                .filter_map(|spec| spec.name.clone())
-                .filter(|name| name.starts_with("plugin_"))
-                .collect();
-            Ok(plugin_services)
-        }
-        Err(e) => {
-            tracing::warn!("Failed to list Docker Swarm services: {:?}", e);
-            Err(AppError::DockerError { details: e.to_string() })
-        }
-    }
-}
-
-pub async fn inspect_plugin_service(docker: &Docker, service_name: &str) -> Result<Option<bollard::models::Service>, AppError> {
-    match docker.inspect_service(service_name, None::<bollard::query_parameters::InspectServiceOptions>).await {
-        Ok(service) => Ok(Some(service)),
-        Err(bollard::errors::Error::DockerResponseServerError { status_code: 404, .. }) => Ok(None),
-        Err(e) => {
-            tracing::warn!(service_name = %service_name, error = %e, "Failed to inspect Docker Swarm service");
-            Err(AppError::DockerError { details: e.to_string() })
-        }
-    }
-}
-
-pub fn is_swarm_service_name(container_id: &str) -> bool {
-    container_id.starts_with("plugin_")
+pub fn is_swarm_service_name(deployment_id: &str) -> bool {
+    deployment_id.starts_with("plugin_")
 }
 
 pub async fn resolve_service_to_container(docker: &Docker, service_name: &str) -> Result<Option<String>, AppError> {
     let tasks = get_service_tasks(docker, service_name).await?;
-    Ok(tasks.into_iter().find(|t| t.status == "running").and_then(|t| t.container_id))
+    Ok(tasks.into_iter().find(|t| t.status == "running").and_then(|t| t.deployment_id))
 }
 
 /// Resolve a potentially Swarm service name to a real container ID for use with

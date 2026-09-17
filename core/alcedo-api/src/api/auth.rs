@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_sessions::Session;
 
+use alcedo_common::context::ExtractContext;
 use crate::db::activity_logs::SystemLogEntry;
 use crate::error::AppError;
 use crate::middleware::logging::extract_request_id_from_headers;
@@ -29,6 +30,7 @@ pub struct LoginResponse {
 pub struct MeResponse {
     pub user: auth::PublicUser,
     pub scopes: Vec<String>,
+    pub is_admin: bool,
 }
 
 const SESSION_USER_ID_KEY: &str = "user_id";
@@ -133,10 +135,19 @@ const MAX_LOGIN_ATTEMPTS: u32 = 5;
 
 async fn check_login_lockout(state: &Arc<AppState>, email: &str) -> Result<(), AppError> {
     let key = format!("{}{}", LOGIN_FAIL_PREFIX, email);
-    if let Some(ref redis) = state.rate_limit_redis {
-        let mut conn = redis.lock().await;
-        let count: Option<u32> = match redis::cmd("GET").arg(&key).query_async(&mut *conn).await {
-            Ok(c) => c,
+    if let Some(ref client) = state.redis {
+        let count = match client.get(&key).await {
+            Ok(Some(s)) => match s.parse::<u32>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    tracing::error!("[AUTH] corrupt login_fail counter for {}", key);
+                    // Fail closed: a corrupt counter must not bypass the lockout
+                    return Err(AppError::TooManyRequests(
+                        "Rate limiting unavailable. Try again later.".to_string(),
+                    ));
+                }
+            },
+            Ok(None) => None,
             Err(e) => {
                 tracing::error!("[AUTH] Redis error in login lockout check: {}", e);
                 // Fail closed on Redis errors to prevent brute-force bypass
@@ -147,11 +158,11 @@ async fn check_login_lockout(state: &Arc<AppState>, email: &str) -> Result<(), A
         };
         if let Some(count) = count {
             if count >= MAX_LOGIN_ATTEMPTS {
-                let ttl: i64 = redis::cmd("TTL")
-                    .arg(&key)
-                    .query_async(&mut *conn)
+                let ttl = client
+                    .ttl(&key)
                     .await
-                    .unwrap_or(900);
+                    .unwrap_or(Some(LOGIN_FAIL_TTL as i64))
+                    .unwrap_or(LOGIN_FAIL_TTL as i64);
                 return Err(AppError::TooManyRequests(format!(
                     "Too many login attempts. Try again in {} seconds.",
                     ttl,
@@ -164,33 +175,15 @@ async fn check_login_lockout(state: &Arc<AppState>, email: &str) -> Result<(), A
 
 async fn record_failed_login(state: &Arc<AppState>, email: &str) {
     let key = format!("{}{}", LOGIN_FAIL_PREFIX, email);
-    if let Some(ref redis) = state.rate_limit_redis {
-        let mut conn = redis.lock().await;
-        let count: u64 = redis::cmd("INCR")
-            .arg(&key)
-            .query_async(&mut *conn)
-            .await
-            .unwrap_or(0);
-        if count == 1 {
-            let _: () = redis::cmd("EXPIRE")
-                .arg(&key)
-                .arg(LOGIN_FAIL_TTL as i64)
-                .query_async(&mut *conn)
-                .await
-                .unwrap_or(());
-        }
+    if let Some(ref client) = state.redis {
+        let _ = client.incr_with_ttl(&key, LOGIN_FAIL_TTL).await;
     }
 }
 
 async fn clear_login_failures(state: &Arc<AppState>, email: &str) {
     let key = format!("{}{}", LOGIN_FAIL_PREFIX, email);
-    if let Some(ref redis) = state.rate_limit_redis {
-        let mut conn = redis.lock().await;
-        let _: () = redis::cmd("DEL")
-            .arg(&key)
-            .query_async(&mut *conn)
-            .await
-            .unwrap_or(());
+    if let Some(ref client) = state.redis {
+        let _ = client.del(&key).await;
     }
 }
 
@@ -240,9 +233,11 @@ pub async fn logout_handler(
 
 pub async fn me_handler(
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    ExtractContext(ctx): ExtractContext,
     session: Session,
 ) -> Result<Json<MeResponse>, AppError> {
-    let pool = state.db()?;
+    let pool = &state.db_for_headers(&headers).await?;
 
     let user_id: uuid::Uuid = session
         .get(SESSION_USER_ID_KEY)
@@ -254,20 +249,25 @@ pub async fn me_handler(
         .await?
         .ok_or_else(|| AppError::Unauthorized("User not found".to_string()))?;
 
-    let scopes: Vec<String> = sqlx::query_scalar(
-        r#"SELECT DISTINCT rs.scope
-           FROM user_roles ur
-           JOIN role_scopes rs ON rs.role_id = ur.role_id
-           WHERE ur.user_id = $1
-           ORDER BY rs.scope"#,
-    )
-    .bind(user_id)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    let scopes: Vec<String> = if ctx.app_version_id.is_some() {
+        sqlx::query_scalar(
+            r#"SELECT DISTINCT rs.scope
+               FROM alcedocore_user_roles ur
+               JOIN alcedocore_role_scopes rs ON rs.role_id = ur.role_id
+               WHERE ur.user_id = $1
+               ORDER BY rs.scope"#,
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     Ok(Json(MeResponse {
         user: user.to_public(),
         scopes,
+        is_admin: user.is_admin,
     }))
 }

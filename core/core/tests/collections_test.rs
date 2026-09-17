@@ -57,7 +57,7 @@ async fn test_create_collection_with_all_field_types() {
     let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
         "SELECT column_name, data_type, is_nullable, column_default
          FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = $1
+         WHERE table_schema = 'default010v1' AND table_name = $1
          ORDER BY ordinal_position"
     )
     .bind(&name)
@@ -183,7 +183,7 @@ async fn test_update_collection_add_remove_fields() {
     // Verify both columns exist in information_schema
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = $1"
+         WHERE table_schema = 'default010v1' AND table_name = $1"
     )
     .bind(&name)
     .fetch_all(test_db.pool())
@@ -206,7 +206,7 @@ async fn test_update_collection_add_remove_fields() {
     // Verify email exists, name removed
     let rows2: Vec<(String,)> = sqlx::query_as(
         "SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = $1"
+         WHERE table_schema = 'default010v1' AND table_name = $1"
     )
     .bind(&name)
     .fetch_all(test_db.pool())
@@ -267,7 +267,7 @@ async fn test_update_collection_toggles_unique_required_on_existing_field() {
     // Verify is_nullable = NO (required toggled on)
     let nullable: String = sqlx::query_scalar(
         "SELECT is_nullable FROM information_schema.columns
-          WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'code'",
+          WHERE table_schema = 'default010v1' AND table_name = $1 AND column_name = 'code'",
     )
     .bind(&name)
     .fetch_one(test_db.pool())
@@ -342,7 +342,7 @@ async fn test_delete_collection() {
     // Verify table no longer exists in information_schema
     let table_rows: Vec<(String,)> = sqlx::query_as(
         "SELECT table_name FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = $1"
+         WHERE table_schema = 'default010v1' AND table_name = $1"
     )
     .bind(&name)
     .fetch_all(test_db.pool())
@@ -663,7 +663,7 @@ async fn test_create_collection_name_too_long() {
 #[tokio::test]
 async fn test_create_collection_reserved_name() {
     let (server, _test_db) = setup_server().await;
-    let payload = serde_json::json!({ "name": "plugins", "fields": [{"name":"x","type":"string"}] });
+    let payload = serde_json::json!({ "name": "alcedo_plugins", "fields": [{"name":"x","type":"string"}] });
     let response = server.post("/api/collections").add_header("Authorization", "Bearer dev_test-key-for-tests-12345").json(&payload).await;
     assert_eq!(response.status_code(), axum::http::StatusCode::BAD_REQUEST);
     assert!(response.text().contains("reserved"),
@@ -883,9 +883,9 @@ async fn test_ddl_reconciliation_after_create() {
     assert_eq!(create_resp.status_code(), axum::http::StatusCode::CREATED,
         "Create failed: {}", create_resp.text());
 
-    // 1. Query fields from collection_fields
+    // 1. Query fields from alcedocore_collection_fields
     let field_rows: Vec<(String, String, bool)> = sqlx::query_as(
-        "SELECT name, field_type, required FROM collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
+        "SELECT name, field_type, required FROM alcedocore_collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
     )
     .bind(&name)
     .fetch_all(test_db.pool())
@@ -909,7 +909,7 @@ async fn test_ddl_reconciliation_after_create() {
     // 2. Query information_schema.columns (exclude system columns)
     let info_rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT column_name, data_type FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = $1
+         WHERE table_schema = 'default010v1' AND table_name = $1
            AND column_name NOT IN ('id', 'created_at', 'updated_at')
          ORDER BY ordinal_position"
     )
@@ -956,7 +956,7 @@ async fn test_ddl_reconciliation_after_update() {
 
     // Verify collection_fields has 2 fields
     let field_rows: Vec<(String, String, bool)> = sqlx::query_as(
-        "SELECT name, field_type, required FROM collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
+        "SELECT name, field_type, required FROM alcedocore_collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
     )
     .bind(&name)
     .fetch_all(test_db.pool())
@@ -969,7 +969,7 @@ async fn test_ddl_reconciliation_after_update() {
     // Verify information_schema has 2 user columns
     let info_rows: Vec<(String,)> = sqlx::query_as(
         "SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = $1
+         WHERE table_schema = 'default010v1' AND table_name = $1
            AND column_name NOT IN ('id', 'created_at', 'updated_at')"
     )
     .bind(&name)
@@ -992,7 +992,7 @@ async fn test_ddl_reconciliation_after_update() {
 
     // Verify collection_fields has 3 fields
     let field_rows2: Vec<(String, String, bool)> = sqlx::query_as(
-        "SELECT name, field_type, required FROM collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
+        "SELECT name, field_type, required FROM alcedocore_collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
     )
     .bind(&name)
     .fetch_all(test_db.pool())
@@ -1005,7 +1005,7 @@ async fn test_ddl_reconciliation_after_update() {
     // Verify information_schema has 3 user columns
     let info_rows2: Vec<(String,)> = sqlx::query_as(
         "SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = $1
+         WHERE table_schema = 'default010v1' AND table_name = $1
            AND column_name NOT IN ('id', 'created_at', 'updated_at')"
     )
     .bind(&name)
@@ -1030,7 +1030,7 @@ async fn test_ddl_reconciliation_after_update() {
 
     // Verify collection_fields has 2 fields
     let field_rows3: Vec<(String, String, bool)> = sqlx::query_as(
-        "SELECT name, field_type, required FROM collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
+        "SELECT name, field_type, required FROM alcedocore_collection_fields WHERE collection_name = $1 ORDER BY ordinal_position"
     )
     .bind(&name)
     .fetch_all(test_db.pool())
@@ -1044,7 +1044,7 @@ async fn test_ddl_reconciliation_after_update() {
     // Verify information_schema has 2 user columns (views removed)
     let info_rows3: Vec<(String,)> = sqlx::query_as(
         "SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = $1
+         WHERE table_schema = 'default010v1' AND table_name = $1
            AND column_name NOT IN ('id', 'created_at', 'updated_at')"
     )
     .bind(&name)
@@ -1082,7 +1082,7 @@ async fn test_update_collection_preserves_omitted_fields_unless_removed() {
 
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = $1 AND column_name NOT IN ('id', 'created_at', 'updated_at')"
+         WHERE table_schema = 'default010v1' AND table_name = $1 AND column_name NOT IN ('id', 'created_at', 'updated_at')"
     )
     .bind(&name)
     .fetch_all(test_db.pool())
@@ -1102,7 +1102,7 @@ async fn test_update_collection_preserves_omitted_fields_unless_removed() {
 
     let rows2: Vec<(String,)> = sqlx::query_as(
         "SELECT column_name FROM information_schema.columns
-         WHERE table_schema = 'public' AND table_name = $1 AND column_name NOT IN ('id', 'created_at', 'updated_at')"
+         WHERE table_schema = 'default010v1' AND table_name = $1 AND column_name NOT IN ('id', 'created_at', 'updated_at')"
     )
     .bind(&name)
     .fetch_all(test_db.pool())
@@ -1124,7 +1124,7 @@ async fn test_ddl_reconciliation_after_delete() {
 
     // Verify collection exists in collection_definitions
     let (count,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*)::int8 FROM collection_definitions WHERE name = $1"
+        "SELECT COUNT(*)::int8 FROM alcedocore_collection_definitions WHERE name = $1"
     )
     .bind(&name)
     .fetch_one(test_db.pool())
@@ -1135,7 +1135,7 @@ async fn test_ddl_reconciliation_after_delete() {
     // Verify table exists
     let (table_count,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::int8 FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = $1"
+         WHERE table_schema = 'default010v1' AND table_name = $1"
     )
     .bind(&name)
     .fetch_one(test_db.pool())
@@ -1150,7 +1150,7 @@ async fn test_ddl_reconciliation_after_delete() {
 
     // Verify collection_definitions no longer has the row
     let (count_after,): (i64,) = sqlx::query_as(
-        "SELECT COUNT(*)::int8 FROM collection_definitions WHERE name = $1"
+        "SELECT COUNT(*)::int8 FROM alcedocore_collection_definitions WHERE name = $1"
     )
     .bind(&name)
     .fetch_one(test_db.pool())
@@ -1161,7 +1161,7 @@ async fn test_ddl_reconciliation_after_delete() {
     // Verify table no longer exists
     let (table_count_after,): (i64,) = sqlx::query_as(
         "SELECT COUNT(*)::int8 FROM information_schema.tables
-         WHERE table_schema = 'public' AND table_name = $1"
+         WHERE table_schema = 'default010v1' AND table_name = $1"
     )
     .bind(&name)
     .fetch_one(test_db.pool())

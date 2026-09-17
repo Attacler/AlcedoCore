@@ -2,6 +2,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use alcedo_common::context::ExtractContext;
 use alcedo_common::RequestIdentity;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -24,11 +25,13 @@ pub async fn create_handler(
     Path(slug): Path<String>,
     headers: axum::http::HeaderMap,
     identity: RequestIdentity,
+    ExtractContext(ctx): ExtractContext,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let schema = state.schema_for_headers(&headers).await?;
 
-    reject_system_collection(db_pool, &state.redis_connection, &slug).await?;
+    reject_system_collection(db_pool, &state.redis, &schema, &slug).await?;
 
     let pc = permission_check::check_permission(&state, &identity, &headers, &slug, "create").await?;
     if let PermissionCheck::Denied { reason } = pc {
@@ -63,7 +66,7 @@ pub async fn create_handler(
     let request_id = middleware::logging::extract_request_id_from_headers(&headers);
     let start = Instant::now();
 
-    let results = match collections::get_cached_collection(db_pool, &state.redis_connection, &slug).await {
+    let results = match collections::get_cached_collection(db_pool, &state.redis, &schema, &slug).await {
         Ok(collection) => {
             // Validate relational references in the create body
             if let Some(ref body_map) = body.as_object() {
@@ -87,16 +90,24 @@ pub async fn create_handler(
                     body = json!(enriched);
                 }
             }
-            // Collection exists — use collection_items API (accepts {name: val} or [{...}, ...])
-            let create_body: collection_items::CreateItemsBody = serde_json::from_value(body)
+            // Collection exists — use the item write engine (accepts {name: val} or [{...}, ...])
+            let create_body: crate::db::collection_items::CreateItemsBody = serde_json::from_value(body)
                 .map_err(|e| AppError::BadRequest(format!("Invalid create body: {}", e)))?;
-            collection_items::create_items(db_pool, &slug, create_body).await?
+            let app_ctx = alcedo_common::context::headers_to_app_context(&headers);
+            let engine = alcedo_db::services::items::service::ItemsService::new(
+                &state.core,
+                &app_ctx,
+                &slug,
+            );
+            engine.create(db_pool, create_body).await?.affected
         }
         Err(_) => {
             // Not a collection — use plugin items API (expects {items: [...]})
             let request: CreateRequest = serde_json::from_value(body)
                 .map_err(|e| AppError::BadRequest(format!("Invalid create body: {}", e)))?;
-            create_items(db_pool, &slug, request).await?
+            let (app_version_id, version_id) =
+                crate::api::install::resolve_install_scope_for_context(db_pool, &slug, &ctx).await?;
+            create_items(db_pool, &slug, request, app_version_id, version_id).await?
         }
     };
 
@@ -153,11 +164,13 @@ pub async fn update_handler(
     Path(slug): Path<String>,
     headers: axum::http::HeaderMap,
     identity: RequestIdentity,
+    ExtractContext(ctx): ExtractContext,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let schema = state.schema_for_headers(&headers).await?;
 
-    reject_system_collection(db_pool, &state.redis_connection, &slug).await?;
+    reject_system_collection(db_pool, &state.redis, &schema, &slug).await?;
 
     let pc = permission_check::check_permission(&state, &identity, &headers, &slug, "update").await?;
     if let PermissionCheck::Denied { reason } = pc {
@@ -198,7 +211,7 @@ pub async fn update_handler(
     let request_id = middleware::logging::extract_request_id_from_headers(&headers);
     let start = Instant::now();
 
-    let updated = match collections::get_cached_collection(db_pool, &state.redis_connection, &slug).await {
+    let updated = match collections::get_cached_collection(db_pool, &state.redis, &schema, &slug).await {
         Ok(collection) => {
             let mut body: crate::db::collection_items::UpdateItemsBody = serde_json::from_value(body)
                 .map_err(|e| AppError::BadRequest(format!("Invalid update body: {}", e)))?;
@@ -232,7 +245,7 @@ pub async fn update_handler(
                     }
 
                     // Build IN subquery for dot-notation permission filters
-                    let all_cols = collections::get_cached_collections(db_pool, &state.redis_connection).await?;
+                    let all_cols = collections::get_cached_collections(db_pool, &state.redis, &schema).await?;
                     let set_count = body.update.len();
                     let where_count = body.filter.as_object().map(|o| o.len()).unwrap_or(0);
                     let (perm_where, perm_binds, join_clauses) =
@@ -273,12 +286,37 @@ pub async fn update_handler(
             } else {
                 None
             };
-            crate::db::collection_items::update_items(db_pool, &slug, body, perm_filter).await?
+            let app_ctx = alcedo_common::context::headers_to_app_context(&headers);
+            let engine = alcedo_db::services::items::service::ItemsService::new(&state.core, &app_ctx, &slug);
+            let outcome = engine.update(db_pool, body, perm_filter).await?;
+            let affected = outcome.affected;
+            let updated = outcome.affected_count;
+
+            let request_id_clone = request_id.clone();
+            let event_bus = state.event_bus.clone();
+            let slug_clone = slug.clone();
+            tokio::spawn(async move {
+                for item in affected {
+                    let item_id = item.get("id").cloned().unwrap_or(Value::Null);
+                    event_bus.emit(events::SystemEvent::ItemUpdated {
+                        collection_name: slug_clone.clone(),
+                        item_id,
+                        old_values: Value::Null,
+                        new_values: item,
+                        diff: Value::Null,
+                        request_id: Some(request_id_clone.clone()),
+                    });
+                }
+            });
+
+            updated
         }
         Err(_) => {
             let request: UpdateRequest = serde_json::from_value(body)
                 .map_err(|e| AppError::BadRequest(format!("Invalid update body: {}", e)))?;
-            update_items(db_pool, &slug, request).await?
+            let (app_version_id, version_id) =
+                crate::api::install::resolve_install_scope_for_context(db_pool, &slug, &ctx).await?;
+            update_items(db_pool, &slug, request, app_version_id, version_id).await?
         }
     };
     let duration_ms = start.elapsed().as_millis() as i64;
@@ -308,11 +346,13 @@ pub async fn delete_handler(
     Path(slug): Path<String>,
     headers: axum::http::HeaderMap,
     identity: RequestIdentity,
+    ExtractContext(ctx): ExtractContext,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let schema = state.schema_for_headers(&headers).await?;
 
-    reject_system_collection(db_pool, &state.redis_connection, &slug).await?;
+    reject_system_collection(db_pool, &state.redis, &schema, &slug).await?;
 
     let pc = permission_check::check_permission(&state, &identity, &headers, &slug, "delete").await?;
     if let PermissionCheck::Denied { reason } = pc {
@@ -322,7 +362,7 @@ pub async fn delete_handler(
     let request_id = middleware::logging::extract_request_id_from_headers(&headers);
     let start = Instant::now();
 
-    let (deleted, deleted_items) = match collections::get_cached_collection(db_pool, &state.redis_connection, &slug).await {
+    let (deleted, deleted_items) = match collections::get_cached_collection(db_pool, &state.redis, &schema, &slug).await {
         Ok(ref collection) => {
             let delete_body: collection_items::DeleteItemsBody = serde_json::from_value(body)
                 .map_err(|e| AppError::BadRequest(format!("Invalid delete body: {}", e)))?;
@@ -343,12 +383,17 @@ pub async fn delete_handler(
             } else {
                 None
             };
-            collection_items::delete_items(db_pool, &slug, delete_body, perm_filter).await?
+            let app_ctx = alcedo_common::context::headers_to_app_context(&headers);
+            let engine = alcedo_db::services::items::service::ItemsService::new(&state.core, &app_ctx, &slug);
+            let outcome = engine.delete(db_pool, delete_body, perm_filter).await?;
+            (outcome.affected_count, outcome.deleted)
         }
         Err(_) => {
             let request: DeleteRequest = serde_json::from_value(body)
                 .map_err(|e| AppError::BadRequest(format!("Invalid delete body: {}", e)))?;
-            delete_items(db_pool, &slug, request).await?
+            let (app_version_id, version_id) =
+                crate::api::install::resolve_install_scope_for_context(db_pool, &slug, &ctx).await?;
+            delete_items(db_pool, &slug, request, app_version_id, version_id).await?
         }
     };
     let duration_ms = start.elapsed().as_millis() as i64;

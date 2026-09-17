@@ -19,7 +19,7 @@ impl Registry {
     pub async fn find_by_id(db: &PgPool, id: i32) -> Result<Option<Self>, AppError> {
         let row = sqlx::query_as::<_, Registry>(
             "SELECT id, name, url, pull_url, auth_type, username, password, created_at, updated_at
-             FROM registries WHERE id = $1",
+             FROM alcedo_registries WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(db)
@@ -29,7 +29,7 @@ impl Registry {
 
     find_all!(
         find_all,
-        "registries",
+        "alcedo_registries",
         "id, name, url, pull_url, auth_type, username, password, created_at, updated_at",
         "name"
     );
@@ -41,7 +41,7 @@ impl Registry {
             None
         };
         let row: (i32,) = sqlx::query_as(
-            "INSERT INTO registries (name, url, pull_url, auth_type, username, password, created_at, updated_at)
+            "INSERT INTO alcedo_registries (name, url, pull_url, auth_type, username, password, created_at, updated_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
              RETURNING id"
         )
@@ -114,7 +114,7 @@ impl Registry {
         updates.push(format!("updated_at = NOW()"));
 
         let query = format!(
-            "UPDATE registries SET {} WHERE id = ${}",
+            "UPDATE alcedo_registries SET {} WHERE id = ${}",
             updates.join(", "),
             param_idx
         );
@@ -143,7 +143,7 @@ impl Registry {
         Ok(())
     }
 
-    delete_by!(delete_by_id, "registries", "id", i32);
+    delete_by!(delete_by_id, "alcedo_registries", "id", i32);
 
     /// Resolve a plugin image reference to a fully-qualified pull name for this
     /// registry. Pulls ALWAYS go through a configured registry:
@@ -188,7 +188,7 @@ impl Registry {
     }
 
     /// True when this registry is the auto-created default placeholder
-    /// (inserted by `ensure_default` / core migration 047) and so may be
+    /// (seeded by the core init migration / `ensure_default`) and so may be
     /// replaced by an env/startup-seeded registry.
     fn is_default_placeholder(&self) -> bool {
         self.name == "local"
@@ -203,16 +203,14 @@ impl Registry {
     ///
     /// - Empty table → insert a `local` registry from `local_registry_url`
     ///   (e.g. `LOCAL_REGISTRY_URL`, default `localhost:5000`).
-    /// - Table holds only the auto-created placeholder → upgrade its URL to
-    ///   `local_registry_url` so Docker/Swarm and K8s find the right host.
+    /// - Any auto-created `local` placeholder → upgrade its URL to
+    ///   `local_registry_url` so Docker/Swarm and K8s find the right host,
+    ///   even when other registries already exist.
     /// - Otherwise → leave existing registries untouched.
     ///
     /// Returns the id of the default (lowest-id) registry.
-    pub async fn ensure_default(
-        db: &PgPool,
-        local_registry_url: &str,
-    ) -> Result<i32, AppError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM registries")
+    pub async fn ensure_default(db: &PgPool, local_registry_url: &str) -> Result<i32, AppError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alcedo_registries")
             .fetch_one(db)
             .await?;
 
@@ -242,31 +240,46 @@ impl Registry {
             return Ok(id);
         }
 
-        // Upgrade the sole auto-created placeholder to the configured host.
-        if count == 1 {
-            let all = Self::find_all(db).await?;
-            if let Some(reg) = all.first() {
-                if reg.is_default_placeholder() && reg.url != url {
-                    Registry::update(
-                        db,
-                        reg.id,
-                        None,
-                        Some(&url),
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                    .await?;
-                    return Ok(reg.id);
-                }
-            }
+        // Fresh DB where only the AlcedoSystemPlugins seed (id 0, url '') exists →
+        // seed the `local` registry from env so plugin pulls always have a target.
+        let all = Self::find_all(db).await?;
+        if count == 1
+            && all.first().map_or(false, |r| r.id == 0 && !r.is_default_placeholder())
+        {
+            let now = chrono::Utc::now();
+            let _ = Registry::insert(
+                db,
+                &Registry {
+                    id: 0, // ignored by insert; SERIAL assigns 1
+                    name: "local".to_string(),
+                    url: url.clone(),
+                    pull_url: None,
+                    auth_type: "none".to_string(),
+                    username: None,
+                    password: None,
+                    created_at: Some(now),
+                    updated_at: Some(now),
+                },
+            )
+            .await?;
+        }
+
+        // Upgrade the auto-created `local` placeholder to the configured host,
+        // even when other registries (e.g. the seeded `AlcedoSystemPlugins`
+        // row) already exist. Idempotent: once upgraded, `is_default_placeholder`
+        // is false and the row is left untouched.
+        if let Some(reg) = all
+            .iter()
+            .find(|r| r.is_default_placeholder() && r.url != url)
+        {
+            Registry::update(db, reg.id, None, Some(&url), None, None, None, None).await?;
         }
 
         // Return the default (lowest-id) registry.
-        let row: (i32,) = sqlx::query_as("SELECT id FROM registries ORDER BY id LIMIT 1")
-            .fetch_one(db)
-            .await?;
+        let row: (i32,) =
+            sqlx::query_as("SELECT id FROM alcedo_registries ORDER BY id LIMIT 1")
+                .fetch_one(db)
+                .await?;
         Ok(row.0)
     }
 
@@ -278,7 +291,7 @@ impl Registry {
         db: &PgPool,
         seed: &alcedo_common::config::RegistrySeed,
     ) -> Result<bool, AppError> {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM registries")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM alcedo_registries")
             .fetch_one(db)
             .await?;
 

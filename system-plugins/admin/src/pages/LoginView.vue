@@ -14,7 +14,9 @@ const email = ref(""),
 onMounted(async () => {
     await authStore.initialize();
     if (authStore.user) {
-        const redirect = (route.query.redirect as string) || "/dashboard";
+        const redirect =
+            (route.query.redirect as string) ||
+            (await authStore.resolveLanding());
         router.replace(redirect);
     }
 });
@@ -22,7 +24,9 @@ onMounted(async () => {
 async function handleLogin() {
     const success = await authStore.login(email.value, password.value);
     if (success) {
-        const redirect = (route.query.redirect as string) || "/dashboard";
+        const redirect =
+            (route.query.redirect as string) ||
+            (await authStore.resolveLanding());
         router.push(redirect);
     }
 }

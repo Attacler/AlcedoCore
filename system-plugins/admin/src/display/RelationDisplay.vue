@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from "vue-router";
+import { appPath } from "@/utils/appHeaders";
 
 const props = defineProps<{
     value: string | null | undefined;
@@ -11,7 +12,7 @@ const props = defineProps<{
 const router = useRouter();
 
 function openRecord() {
-    router.push("/detail/" + props.relatedCollection + "/" + props.value);
+    router.push(appPath("/detail/" + props.relatedCollection + "/" + props.value));
 }
 </script>
 

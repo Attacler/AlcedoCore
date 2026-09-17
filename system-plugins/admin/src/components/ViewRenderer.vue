@@ -4,6 +4,7 @@ import { useSavedViewsStore } from "@/stores/savedViews";
 import { useSettingsStore } from "@/stores/settingsStore";
 import type { FieldDefinition } from "@/stores/collections";
 import { useExtensionRegistryStore } from "@/stores/extensionRegistry";
+import { appPath } from "@/utils/appHeaders";
 
 const savedViewsStore = useSavedViewsStore(),
     settingsStore = useSettingsStore(),
@@ -112,7 +113,7 @@ const currentViewComponent = computed(() => {
                 This collection has a dedicated management interface.
             </p>
             <router-link
-                :to="'/' + collectionName"
+                :to="appPath('/' + collectionName)"
                 class="text-blue-500 hover:underline text-sm font-medium"
             >
                 &#8592; Go to {{ collectionName }} management

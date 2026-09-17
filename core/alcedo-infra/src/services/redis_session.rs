@@ -1,11 +1,10 @@
+use crate::services::redis_client::RedisClient;
 use async_trait::async_trait;
 use deadpool::managed::{self, RecycleResult};
 use redis::aio::ConnectionManager;
-use redis::AsyncCommands;
 use std::future::Future;
 use std::sync::Arc;
 use time::OffsetDateTime;
-use tokio::sync::Mutex;
 use tower_sessions::session::{Id, Record};
 use tower_sessions::session_store::{self, SessionStore};
 
@@ -60,7 +59,7 @@ pub type RedisPool = managed::Pool<RedisPoolManager>;
 /// Redis TTL handles expiry — no background cleanup task needed.
 #[derive(Clone)]
 pub struct RedisSessionStore {
-    conn: Arc<Mutex<ConnectionManager>>,
+    client: Arc<RedisClient>,
 }
 
 impl std::fmt::Debug for RedisSessionStore {
@@ -70,10 +69,8 @@ impl std::fmt::Debug for RedisSessionStore {
 }
 
 impl RedisSessionStore {
-    pub fn new(conn: ConnectionManager) -> Self {
-        Self {
-            conn: Arc::new(Mutex::new(conn)),
-        }
+    pub fn new(client: Arc<RedisClient>) -> Self {
+        Self { client }
     }
 }
 
@@ -91,9 +88,8 @@ impl SessionStore for RedisSessionStore {
             .whole_seconds()
             .max(1) as u64;
 
-        let mut conn = self.conn.lock().await;
-        let _: () = conn
-            .set_ex(key, data.as_slice(), ttl)
+        self.client
+            .set_bytes(&key, data.as_slice(), Some(ttl))
             .await
             .map_err(|e| session_store::Error::Backend(e.to_string()))?;
 
@@ -103,10 +99,9 @@ impl SessionStore for RedisSessionStore {
     async fn load(&self, session_id: &Id) -> session_store::Result<Option<Record>> {
         let key = session_id.to_string();
 
-        let mut conn = self.conn.lock().await;
-
-        let data: Option<Vec<u8>> = conn
-            .get(key)
+        let data = self
+            .client
+            .get_bytes(&key)
             .await
             .map_err(|e| session_store::Error::Backend(e.to_string()))?;
 
@@ -127,9 +122,8 @@ impl SessionStore for RedisSessionStore {
     async fn delete(&self, session_id: &Id) -> session_store::Result<()> {
         let key = session_id.to_string();
 
-        let mut conn = self.conn.lock().await;
-        let _: () = conn
-            .del(key)
+        self.client
+            .del(&key)
             .await
             .map_err(|e| session_store::Error::Backend(e.to_string()))?;
 

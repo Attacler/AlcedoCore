@@ -11,8 +11,8 @@ use std::time::Duration;
 use alcedo_common::config::AppConfig;
 use alcedo_container::container::PluginPlatform;
 use alcedo_db::queries::Registry;
+use platform_docker::client::DockerClient;
 use platform_docker::platform::DockerPlatform;
-use platform_docker::runtime::DockerRuntime;
 
 static DOCKER_INIT: Once = Once::new();
 
@@ -56,10 +56,8 @@ fn test_config(dev_mode: bool) -> AppConfig {
 
 fn create_platform(dev_mode: bool) -> DockerPlatform {
     ensure_docker();
-    let runtime =
-        Arc::new(DockerRuntime::new()) as Arc<dyn alcedo_container::container::ContainerRuntime>;
     let config = Arc::new(test_config(dev_mode));
-    DockerPlatform::new(None, runtime, config)
+    DockerPlatform::new(DockerClient, config)
 }
 
 fn unique_slug() -> String {
@@ -105,6 +103,7 @@ async fn test_deploy_simple_container() {
             "1.0.0",
             "hello-world:latest",
             HashMap::new(),
+            None,
         )
         .await
         .expect("Deploy should succeed");
@@ -128,7 +127,7 @@ async fn test_deploy_with_env_vars() {
     env.insert("HELLO".to_string(), "world".to_string());
 
     let id = platform
-        .deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", env)
+        .deploy(&test_registry(), &slug, "1.0.0", "hello-world:latest", env, None)
         .await
         .expect("Deploy with env vars should succeed");
 
@@ -186,6 +185,7 @@ async fn test_deploy_duplicate() {
             version,
             "hello-world:latest",
             HashMap::new(),
+            None,
         )
         .await
         .expect("First deploy should succeed");
@@ -197,6 +197,7 @@ async fn test_deploy_duplicate() {
             version,
             "hello-world:latest",
             HashMap::new(),
+            None,
         )
         .await
         .expect("Second deploy (same slug+version) should succeed");
@@ -236,6 +237,7 @@ async fn test_get_address() {
             "1.0.0",
             "hello-world:latest",
             HashMap::new(),
+            None,
         )
         .await
         .expect("Deploy should succeed");
@@ -270,6 +272,7 @@ async fn test_restart() {
             "1.0.0",
             "hello-world:latest",
             HashMap::new(),
+            None,
         )
         .await
         .expect("Deploy should succeed");

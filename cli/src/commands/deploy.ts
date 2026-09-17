@@ -74,7 +74,7 @@ export const deployCommand = new Command("deploy")
   .action(async (slug: string, options: DeployOptions, cmd: Command) => {
     const config = loadConfig(cmd.optsWithGlobals() as any);
     const registryUrl = (config.registryUrl || "localhost:5000").replace(/^https?:\/\//, "");
-    const coreUrl = config.coreUrl;
+    const coreUrl = config.coreUrl || "http://localhost:8080";
     const tag = options.tag || "1.0.0";
     const image = options.image || `${registryUrl}/${slug}:${tag}`;
 
@@ -124,8 +124,8 @@ export const deployCommand = new Command("deploy")
 
       spinner.succeed();
       success(`Plugin "${slug}" v${tag} deployed`);
-      if (data.container_id) {
-        info(`Container: ${data.container_id}`);
+      if (data.deployment_id) {
+        info(`Deployment: ${data.deployment_id}`);
       }
     } catch (err: any) {
       spinner.fail();

@@ -54,7 +54,7 @@ async fn test_create_and_query_items() {
     ];
 
     let create_req = CreateRequest { items };
-    let created = create_items(test_db.pool(), "test_create_query", create_req).await.unwrap();
+    let created = create_items(test_db.pool(), "test_create_query", create_req, None, None).await.unwrap();
     assert_eq!(created.len(), 3, "Should create 3 items");
 
     let query_req = QueryRequest {
@@ -67,7 +67,7 @@ async fn test_create_and_query_items() {
         extra_select_binds: None,
     };
 
-    let response = query_items(test_db.pool(), "test_create_query", query_req).await.unwrap();
+    let response = query_items(test_db.pool(), "test_create_query", query_req, None, None).await.unwrap();
     assert!(!response.rows.is_empty(), "Should return items");
 }
 
@@ -80,13 +80,13 @@ async fn test_update_items() {
         json!({"name": "Old Name", "price": 100.0}).as_object().unwrap().clone(),
     ];
     let create_req = CreateRequest { items };
-    let _created = create_items(test_db.pool(), "test_update", create_req).await.unwrap();
+    let _created = create_items(test_db.pool(), "test_update", create_req, None, None).await.unwrap();
 
     let update_req = UpdateRequest {
         filter: json!({"name": "Old Name"}),
         update: json!({"name": "New Name"}).as_object().unwrap().clone(),
     };
-    let updated = update_items(test_db.pool(), "test_update", update_req).await.unwrap();
+    let updated = update_items(test_db.pool(), "test_update", update_req, None, None).await.unwrap();
     assert_eq!(updated, 1, "Should update 1 item");
 }
 
@@ -99,14 +99,14 @@ async fn test_delete_items_by_pk() {
         json!({"name": "To Delete", "price": 50.0}).as_object().unwrap().clone(),
     ];
     let create_req = CreateRequest { items };
-    let created = create_items(test_db.pool(), "test_delete", create_req).await.unwrap();
+    let created = create_items(test_db.pool(), "test_delete", create_req, None, None).await.unwrap();
     let first_id = created[0].get("id").and_then(|v| v.as_i64()).unwrap();
 
     let delete_req = DeleteRequest {
         filter: None,
         pk_values: Some(vec![json!(first_id)]),
     };
-    let (deleted_count, _) = delete_items(test_db.pool(), "test_delete", delete_req).await.unwrap();
+    let (deleted_count, _) = delete_items(test_db.pool(), "test_delete", delete_req, None, None).await.unwrap();
     assert_eq!(deleted_count, 1, "Should delete 1 item");
 }
 
@@ -119,7 +119,7 @@ async fn test_invalid_column_rejected() {
         json!({"nonexistent_column": "value"}).as_object().unwrap().clone(),
     ];
     let create_req = CreateRequest { items };
-    let result = create_items(test_db.pool(), "test_invalid", create_req).await;
+    let result = create_items(test_db.pool(), "test_invalid", create_req, None, None).await;
     assert!(result.is_err(), "Should reject invalid column");
 }
 
@@ -138,6 +138,8 @@ async fn test_non_existent_slug_returns_404() {
             extra_select: None,
             extra_select_binds: None,
         },
+        None,
+        None,
     ).await;
     assert!(result.is_err(), "Non-existent slug should error");
 }

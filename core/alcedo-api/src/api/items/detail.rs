@@ -10,7 +10,6 @@ use std::sync::Arc;
 use crate::api::permission_check::{self, PermissionCheck};
 use crate::db::collection_items::{self};
 use crate::db::collections::{self};
-use crate::db::field_resolver::{self, FieldResolverOptions};
 use crate::error::AppError;
 use crate::plugins::health::AppState;
 
@@ -66,9 +65,10 @@ pub async fn get_item_handler(
     identity: RequestIdentity,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let schema = state.schema_for_headers(&headers).await?;
 
-    reject_system_collection(db_pool, &state.redis_connection, &collection_name).await?;
+    reject_system_collection(db_pool, &state.redis, &schema, &collection_name).await?;
 
     // Permission check first (needed for display value resolution and field restrictions)
     let pc =
@@ -97,84 +97,23 @@ pub async fn get_item_handler(
         })
         .unwrap_or_default();
 
-    let fields_has_dots = fields_param.iter().any(|f| f.contains('.'));
-
-    let quoted = format!("\"{}\"", collection_name);
-    let sql = if !fields_param.is_empty() {
-        let collection =
-            collections::get_cached_collection(db_pool, &state.redis_connection, &collection_name)
-                .await?;
-
-        let flat_fields: Vec<&String> = fields_param.iter().filter(|f| !f.contains('.')).collect();
-
-        let implicit_cols = ["id", "created_at", "updated_at"];
-        let mut all_names: Vec<String> = collection.fields.iter().map(|f| f.name.clone()).collect();
-        for col in &implicit_cols {
-            if !all_names.contains(&col.to_string()) {
-                all_names.push(col.to_string());
-            }
-        }
-
-        // Validate flat field names against schema (SQL injection prevention)
-        for field_name in &flat_fields {
-            if !all_names.iter().any(|n| n == *field_name) {
-                return Err(AppError::BadRequest(format!(
-                    "Unknown field: '{}'",
-                    field_name
-                )));
-            }
-        }
-
-        let mut cols: Vec<String> = if flat_fields.is_empty() {
-            all_names.iter().map(|n| format!("\"{}\"", n)).collect()
-        } else {
-            let mut names: Vec<String> = flat_fields.iter().map(|s| (*s).clone()).collect();
-            for col in &implicit_cols {
-                if !names.contains(&col.to_string()) {
-                    names.push(col.to_string());
-                }
-            }
-            names.iter().map(|n| format!("\"{}\"", n)).collect()
-        };
-
-        if fields_has_dots {
-            let all_collections =
-                collections::get_cached_collections(db_pool, &state.redis_connection).await?;
-            let mut field_opts = FieldResolverOptions {
-                depth_limit: 5,
+    let app_ctx = alcedo_common::context::headers_to_app_context(&headers);
+    let engine = alcedo_db::services::items::service::ItemsService::new(
+        &state.core,
+        &app_ctx,
+        &collection_name,
+    );
+    let item = engine
+        .read_one(
+            db_pool,
+            alcedo_db::services::items::read::OneRequest {
+                item_id: item_id.clone(),
+                fields: fields_param.clone(),
                 backlink: true,
-                visited: std::collections::HashSet::new(),
-            };
-            let fragments = field_resolver::resolve_nested_fields(
-                &fields_param,
-                &collection_name,
-                &all_collections,
-                &mut field_opts,
-            )?;
-            for fragment in &fragments {
-                cols.push(fragment.select_clause.clone());
-            }
-        }
-
-        let inner_select = cols.join(", ");
-        format!(
-            r#"SELECT row_to_json("_q".*) FROM (SELECT {} FROM {} WHERE "id" = $1::uuid) AS "_q""#,
-            inner_select, quoted,
+                depth_limit: 5,
+            },
         )
-    } else {
-        format!(
-            r#"SELECT row_to_json({}.*) FROM {} WHERE "id" = $1::uuid"#,
-            quoted, quoted,
-        )
-    };
-    println!("sq: {:?}", sql);
-    let (item,): (Value,) = sqlx::query_as(&sql)
-        .bind(&item_id)
-        .fetch_optional(db_pool)
-        .await
-        .map_err(|e| AppError::DatabaseError {
-            details: format!("Collection item query failed: {}", e),
-        })?
+        .await?
         .ok_or_else(|| {
             AppError::NotFound(format!(
                 "Item '{}' not found in collection '{}'",
@@ -230,7 +169,8 @@ pub async fn get_item_handler(
     // Now augment display values only for fields that survived restriction
     let display_augmented = match collections::get_cached_collection(
         db_pool,
-        &state.redis_connection,
+        &state.redis,
+        &schema,
         &collection_name,
     )
     .await
@@ -270,31 +210,13 @@ pub async fn get_item_handler(
         Err(_) => restricted,
     };
 
-    let final_item = match collections::get_cached_collection(
-        db_pool,
-        &state.redis_connection,
-        &collection_name,
-    )
-    .await
-    {
-        Ok(collection) => {
-            let augmented = collection_items::augment_items_with_inline_parents(
-                db_pool,
-                &[display_augmented.clone()],
-                &collection,
-                &collection_name,
-            )
-            .await
-            .unwrap_or_else(|_| vec![display_augmented.clone()]);
-            augmented.into_iter().next().unwrap_or(display_augmented)
-        }
-        Err(_) => display_augmented,
-    };
+    let final_item = display_augmented;
 
     // Resolve File field UUIDs to full file metadata objects
     let final_item = match collections::get_cached_collection(
         db_pool,
-        &state.redis_connection,
+        &state.redis,
+        &schema,
         &collection_name,
     )
     .await
@@ -340,7 +262,8 @@ pub async fn references_handler(
     headers: axum::http::HeaderMap,
     identity: RequestIdentity,
 ) -> Result<Json<Value>, AppError> {
-    let db_pool = state.db()?;
+    let db_pool = &state.db_for_headers(&headers).await?;
+    let schema = state.schema_for_headers(&headers).await?;
 
     // Check permission on source collection
     let _pc =
@@ -349,7 +272,7 @@ pub async fn references_handler(
 
     // Find referencing pairs by listing all collections and their relationship fields
     let all_collections =
-        collections::get_cached_collections(db_pool, &state.redis_connection).await?;
+        collections::get_cached_collections(db_pool, &state.redis, &schema).await?;
     let referencing_pairs: Vec<(
         &crate::db::collections::CollectionDefinition,
         &crate::db::collections::FieldDefinition,
@@ -392,13 +315,13 @@ pub async fn references_handler(
         }
     }
 
-    let references = crate::db::collections::get_referencing_items(
-        db_pool,
+    let app_ctx = alcedo_common::context::headers_to_app_context(&headers);
+    let engine = alcedo_db::services::items::service::ItemsService::new(
+        &state.core,
+        &app_ctx,
         &collection_name,
-        &item_id,
-        &collection_filters,
-    )
-    .await?;
+    );
+    let references = engine.read_references(db_pool, &item_id, &collection_filters).await?;
 
     // Apply field-level restrictions to each referencing group
     let mut filtered_references = Vec::new();

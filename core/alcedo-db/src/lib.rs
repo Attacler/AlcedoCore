@@ -1,8 +1,12 @@
+pub mod app_migrations;
 pub mod db;
+pub mod global_migrations;
 pub mod services;
 pub mod system_migrations;
 
 pub use db::*;
+
+pub use app_migrations::ensure_app_version_schema;
 
 pub use alcedo_common::error;
 pub use alcedo_common::state;
@@ -25,9 +29,12 @@ pub fn core_state_for_migrations(pool: Pool, config: AppConfig) -> CoreState {
 /// cycle (`alcedo-db` -> `alcedo-plugins` -> `alcedo-db`).
 pub async fn core_state_for_migrations_from_env() -> CoreState {
     let config = AppConfig::from_env().expect("Failed to load AppConfig from environment");
-    let db_url = config.database_url.clone().filter(|s| !s.is_empty()).or_else(|| {
-        std::env::var("DATABASE_URL").ok().filter(|s| !s.is_empty())
-    }).expect("DATABASE_URL must be set for migrations");
+    let db_url = config
+        .database_url
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("DATABASE_URL").ok().filter(|s| !s.is_empty()))
+        .expect("DATABASE_URL must be set for migrations");
     let pool = db::connect_pool(&db_url)
         .await
         .expect("Failed to connect database pool for migrations");

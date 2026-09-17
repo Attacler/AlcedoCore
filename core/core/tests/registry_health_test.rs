@@ -11,6 +11,8 @@ async fn setup_server() -> (axum_test::TestServer, TestDb) {
     let test_db = TestDb::new().await.expect("Failed to create test DB");
     let state = create_test_state_with_pool(test_db.pool().clone()).await;
 
+    refresh_schema(&state).await;
+
     let _ = plugin_core::services::auth::provision_dev_api_key(
         test_db.pool(),
         Some(DEV_API_KEY.to_string()),
@@ -18,7 +20,7 @@ async fn setup_server() -> (axum_test::TestServer, TestDb) {
 
     let session_layer = create_test_session_layer().await;
     let app = api::make_router(Arc::new(state), session_layer);
-    let server = axum_test::TestServer::new(app).expect("Failed to create test server");
+    let server = axum_test::TestServer::new(with_default_app_headers(app)).expect("Failed to create test server");
     (server, test_db)
 }
 

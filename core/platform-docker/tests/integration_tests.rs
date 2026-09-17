@@ -13,16 +13,16 @@ fn create_docker_client() -> Result<Docker, bollard::errors::Error> {
     }
 }
 
-async fn cleanup_container(docker: &Docker, container_id: &str) {
+async fn cleanup_container(docker: &Docker, deployment_id: &str) {
     let _ = docker
         .stop_container(
-            container_id,
+            deployment_id,
             None::<bollard::query_parameters::StopContainerOptions>,
         )
         .await;
     let _ = docker
         .remove_container(
-            container_id,
+            deployment_id,
             Some(bollard::query_parameters::RemoveContainerOptions {
                 force: true,
                 ..Default::default()
@@ -722,7 +722,7 @@ mod fetch_plugin_doc_tests {
     #[tokio::test]
     async fn test_fetch_plugin_doc_success() {
         let docker = require_docker();
-        let container_id = setup_container_with_doc(&docker, "# Test Doc\n\nHello world").await;
+        let deployment_id = setup_container_with_doc(&docker, "# Test Doc\n\nHello world").await;
 
         // Verify we can read the file directly via exec first
         let exec_config = bollard::exec::CreateExecOptions {
@@ -732,7 +732,7 @@ mod fetch_plugin_doc_tests {
             ..Default::default()
         };
         let exec = docker
-            .create_exec(&container_id, exec_config)
+            .create_exec(&deployment_id, exec_config)
             .await
             .expect("Failed to create exec");
 
@@ -770,13 +770,13 @@ mod fetch_plugin_doc_tests {
             output_str
         );
 
-        cleanup_container(&docker, &container_id).await;
+        cleanup_container(&docker, &deployment_id).await;
     }
 
     #[tokio::test]
     async fn test_fetch_plugin_doc_nested_path() {
         let docker = require_docker();
-        let container_id = setup_container_with_nested_doc(&docker).await;
+        let deployment_id = setup_container_with_nested_doc(&docker).await;
 
         // Verify nested file exists
         let exec_config = bollard::exec::CreateExecOptions {
@@ -786,7 +786,7 @@ mod fetch_plugin_doc_tests {
             ..Default::default()
         };
         let exec = docker
-            .create_exec(&container_id, exec_config)
+            .create_exec(&deployment_id, exec_config)
             .await
             .expect("Failed to create exec");
 
@@ -824,7 +824,7 @@ mod fetch_plugin_doc_tests {
             output_str
         );
 
-        cleanup_container(&docker, &container_id).await;
+        cleanup_container(&docker, &deployment_id).await;
     }
 
     #[tokio::test]
@@ -995,8 +995,10 @@ mod live_proxy_tests {
 
     use alcedo_api::container::PluginPlatform;
     use alcedo_api::plugins::health::{AppState, CoreState, PluginHealthMap};
+    use alcedo_api::services::redis_client::RedisClient;
     use alcedo_api::services::redis_session::{RedisPool, RedisPoolManager, RedisSessionStore};
     use deadpool::managed;
+    use platform_docker::client::DockerClient;
     use std::sync::Arc;
     use testcontainers::runners::AsyncRunner;
     use testcontainers::ContainerAsync;
@@ -1093,10 +1095,10 @@ while True:
             .create_container(Some(options), config)
             .await
             .expect("failed to create live proxy container");
-        let container_id = created.id.clone();
+        let deployment_id = created.id.clone();
         docker
             .start_container(
-                &container_id,
+                &deployment_id,
                 None::<bollard::query_parameters::StartContainerOptions>,
             )
             .await
@@ -1104,10 +1106,10 @@ while True:
 
         async {
             // Hermetic Redis for the active-plugin cache + request-id mapping.
-            let (_redis_container, conn_manager, redis_url) = start_redis().await;
+            let (_redis_container, _conn_manager, redis_url) = start_redis().await;
 
-            // Build a DockerPlatform backed by a real DockerRuntime. The global
-            // Docker client used by the runtime must be initialized first.
+            // Build a DockerPlatform backed by a real DockerClient. The global
+            // Docker client must be initialized first.
             let socket_path = std::env::var("DOCKER_SOCKET_PATH")
                 .unwrap_or_else(|_| "/var/run/docker.sock".to_string());
             platform_docker::init_docker(&socket_path)
@@ -1139,14 +1141,13 @@ while True:
                 registry_seed: None,
             };
             let platform = platform_docker::platform::DockerPlatform::new(
-                None,
-                Arc::new(platform_docker::runtime::DockerRuntime::new()),
+                DockerClient,
                 Arc::new(config),
             );
 
             // The platform must resolve the live container's bridge IP.
             let address = platform
-                .get_address(&container_id)
+                .get_address(&deployment_id)
                 .await
                 .expect("platform get_address failed")
                 .expect("platform could not resolve container address");
@@ -1188,7 +1189,7 @@ while True:
             {
                 let mut conn = redis_pool.get().await.expect("failed to get redis conn");
                 let active = serde_json::json!({
-                    "container_id": container_id,
+                    "deployment_id": deployment_id,
                     "version": "1.0.0",
                     "endpoint_count": 1,
                 });
@@ -1200,11 +1201,16 @@ while True:
             }
 
             let dir = std::env::temp_dir().join(format!("proxy-files-{}", uuid::Uuid::new_v4()));
+            let redis_client = Arc::new(
+                RedisClient::connect(&redis_url)
+                    .await
+                    .expect("failed to build RedisClient"),
+            );
             let state = AppState {
                 core: CoreState::for_pool(None),
                 health_map: Arc::new(PluginHealthMap::new(None)),
                 db_pool: None,
-                kv_store: Arc::new(alcedo_infra::kv::store::KvStore::new_test()),
+                kv_store: Arc::new(alcedo_infra::kv::store::KvStore::new(redis_client.clone())),
                 file_storage: Arc::new(
                     file_storage_local::LocalFileStorage::new(dir.to_str().unwrap())
                         .expect("failed to create file storage"),
@@ -1213,16 +1219,14 @@ while True:
                 static_registry: None,
                 registries: None,
                 platform: Some(Arc::new(platform) as Arc<dyn PluginPlatform>),
-                redis_connection: Some(redis_pool.clone()),
-                rate_limit_redis: Some(Arc::new(tokio::sync::Mutex::new(conn_manager.clone()))),
-                kv_redis: Some(Arc::new(tokio::sync::Mutex::new(conn_manager.clone()))),
+                redis: Some(redis_client.clone()),
                 logging_channel: None,
                 host_call_channel: None,
                 event_bus: Default::default(),
                 capture_body: false,
                 capture_body_max_size: 10240,
                 nested_field_depth_limit: 5,
-                session_store: RedisSessionStore::new(conn_manager),
+                session_store: RedisSessionStore::new(redis_client),
                 proxy_client: reqwest::Client::new(),
                 rate_limit_auth_requests: 10,
                 rate_limit_auth_window: 60,
@@ -1281,6 +1285,183 @@ while True:
         }
         .await;
 
-        cleanup_container(&docker, &container_id).await;
+        cleanup_container(&docker, &deployment_id).await;
+    }
+}
+
+mod prepare_deployment_tests {
+    use alcedo_api::db::queries::{PluginVersion, Registry};
+    use alcedo_api::plugins::health::{AppState, CoreState, PluginHealthMap};
+    use alcedo_api::services::redis_client::RedisClient;
+    use alcedo_api::services::redis_session::{RedisPool, RedisPoolManager, RedisSessionStore};
+    use alcedo_infra::kv::store::KvStore;
+    use deadpool::managed;
+    use sqlx::PgPool;
+    use std::sync::Arc;
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers::ContainerAsync;
+    use testcontainers::ImageExt;
+    use testcontainers_modules::postgres::Postgres;
+
+    async fn start_postgres() -> (PgPool, ContainerAsync<Postgres>) {
+        let container = Postgres::default()
+            .with_tag("16-alpine")
+            .start()
+            .await
+            .expect("failed to start postgres container");
+        let connection_string = format!(
+            "postgres://postgres:postgres@{}:{}/postgres",
+            container.get_host().await.expect("failed to get postgres host"),
+            container
+                .get_host_port_ipv4(5432)
+                .await
+                .expect("failed to get postgres port"),
+        );
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&connection_string)
+            .await
+            .expect("failed to connect to postgres");
+        (pool, container)
+    }
+
+    async fn create_versions_table(pool: &PgPool) {
+        sqlx::query(
+            "CREATE TABLE alcedo_plugins (
+                id BIGSERIAL PRIMARY KEY,
+                slug VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(pool)
+        .await
+        .expect("failed to create plugin installs table");
+        sqlx::query(
+            "CREATE TABLE alcedo_plugin_versions (
+                id BIGSERIAL PRIMARY KEY,
+                install_id BIGINT NOT NULL REFERENCES alcedo_plugins(id) ON DELETE CASCADE,
+                slug VARCHAR(255) NOT NULL,
+                version VARCHAR(100) NOT NULL,
+                deployment_id VARCHAR(255),
+                status VARCHAR(50) NOT NULL DEFAULT 'stopped',
+                is_active BOOLEAN NOT NULL DEFAULT FALSE,
+                deployed_at TIMESTAMPTZ DEFAULT NOW(),
+                public_synced BOOLEAN NOT NULL DEFAULT FALSE,
+                public_path VARCHAR(500),
+                pages_synced BOOLEAN NOT NULL DEFAULT FALSE,
+                pages_path VARCHAR(500),
+                CONSTRAINT uq_alcedo_plugin_versions_install_version UNIQUE (install_id, version)
+            )",
+        )
+        .execute(pool)
+        .await
+        .expect("failed to create plugin versions table");
+    }
+
+    fn test_state(pool: PgPool) -> AppState {
+        let redis_pool: RedisPool =
+            managed::Pool::builder(RedisPoolManager::with_url("redis://127.0.0.1:6379"))
+                .max_size(1)
+                .build()
+                .expect("failed to build redis pool");
+        let redis_client = Arc::new(RedisClient::new(redis_pool));
+        let file_dir = std::env::temp_dir().join(format!("prepare-files-{}", uuid::Uuid::new_v4()));
+        let file_storage = Arc::new(
+            file_storage_local::LocalFileStorage::new(file_dir.to_str().unwrap())
+                .expect("failed to create file storage"),
+        );
+        AppState {
+            core: CoreState::for_pool(Some(pool.clone())),
+            health_map: Arc::new(PluginHealthMap::new(None)),
+            db_pool: Some(pool),
+            kv_store: Arc::new(KvStore::new_disabled()),
+            redis: Some(redis_client.clone()),
+            plugin_network: None,
+            static_registry: None,
+            registries: None,
+            platform: None,
+            logging_channel: None,
+            host_call_channel: None,
+            event_bus: Default::default(),
+            capture_body: false,
+            capture_body_max_size: 10240,
+            nested_field_depth_limit: 5,
+            session_store: RedisSessionStore::new(redis_client),
+            proxy_client: reqwest::Client::new(),
+            rate_limit_auth_requests: 10,
+            rate_limit_auth_window: 60,
+            rate_limit_api_requests: 100,
+            rate_limit_api_window: 60,
+            file_storage,
+        }
+    }
+
+    fn test_registry() -> Registry {
+        Registry {
+            id: 0,
+            name: "test".to_string(),
+            url: "".to_string(),
+            pull_url: None,
+            auth_type: "none".to_string(),
+            username: None,
+            password: None,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_prepare_plugin_deployment_inserts_inactive_row_idempotently() {
+        let (pool, _container) = start_postgres().await;
+        create_versions_table(&pool).await;
+
+        let state = test_state(pool.clone());
+        let registry = test_registry();
+        let slug = format!("prepare-test-{}", uuid::Uuid::new_v4().simple());
+        let version = "1.0.0";
+        let image = "example.com/plugin:1.0.0";
+
+        let install_id: i64 =
+            sqlx::query_scalar("INSERT INTO alcedo_plugins (slug) VALUES ($1) RETURNING id")
+                .bind(&slug)
+                .fetch_one(&pool)
+                .await
+                .expect("failed to seed plugin install");
+
+        alcedo_api::api::admin::deployment::prepare_plugin_deployment(
+            &state, &pool, &registry, &slug, version, image, install_id, None, None,
+        )
+        .await
+        .expect("first prepare_plugin_deployment should succeed");
+
+        let row = PluginVersion::find_by_install_and_version(&pool, install_id, version)
+            .await
+            .expect("query should succeed")
+            .expect("version row should have been inserted");
+        assert!(!row.is_active, "pre-inserted row must not be active");
+        assert_eq!(row.status, "deploying");
+        assert!(row.deployment_id.is_none());
+
+        alcedo_api::api::admin::deployment::prepare_plugin_deployment(
+            &state, &pool, &registry, &slug, version, image, install_id, None, None,
+        )
+        .await
+        .expect("second prepare_plugin_deployment should succeed");
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM alcedo_plugin_versions WHERE install_id = $1 AND version = $2",
+        )
+        .bind(install_id)
+        .bind(version)
+        .fetch_one(&pool)
+        .await
+        .expect("count query should succeed");
+        assert_eq!(count, 1, "second prepare must not create a duplicate row");
+
+        let row = PluginVersion::find_by_install_and_version(&pool, install_id, version)
+            .await
+            .expect("query should succeed")
+            .expect("version row should still exist");
+        assert!(!row.is_active, "row must remain inactive after second prepare");
+        assert_eq!(row.status, "deploying");
     }
 }

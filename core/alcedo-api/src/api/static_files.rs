@@ -7,10 +7,31 @@ use mime_guess::MimeGuess;
 use std::path::Path;
 use std::sync::Arc;
 
+use alcedo_common::context::ExtractContext;
 use crate::db::queries::PluginVersion;
 use crate::db::queries::SystemSetting;
 use crate::error::AppError;
 use crate::plugins::health::AppState as PluginAppState;
+
+async fn resolve_active_version_for_context(
+    db_pool: &sqlx::PgPool,
+    slug: &str,
+    ctx: &alcedo_common::context::RequestContext,
+) -> Result<Option<PluginVersion>, AppError> {
+    let plugin = crate::api::install::resolve_install_for_context(db_pool, slug, ctx).await?;
+    PluginVersion::find_active_for_install(db_pool, plugin.id).await
+}
+
+async fn is_static_plugin_for_context(
+    db_pool: &sqlx::PgPool,
+    slug: &str,
+    ctx: &alcedo_common::context::RequestContext,
+) -> bool {
+    match crate::api::install::resolve_install_for_context(db_pool, slug, ctx).await {
+        Ok(p) => p.plugin_type == "static",
+        Err(_) => false,
+    }
+}
 
 fn reject_path_traversal(path: &str) -> Result<(), AppError> {
     if path.contains("..") {
@@ -25,6 +46,7 @@ fn reject_path_traversal(path: &str) -> Result<(), AppError> {
 pub async fn serve_static_file(
     State(state): State<Arc<PluginAppState>>,
     axum::extract::Path(path_info): axum::extract::Path<super::SlugPath>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Response {
     // Reject path traversal attempts
     if let Err(e) = reject_path_traversal(&path_info.path) {
@@ -40,11 +62,7 @@ pub async fn serve_static_file(
         }
     };
 
-    let is_static = match crate::db::queries::Plugin::find_by_slug(db_pool, &path_info.slug).await {
-        Ok(Some(p)) => p.plugin_type == "static",
-        Ok(None) => false,
-        Err(_) => false,
-    };
+    let is_static = is_static_plugin_for_context(db_pool, &path_info.slug, &ctx).await;
 
     let plugins_dir_str = std::env::var("PLUGINS_DIR").unwrap_or_else(|_| "/plugins".to_string());
     let plugins_dir = Path::new(&plugins_dir_str);
@@ -101,7 +119,13 @@ pub async fn serve_static_file(
             }
         }
     } else {
-        let active_version = match PluginVersion::find_active(db_pool, &path_info.slug).await {
+        let active_version = match resolve_active_version_for_context(
+            db_pool,
+            &path_info.slug,
+            &ctx,
+        )
+        .await
+        {
             Ok(Some(v)) => v,
             Ok(None) => {
                 tracing::warn!("[STATIC] No active version found for {}", path_info.slug);
@@ -112,8 +136,8 @@ pub async fn serve_static_file(
                 .into_response();
             }
             Err(e) => {
-                tracing::error!("[STATIC] Database error: {}", e);
-                return AppError::Internal(format!("Database error: {}", e)).into_response();
+                tracing::error!("[STATIC] Failed to resolve active version: {}", e);
+                return e.into_response();
             }
         };
 
@@ -160,7 +184,7 @@ pub async fn serve_static_file(
                         );
                     }
                 }
-                let container_id = match &active_version.container_id {
+                let deployment_id = match &active_version.deployment_id {
                     Some(id) => id.clone(),
                     None => {
                         tracing::error!("[STATIC] No container ID for active version");
@@ -172,7 +196,7 @@ pub async fn serve_static_file(
                 };
                 let file_path = format!("/public/{}", path_info.path);
                 let file_result = match state.platform.as_ref() {
-                    Some(platform) => platform.read_file(&container_id, &file_path).await,
+                    Some(platform) => platform.read_file(&deployment_id, &file_path).await,
                     None => Err(AppError::Internal("Platform not configured".to_string())),
                 };
                 match file_result {
@@ -209,7 +233,11 @@ pub async fn serve_static_file(
         })
 }
 
-async fn try_catch_all_proxy(state: &Arc<PluginAppState>, path: &str) -> Option<Response> {
+async fn try_catch_all_proxy(
+    state: &Arc<PluginAppState>,
+    path: &str,
+    ctx: &alcedo_common::context::RequestContext,
+) -> Option<Response> {
     let db_pool = state.db_pool.as_ref()?;
     let setting = SystemSetting::find_by_key(db_pool, "catch_all_plugin_slug")
         .await
@@ -234,6 +262,7 @@ async fn try_catch_all_proxy(state: &Arc<PluginAppState>, path: &str) -> Option<
             slug: slug.clone(),
             path: path.to_string(),
         }),
+        ExtractContext(ctx.clone()),
         request,
     )
     .await
@@ -278,6 +307,7 @@ async fn try_catch_all_proxy(state: &Arc<PluginAppState>, path: &str) -> Option<
 pub async fn serve_index_or_static(
     State(state): State<Arc<PluginAppState>>,
     axum::extract::Path(slug_info): axum::extract::Path<super::SlugPath>,
+    ExtractContext(ctx): ExtractContext,
 ) -> Response {
     // Reject path traversal attempts
     if let Err(e) = reject_path_traversal(&slug_info.path) {
@@ -372,12 +402,7 @@ pub async fn serve_index_or_static(
     } else if state.db_pool.is_some() {
         let db_pool = state.db_pool.as_ref().unwrap();
 
-        let is_static_from_db = match crate::db::queries::Plugin::find_by_slug(db_pool, &slug).await
-        {
-            Ok(Some(p)) => p.plugin_type == "static",
-            Ok(None) => false,
-            Err(_) => false,
-        };
+        let is_static_from_db = is_static_plugin_for_context(db_pool, &slug, &ctx).await;
 
         if is_static_from_db {
             let local_path = plugins_dir.join(&slug).join("public").join(&file_path);
@@ -418,7 +443,9 @@ pub async fn serve_index_or_static(
                 }
             }
         } else {
-            let active_version = match PluginVersion::find_active(db_pool, &slug).await {
+            let active_version = match resolve_active_version_for_context(db_pool, &slug, &ctx)
+                .await
+            {
                 Ok(Some(v)) => v,
                 Ok(None) => {
                     let full_catch_path = if slug_info.path.is_empty() {
@@ -426,7 +453,9 @@ pub async fn serve_index_or_static(
                     } else {
                         format!("{}/{}", slug, slug_info.path)
                     };
-                    if let Some(response) = try_catch_all_proxy(&state, &full_catch_path).await {
+                    if let Some(response) =
+                        try_catch_all_proxy(&state, &full_catch_path, &ctx).await
+                    {
                         return response;
                     }
                     tracing::warn!("[STATIC] No active version found for {}", slug);
@@ -437,8 +466,8 @@ pub async fn serve_index_or_static(
                     .into_response();
                 }
                 Err(e) => {
-                    tracing::error!("[STATIC] Database error: {}", e);
-                    return AppError::Internal(format!("Database error: {}", e)).into_response();
+                    tracing::error!("[STATIC] Failed to resolve active version: {}", e);
+                    return e.into_response();
                 }
             };
 
