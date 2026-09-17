@@ -1,0 +1,36 @@
+use std::sync::Arc;
+
+use sqlx::{Pool, Postgres};
+use sqlx_migrator::Info;
+use sqlx_migrator::migration::Migration;
+use sqlx_migrator::{Migrate, Migrator, Plan, vec_box};
+
+use crate::services::context::{AppContext, RequestSource};
+
+pub(crate) mod m00001_init;
+
+pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
+    vec_box![m00001_init::M0001Migration { app_context },]
+}
+
+pub async fn run_system_migrations(database_pool: &Pool<Postgres>) {
+    let mut migrator = Migrator::default().set_schema("alcedo").unwrap();
+    let app_context = AppContext {
+        app_name: "alcedo".to_string(),
+        version: "".to_string(),
+        request_source: RequestSource::Migration,
+    };
+
+    sqlx::query(&format!(
+        "CREATE SCHEMA IF NOT EXISTS {}",
+        app_context.schema_name()
+    ))
+    .execute(database_pool)
+    .await
+    .unwrap();
+
+    migrator.add_migrations(migrations(app_context)).unwrap();
+    let mut conn = database_pool.acquire().await.unwrap();
+
+    migrator.run(&mut *conn, &Plan::apply_all()).await.unwrap();
+}

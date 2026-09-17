@@ -1,0 +1,31 @@
+services:
+  database:
+    image: postgis/postgis:17-master
+    restart: always
+    volumes:
+      - ./docker/database:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "postgres"
+      POSTGRES_DB: "postgres"
+    healthcheck:
+      test: ["CMD", "pg_isready", "--host=postgres", "--username=postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_interval: 5s
+      start_period: 30s
+    ports:
+      - 5432:5432
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin4_container
+    restart: always
+    ports:
+      - "8888:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: test@test.nl
+      PGADMIN_DEFAULT_PASSWORD: test
+    volumes:
+      - ./docker/pgadmin-data:/var/lib/pgadmin
+      - ./docker/pgadmin-data-backups:/var/lib/pgadmin/storage/test_test.nl/
