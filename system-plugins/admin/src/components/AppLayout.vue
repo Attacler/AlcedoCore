@@ -28,9 +28,8 @@ const appSwitcherOpen = ref(false);
 
 const currentAppName = computed(
     () =>
-        accessibleApps.value.find(
-            (a) => a.api_name === appContext.appSlug,
-        )?.name ?? appContext.appSlug,
+        accessibleApps.value.find((a) => a.api_name === appContext.appSlug)
+            ?.name ?? appContext.appSlug,
 );
 
 async function loadAccessibleApps() {
@@ -530,6 +529,19 @@ onUnmounted(() => {
                         No items
                     </div>
                 </div>
+
+                <div
+                    v-if="appContext.appSlug && activeSection == 'settings'"
+                    class="mb-2"
+                >
+                    <Button
+                        label="Back to the app overview"
+                        icon="pi pi-arrow-left"
+                        text
+                        size="small"
+                        @click="goBackToApps"
+                    />
+                </div>
             </nav>
 
             <!-- App Switcher -->
@@ -694,15 +706,6 @@ onUnmounted(() => {
                 class="flex-1 flex flex-col grow"
                 :class="{ 'p-4': !fullPage }"
             >
-                <div v-if="appContext.appSlug" class="mb-2">
-                    <Button
-                        label="Apps"
-                        icon="pi pi-arrow-left"
-                        text
-                        size="small"
-                        @click="goBackToApps"
-                    />
-                </div>
                 <router-view
                     :key="`${appContext.appSlug}:${appContext.version}`"
                 />

@@ -9,6 +9,7 @@ import Select from "primevue/select";
 import MultiSelect from "primevue/multiselect";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
+import { Drawer } from "primevue";
 
 interface AppWithVersions {
     id: number;
@@ -328,7 +329,10 @@ onMounted(() => {
             </p>
         </div>
 
-        <div v-else class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        <div
+            v-else
+            class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4"
+        >
             <div
                 v-for="app in visibleApps"
                 :key="app.id"
@@ -387,12 +391,11 @@ onMounted(() => {
         </div>
 
         <!-- Create App dialog -->
-        <Dialog
+        <Drawer
             v-model:visible="showCreateDialog"
             header="Add App"
-            :modal="true"
             :style="{ width: '420px' }"
-            :draggable="false"
+            position="right"
         >
             <div class="flex flex-col gap-3">
                 <div class="flex flex-col gap-1">
@@ -403,6 +406,7 @@ onMounted(() => {
                         v-model="newApp.name"
                         placeholder="Name (e.g. Shop)"
                         fluid
+                        autofocus
                     />
                 </div>
                 <div class="flex flex-col gap-1">
@@ -447,7 +451,7 @@ onMounted(() => {
                     @click="createApp"
                 />
             </template>
-        </Dialog>
+        </Drawer>
 
         <!-- Edit App dialog -->
         <Dialog
