@@ -1,4 +1,6 @@
 export type { ClientOptions, AppHeaderOptions } from "./client";
+export { AlcedoApiError } from "./types/jsend";
+export type { JSendResponse } from "./types/jsend";
 export type { PlatformSettings, AppSettings } from "./appSettings";
 export type { PluginScope } from "./plugins";
 export type { TimelineEntry } from "./activityLogs";

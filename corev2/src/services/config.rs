@@ -13,6 +13,8 @@ pub struct Config {
     pub cache_strategy: String,
     pub max_login_attempts: u8,
     pub login_fatal_ttl: u16,
+    pub admin_email: Option<String>,
+    pub admin_password: Option<String>,
 }
 
 pub fn get_config() -> Config {
@@ -64,6 +66,9 @@ pub fn get_config() -> Config {
         })
         .unwrap_or(60 * 30);
 
+    let admin_email = env::var("ADMIN_EMAIL").ok();
+    let admin_password = env::var("ADMIN_PASSWORD").ok();
+
     Config {
         listen_port,
         listen_ip,
@@ -74,5 +79,7 @@ pub fn get_config() -> Config {
         cache_strategy,
         max_login_attempts,
         login_fatal_ttl,
+        admin_email,
+        admin_password,
     }
 }

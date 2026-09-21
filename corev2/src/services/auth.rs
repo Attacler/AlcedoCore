@@ -1,6 +1,7 @@
 use std::{collections::HashMap, iter::Map, time::Duration};
 
 use argon2::PasswordVerifier;
+use argon2::password_hash::PasswordHasher;
 use argon2::{Argon2, PasswordHash};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -27,6 +28,7 @@ pub struct AlcedoUser {
     pub is_admin: bool,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing)]
     pub password_hash: String,
 }
 
@@ -140,12 +142,24 @@ impl AuthService<'_> {
         execute_query(
             &self.app_state,
             format!(
-                "UPDATE alcedo_users SET last_login_at = NOW() WHERE id = {}",
+                "UPDATE alcedo.alcedo_users SET last_login = NOW() WHERE id = '{}'",
                 user_id
             ),
         )
         .await?;
         Ok(())
+    }
+
+    pub async fn hash_password(password: &str) -> Result<String, AlcedoError> {
+        let password = password.to_string();
+        spawn_blocking(move || {
+            Argon2::default()
+                .hash_password(password.as_bytes())
+                .map(|hash| hash.to_string())
+                .map_err(|e| AlcedoError::SystemError(format!("Password hashing failed: {}", e), 0))
+        })
+        .await
+        .map_err(|e| AlcedoError::SystemError(format!("Password hashing task failed: {}", e), 0))?
     }
 
     pub async fn verify_password(password: &str, hash: &str) -> Result<bool, AlcedoError> {
@@ -173,6 +187,24 @@ impl AuthService<'_> {
     }
 }
 
+fn parse_timestamp(value: Option<&Value>) -> Result<DateTime<Utc>, AlcedoError> {
+    let raw = value
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AlcedoError::SystemError("missing or invalid timestamp".to_string(), 0))?;
+
+    if let Ok(datetime) = DateTime::parse_from_rfc3339(raw) {
+        return Ok(datetime.with_timezone(&Utc));
+    }
+    if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Ok(naive.and_utc());
+    }
+
+    Err(AlcedoError::SystemError(
+        format!("Invalid timestamp: {}", raw),
+        0,
+    ))
+}
+
 impl TryFrom<Value> for AlcedoUser {
     type Error = AlcedoError;
 
@@ -181,28 +213,29 @@ impl TryFrom<Value> for AlcedoUser {
             id: Uuid::parse_str(user.get("id").and_then(|v| v.as_str()).ok_or_else(|| {
                 AlcedoError::SystemError("missing or invalid 'id'".to_string(), 0)
             })?)
-            .unwrap(),
+            .map_err(|e| AlcedoError::SystemError(format!("invalid 'id': {}", e), 0))?,
             email: user
                 .get("email")
                 .and_then(|v| v.as_str())
-                .unwrap()
+                .ok_or_else(|| {
+                    AlcedoError::SystemError("missing or invalid 'email'".to_string(), 0)
+                })?
                 .to_string(),
             display_name: user
                 .get("display_name")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
-            is_admin: user.get("is_admin").and_then(|v| v.as_bool()).unwrap(),
-            created_at: DateTime::parse_from_rfc3339(
-                user.get("created_at").and_then(|v| v.as_str()).unwrap(),
-            )
-            .unwrap()
-            .with_timezone(&Utc),
-            updated_at: DateTime::parse_from_rfc3339(
-                user.get("updated_at").and_then(|v| v.as_str()).unwrap(),
-            )
-            .unwrap()
-            .with_timezone(&Utc),
-            password_hash: "".to_string(),
+            is_admin: user
+                .get("is_admin")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            created_at: parse_timestamp(user.get("created_at"))?,
+            updated_at: parse_timestamp(user.get("updated_at"))?,
+            password_hash: user
+                .get("password_hash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         })
     }
 }

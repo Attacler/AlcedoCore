@@ -96,7 +96,7 @@ pub async fn login_handler(
     session: Session,
     headers: HeaderMap,
     Json(payload): Json<LoginRequest>,
-) -> Result<Json<LoginResponse>, AlcedoError> {
+) -> Result<Json<JSendResponse<LoginResponse>>, AlcedoError> {
     let app_context = AppContext {
         app_name: "alcedo".to_string(),
         version: "".to_string(),
@@ -135,12 +135,12 @@ pub async fn login_handler(
     let _ = session.delete().await;
 
     session
-        .insert("user_id", user.id)
+        .insert("auth_level", AuthLevel::User(user.id))
         .await
         .map_err(|e| AlcedoError::SystemError(format!("Session error: {}", e), 0))?;
 
     auth_service.update_last_login(user.id).await?;
     // TODO send event of login success + log
 
-    Ok(Json(LoginResponse { user }))
+    Ok(Json(success(LoginResponse { user })))
 }

@@ -25,7 +25,11 @@ use crate::{
         cache::{SystemCache, in_memory::InMemoryCache, redis::RedisCache},
         config::get_config,
         context::AppContext,
-        hooks::{MultiEventBus, systemhooks::setup_system_hooks},
+        hooks::{
+            HookContext, MultiEventBus,
+            systemhooks::setup_system_hooks,
+            types::lifecycle::CoreLoaded,
+        },
         postgres::{inspector::DatabaseSchema, tables::TableService},
     },
 };
@@ -77,6 +81,29 @@ async fn main() -> Result<()> {
     }
 
     setup_system_hooks(bus_clone).await;
+
+    // Dispatch the core-loaded event now that migrations, the schema cache and
+    // all system hooks are in place. Listeners (e.g. the admin bootstrap) run
+    // inside this transaction.
+    {
+        let app_context = AppContext {
+            app_name: "alcedo".to_string(),
+            version: "".to_string(),
+            request_source: services::context::RequestSource::Inspector,
+        };
+        let mut event = CoreLoaded {};
+        let mut transaction = state.database_pool.begin().await?;
+        let hook_context = HookContext {
+            context: app_context,
+            state: state.clone(),
+            tx: &mut transaction,
+        };
+        state
+            .event_bus
+            .trigger("core.loaded", &mut event, hook_context)
+            .await;
+        transaction.commit().await?;
+    }
 
     let listen_address = format!("{}:{}", state.config.listen_ip, state.config.listen_port);
 

@@ -1,4 +1,4 @@
-import ky, { type BeforeRequestHook } from "ky";
+import ky, { type AfterResponseHook, type BeforeRequestHook } from "ky";
 import { createPluginsResource } from "./plugins.js";
 import { createHealthResource } from "./health.js";
 import { createMigrationsResource } from "./migrations.js";
@@ -19,8 +19,60 @@ import { createRegistriesResource } from "./registries.js";
 import { createActivityLogsResource } from "./activityLogs.js";
 import { createAppSettingsResource } from "./appSettings.js";
 import { createDeveloperApiKeysResource } from "./developerApiKeys.js";
+import { AlcedoApiError, type JSendResponse } from "./types/jsend.js";
 
 const DEFAULT_TIMEOUT = 30_000;
+const JSON_CONTENT_TYPE = "application/json";
+
+function isJSendEnvelope(value: unknown): value is JSendResponse<unknown> {
+    if (typeof value !== "object" || value === null || !("status" in value)) {
+        return false;
+    }
+    const status = (value as { status: unknown }).status;
+    return status === "success" || status === "fail" || status === "error";
+}
+
+/**
+ * Global ky `afterResponse` hook that understands AlcedoCore's JSend envelope.
+ *
+ * - `status: "success"` → the response body is replaced with `data`, so every
+ *   `.json()` call site receives the payload directly.
+ * - `status: "fail" | "error"` → throws {@link AlcedoApiError} carrying the
+ *   JSend `message`/`code`.
+ * - Non-JSON responses (file downloads, docs, empty bodies) pass through
+ *   untouched.
+ */
+async function unwrapJSend(response: Response): Promise<Response> {
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.includes(JSON_CONTENT_TYPE)) return response;
+
+    const raw = await response.clone().text();
+    if (!raw) return response;
+
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(raw);
+    } catch {
+        return response;
+    }
+
+    if (!isJSendEnvelope(parsed)) return response;
+
+    if (parsed.status !== "success") {
+        throw new AlcedoApiError(
+            parsed.message ?? "Request failed",
+            parsed.code,
+            parsed.status,
+            response.status,
+        );
+    }
+
+    return new Response(JSON.stringify(parsed.data ?? null), {
+        status: response.status,
+        statusText: response.statusText,
+        headers: { "content-type": JSON_CONTENT_TYPE },
+    });
+}
 
 export interface ClientOptions {
     timeout?: number;
@@ -75,6 +127,10 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
                         state.request.headers as Headers,
                     );
                 }) as BeforeRequestHook,
+            ],
+            afterResponse: [
+                (({ response }: { response: Response }) =>
+                    unwrapJSend(response)) as AfterResponseHook,
             ],
         },
     });

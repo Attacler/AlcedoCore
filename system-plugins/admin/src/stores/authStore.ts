@@ -45,8 +45,9 @@ export const useAuthStore = defineStore("auth", () => {
                 loginError.value = res.error || "Invalid email or password";
                 return false;
             }
-        } catch {
-            loginError.value = "Network error — could not reach server";
+        } catch (e: any) {
+            loginError.value =
+                e?.message || "Network error — could not reach server";
             return false;
         } finally {
             loading.value = false;
