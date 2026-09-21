@@ -4,7 +4,7 @@ import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import LogDetailPopup from "@/components/LogDetailPopup.vue";
 import { formatLogTime } from "@/utils/formatters";
 import { useActivityLogStore } from "@/stores/activityLogStore";
-import { TimelineEntry } from "alcedocore-sdk-node/activityLogs";
+import { TimelineEntry } from "@alcedocore/sdk";
 
 const props = defineProps<{
     collectionName: string;

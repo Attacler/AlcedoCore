@@ -382,7 +382,7 @@ function fileUploaded(key: string, uploadResponse: MediaFile) {
                             :disabled="
                                 savingKey === key ||
                                 store.getLocalValue(key) ===
-                                    store.settings[key] ||
+                                    store.appSettings[key] ||
                                 !!store.validateValue(key)
                             "
                             severity="secondary"

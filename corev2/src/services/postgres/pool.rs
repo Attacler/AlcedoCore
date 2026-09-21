@@ -14,6 +14,7 @@ use sqlx::{
     postgres::{PgPoolOptions, PgRow},
 };
 use tokio::time::Instant;
+use uuid::Uuid;
 
 use crate::services::config::Config;
 use crate::{AppState, services::errors::AlcedoError};
@@ -211,11 +212,12 @@ pub fn pgrow_to_json(row: &PgRow) -> Result<Map<String, serde_json::Value>, sqlx
             // Get the type name from the type info
             let type_name = column.type_info().name();
 
-            // Match based on common PostgreSQL type names.
-            // Note: This matching is a simplification for illustration. In a
-            // production application, you might need a more comprehensive or
-            // library-based approach for decoding every possible type accurately.
             json_value = match type_name {
+                "UUID" => {
+                    let val: Uuid =
+                        Decode::<'_, Postgres>::decode(raw_value).map_err(sqlx::Error::Decode)?;
+                    json!(val.to_string())
+                }
                 // Common Integer Types
                 "INT2" | "INT4" | "INT8" => {
                     let val: i64 =

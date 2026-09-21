@@ -1,9 +1,10 @@
-export { createClient, resolveAppHeaders } from "./client";
 export type { ClientOptions, AppHeaderOptions } from "./client";
+export type { PlatformSettings, AppSettings } from "./appSettings";
+export type { PluginScope } from "./plugins";
+export type { TimelineEntry } from "./activityLogs";
 
 export { createHealthResource } from "./health";
 export { createPluginsResource } from "./plugins";
-export type { PluginScope } from "./plugins";
 export { createMigrationsResource } from "./migrations";
 export { createSettingsResource } from "./settings";
 export { createUsageResource } from "./usage";
@@ -22,6 +23,8 @@ export { createRegistriesResource } from "./registries";
 export { createActivityLogsResource } from "./activityLogs";
 export { createAppSettingsResource } from "./appSettings";
 export { createDeveloperApiKeysResource } from "./developerApiKeys";
+
+export { createClient, resolveAppHeaders } from "./client";
 
 export {
     PluginSchema,

@@ -115,6 +115,7 @@ impl Operation<Postgres> for M0001Operation {
             )
             .await
             .map_err(|e| Error::Box(Box::new(e)))?;
+
         let collections_id = collection_data.get(0).unwrap();
         let fields_id = collection_data.get(1).unwrap();
 

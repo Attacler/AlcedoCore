@@ -167,7 +167,7 @@ function nextKey(): string {
 function makeField(displayType: string, pos: number): any {
     const displayDef =
         (devStore.pluginDetails?.displays || []).find(
-            (e) => e.name == displayType,
+            (e: any) => e.name == displayType,
         ) ||
         getDisplayComponentDef(displayType) ||
         extensionRegistry.getDisplayWidget(displayType);
@@ -1054,9 +1054,9 @@ watch(
                                     ? 'border-blue-400 bg-blue-50/50 text-blue-500'
                                     : 'border-gray-200 hover:border-blue-300'
                             "
-@dragover.prevent="onDragOverEmptySection(section)"
-                             @dragleave="onDragLeaveEmptySection(section)"
-                             @drop.stop="onDropInSection($event, section)"
+                            @dragover.prevent="onDragOverEmptySection(section)"
+                            @dragleave="onDragLeaveEmptySection(section)"
+                            @drop.stop="onDropInSection($event, section)"
                         >
                             <template v-if="dragType || dragFieldKey"
                                 >Drop fields here</template

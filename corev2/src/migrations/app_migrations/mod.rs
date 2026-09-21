@@ -12,6 +12,7 @@ use crate::services::postgres::tables::TableService;
 pub(crate) mod m00001_init;
 pub(crate) mod m00002_views;
 pub(crate) mod m00003_fieldoptions;
+pub(crate) mod m00004_roles;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -22,6 +23,9 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
             app_context: app_context.clone()
         },
         m00003_fieldoptions::M0003Migration {
+            app_context: app_context.clone()
+        },
+        m00004_roles::M0004Migration {
             app_context: app_context.clone()
         }
     ]

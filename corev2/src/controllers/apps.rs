@@ -1,4 +1,4 @@
-use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -6,6 +6,7 @@ use crate::{
     AppState,
     services::{
         context::{AppContext, RequestSource},
+        errors::AlcedoError,
         items::{
             query::{LogicOp, Query},
             service::ItemsService,
@@ -49,7 +50,7 @@ struct GetAppVersionsResponse {
 )]
 async fn get_apps(
     State(state): State<AppState>,
-) -> (StatusCode, Json<JSendResponse<Vec<GetAppVersionsResponse>>>) {
+) -> Result<Json<JSendResponse<Vec<GetAppVersionsResponse>>>, AlcedoError> {
     let app_context = AppContext {
         app_name: "alcedo".to_string(),
         version: "".to_string(),
@@ -102,5 +103,5 @@ async fn get_apps(
         })
         .collect();
 
-    (StatusCode::OK, Json(success(parsed)))
+    Ok(Json(success(parsed)))
 }

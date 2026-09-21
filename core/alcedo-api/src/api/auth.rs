@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower_sessions::Session;
 
-use alcedo_common::context::ExtractContext;
 use crate::db::activity_logs::SystemLogEntry;
 use crate::error::AppError;
 use crate::middleware::logging::extract_request_id_from_headers;
 use crate::plugins::health::AppState;
 use crate::services::auth;
+use alcedo_common::context::ExtractContext;
 
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {

@@ -71,11 +71,7 @@ watchEffect(() => {
 onMounted(() => {
     checkMobile();
     window.addEventListener("resize", checkMobile);
-    settingsStore.fetchSettings();
-    // Global-zone forms (e.g. Users) resolve fields from the collections store;
-    // unlike AppLayout, GlobalLayout never loaded it, so field widgets failed
-    // to render on direct loads of /users/new and /users/:id.
-    collectionsStore.fetchCollections();
+    settingsStore.fetchPlatformSettings();
 });
 
 onUnmounted(() => {
@@ -88,7 +84,9 @@ onUnmounted(() => {
         <!-- Fixed Sidebar (desktop) / Drawer (mobile) -->
         <aside
             class="fixed left-0 top-0 h-dvh w-64 bg-slate-800 text-white z-40 flex flex-col transition-transform duration-300"
-            :class="isMobile && !sidebarOpen ? '-translate-x-full' : 'translate-x-0'"
+            :class="
+                isMobile && !sidebarOpen ? '-translate-x-full' : 'translate-x-0'
+            "
         >
             <!-- Logo/Brand area -->
             <div

@@ -26,5 +26,8 @@ pub async fn generate_app_state_for_migrations() -> AppState {
         })),
         event_bus,
         config,
+        cache: services::cache::SystemCache::InMemory(
+            services::cache::in_memory::InMemoryCache::new(),
+        ),
     }
 }

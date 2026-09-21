@@ -9,6 +9,8 @@ use serde_json::{Value, json};
 use serde_qs::axum::QsQuery;
 use std::collections::HashMap;
 
+use crate::services::errors::AlcedoError;
+
 pub struct CustomQuery<T>(pub T);
 
 impl<T, S> FromRequestParts<S> for CustomQuery<T>
@@ -16,7 +18,7 @@ where
     T: DeserializeOwned + 'static,
     S: Send + Sync,
 {
-    type Rejection = Response;
+    type Rejection = AlcedoError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let uri = parts.uri.clone();
@@ -50,13 +52,13 @@ where
                                     json_obj.insert(key, json_val);
                                 }
                                 Err(json_err) => {
-                                    return Err((
-                                        StatusCode::BAD_REQUEST,
-                                        Json(json!({
-                                            "error": format!("Invalid JSON in parameter '{}': {}", key, json_err)
-                                        })),
-                                    )
-                                        .into_response());
+                                    return Err(AlcedoError::InvalidInput(
+                                        format!(
+                                            "Invalid JSON in parameter '{}': {}",
+                                            key, json_err
+                                        ),
+                                        0,
+                                    ));
                                 }
                             }
                         } else if let Ok(num) = value.parse::<u64>() {
@@ -80,11 +82,7 @@ where
                     }
 
                     let json_value = serde_json::to_value(json_obj).map_err(|e| {
-                        (
-                            StatusCode::BAD_REQUEST,
-                            Json(json!({ "error": format!("Failed to construct JSON: {}", e) })),
-                        )
-                            .into_response()
+                        AlcedoError::InvalidInput(format!("Failed to construct JSON: {}", e), 0)
                     })?;
 
                     match serde_json::from_value::<T>(json_value) {
@@ -102,21 +100,13 @@ where
                                 }
                                 _ => format!("Deserialization error: {}", de_err),
                             };
-                            Err((
-                                StatusCode::BAD_REQUEST,
-                                Json(json!({ "error": error_message })),
-                            )
-                                .into_response())
+                            Err(AlcedoError::InvalidInput(error_message, 0))
                         }
                     }
                 } else {
                     let error_message = format!("Invalid query parameters: {}", qs_err);
 
-                    Err((
-                        StatusCode::BAD_REQUEST,
-                        Json(json!({ "error": error_message })),
-                    )
-                        .into_response())
+                    Err(AlcedoError::InvalidInput(error_message, 0))
                 }
             }
         }

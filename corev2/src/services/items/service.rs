@@ -46,6 +46,31 @@ impl ItemsService<'_> {
             .execute_query(self.app_context, self.app_state, self.collection)
             .await?)
     }
+
+    pub async fn get_items_by_pks<'a>(
+        &self,
+        pks: Vec<Value>,
+    ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
+        let pk = get_pk_key(&self.app_state.database_schema, &self.collection).await?;
+        let mut query = Query::default();
+        let mut hmap = FieldFilter {
+            fields: HashMap::new(),
+        };
+
+        hmap.fields.insert(
+            pk.name,
+            FieldValue::Comparison(Comparison {
+                _in: Some(pks.into()),
+                ..Default::default()
+            }),
+        );
+        query.filter = LogicOp {
+            _and: Some(vec![Filter::Field(hmap)]),
+            _or: None,
+        };
+        self.read_items_by_query(query).await
+    }
+
     pub async fn update_items_by_query<'a>(
         &self,
         query: &mut Query,
@@ -222,6 +247,7 @@ impl ItemsService<'_> {
         for query in queries {
             let query = query.unwrap();
             let result = execute_query_transaction(&self.app_state, tx, &query).await?;
+            println!("Result: {:?}", result);
             let pk = pgrow_to_json(result.get(0).unwrap()).unwrap();
             let pk = pk.get(&pk_name).unwrap().to_string();
 

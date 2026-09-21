@@ -8,9 +8,21 @@ use sqlx_migrator::{Migrate, Migrator, Plan, vec_box};
 use crate::services::context::{AppContext, RequestSource};
 
 pub(crate) mod m00001_init;
+pub(crate) mod m00002_users;
+pub(crate) mod m00003_settings;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
-    vec_box![m00001_init::M0001Migration { app_context },]
+    vec_box![
+        m00001_init::M0001Migration {
+            app_context: app_context.clone()
+        },
+        m00002_users::M0002Migration {
+            app_context: app_context.clone()
+        },
+        m00003_settings::M0003Migration {
+            app_context: app_context.clone()
+        },
+    ]
 }
 
 pub async fn run_system_migrations(database_pool: &Pool<Postgres>) {

@@ -1,14 +1,22 @@
 use core::fmt;
 
-use axum::Json;
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde::Serialize;
+use serde_json::json;
 
 use crate::services::respond::{self, JSendResponse};
 
 #[derive(Debug, Serialize)]
 pub enum AlcedoError {
+    TooManyRequests(),
     NotFound(String, i32),
     InvalidInput(String, i32),
+    Unauthorized(String, i32),
+    UnAuthenticated(),
     Other(String, i32),
     SystemError(String, i32),
     #[serde(skip_serializing)]
@@ -26,6 +34,11 @@ impl fmt::Display for AlcedoError {
             AlcedoError::SystemError(msg, code) => write!(f, "System error ({}): {}", code, msg),
             AlcedoError::Sqlx(error) => write!(f, "SQLx error: {}", error.to_string()),
             AlcedoError::Io(error) => write!(f, "IO error: {}", error.to_string()),
+            AlcedoError::UnAuthenticated() => write!(f, "Unauthenticated"),
+            AlcedoError::TooManyRequests() => write!(f, "Ratelimit"),
+            AlcedoError::Unauthorized(error, code) => {
+                write!(f, "Unauthorized ({}): {}", code, error)
+            }
         }
     }
 }
@@ -51,6 +64,9 @@ impl AlcedoError {
             AlcedoError::SystemError(msg, code) => respond::error(msg, Some(*code), None),
             AlcedoError::Sqlx(error) => respond::error(error.to_string(), Some(0), None),
             AlcedoError::Io(error) => respond::error(error.to_string(), Some(0), None),
+            AlcedoError::UnAuthenticated() => respond::error("Unauthenticated", Some(0), None),
+            AlcedoError::TooManyRequests() => respond::error("Too many requests", Some(0), None),
+            AlcedoError::Unauthorized(error, code) => respond::error(error, Some(*code), None),
         };
 
         Json(jsend_response)
@@ -63,10 +79,30 @@ impl AlcedoError {
             AlcedoError::Other(msg, _) => msg,
             AlcedoError::SystemError(msg, _) => msg,
             AlcedoError::Sqlx(error) => return error.to_string(),
+            AlcedoError::Unauthorized(error, _) => return error.to_string(),
             AlcedoError::Io(error) => return error.to_string(),
+            AlcedoError::UnAuthenticated() => return "Unauthenticated".to_string(),
+            AlcedoError::TooManyRequests() => return "Too many requests".to_string(),
         }
         .to_string()
     }
 }
 
 impl std::error::Error for AlcedoError {}
+
+impl IntoResponse for AlcedoError {
+    fn into_response(self) -> Response {
+        let status_code = match self {
+            AlcedoError::InvalidInput(_, _) => StatusCode::BAD_REQUEST,
+            AlcedoError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AlcedoError::NotFound(_, _) => StatusCode::NOT_FOUND,
+            AlcedoError::Other(_, _) => StatusCode::INTERNAL_SERVER_ERROR,
+            AlcedoError::Sqlx(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AlcedoError::SystemError(_, _) => StatusCode::INTERNAL_SERVER_ERROR,
+            AlcedoError::UnAuthenticated() => StatusCode::UNAUTHORIZED,
+            AlcedoError::TooManyRequests() => StatusCode::TOO_MANY_REQUESTS,
+            AlcedoError::Unauthorized(_, _) => StatusCode::UNAUTHORIZED,
+        };
+        (status_code, self.to_json_response::<String>()).into_response()
+    }
+}

@@ -1,24 +1,33 @@
 use std::collections::HashMap;
 
+use crate::services::items::service::ItemsService;
+use crate::services::respond::JSendResponse;
+use crate::services::respond::success;
+use crate::services::{
+    context::ExtractContext,
+    errors::AlcedoError,
+    items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query},
+    postgres::tables::get_pk_key,
+    query_parse::CustomQuery,
+};
 use axum::{
     Json, Router,
-    extract::{ Path, State},
+    extract::{Path, State},
     http::StatusCode,
-    routing::{get},
+    routing::get,
 };
 use serde_json::{Map, Value};
-use crate::services::{context::ExtractContext, errors::AlcedoError, items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query}, postgres::tables::get_pk_key, query_parse::CustomQuery};
-use crate::services::respond::JSendResponse;
-use crate::services::items::service::ItemsService;
-use crate::services::respond::success;
 
-use crate::{
-    AppState
-};
+use crate::AppState;
 
 pub fn items_controller() -> Router<AppState> {
-    return Router::new()
-        .route("/{collection}", get(get_items).post(create_items).patch(update_items).delete(delete_items));
+    return Router::new().route(
+        "/{collection}",
+        get(get_items)
+            .post(create_items)
+            .patch(update_items)
+            .delete(delete_items),
+    );
 }
 
 // @TODO Better support for de API explorer/docs. Ticket https://github.com/Authress-Engineering/openapi-explorer/issues/294 describes the issue.
@@ -48,17 +57,12 @@ async fn get_items(
     CustomQuery(query): CustomQuery<Query>,
     Path(collection): Path<String>,
     ExtractContext(context): ExtractContext,
-) -> (StatusCode, Json<JSendResponse<Vec<serde_json::Map<std::string::String, Value>>>>) {
-    let service = ItemsService::new(&state,&context,&collection);
-    let result = service.read_items_by_query(query).await;
+) -> Result<Json<JSendResponse<Vec<serde_json::Map<std::string::String, Value>>>>, AlcedoError> {
+    let service = ItemsService::new(&state, &context, &collection);
+    let result = service.read_items_by_query(query).await?;
 
-    if let Err(e) = result {
-        return (StatusCode::NOT_FOUND, e.to_json_response());
-    }
-
-    (StatusCode::OK, Json(success(result.unwrap())))
+    Ok(Json(success(result)))
 }
-
 
 #[utoipa::path(post, path = "/items/{collection}",
     params(
@@ -78,36 +82,33 @@ async fn create_items(
     CustomQuery(mut query): CustomQuery<Query>,
     ExtractContext(context): ExtractContext,
     Json(items): Json<Vec<Map<String, Value>>>,
-) -> (StatusCode, Json<JSendResponse<Vec<serde_json::Map<std::string::String, Value>>>>) {
-    let service = ItemsService::new(&state,&context,&collection);
-    let result = service.create_many(items,&mut None).await;
+) -> Result<Json<JSendResponse<Vec<serde_json::Map<std::string::String, Value>>>>, AlcedoError> {
+    let service = ItemsService::new(&state, &context, &collection);
+    let result = service.create_many(items, &mut None).await?;
 
-    if let Err(e) = result {
-        return (StatusCode::NOT_FOUND, e.to_json_response());
-    }  
-
-    let result:Vec<String> = result.unwrap();
     let mut hmap = FieldFilter {
         fields: HashMap::new(),
     };
-    let pk = get_pk_key(&state.database_schema, &collection).await.unwrap().name;
+    let pk = get_pk_key(&state.database_schema, &collection)
+        .await
+        .unwrap()
+        .name;
     hmap.fields.insert(
         pk,
         FieldValue::Comparison(Comparison {
             _in: Some(result.into()),
             ..Default::default()
-        })
+        }),
     );
-    query.filter = LogicOp{
+    query.filter = LogicOp {
         _and: Some(vec![Filter::Field(hmap)]),
-        _or: None
+        _or: None,
     };
-    
-    let result = service.read_items_by_query(query).await;
 
-    (StatusCode::OK, Json(success(result.unwrap())))
+    let result = service.read_items_by_query(query).await?;
+
+    Ok(Json(success(result)))
 }
-
 
 #[utoipa::path(patch, path = "/items/{collection}",
     params(
@@ -128,38 +129,41 @@ async fn update_items(
     CustomQuery(mut query): CustomQuery<Query>,
     ExtractContext(context): ExtractContext,
     Json(item): Json<Map<String, Value>>,
-) -> (StatusCode, Json<JSendResponse<Vec<serde_json::Map<std::string::String, Value>>>>) {
+) -> Result<Json<JSendResponse<Vec<serde_json::Map<std::string::String, Value>>>>, AlcedoError> {
     if let None = query.filter._and {
-        return (StatusCode::NOT_FOUND, AlcedoError::InvalidInput("A _and filter is required for updating items.".to_string(), 1).to_json_response());
+        return Err(AlcedoError::InvalidInput(
+            "A _and filter is required for updating items.".to_string(),
+            1,
+        ));
     }
-    let service = ItemsService::new(&state,&context,&collection);
-    let result = service.update_items_by_query(&mut query.clone(),item,&mut None).await;
- 
-    if let Err(e) = result {
-        return (StatusCode::NOT_FOUND, e.to_json_response());
-    }  
+    let service = ItemsService::new(&state, &context, &collection);
+    let result = service
+        .update_items_by_query(&mut query.clone(), item, &mut None)
+        .await?;
 
-    let result = result.unwrap();
-    let pk = get_pk_key(&state.database_schema, &collection).await.unwrap().name;
+    let pk = get_pk_key(&state.database_schema, &collection)
+        .await
+        .unwrap()
+        .name;
     let mut hmap = FieldFilter {
         fields: HashMap::new(),
     };
-    hmap.fields.insert(pk,
+    hmap.fields.insert(
+        pk,
         FieldValue::Comparison(Comparison {
             _in: Some(result.into()),
             ..Default::default()
-        })
+        }),
     );
-    query.filter = LogicOp{
+    query.filter = LogicOp {
         _and: Some(vec![Filter::Field(hmap)]),
-        _or: None
+        _or: None,
     };
-    
-    let result = service.read_items_by_query(query).await;
 
-    (StatusCode::OK, Json(success(result.unwrap())))
+    let result = service.read_items_by_query(query).await?;
+
+    Ok(Json(success(result)))
 }
-
 
 #[utoipa::path(delete, path = "/items/{collection}",
     params(
@@ -177,16 +181,15 @@ async fn delete_items(
     Path(collection): Path<String>,
     CustomQuery(query): CustomQuery<Query>,
     ExtractContext(context): ExtractContext,
-) -> (StatusCode, Json<JSendResponse<u64>>) {
+) -> Result<Json<JSendResponse<u64>>, AlcedoError> {
     if let None = query.filter._and {
-        return (StatusCode::NOT_FOUND, AlcedoError::InvalidInput("A _and filter is required for deleting items.".to_string(), 1).to_json_response());
+        return Err(AlcedoError::InvalidInput(
+            "A _and filter is required for deleting items.".to_string(),
+            1,
+        ));
     }
-    let service = ItemsService::new(&state,&context,&collection);
-    let result = service.delete_items_by_query(query,&mut None).await;
+    let service = ItemsService::new(&state, &context, &collection);
+    let result = service.delete_items_by_query(query, &mut None).await?;
 
-    if let Err(e) = result {
-        return (StatusCode::NOT_FOUND, e.to_json_response());
-    }  
-
-    (StatusCode::OK, Json(success(result.unwrap())))
+    Ok(Json(success(result)))
 }

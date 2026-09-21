@@ -1,5 +1,8 @@
 #[cfg(test)]
-use crate::{AppState, services::postgres::pool::setup_pool};
+use crate::{
+    AppState,
+    services::{cache::in_memory::InMemoryCache, postgres::pool::setup_pool},
+};
 
 #[cfg(test)]
 pub async fn get_app_state() -> AppState {
@@ -20,6 +23,7 @@ pub async fn get_app_state() -> AppState {
         database_schema: Arc::new(RwLock::new(DatabaseSchema::new())),
         event_bus,
         config,
+        cache: crate::services::cache::SystemCache::InMemory(InMemoryCache::new()),
     };
 
     let mut write_schema_lock = state.database_schema.write().await;

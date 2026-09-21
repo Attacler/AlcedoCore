@@ -5,7 +5,8 @@ use sqlx::{Pool, Postgres, Transaction};
 use tokio::sync::RwLock;
 
 use crate::services::{
-    config, errors::AlcedoError, hooks::MultiEventBus, postgres::inspector::DatabaseSchema,
+    cache::SystemCache, config, errors::AlcedoError, hooks::MultiEventBus,
+    postgres::inspector::DatabaseSchema,
 };
 
 #[derive(Clone)]
@@ -14,6 +15,7 @@ pub struct AppState {
     pub database_schema: Arc<RwLock<DatabaseSchema>>,
     pub event_bus: Arc<MultiEventBus>,
     pub config: config::Config,
+    pub cache: SystemCache,
 }
 impl AppState {
     pub async fn db_new_transaction<T, F>(&self, work: F) -> Result<T, AlcedoError>

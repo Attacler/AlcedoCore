@@ -4,27 +4,27 @@ mod services;
 mod utils;
 
 use anyhow::Result;
-use axum::{
-    Router,
-    extract::Request,
-    middleware::{self, Next},
-    response::Response,
-};
-use chrono::Local;
-use futures::future::BoxFuture;
-use sqlx::{Pool, Postgres, Transaction};
-use std::{sync::Arc, time::Instant};
+use axum::{Router, http::StatusCode, middleware, response::IntoResponse};
+use std::sync::Arc;
+use time::Duration;
+
 use tokio::sync::RwLock;
+use tower_sessions::{MemoryStore, SessionManagerLayer, cookie::SameSite};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
+mod app;
+mod platform;
 
+mod middelware;
 use crate::{
+    app::app_controller,
     migrations::{app_migrations::run_app_migrations, system_migrations::run_system_migrations},
+    platform::platform_controller,
     services::{
         app_state::AppState,
+        cache::{SystemCache, in_memory::InMemoryCache, redis::RedisCache},
         config::get_config,
         context::AppContext,
-        errors::AlcedoError,
         hooks::{MultiEventBus, systemhooks::setup_system_hooks},
         postgres::{inspector::DatabaseSchema, tables::TableService},
     },
@@ -44,11 +44,18 @@ async fn main() -> Result<()> {
     let event_bus = Arc::new(MultiEventBus::new());
     let bus_clone = Arc::clone(&event_bus);
 
+    let cache = if config.cache_strategy == "redis" {
+        SystemCache::Redis(RedisCache::new().await)
+    } else {
+        SystemCache::InMemory(InMemoryCache::new())
+    };
+
     let state = AppState {
         database_pool,
         database_schema: Arc::new(RwLock::new(DatabaseSchema::new())),
         event_bus,
         config,
+        cache,
     };
 
     let mut write_schema_lock = state.database_schema.write().await;
@@ -73,16 +80,24 @@ async fn main() -> Result<()> {
 
     let listen_address = format!("{}:{}", state.config.listen_ip, state.config.listen_port);
 
+    let session_store = MemoryStore::default();
+    let session_layer = SessionManagerLayer::new(session_store)
+        .with_name("alcedo_session")
+        .with_same_site(SameSite::Strict)
+        .with_http_only(true)
+        .with_secure(false)
+        .with_expiry(tower_sessions::Expiry::OnInactivity(Duration::seconds(
+            state.config.session_ttl_seconds,
+        )));
+
     let app = Router::new()
-        .nest("/items", controllers::items::items_controller())
-        .nest(
-            "/collections",
-            controllers::collections::tables_controller(),
-        )
-        .nest("/apps", controllers::apps::apps_controller())
-        .nest("/docs", controllers::docs::docs_controller())
-        .fallback_service(controllers::ui::ui_controller())
-        .layer(middleware::from_fn(log_request))
+        .nest("/api/app", app_controller())
+        .nest("/api/platform", platform_controller())
+        .nest("/api/docs", controllers::docs::docs_controller())
+        // .fallback_service(controllers::ui::ui_controller())
+        .fallback(handler_404)
+        .layer(middleware::from_fn(middelware::log::log_request))
+        .layer(session_layer)
         .with_state(state);
 
     println!("🚀 Listening on {listen_address}");
@@ -93,17 +108,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn log_request(req: Request, next: Next) -> Response {
-    let method = req.method().clone();
-    let uri = req.uri().clone();
-    let start = Instant::now();
-
-    let response = next.run(req).await;
-
-    let duration = start.elapsed();
-    let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S");
-
-    println!("{} {} {} {:.2?}", timestamp, method, uri.path(), duration);
-
-    response
+async fn handler_404() -> impl IntoResponse {
+    (StatusCode::NOT_FOUND, "404 Not Found")
 }

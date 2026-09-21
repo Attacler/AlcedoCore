@@ -473,7 +473,7 @@ function closeDeleteModal() {
 }
 
 watch(
-    () => settingsStore.settings["default_page_size"],
+    () => settingsStore.appSettings["default_page_size"],
     (newVal) => {
         if (newVal !== undefined && newVal !== null) {
             perPage.value = Number(newVal);

@@ -3,8 +3,10 @@ import { ref, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/authStore";
 import Password from "primevue/password";
+import { useSettingsStore } from "@/stores/settingsStore";
 
 const authStore = useAuthStore(),
+    settingsStore = useSettingsStore(),
     router = useRouter(),
     route = useRoute();
 
@@ -109,7 +111,11 @@ async function handleLogin() {
                 </template>
             </Card>
             <p class="text-center text-xs text-gray-400 mt-6">
-                Alcedo Admin Panel
+                {{
+                    settingsStore.platformSettings.platform_name ||
+                    "Alcedo Core"
+                }}
+                Panel
             </p>
         </div>
     </div>

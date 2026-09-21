@@ -1,12 +1,7 @@
-use axum::response::IntoResponse;
-use axum::{
-    Json,
-    extract::FromRequestParts,
-    http::{StatusCode, request::Parts},
-    response::Response,
-};
+use axum::{extract::FromRequestParts, http::request::Parts};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+
+use crate::services::errors::AlcedoError;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum RequestSource {
@@ -62,25 +57,17 @@ impl<S> FromRequestParts<S> for ExtractContext
 where
     S: Send + Sync,
 {
-    type Rejection = Response;
+    type Rejection = AlcedoError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let app = parts.headers.get("x-app");
+        let app: Option<&axum::http::HeaderValue> = parts.headers.get("x-app");
         let version = parts.headers.get("x-version");
 
         if let None = app {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "No app provided" })),
-            )
-                .into_response());
+            return Err(AlcedoError::InvalidInput("No app provided".to_string(), 0));
         }
         if let None = version {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "No version provided" })),
-            )
-                .into_response());
+            return Err(AlcedoError::InvalidInput("No app provided".to_string(), 0));
         }
 
         Ok(ExtractContext(AppContext {

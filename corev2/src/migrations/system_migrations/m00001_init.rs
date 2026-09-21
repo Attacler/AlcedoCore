@@ -7,59 +7,10 @@ use sqlx_migrator::operation::Operation;
 
 use crate::migrations::generate_app_state_for_migrations;
 use crate::services::context::AppContext;
+use crate::services::postgres::tables::TableBuilderExt;
 use crate::services::postgres::tables::TableService;
 pub(crate) struct M0001Operation {
     app_context: AppContext,
-}
-
-trait TableBuilderExt {
-    fn add_col(&mut self, name: &str, f: impl FnOnce(ColumnDef) -> ColumnDef) -> &mut Self;
-    fn add_fk(
-        &mut self,
-        from_context: &AppContext,
-        from_table: &str,
-        from_col: &str,
-        to_context: &AppContext,
-        to_table: &str,
-        to_col: &str,
-    ) -> &mut Self;
-}
-
-impl TableBuilderExt for TableCreateStatement {
-    fn add_col(&mut self, name: &str, f: impl FnOnce(ColumnDef) -> ColumnDef) -> &mut Self {
-        self.col(f(ColumnDef::new(Alias::new(name))));
-        self
-    }
-
-    fn add_fk(
-        &mut self,
-        from_context: &AppContext,
-        from_table: &str,
-        from_col: &str,
-        to_context: &AppContext,
-        to_table: &str,
-        to_col: &str,
-    ) -> &mut Self {
-        self.foreign_key(
-            ForeignKey::create()
-                .name(format!(
-                    "{}_{}_{}_{}",
-                    from_table, from_col, to_table, to_col
-                ))
-                .from(
-                    (
-                        Alias::new(from_context.schema_name()),
-                        Alias::new(from_table),
-                    ),
-                    Alias::new(from_col),
-                )
-                .to(
-                    (Alias::new(from_context.schema_name()), Alias::new(to_table)),
-                    Alias::new(to_col),
-                ),
-        );
-        self
-    }
 }
 
 #[async_trait::async_trait]

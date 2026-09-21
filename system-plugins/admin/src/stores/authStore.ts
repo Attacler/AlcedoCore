@@ -2,8 +2,11 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import type { User as UserInfo } from "@/types/user";
 import { useMenuStore } from "./menuStore";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
 
 export const useAuthStore = defineStore("auth", () => {
+    const { client } = useAlcedoClient();
+
     const user = ref<UserInfo | null>(null);
     const scopes = ref<string[]>([]);
     const isAdmin = ref(false);
@@ -14,15 +17,13 @@ export const useAuthStore = defineStore("auth", () => {
     async function initialize() {
         loading.value = true;
         try {
-            const res = await fetch("/api/auth/me", { credentials: "include" });
-            if (res.ok) {
-                const data = await res.json();
-                user.value = data.user;
-                scopes.value = data.scopes || [];
-                isAdmin.value = data.is_admin === true;
-                const menuStore = useMenuStore();
-                menuStore.loadMyMenus();
-            }
+            const res = await client.auth.me();
+
+            user.value = res.user;
+            scopes.value = res.scopes || [];
+            isAdmin.value = res.user.is_admin === true;
+            const menuStore = useMenuStore();
+            menuStore.loadMyMenus();
         } catch {
             user.value = null;
             scopes.value = [];
@@ -36,20 +37,12 @@ export const useAuthStore = defineStore("auth", () => {
         loading.value = true;
         loginError.value = null;
         try {
-            const res = await fetch("/api/auth/login", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                credentials: "include",
-                body: JSON.stringify({ email, password }),
-            });
-            if (res.ok) {
+            const res = await client.auth.login({ email, password });
+            if ("user" in res) {
                 await initialize();
                 return true;
             } else {
-                const err = await res
-                    .json()
-                    .catch(() => ({ error: "Login failed" }));
-                loginError.value = err.error || "Invalid email or password";
+                loginError.value = res.error || "Invalid email or password";
                 return false;
             }
         } catch {

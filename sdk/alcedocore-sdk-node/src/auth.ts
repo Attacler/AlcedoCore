@@ -24,12 +24,12 @@ export interface LoginErrorResponse {
 export function createAuthResource(ky: KyInstance) {
     return {
         me: (options?: any) =>
-            ky.get("auth/me", options).json<FetchMeResponse>(),
+            ky.get("platform/auth/me", options).json<FetchMeResponse>(),
         login: (data: any, options?: any) =>
             ky
-                .post("auth/login", { json: data, ...options })
+                .post("platform/auth/login", { json: data, ...options })
                 .json<LoginSuccessResponse | LoginErrorResponse>(),
         logout: (options?: any) =>
-            ky.post("auth/logout", options).json<{ success: true }>(),
+            ky.post("platform/auth/logout", options).json<{ success: true }>(),
     };
 }
