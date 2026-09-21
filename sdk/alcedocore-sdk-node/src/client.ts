@@ -9,6 +9,7 @@ import { createDbResource } from "./db.js";
 import { createSchemaResource } from "./schema.js";
 import { createLogsResource } from "./logs.js";
 import { createAuthResource } from "./auth.js";
+import { createSessionsResource } from "./sessions.js";
 import { createUsersResource } from "./users.js";
 import { createRolesResource } from "./roles.js";
 import { createPoliciesResource } from "./policies.js";
@@ -156,6 +157,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
         schema: createSchemaResource(kyInstance),
         logs: createLogsResource(kyInstance),
         auth: createAuthResource(kyInstance),
+        sessions: createSessionsResource(kyInstance),
         users: createUsersResource(kyInstance),
         roles: createRolesResource(kyInstance),
         policies: createPoliciesResource(kyInstance),

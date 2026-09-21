@@ -3,7 +3,7 @@ export function createItemsResource(ky: any) {
         list: (name: string, params?: Record<string, string>) =>
             ky
                 .get(
-                    `${name == "users" ? name : "items" + `/${encodeURIComponent(name)}`}`,
+                    `${name == "users" ? "platform/users" : "items" + `/${encodeURIComponent(name)}`}`,
                     { searchParams: params },
                 )
                 .json(),

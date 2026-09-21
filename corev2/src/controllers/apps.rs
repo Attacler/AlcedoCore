@@ -51,11 +51,7 @@ struct GetAppVersionsResponse {
 async fn get_apps(
     State(state): State<AppState>,
 ) -> Result<Json<JSendResponse<Vec<GetAppVersionsResponse>>>, AlcedoError> {
-    let app_context = AppContext {
-        app_name: "alcedo".to_string(),
-        version: "".to_string(),
-        request_source: RequestSource::API,
-    };
+    let app_context = AppContext::system(RequestSource::API);
     let collection = "alcedo_apps_versions".to_string();
     let service = ItemsService::new(&state, &app_context, &collection);
 

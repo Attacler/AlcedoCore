@@ -57,7 +57,9 @@ pub fn parse_value(
         }
 
         // Date/time types - string only
-        "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "interval" => {
+        "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "interval"
+        | "timestamp without time zone" | "timestamp with time zone"
+        | "time without time zone" | "time with time zone" => {
             let s = value.as_str()?.to_uppercase();
             match s.as_str() {
                 "CURRENT_DATE" => return Some(Expr::cust("CURRENT_DATE")),

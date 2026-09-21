@@ -15,6 +15,8 @@ export { createDbResource } from "./db";
 export { createSchemaResource } from "./schema";
 export { createLogsResource } from "./logs";
 export { createAuthResource } from "./auth";
+export { createSessionsResource } from "./sessions";
+export type { SessionInfo } from "./sessions";
 export { createUsersResource } from "./users";
 export { createRolesResource } from "./roles";
 export { createPoliciesResource } from "./policies";

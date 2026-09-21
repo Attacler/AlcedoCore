@@ -23,7 +23,9 @@ pub fn column_type_to_ts(
         
 
         // Date/time types - string only
-        "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "interval" => 
+        "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "interval"
+        | "timestamp without time zone" | "timestamp with time zone"
+        | "time without time zone" | "time with time zone" => 
             "string".to_string(),
         
 

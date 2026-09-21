@@ -29,6 +29,7 @@ import SettingsCategory from "@/pages/Settings/SettingsCategory.vue";
 import MediaLibrary from "@/pages/MediaLibrary.vue";
 import ApiDocs from "@/pages/ApiDocs.vue";
 import CollectionBuilder from "@/pages/CollectionBuilder.vue";
+import SettingsSession from "@/pages/Settings/SettingsSession.vue";
 
 const APP_DASHBOARD_ROUTE = "AppDashboard";
 
@@ -50,6 +51,11 @@ const routes: RouteRecordRaw[] = [
         path: "/apps",
         name: "AppsOverview",
         component: AppsOverview,
+    },
+    {
+        path: "/sessions",
+        name: "GlobalSessions",
+        component: SettingsSession,
     },
     {
         path: "/versions",

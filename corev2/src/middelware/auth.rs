@@ -1,14 +1,9 @@
-use axum::{
-    extract::{FromRequestParts, Request, State},
-    http::{Request as HttpRequest, request::Parts},
-    middleware::Next,
-    response::{IntoResponse, Response},
-};
+use axum::{extract::FromRequestParts, http::request::Parts};
 use serde::{Deserialize, Serialize};
-use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::services::{app_state::AppState, errors::AlcedoError};
+use crate::utils::session_cookie::read_session_cookie;
+use crate::{AppState, services::errors::AlcedoError, services::sessions};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AuthLevel {
@@ -16,23 +11,21 @@ pub enum AuthLevel {
     Public,
 }
 
-impl<S> FromRequestParts<S> for AuthLevel
-where
-    S: Send + Sync,
-{
+impl FromRequestParts<AppState> for AuthLevel {
     type Rejection = AlcedoError;
 
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let session = Session::from_request_parts(parts, state)
-            .await
-            .map_err(|_| AlcedoError::SystemError("Unknown session".to_string(), 0))?;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let Some(session_id) = read_session_cookie(&parts.headers, &state.config.session_cookie_name)
+        else {
+            return Ok(AuthLevel::Public);
+        };
 
-        let level = session
-            .get::<AuthLevel>("auth_level")
-            .await
-            .map_err(|_| AlcedoError::SystemError("Unknown session".to_string(), 0))?
-            .unwrap_or(AuthLevel::Public); // no session = treat as public
-
-        Ok(level)
+        match sessions::resolve(&state.cache, &session_id).await {
+            Some(user_id) => Ok(AuthLevel::User(user_id)),
+            None => Ok(AuthLevel::Public),
+        }
     }
 }

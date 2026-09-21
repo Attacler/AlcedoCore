@@ -1,4 +1,6 @@
 use std::env;
+use std::fmt::Display;
+use std::str::FromStr;
 
 use dotenvy::dotenv;
 
@@ -15,59 +17,43 @@ pub struct Config {
     pub login_fatal_ttl: u16,
     pub admin_email: Option<String>,
     pub admin_password: Option<String>,
+    pub session_cookie_name: String,
+    pub session_cookie_path: String,
+    pub session_cookie_http_only: bool,
+    pub session_cookie_secure: bool,
+    pub session_cookie_same_site: String,
+    pub session_cookie_domain: Option<String>,
 }
 
 pub fn get_config() -> Config {
     dotenv().ok();
-    let database_url =
-        env::var("DATABASE_URL").expect("Environment variable 'DATABASE_URL' is not defined!");
-    let database_max_connections = env::var("DATABASE_MAX_CONNECTIONS")
-        .map(|v| {
-            v.parse::<u32>()
-                .expect("DATABASE_MAX_CONNECTIONS must be a number")
-        })
-        .unwrap_or(5);
+    let database_url = env_required("DATABASE_URL");
+    let database_max_connections = env_or_msg("DATABASE_MAX_CONNECTIONS", 5u32, "must be a number");
+    let listen_ip = env_str("CORE_IP", "0.0.0.0");
+    let listen_port = env_or_msg("CORE_PORT", 3000u16, "must be a number");
+    let session_ttl_seconds = env_or_msg("SESSION_TTL_SECONDS", 604800i64, "must be a number");
+    let database_log_queries = env_or_msg("DATABASE_LOG_QUERIES", false, "must be a boolean");
+    let cache_strategy = env_str("CACHE_STRATEGY", "in_memory");
+    let max_login_attempts =
+        env_or_msg("MAX_LOGIN_ATTEMPTS", 5u8, "must be a number (under 255)");
+    let login_fatal_ttl = env_or_msg("LOGIN_FAIL_TTL", 60 * 30u16, "must be a number (under 26553555)");
 
-    let listen_ip = env::var("CORE_IP").unwrap_or_else(|_| "0.0.0.0".to_string());
+    let admin_email = env_opt("ADMIN_EMAIL");
+    let admin_password = env_opt("ADMIN_PASSWORD");
 
-    let listen_port = env::var("CORE_PORT")
-        .map(|v| v.parse::<u16>().expect("CORE_PORT must be a number"))
-        .unwrap_or(3000);
-    let session_ttl_seconds = env::var("SESSSION_TTL_SECONDS")
-        .map(|v| {
-            v.parse::<i64>()
-                .expect("SESSSION_TTL_SECONDS must be a number")
-        })
-        .unwrap_or(604800);
+    let session_cookie_name = env_str("SECURITY_COOKIE_NAME", "alcedo_session");
+    let session_cookie_path = env_str("SECURITY_COOKIE_PATH", "/");
+    let session_cookie_http_only = env_or_msg("SECURITY_COOKIE_HTTP_ONLY", true, "must be a boolean");
+    let session_cookie_secure = env_or_msg("SECURITY_COOKIE_SECURE", false, "must be a boolean");
+    let session_cookie_same_site = env_str("SECURITY_COOKIE_SAMESITE", "lax");
+    let session_cookie_domain = env_opt("SECURITY_COOKIE_DOMAIN");
 
-    let database_log_queries = env::var("DATABASE_LOG_QUERIES")
-        .map(|v| {
-            v.parse::<bool>()
-                .expect("DATABASE_LOG_QUERIES must be a boolean")
-        })
-        .unwrap_or(false);
-
-    let cache_strategy = env::var("CACHE_STRATEGY")
-        .map(|v| {
-            v.parse::<String>()
-                .expect("CACHE_STRATEGY must be a string")
-        })
-        .unwrap_or("in_memory".to_string());
-    let max_login_attempts = env::var("MAX_LOGIN_ATTEMPTS")
-        .map(|v| {
-            v.parse::<u8>()
-                .expect("MAX_LOGIN_ATTEMPTS must be a number (under 255)")
-        })
-        .unwrap_or(5);
-    let login_fatal_ttl = env::var("LOGIN_FAIL_TTL")
-        .map(|v| {
-            v.parse::<u16>()
-                .expect("LOGIN_FAIL_TTL must be a number (under 26553555)")
-        })
-        .unwrap_or(60 * 30);
-
-    let admin_email = env::var("ADMIN_EMAIL").ok();
-    let admin_password = env::var("ADMIN_PASSWORD").ok();
+    if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
+        eprintln!(
+            "[CONFIG] SECURITY_COOKIE_SAMESITE=none requires SECURITY_COOKIE_SECURE=true; \
+             browsers will reject the session cookie."
+        );
+    }
 
     Config {
         listen_port,
@@ -81,5 +67,44 @@ pub fn get_config() -> Config {
         login_fatal_ttl,
         admin_email,
         admin_password,
+        session_cookie_name,
+        session_cookie_path,
+        session_cookie_http_only,
+        session_cookie_secure,
+        session_cookie_same_site,
+        session_cookie_domain,
     }
+}
+
+/// Reads a required environment variable, panicking with a descriptive message
+/// when it is missing.
+fn env_required(key: &str) -> String {
+    env::var(key).unwrap_or_else(|_| panic!("Environment variable '{}' is not defined!", key))
+}
+
+/// Reads an environment variable and parses it into `T`, falling back to
+/// `default` when the variable is absent. An invalid value panics with the
+/// given message.
+fn env_or_msg<T>(key: &str, default: T, message: &str) -> T
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    match env::var(key) {
+        Ok(value) => value
+            .parse::<T>()
+            .unwrap_or_else(|_| panic!("{} {}", key, message)),
+        Err(_) => default,
+    }
+}
+
+/// Reads an environment variable as a string, falling back to `default` when
+/// the variable is absent.
+fn env_str(key: &str, default: &str) -> String {
+    env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+/// Reads an optional, non-empty environment variable as a `String`.
+fn env_opt(key: &str) -> Option<String> {
+    env::var(key).ok().filter(|value| !value.is_empty())
 }

@@ -20,6 +20,16 @@ pub struct AppContext {
 }
 
 impl AppContext {
+    /// Builds the global ("alcedo") context used for tables that are not bound
+    /// to an app/version (users, sessions, the apps registry, system settings).
+    pub fn system(request_source: RequestSource) -> Self {
+        AppContext {
+            app_name: "alcedo".to_string(),
+            version: String::new(),
+            request_source,
+        }
+    }
+
     pub fn schema_name(&self) -> String {
         if self.version.len() == 0 {
             return format!("{}", slugify(&self.app_name));

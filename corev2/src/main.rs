@@ -6,10 +6,8 @@ mod utils;
 use anyhow::Result;
 use axum::{Router, http::StatusCode, middleware, response::IntoResponse};
 use std::sync::Arc;
-use time::Duration;
 
 use tokio::sync::RwLock;
-use tower_sessions::{MemoryStore, SessionManagerLayer, cookie::SameSite};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 mod app;
@@ -86,11 +84,7 @@ async fn main() -> Result<()> {
     // all system hooks are in place. Listeners (e.g. the admin bootstrap) run
     // inside this transaction.
     {
-        let app_context = AppContext {
-            app_name: "alcedo".to_string(),
-            version: "".to_string(),
-            request_source: services::context::RequestSource::Inspector,
-        };
+        let app_context = AppContext::system(services::context::RequestSource::Inspector);
         let mut event = CoreLoaded {};
         let mut transaction = state.database_pool.begin().await?;
         let hook_context = HookContext {
@@ -107,16 +101,6 @@ async fn main() -> Result<()> {
 
     let listen_address = format!("{}:{}", state.config.listen_ip, state.config.listen_port);
 
-    let session_store = MemoryStore::default();
-    let session_layer = SessionManagerLayer::new(session_store)
-        .with_name("alcedo_session")
-        .with_same_site(SameSite::Strict)
-        .with_http_only(true)
-        .with_secure(false)
-        .with_expiry(tower_sessions::Expiry::OnInactivity(Duration::seconds(
-            state.config.session_ttl_seconds,
-        )));
-
     let app = Router::new()
         .nest("/api/app", app_controller())
         .nest("/api/platform", platform_controller())
@@ -124,7 +108,6 @@ async fn main() -> Result<()> {
         // .fallback_service(controllers::ui::ui_controller())
         .fallback(handler_404)
         .layer(middleware::from_fn(middelware::log::log_request))
-        .layer(session_layer)
         .with_state(state);
 
     println!("🚀 Listening on {listen_address}");

@@ -599,19 +599,26 @@ onUnmounted(() => {
                     class="flex items-center gap-2"
                     :class="{ 'justify-center': collapsed && !isMobile }"
                 >
-                    <div
-                        class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium shrink-0"
+                    <RouterLink
+                        :to="`/users/${authStore.user?.id}`"
+                        class="flex items-center gap-2 min-w-0 flex-1"
+                        :class="{ 'justify-center': collapsed && !isMobile }"
+                        title="Open your user record"
                     >
-                        {{ authStore.userInitial }}
-                    </div>
-                    <div v-if="!collapsed || isMobile" class="flex-1 min-w-0">
-                        <p class="text-sm font-medium text-white truncate">
-                            {{ authStore.displayName }}
-                        </p>
-                        <p class="text-xs text-slate-400 truncate">
-                            {{ authStore.user.email }}
-                        </p>
-                    </div>
+                        <div
+                            class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium shrink-0"
+                        >
+                            {{ authStore.userInitial }}
+                        </div>
+                        <div v-if="!collapsed || isMobile" class="flex-1 min-w-0">
+                            <p class="text-sm font-medium text-white truncate">
+                                {{ authStore.displayName }}
+                            </p>
+                            <p class="text-xs text-slate-400 truncate">
+                                {{ authStore.user.email }}
+                            </p>
+                        </div>
+                    </RouterLink>
                     <Button
                         v-if="!collapsed || isMobile"
                         icon="pi pi-sign-out"

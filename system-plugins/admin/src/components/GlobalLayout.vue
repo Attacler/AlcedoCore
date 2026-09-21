@@ -25,12 +25,16 @@ const navItems: GlobalNavItem[] = [
     { label: "Users", icon: "group", route: "/users" },
     { label: "Registries", icon: "cloud", route: "/registries" },
     { label: "Plugins", icon: "extension", route: "/plugins" },
+    { label: "Sessions", icon: "devices", route: "/sessions" },
 ];
 
 const visibleNavItems = computed(() =>
     authStore.isAdmin
         ? navItems
-        : navItems.filter((item) => item.route === "/apps"),
+        : navItems.filter(
+              (item) =>
+                  item.route === "/apps" || item.route === "/sessions",
+          ),
 );
 
 const branding = computed(() => ({
@@ -126,22 +130,29 @@ onUnmounted(() => {
             <!-- User Info & Logout -->
             <div
                 v-if="authStore.user"
-                class="border-t border-slate-700 px-3 py-2"
+                class="border-t border-slate-700 px-1.5 py-2"
             >
-                <div class="flex items-center gap-2">
-                    <div
-                        class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium shrink-0"
+                <div class="flex items-center gap-1">
+                    <RouterLink
+                        :to="`/users/${authStore.user?.id}`"
+                        class="flex items-center gap-2 flex-1 min-w-0 rounded-lg px-1.5 py-1 hover:bg-slate-700 transition-colors"
+                        title="Open your user record"
+                        @click="closeSidebarOnMobile"
                     >
-                        {{ authStore.userInitial }}
-                    </div>
-                    <div class="flex-1 min-w-0">
-                        <p class="text-sm font-medium text-white truncate">
-                            {{ authStore.displayName }}
-                        </p>
-                        <p class="text-xs text-slate-400 truncate">
-                            {{ authStore.user.email }}
-                        </p>
-                    </div>
+                        <div
+                            class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium shrink-0"
+                        >
+                            {{ authStore.userInitial }}
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-sm font-medium text-white truncate">
+                                {{ authStore.displayName }}
+                            </p>
+                            <p class="text-xs text-slate-400 truncate">
+                                {{ authStore.user.email }}
+                            </p>
+                        </div>
+                    </RouterLink>
                     <Button
                         icon="pi pi-sign-out"
                         text

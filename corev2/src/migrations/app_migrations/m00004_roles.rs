@@ -25,11 +25,7 @@ impl Operation<Postgres> for M0004Operation {
 
                 async move {
                     let table_service = TableService::new(&state, &app_context);
-                    let global_context = AppContext {
-                        app_name: "alcedo".to_string(),
-                        version: "".to_string(),
-                        request_source: RequestSource::Migration,
-                    };
+                    let global_context = AppContext::system(RequestSource::Migration);
 
                     table_service
                         .create_table(

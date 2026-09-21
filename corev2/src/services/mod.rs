@@ -9,3 +9,4 @@ pub mod items;
 pub mod postgres;
 pub mod query_parse;
 pub mod respond;
+pub mod sessions;

@@ -56,10 +56,7 @@ export const useAuthStore = defineStore("auth", () => {
 
     async function logout() {
         try {
-            await fetch("/api/auth/logout", {
-                method: "POST",
-                credentials: "include",
-            });
+            await client.auth.logout();
         } catch {
             // Proceed with local logout even if server call fails
         }

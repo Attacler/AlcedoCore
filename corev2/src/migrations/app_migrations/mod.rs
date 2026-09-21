@@ -34,11 +34,7 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
 pub async fn run_app_migrations(database_pool: &Pool<Postgres>) {
     let app_state = generate_app_state_for_migrations().await;
 
-    let app_context = AppContext {
-        app_name: "alcedo".to_string(),
-        version: "".to_string(),
-        request_source: RequestSource::Migration,
-    };
+    let app_context = AppContext::system(RequestSource::Migration);
     let collection = "alcedo_apps_versions".to_string();
     let table_service = TableService::new(&app_state, &app_context);
     table_service.refresh_schema().await;

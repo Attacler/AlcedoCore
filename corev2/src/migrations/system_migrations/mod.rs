@@ -10,6 +10,7 @@ use crate::services::context::{AppContext, RequestSource};
 pub(crate) mod m00001_init;
 pub(crate) mod m00002_users;
 pub(crate) mod m00003_settings;
+pub(crate) mod m00004_sessions;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -22,16 +23,15 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
         m00003_settings::M0003Migration {
             app_context: app_context.clone()
         },
+        m00004_sessions::M0004Migration {
+            app_context: app_context.clone()
+        },
     ]
 }
 
 pub async fn run_system_migrations(database_pool: &Pool<Postgres>) {
     let mut migrator = Migrator::default().set_schema("alcedo").unwrap();
-    let app_context = AppContext {
-        app_name: "alcedo".to_string(),
-        version: "".to_string(),
-        request_source: RequestSource::Migration,
-    };
+    let app_context = AppContext::system(RequestSource::Migration);
 
     sqlx::query(&format!(
         "CREATE SCHEMA IF NOT EXISTS {}",

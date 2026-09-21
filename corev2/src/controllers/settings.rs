@@ -4,7 +4,6 @@ use axum::{Json, Router, extract::State, http::StatusCode, response::IntoRespons
 use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tower_sessions::Session;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -34,11 +33,7 @@ pub struct SettingsResponse {
 async fn get_settings(
     State(state): State<AppState>,
 ) -> Result<Json<JSendResponse<SettingsResponse>>, AlcedoError> {
-    let app_context = AppContext {
-        app_name: "alcedo".to_string(),
-        version: "".to_string(),
-        request_source: RequestSource::API,
-    };
+    let app_context = AppContext::system(RequestSource::API);
 
     let collection = "alcedo_settings".to_string();
     let service = ItemsService::new(&state, &app_context, &collection);

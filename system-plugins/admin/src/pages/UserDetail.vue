@@ -7,6 +7,7 @@ import { useRolesStore } from "@/stores/rolesStore";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import RecordForm from "@/components/RecordForm.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
+import SessionsPanel from "@/components/SessionsPanel.vue";
 import type { Role } from "@/stores/rolesStore";
 import type { User } from "@/types/user";
 type UserData = User & { $permissions?: Record<string, unknown> };
@@ -352,7 +353,7 @@ async function handleSave() {
                     password: editPassword.value,
                 })) as any;
 
-                router.push(`/users/${result.data.id}`);
+                router.push(`/users/${(result as any).id}`);
             } catch (e: any) {
                 saveError.value =
                     e.data?.detail || e?.message || "Failed to create user";
@@ -379,6 +380,12 @@ async function handleDelete() {
     showDeleteDialog.value = false;
     if (ok) {
         router.push("/users");
+    }
+}
+
+function handleSessionsRevokedAll() {
+    if (user.value && user.value.id === authStore.user?.id) {
+        router.push("/login");
     }
 }
 </script>
@@ -625,6 +632,30 @@ async function handleDelete() {
                             </div>
                         </div>
                     </div>
+                </template>
+            </Card>
+
+            <!-- Sessions Card (self or admin) -->
+            <Card
+                v-if="
+                    !isNew &&
+                    user &&
+                    (authStore.isAdmin || user.id === authStore.user?.id)
+                "
+            >
+                <template #title>
+                    <div class="flex items-center gap-2">
+                        <span class="material-symbols-outlined text-purple-500"
+                            >devices</span
+                        >
+                        <span>Sessions</span>
+                    </div>
+                </template>
+                <template #content>
+                    <SessionsPanel
+                        :userId="user.id"
+                        @revoked-all="handleSessionsRevokedAll"
+                    />
                 </template>
             </Card>
 

@@ -531,7 +531,8 @@ impl ItemsService<'_> {
         let pk = get_pk_key(&self.app_state.database_schema, &self.collection).await?;
         stmt.returning_col(Alias::new(pk.name.clone()));
         stmt.values(values);
-        stmt.and_where(Expr::eq(Expr::col(Alias::new(pk.name.clone())), pk_val));
+        let parsed_pk = self.parse_pk_value(&pk.name, &pk_val).await?;
+        stmt.and_where(Expr::eq(Expr::col(Alias::new(pk.name.clone())), parsed_pk));
 
         Ok(stmt.to_string(PostgresQueryBuilder))
     }
@@ -545,11 +546,24 @@ impl ItemsService<'_> {
         ));
 
         let pk = get_pk_key(&self.app_state.database_schema, &self.collection).await?;
-        stmt.and_where(Expr::eq(
-            Expr::col(Alias::new(pk.name.clone())),
-            pk_val.clone(),
-        ));
+        let parsed_pk = self.parse_pk_value(&pk.name, pk_val).await?;
+        stmt.and_where(Expr::eq(Expr::col(Alias::new(pk.name.clone())), parsed_pk));
         Ok(stmt.to_string(PostgresQueryBuilder))
+    }
+
+    /// Converts a primary-key JSON value into a correctly-typed SQL expression.
+    async fn parse_pk_value(
+        &self,
+        pk_name: &str,
+        pk_val: &Value,
+    ) -> Result<SimpleExpr, AlcedoError> {
+        let schema = self.app_state.database_schema.read().await;
+        parse_value(&schema, &vec![], &self.collection, pk_name, pk_val.clone()).ok_or_else(|| {
+            AlcedoError::InvalidInput(
+                format!("Invalid primary key value for field {}", pk_name),
+                1,
+            )
+        })
     }
 }
 
