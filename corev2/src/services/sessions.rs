@@ -6,6 +6,7 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::item_map;
 use crate::services::{
     cache::SystemCache,
     context::{AppContext, RequestSource},
@@ -41,13 +42,14 @@ pub async fn create(
         .format(TIMESTAMP_FORMAT)
         .to_string();
 
-    let mut item = Map::new();
-    item.insert("id".to_string(), Value::String(id.to_string()));
-    item.insert("user_id".to_string(), Value::String(user_id.to_string()));
+    let mut item = item_map! {
+        "id" => id.to_string(),
+        "user_id" => user_id.to_string(),
+        "expires_at" => expires_at,
+    };
     if let Some(user_agent) = user_agent {
         item.insert("user_agent".to_string(), Value::String(user_agent));
     }
-    item.insert("expires_at".to_string(), Value::String(expires_at));
 
     service.create_many(vec![item], &mut None).await?;
 

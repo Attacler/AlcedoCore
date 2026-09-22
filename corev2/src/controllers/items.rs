@@ -38,7 +38,7 @@ pub struct DocsItemFilter {
     filter: std::collections::HashMap<String, serde_json::Value>,
 }
 
-#[utoipa::path(get, path = "/items/{collection}",
+#[utoipa::path(get, path = "/api/app/items/{collection}",
     params(
         ("collection" = String, Path, description = "Collection name."),
         ("filter" = String, Query, description = "See \"Items - Query\" for more information"),
@@ -64,7 +64,7 @@ async fn get_items(
     Ok(Json(success(result)))
 }
 
-#[utoipa::path(post, path = "/items/{collection}",
+#[utoipa::path(post, path = "/api/app/items/{collection}",
     params(
         ("collection" = String, Path, description = "Collection name."),
         ("fields" = String, Query, description = "See \"Items - Query\" for more information."),
@@ -110,7 +110,7 @@ async fn create_items(
     Ok(Json(success(result)))
 }
 
-#[utoipa::path(patch, path = "/items/{collection}",
+#[utoipa::path(patch, path = "/api/app/items/{collection}",
     params(
         ("collection" = String, Path, description = "Collection name."),
         ("filter" = String, Query, description = "Used for choosing the items to update. See \"Items - Query\" for more information"),
@@ -165,7 +165,7 @@ async fn update_items(
     Ok(Json(success(result)))
 }
 
-#[utoipa::path(delete, path = "/items/{collection}",
+#[utoipa::path(delete, path = "/api/app/items/{collection}",
     params(
         ("collection" = String, Path, description = "Collection name."),
         ("filter" = DocsItemFilter, Query, style = DeepObject, explode, description = "Used for choosing the items to delete. See \"Items - Query\" for more information"),

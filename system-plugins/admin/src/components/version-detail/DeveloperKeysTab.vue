@@ -39,23 +39,11 @@ const showRawKey = ref(false),
     rawKey = ref(""),
     rawKeyName = ref("");
 
-async function readJson(
-    method: string,
-    path: string,
-    opts?: Record<string, unknown>,
-): Promise<any> {
-    const res = await client.request(method, path, opts);
-    if (res && typeof res.json === "function") {
-        return res.json();
-    }
-    return res;
-}
-
 async function loadKeys(versionId: number = props.versionId) {
     loading.value = true;
     error.value = "";
     try {
-        const res = await readJson("get", `/versions/${versionId}/keys`);
+        const res = await client.developerApiKeys.list(versionId);
         keys.value = (res ?? []) as DeveloperKey[];
     } catch (e) {
         error.value =
@@ -75,10 +63,7 @@ async function createKey() {
     if (!name) return;
     creatingKey.value = true;
     try {
-        const res = await readJson("post", "/settings/developer/keys", {
-            json: { name, version_id: props.versionId },
-        });
-        const key = res as DeveloperKey;
+        const key = await client.developerApiKeys.create(props.versionId, name);
         rawKey.value = key.raw_key ?? "";
         rawKeyName.value = key.name;
         showRawKey.value = true;
@@ -87,8 +72,7 @@ async function createKey() {
         await loadKeys(props.versionId);
     } catch (e) {
         toast.show(
-            "Failed to create key: " +
-                (e instanceof Error ? e.message : e),
+            "Failed to create key: " + (e instanceof Error ? e.message : e),
             "error",
         );
     } finally {
@@ -114,10 +98,7 @@ function confirmRevoke(key: DeveloperKey) {
         acceptProps: { label: "Revoke", severity: "danger" },
         accept: async () => {
             try {
-                await client.request(
-                    "delete",
-                    `/settings/developer/keys/${key.id}`,
-                );
+                await client.developerApiKeys.remove(key.id);
                 toast.show("Key revoked", "success");
                 await loadKeys(props.versionId);
             } catch (e) {
@@ -197,11 +178,7 @@ watch(
                 class="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3"
             >
                 <p class="text-sm mb-2">{{ error }}</p>
-                <Button
-                    label="Retry"
-                    size="small"
-                    @click="loadKeys()"
-                />
+                <Button label="Retry" size="small" @click="loadKeys()" />
             </div>
 
             <div
@@ -218,9 +195,7 @@ watch(
                     class="flex items-center justify-between px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg"
                 >
                     <div class="flex-1 min-w-0 mr-3">
-                        <div
-                            class="text-sm font-medium text-gray-900 truncate"
-                        >
+                        <div class="text-sm font-medium text-gray-900 truncate">
                             {{ key.name }}
                         </div>
                         <div class="text-xs text-gray-500 mt-0.5">

@@ -1,4 +1,5 @@
 pub mod app_state;
+pub mod apps;
 pub mod auth;
 pub mod cache;
 pub mod config;
@@ -10,3 +11,4 @@ pub mod postgres;
 pub mod query_parse;
 pub mod respond;
 pub mod sessions;
+pub mod versions;

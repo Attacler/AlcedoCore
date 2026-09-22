@@ -18,6 +18,14 @@ pub struct AppState {
     pub cache: SystemCache,
 }
 impl AppState {
+    pub async fn refresh_schema(&self) {
+        let mut lock = self.database_schema.write().await;
+        let refreshed = lock.refresh(self).await;
+        lock.tables = refreshed.tables;
+        lock.columns = refreshed.columns;
+        lock.app_versions = refreshed.app_versions;
+    }
+
     pub async fn db_new_transaction<T, F>(&self, work: F) -> Result<T, AlcedoError>
     where
         F: for<'a> FnOnce(

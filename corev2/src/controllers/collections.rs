@@ -39,7 +39,7 @@ pub fn tables_controller() -> Router<AppState> {
         );
 }
 
-#[utoipa::path(get, path = "/collections/schema", 
+#[utoipa::path(get, path = "/api/app/collections/schema", 
     responses(
         (status = OK, body = Value)
     )
@@ -59,7 +59,7 @@ async fn get_schema(
     )
 }
 
-#[utoipa::path(get, path = "/collections/schema/ts", 
+#[utoipa::path(get, path = "/api/app/collections/schema/ts", 
     responses(
         (status = OK, body = String)
     )
@@ -187,7 +187,7 @@ struct GetCollectionsResponse {
     fields: Vec<GetCollectionFields>,
 }
 
-#[utoipa::path(get, path = "/collections",
+#[utoipa::path(get, path = "/api/app/collections",
     params(
         ("x-app" = String, Header, description = "App name header"),
         ("x-version" = String, Header, description = "Version name header"),
@@ -282,7 +282,7 @@ struct ColumnRequest {
     has_auto_increment: bool,
 }
 
-#[utoipa::path(post, path = "/collections",
+#[utoipa::path(post, path = "/api/app/collections",
     params(
         ("x-app" = String, Header, description = "App name header"),
         ("x-version" = String, Header, description = "Version name header"),
@@ -333,7 +333,7 @@ async fn create_collection(
     )))
 }
 
-#[utoipa::path(delete, path = "/collections/{name}",
+#[utoipa::path(delete, path = "/api/app/collections/{name}",
     params(
         ("name" = String, Path, description = "Collection name."),
         ("x-app" = String, Header, description = "App name header"),
@@ -362,7 +362,7 @@ struct AddFieldRequest {
     meta: FieldMetaObject,
 }
 
-#[utoipa::path(post, path = "/collections/{name}/fields",
+#[utoipa::path(post, path = "/api/app/collections/{name}/fields",
     params(
         ("name" = String, Path, description = "Collection name."),
         ("x-app" = String, Header, description = "App name header"),
@@ -387,7 +387,7 @@ async fn add_field(
     Ok(Json(respond::success::<String>("Field added".to_string())))
 }
 
-#[utoipa::path(delete, path = "/collections/{name}/fields/{field_name}",
+#[utoipa::path(delete, path = "/api/app/collections/{name}/fields/{field_name}",
     params(
         ("name" = String, Path, description = "Collection name."),
         ("field_name" = String, Path, description = "Field name."),
@@ -418,7 +418,7 @@ struct UpdateFieldRequest {
     meta: Option<FieldMetaObject>,
 }
 
-#[utoipa::path(put, path = "/collections/{name}/fields/{field}",
+#[utoipa::path(put, path = "/api/app/collections/{name}/fields/{field}",
     params(
         ("name" = String, Path, description = "Collection name."),
         ("field" = String, Path, description = "Field name."),

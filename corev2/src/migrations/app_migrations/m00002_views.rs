@@ -341,8 +341,12 @@ impl Migration<Postgres> for M0002Migration {
         "m0002_views"
     }
 
+    /// Depends on m0003_fieldoptions: the rows inserted here carry an
+    /// `options` value which requires the `alcedo_fields.options` column.
     fn parents(&self) -> Vec<Box<dyn Migration<Postgres>>> {
-        vec![]
+        vec![Box::new(super::m00003_fieldoptions::M0003Migration {
+            app_context: self.app_context.clone(),
+        })]
     }
 
     fn operations(&self) -> Vec<Box<dyn Operation<Postgres>>> {

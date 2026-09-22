@@ -29,26 +29,13 @@ const versionId = computed(() => Number(route.params.id)),
     notFound = ref(false),
     activeTab = ref("access");
 
-async function readJson(
-    method: string,
-    path: string,
-    opts?: Record<string, unknown>,
-): Promise<any> {
-    const res = await client.request(method, path, opts);
-    if (res && typeof res.json === "function") {
-        return res.json();
-    }
-    return res;
-}
-
 async function load() {
     loading.value = true;
     error.value = "";
     notFound.value = false;
     versionName.value = null;
     try {
-        const res = await readJson("get", "/versions");
-        const list = (res?.data ?? []) as VersionRow[];
+        const list = await client.versions.list();
         const match = list.find((v) => v.id === versionId.value);
         if (match) {
             versionName.value = match.version_name;
@@ -56,8 +43,7 @@ async function load() {
             notFound.value = true;
         }
     } catch (e) {
-        error.value =
-            e instanceof Error ? e.message : "Failed to load version";
+        error.value = e instanceof Error ? e.message : "Failed to load version";
     } finally {
         loading.value = false;
     }
@@ -139,8 +125,7 @@ watch(() => route.params.id, reloadIfAdmin);
                                 >arrow_back</span
                             >
                         </RouterLink>
-                        <span
-                            class="material-symbols-outlined text-blue-600"
+                        <span class="material-symbols-outlined text-blue-600"
                             >layers</span
                         >
                         <h1

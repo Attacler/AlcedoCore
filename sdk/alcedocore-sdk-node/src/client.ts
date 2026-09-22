@@ -10,6 +10,8 @@ import { createSchemaResource } from "./schema.js";
 import { createLogsResource } from "./logs.js";
 import { createAuthResource } from "./auth.js";
 import { createSessionsResource } from "./sessions.js";
+import { createAppsResource } from "./apps.js";
+import { createVersionsResource } from "./versions.js";
 import { createUsersResource } from "./users.js";
 import { createRolesResource } from "./roles.js";
 import { createPoliciesResource } from "./policies.js";
@@ -158,6 +160,8 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
         logs: createLogsResource(kyInstance),
         auth: createAuthResource(kyInstance),
         sessions: createSessionsResource(kyInstance),
+        apps: createAppsResource(kyInstance),
+        versions: createVersionsResource(kyInstance),
         users: createUsersResource(kyInstance),
         roles: createRolesResource(kyInstance),
         policies: createPoliciesResource(kyInstance),

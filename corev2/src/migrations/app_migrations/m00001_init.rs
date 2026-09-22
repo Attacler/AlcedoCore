@@ -4,11 +4,11 @@ use sqlx_migrator::error::Error;
 use sqlx_migrator::migration::Migration;
 use sqlx_migrator::operation::Operation;
 
+use crate::item_map;
 use crate::migrations::generate_app_state_for_migrations;
 use crate::services::context::AppContext;
 use crate::services::items::service::ItemsService;
 use crate::services::postgres::tables::{TableBuilderExt, TableService};
-use serde_json::json;
 pub(crate) struct M0001Operation {
     app_context: AppContext,
 }
@@ -88,28 +88,22 @@ impl Operation<Postgres> for M0001Operation {
         let collection_data = collections_service
             .create_many(
                 vec![
-                    json!({
-                        "app_name": app_context.app_api_name(),
-                        "app_version": app_context.version_api_name(),
-                        "name": "Alcedo collections",
-                        "table": "alcedo_collections",
-                        "singleton": false,
-                        "hidden": true,
-                    })
-                    .as_object()
-                    .unwrap()
-                    .to_owned(),
-                    json!({
-                        "app_name": app_context.app_api_name(),
-                        "app_version": app_context.version_api_name(),
-                        "name": "Alcedo fields",
-                        "table": "alcedo_collections",
-                        "singleton": false,
-                        "hidden": true,
-                    })
-                    .as_object()
-                    .unwrap()
-                    .to_owned(),
+                    item_map! {
+                        "app_name" => app_context.app_api_name(),
+                        "app_version" => app_context.version_api_name(),
+                        "name" => "Alcedo collections",
+                        "table" => "alcedo_collections",
+                        "singleton" => false,
+                        "hidden" => true,
+                    },
+                    item_map! {
+                        "app_name" => app_context.app_api_name(),
+                        "app_version" => app_context.version_api_name(),
+                        "name" => "Alcedo fields",
+                        "table" => "alcedo_collections",
+                        "singleton" => false,
+                        "hidden" => true,
+                    },
                 ],
                 &mut None,
             )
@@ -126,14 +120,11 @@ impl Operation<Postgres> for M0001Operation {
             "app_name,app_version,name,icon_name,icon_color,singleton,hidden,sort_field"
                 .split(",")
                 .map(|name| {
-                    json!({
-                        "collection_id": collections_id,
-                        "api_name": name,
-                        "display_name": name,
-                    })
-                    .as_object()
-                    .unwrap()
-                    .to_owned()
+                    item_map! {
+                        "collection_id" => collections_id,
+                        "api_name" => name,
+                        "display_name" => name,
+                    }
                 })
                 .collect();
 
@@ -146,14 +137,11 @@ impl Operation<Postgres> for M0001Operation {
         let fields_in_fields_table = "id,collection_id,name"
             .split(",")
             .map(|name| {
-                json!({
-                    "collection_id": fields_id,
-                    "api_name": name,
-                    "display_name": name,
-                })
-                .as_object()
-                .unwrap()
-                .to_owned()
+                item_map! {
+                    "collection_id" => fields_id,
+                    "api_name" => name,
+                    "display_name" => name,
+                }
             })
             .collect();
 

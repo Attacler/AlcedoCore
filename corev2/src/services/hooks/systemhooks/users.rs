@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use serde_json::json;
 use uuid::Uuid;
 
+use crate::item_map;
 use crate::services::{
     auth::AuthService,
     hooks::{MultiEventBus, types::lifecycle::CoreLoaded},
@@ -52,16 +52,11 @@ pub async fn setup_user_hooks(bus: &Arc<MultiEventBus>) {
                 }
             };
 
-            let item = json!({
-                "id": Uuid::new_v4().to_string(),
-                "email": email.clone(),
-                "password_hash": password_hash,
-                "is_admin": true,
-            });
-
-            let items = vec![match item.as_object() {
-                Some(map) => map.clone(),
-                None => return,
+            let items = vec![item_map! {
+                "id" => Uuid::new_v4().to_string(),
+                "email" => email.clone(),
+                "password_hash" => password_hash,
+                "is_admin" => true,
             }];
 
             let mut transaction = Some(tx);

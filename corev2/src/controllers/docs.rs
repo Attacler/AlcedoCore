@@ -3,11 +3,19 @@ use utoipa::OpenApi;
 
 use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
-use crate::controllers::{apps, collections, items};
+use crate::controllers::{
+    apps, auth, collections, developer_keys, items, sessions, settings, users, versions,
+};
 
 #[derive(OpenApi)]
 #[openapi(
     paths(
+        // Items
+        items::get_items,
+        items::create_items,
+        items::update_items,
+        items::delete_items,
+        // Collections
         collections::get_schema,
         collections::get_ts_schema,
         collections::get_collections,
@@ -16,11 +24,37 @@ use crate::controllers::{apps, collections, items};
         collections::add_field,
         collections::drop_field,
         collections::update_field,
-        apps::get_apps,
-        items::get_items,
-        items::create_items,
-        items::update_items,
-        items::delete_items,
+        // Settings
+        settings::get_settings,
+        // Auth
+        auth::get_me,
+        auth::login_handler,
+        auth::logout_handler,
+        // Users
+        users::list_users,
+        users::get_user,
+        users::get_user_sessions,
+        users::revoke_user_session,
+        users::revoke_all_user_sessions,
+        // Sessions
+        sessions::list_own_sessions,
+        sessions::revoke_own_session,
+        sessions::revoke_all_own_sessions,
+        // Apps
+        apps::list_apps,
+        apps::get_app,
+        apps::create_app,
+        apps::update_app,
+        apps::delete_app,
+        apps::me_apps,
+        // Versions
+        versions::list_versions,
+        versions::create_version,
+        versions::delete_version,
+        // Developer keys
+        developer_keys::list_keys,
+        developer_keys::create_key,
+        developer_keys::delete_key,
     ),
     info(
         title = "Alcedo Core API",
@@ -31,11 +65,33 @@ use crate::controllers::{apps, collections, items};
         ),
     ),
     tags(
-        (name = "Items - Query", description = include_str!("../../api-docs/query.md"))
+        (name = "Items - Query", description = concat!(
+            "<details><summary><strong>Filter reference</strong></summary>\n\n",
+            include_str!("../../api-docs/query.md"),
+            "\n\n</details>"
+        )),
+        (name = "Collections", description = "Collection and field definitions (app-scoped)"),
+        (name = "Apps", description = "Applications and their version bindings"),
+        (name = "Versions", description = "Deployment versions. `production` is the template version"),
+        (name = "Developer Keys", description = "Version-scoped developer API keys"),
+        (name = "Auth", description = "Session authentication"),
+        (name = "Users", description = "User administration"),
+        (name = "Sessions", description = "Session management"),
+        (name = "Settings", description = "Platform settings"),
     ),
     components(
         schemas (
-            DocsItemFilter
+            DocsItemFilter,
+            apps::AppWithVersions,
+            apps::CreateAppRequest,
+            apps::UpdateAppRequest,
+            apps::UserAppAccess,
+            versions::VersionRow,
+            versions::CreateVersionRequest,
+            developer_keys::DeveloperKeyResponse,
+            developer_keys::CreateDeveloperKeyRequest,
+            settings::SettingsResponse,
+            auth::LoginRequest,
         )
     )
 )]

@@ -1,22 +1,14 @@
-use std::collections::HashMap;
-
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
-use chrono::DateTime;
+use axum::{Json, Router, extract::State, routing::get};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use utoipa::ToSchema;
-use uuid::Uuid;
 
 use crate::{
     AppState,
-    middelware::auth::AuthLevel,
     services::{
         context::{AppContext, RequestSource},
         errors::AlcedoError,
-        items::{
-            query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query},
-            service::ItemsService,
-        },
+        items::{query::Query, service::ItemsService},
         respond::{JSendResponse, success},
     },
 };
@@ -25,11 +17,14 @@ pub fn settings_controller() -> Router<AppState> {
     return Router::new().route("/", get(get_settings));
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SettingsResponse {
     pub platform_name: String,
 }
 
+#[utoipa::path(get, path = "/api/platform/settings", tag = "Settings",
+    responses((status = OK, body = JSendResponse<SettingsResponse>))
+)]
 async fn get_settings(
     State(state): State<AppState>,
 ) -> Result<Json<JSendResponse<SettingsResponse>>, AlcedoError> {

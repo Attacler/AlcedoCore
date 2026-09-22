@@ -2,23 +2,31 @@ import { DeveloperKey, DeveloperKeyWithRawKey } from "./types/developerKeys";
 
 export function createDeveloperApiKeysResource(ky: any) {
     return {
-        list: (options?: any) =>
+        /// List developer keys, optionally scoped to a single version.
+        list: (versionId?: number, options?: any) =>
             ky
-                .get("/settings/developer/keys", options)
-                .json() as DeveloperKey[],
-        create: (name: string, options?: any) =>
+                .get("platform/developer-keys", {
+                    ...options,
+                    searchParams:
+                        versionId != null
+                            ? { version_id: String(versionId) }
+                            : undefined,
+                })
+                .json() as Promise<DeveloperKey[]>,
+        /// Create a key bound to a version. The raw key is only returned once.
+        create: (versionId: number, name: string, options?: any) =>
             ky
-                .post("/settings/developer/keys", {
-                    json: { name },
+                .post("platform/developer-keys", {
+                    json: { name, version_id: versionId },
                     ...options,
                 })
-                .json() as DeveloperKeyWithRawKey,
+                .json() as Promise<DeveloperKeyWithRawKey>,
         remove: (id: string, options?: any) =>
             ky
                 .delete(
-                    `/settings/developer/keys/${encodeURIComponent(id)}`,
+                    `platform/developer-keys/${encodeURIComponent(id)}`,
                     options,
                 )
-                .json() as { success: boolean },
+                .json() as Promise<{ success: boolean }>,
     };
 }

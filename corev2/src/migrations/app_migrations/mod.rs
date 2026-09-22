@@ -62,7 +62,7 @@ pub async fn run_app_migrations(database_pool: &Pool<Postgres>) {
             app_name: app
                 .get("app_id")
                 .unwrap()
-                .get("name")
+                .get("api_name")
                 .unwrap()
                 .as_str()
                 .unwrap()

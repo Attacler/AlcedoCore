@@ -50,6 +50,29 @@ pub struct RemainingQuery {
 }
 
 impl Query {
+    /// A query filtered on a single equality (`field = value`).
+    pub fn eq(field: &str, value: Value) -> Self {
+        Query::eq_all(&[(field, value)])
+    }
+
+    /// A query filtered on several equalities, combined with `AND`.
+    pub fn eq_all(fields: &[(&str, Value)]) -> Self {
+        let mut map: HashMap<String, FieldValue> = HashMap::new();
+        for (field, value) in fields {
+            map.insert(
+                (*field).to_string(),
+                FieldValue::Comparison(Comparison::eq(value.clone())),
+            );
+        }
+        Query {
+            filter: LogicOp {
+                _and: Some(vec![Filter::Field(FieldFilter { fields: map })]),
+                _or: None,
+            },
+            ..Default::default()
+        }
+    }
+
     /// Executes the Query object as a sql query on the database
     ///
     /// * `state` - The appstate
@@ -794,4 +817,14 @@ pub struct Comparison {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _nbetween: Option<(Value, Value)>, //@TODO _intersects,_nintersects,_intersects_bbox,_nintersects_bbox,_regex,_some,_none
+}
+
+impl Comparison {
+    /// `field = value`
+    pub fn eq(value: Value) -> Self {
+        Comparison {
+            _eq: Some(value),
+            ..Default::default()
+        }
+    }
 }

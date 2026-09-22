@@ -113,6 +113,15 @@ impl TableBuilderExt for TableAlterStatement {
     }
 }
 
+/// Drops a schema and every object inside it. Callers are responsible for
+/// refreshing the schema cache afterwards.
+pub async fn drop_schema(state: &AppState, schema_name: &str) -> Result<(), AlcedoError> {
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name))
+        .execute(&*state.database_pool)
+        .await?;
+    Ok(())
+}
+
 #[derive(ToSchema, Serialize, Default, Deserialize)]
 pub struct FieldCreationObject {
     pub name: String,

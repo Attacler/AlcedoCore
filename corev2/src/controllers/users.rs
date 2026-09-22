@@ -39,13 +39,6 @@ fn without_secret(mut user: Map<String, Value>) -> Map<String, Value> {
     user
 }
 
-async fn require_user(auth_level: AuthLevel) -> Result<Uuid, AlcedoError> {
-    match auth_level {
-        AuthLevel::User(user_id) => Ok(user_id),
-        AuthLevel::Public => Err(AlcedoError::UnAuthenticated()),
-    }
-}
-
 async fn caller_is_admin(state: &AppState, user_id: Uuid) -> Result<bool, AlcedoError> {
     let context = AppContext::system(RequestSource::API);
     let collection = USERS_COLLECTION.to_string();
@@ -79,12 +72,15 @@ fn parse_user_id(id: &str) -> Result<Uuid, AlcedoError> {
     Uuid::parse_str(id).map_err(|_| AlcedoError::InvalidInput("Invalid user id".to_string(), 0))
 }
 
+#[utoipa::path(get, path = "/api/platform/users", tag = "Users",
+    responses((status = OK, body = serde_json::Value))
+)]
 async fn list_users(
     State(state): State<AppState>,
     CustomQuery(query): CustomQuery<Query>,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Vec<Map<String, Value>>>>, AlcedoError> {
-    let caller = require_user(auth_level).await?;
+    let caller = auth_level.require_user()?;
     if !caller_is_admin(&state, caller).await? {
         return Err(AlcedoError::Forbidden(
             "Admin access required".to_string(),
@@ -106,12 +102,16 @@ async fn list_users(
     Ok(Json(success(users)))
 }
 
+#[utoipa::path(get, path = "/api/platform/users/{id}", tag = "Users",
+    params(("id" = Uuid, Path, description = "User id")),
+    responses((status = OK, body = serde_json::Value))
+)]
 async fn get_user(
     State(state): State<AppState>,
     Path(id): Path<String>,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Map<String, Value>>>, AlcedoError> {
-    let caller = require_user(auth_level).await?;
+    let caller = auth_level.require_user()?;
     let target = parse_user_id(&id)?;
     authorize(&state, caller, target).await?;
 
@@ -129,6 +129,10 @@ async fn get_user(
     Ok(Json(success(without_secret(user))))
 }
 
+#[utoipa::path(get, path = "/api/platform/users/{id}/sessions", tag = "Users",
+    params(("id" = Uuid, Path, description = "User id")),
+    responses((status = OK, body = serde_json::Value))
+)]
 async fn get_user_sessions(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -136,7 +140,7 @@ async fn get_user_sessions(
     CustomQuery(query): CustomQuery<Query>,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Vec<Map<String, Value>>>>, AlcedoError> {
-    let caller = require_user(auth_level).await?;
+    let caller = auth_level.require_user()?;
     let target = parse_user_id(&id)?;
     authorize(&state, caller, target).await?;
 
@@ -147,12 +151,19 @@ async fn get_user_sessions(
     Ok(Json(success(rows)))
 }
 
+#[utoipa::path(delete, path = "/api/platform/users/{id}/sessions/{session_id}", tag = "Users",
+    params(
+        ("id" = Uuid, Path, description = "User id"),
+        ("session_id" = String, Path, description = "Session id"),
+    ),
+    responses((status = OK, body = JSendResponse<bool>))
+)]
 async fn revoke_user_session(
     State(state): State<AppState>,
     Path((id, session_id)): Path<(String, String)>,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<bool>>, AlcedoError> {
-    let caller = require_user(auth_level).await?;
+    let caller = auth_level.require_user()?;
     let target = parse_user_id(&id)?;
     authorize(&state, caller, target).await?;
 
@@ -164,12 +175,16 @@ async fn revoke_user_session(
     Ok(Json(success(true)))
 }
 
+#[utoipa::path(delete, path = "/api/platform/users/{id}/sessions", tag = "Users",
+    params(("id" = Uuid, Path, description = "User id")),
+    responses((status = OK, body = JSendResponse<bool>))
+)]
 async fn revoke_all_user_sessions(
     State(state): State<AppState>,
     Path(id): Path<String>,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<bool>>, AlcedoError> {
-    let caller = require_user(auth_level).await?;
+    let caller = auth_level.require_user()?;
     let target = parse_user_id(&id)?;
     authorize(&state, caller, target).await?;
 

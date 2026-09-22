@@ -77,10 +77,7 @@ export const useAuthStore = defineStore("auth", () => {
         }
         // non-admin: fetch accessible apps
         try {
-            const res = await fetch("/api/me/apps", { credentials: "include" });
-            if (!res.ok) return "/apps";
-            const data = await res.json();
-            const apps = data?.data ?? data ?? [];
+            const apps = await client.apps.me();
             if (apps.length === 1) {
                 const a = apps[0];
                 return `/app/${encodeURIComponent(a.api_name)}/${encodeURIComponent(a.version)}/dashboard`;

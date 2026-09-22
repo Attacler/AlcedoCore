@@ -1,21 +1,22 @@
-use std::{collections::HashMap, iter::Map, time::Duration};
+use std::time::Duration;
 
 use argon2::PasswordVerifier;
 use argon2::password_hash::PasswordHasher;
 use argon2::{Argon2, PasswordHash};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::task::spawn_blocking;
 use uuid::Uuid;
 
+use crate::item_map;
 use crate::services::postgres::pool::execute_query;
 use crate::services::{
     app_state::AppState,
     context::AppContext,
     errors::AlcedoError,
     items::{
-        query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query},
+        query::Query,
         service::ItemsService,
     },
 };
@@ -54,23 +55,9 @@ impl AuthService<'_> {
         }
         let service = ItemsService::new(&self.app_state, &self.app_context, &self.collection);
 
-        let mut query = Query::default();
-        let mut hmap = FieldFilter {
-            fields: HashMap::new(),
-        };
-
-        hmap.fields.insert(
-            "email".to_string(),
-            FieldValue::Comparison(Comparison {
-                _eq: Some(email.into()),
-                ..Default::default()
-            }),
-        );
-        query.filter = LogicOp {
-            _and: Some(vec![Filter::Field(hmap)]),
-            _or: None,
-        };
-        let user = service.read_items_by_query(query).await?;
+        let user = service
+            .read_items_by_query(Query::eq("email", email.into()))
+            .await?;
 
         if user.len() == 0 {
             return Ok(None);
@@ -79,6 +66,147 @@ impl AuthService<'_> {
         let user: AlcedoUser = Value::Object(user.clone()).try_into()?;
 
         Ok(Some(user))
+    }
+
+    pub async fn is_admin(&self, user_id: Uuid) -> Result<bool, AlcedoError> {
+        let service = ItemsService::new(&self.app_state, &self.app_context, &self.collection);
+
+        let rows = service
+            .get_items_by_pks(vec![Value::String(user_id.to_string())])
+            .await?;
+
+        Ok(rows
+            .first()
+            .and_then(|row| row.get("is_admin"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
+    }
+
+    pub async fn resolve_version_id(
+        &self,
+        app_name: &str,
+        version_name: &str,
+    ) -> Result<Option<i32>, AlcedoError> {
+        let apps = self
+            .read_by_eq(
+                "alcedo_apps",
+                "api_name",
+                Value::String(app_name.to_string()),
+            )
+            .await?;
+        let Some(app_id) = apps
+            .first()
+            .and_then(|row| row.get("id"))
+            .and_then(Value::as_i64)
+        else {
+            return Ok(None);
+        };
+
+        let versions = self
+            .read_by_eq(
+                "alcedo_versions",
+                "version_name",
+                Value::String(version_name.to_string()),
+            )
+            .await?;
+        let Some(version_id) = versions
+            .first()
+            .and_then(|row| row.get("id"))
+            .and_then(Value::as_i64)
+        else {
+            return Ok(None);
+        };
+
+        let collection = "alcedo_apps_versions".to_string();
+        let service = ItemsService::new(&self.app_state, &self.app_context, &collection);
+        let link = service
+            .read_items_by_query(Query {
+                fields: vec!["id".to_string()],
+                limit: 0,
+                ..Query::eq_all(&[
+                    ("app_id", Value::from(app_id)),
+                    ("version_id", Value::from(version_id)),
+                ])
+            })
+            .await?;
+
+        Ok(if link.is_empty() {
+            None
+        } else {
+            Some(version_id as i32)
+        })
+    }
+
+    pub async fn authenticate_developer_key(
+        &self,
+        version_id: i32,
+        token: &str,
+    ) -> Result<Option<Uuid>, AlcedoError> {
+        let prefix = &token[..token.len().min(10)];
+
+        let collection = "alcedo_developer_api_keys".to_string();
+        let service = ItemsService::new(&self.app_state, &self.app_context, &collection);
+
+        let rows = service
+            .read_items_by_query(Query {
+                fields: vec!["id".to_string(), "key_hash".to_string()],
+                limit: 0,
+                ..Query::eq_all(&[
+                    ("key_prefix", Value::String(prefix.to_string())),
+                    ("version_id", Value::from(version_id)),
+                    ("is_active", Value::Bool(true)),
+                ])
+            })
+            .await?;
+
+        for row in rows {
+            let Some(hash) = row.get("key_hash").and_then(Value::as_str) else {
+                continue;
+            };
+            if AuthService::verify_password(token, hash).await? {
+                let id = row
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .and_then(|s| Uuid::parse_str(s).ok());
+                if let Some(id) = id {
+                    self.touch_developer_key(id).await?;
+                }
+                return Ok(id);
+            }
+        }
+        Ok(None)
+    }
+
+    async fn touch_developer_key(&self, id: Uuid) -> Result<(), AlcedoError> {
+        let collection = "alcedo_developer_api_keys".to_string();
+        let service = ItemsService::new(&self.app_state, &self.app_context, &collection);
+
+        let mut query = Query::eq("id", Value::String(id.to_string()));
+
+        let update = item_map! {
+            "last_used_at" => Utc::now().to_rfc3339(),
+        };
+
+        service
+            .update_items_by_query(&mut query, update, &mut None)
+            .await?;
+        Ok(())
+    }
+
+    async fn read_by_eq(
+        &self,
+        collection: &str,
+        field: &str,
+        value: Value,
+    ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
+        let collection = collection.to_string();
+        let service = ItemsService::new(&self.app_state, &self.app_context, &collection);
+        service
+            .read_items_by_query(Query {
+                limit: 0,
+                ..Query::eq(field, value)
+            })
+            .await
     }
 
     pub async fn check_login_lockout(&self, email: &str) -> Result<(), AlcedoError> {
@@ -124,7 +252,8 @@ impl AuthService<'_> {
     pub async fn record_failed_login(&self, email: &str) {
         let key = format!("{}{}", LOGIN_FAIL_PREFIX, email);
 
-        self.app_state
+        let _ = self
+            .app_state
             .cache
             .incr_with_ttl(
                 &key,
@@ -135,7 +264,7 @@ impl AuthService<'_> {
 
     pub async fn clear_login_failures(&self, email: &str) {
         let key = format!("{}{}", LOGIN_FAIL_PREFIX, email);
-        self.app_state.cache.del(&key).await;
+        let _ = self.app_state.cache.del(&key).await;
     }
 
     pub async fn update_last_login(&self, user_id: Uuid) -> Result<(), AlcedoError> {

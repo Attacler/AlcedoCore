@@ -26,6 +26,7 @@ const navItems: GlobalNavItem[] = [
     { label: "Registries", icon: "cloud", route: "/registries" },
     { label: "Plugins", icon: "extension", route: "/plugins" },
     { label: "Sessions", icon: "devices", route: "/sessions" },
+    { label: "Development", icon: "code", route: "/development" },
 ];
 
 const visibleNavItems = computed(() =>

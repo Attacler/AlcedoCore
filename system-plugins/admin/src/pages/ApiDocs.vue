@@ -10,9 +10,9 @@ const error = ref<string | null>(null);
 onMounted(() => {
     try {
         SwaggerUI({
-            url: "/api/openapi.json",
+            url: "/api/docs/openapi.json",
             dom_id: "#swagger-ui",
-            deepLinking: true,
+            deepLinking: false,
             docExpansion: "list",
             defaultModelsExpandDepth: 1,
             defaultModelExpandDepth: 1,

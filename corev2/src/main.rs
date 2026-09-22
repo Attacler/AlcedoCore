@@ -24,11 +24,11 @@ use crate::{
         config::get_config,
         context::AppContext,
         hooks::{
-            HookContext, MultiEventBus,
-            systemhooks::setup_system_hooks,
+            HookContext, MultiEventBus, systemhooks::setup_system_hooks,
             types::lifecycle::CoreLoaded,
         },
         postgres::{inspector::DatabaseSchema, tables::TableService},
+        versions::VersionsService,
     },
 };
 
@@ -78,11 +78,10 @@ async fn main() -> Result<()> {
         table_service.refresh_meta().await;
     }
 
+    VersionsService::new(&state).ensure_default().await?;
+
     setup_system_hooks(bus_clone).await;
 
-    // Dispatch the core-loaded event now that migrations, the schema cache and
-    // all system hooks are in place. Listeners (e.g. the admin bootstrap) run
-    // inside this transaction.
     {
         let app_context = AppContext::system(services::context::RequestSource::Inspector);
         let mut event = CoreLoaded {};

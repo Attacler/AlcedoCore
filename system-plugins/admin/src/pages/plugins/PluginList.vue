@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { usePluginsStore } from "@/stores/plugins";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import CollectionData from "@/pages/CollectionData.vue";
 import { createClientDataSource } from "@/utils/collectionDataSource";
 import { appPath } from "@/utils/appHeaders";
@@ -10,7 +11,8 @@ import Select from "primevue/select";
 
 const route = useRoute(),
     router = useRouter(),
-    store = usePluginsStore();
+    store = usePluginsStore(),
+    { client } = useAlcedoClient();
 
 const inAppZone = computed(
     () => route.meta.appZone === true || route.path.startsWith("/app/"),
@@ -30,26 +32,12 @@ const levelOptions: { value: "global" | "version" | "app"; label: string }[] = [
 
 async function loadPickers() {
     try {
-        const versionsRes = await fetch("/api/versions");
-        if (versionsRes.ok) {
-            const data = await versionsRes.json();
-            versions.value = (data?.data ?? []) as {
-                id: number;
-                version_name: string;
-            }[];
-        }
+        versions.value = await client.versions.list();
     } catch {
         /* best-effort */
     }
     try {
-        const appsRes = await fetch("/api/apps");
-        if (appsRes.ok) {
-            const data = await appsRes.json();
-            apps.value = (data?.data ?? []) as {
-                api_name: string;
-                name: string;
-            }[];
-        }
+        apps.value = await client.apps.list();
     } catch {
         /* best-effort */
     }

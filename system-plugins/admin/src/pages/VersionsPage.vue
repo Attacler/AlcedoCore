@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { RouterLink } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useAuthStore } from "@/stores/authStore";
 import { useToast } from "@/composables/useToast";
-import { useConfirm } from "primevue/useconfirm";
-import { formatDate, slugify } from "@/utils/formatters";
+import { slugify } from "@/utils/formatters";
 import Card from "primevue/card";
 import Button from "primevue/button";
 import Dialog from "primevue/dialog";
@@ -17,52 +16,20 @@ interface VersionRow {
     version_name: string;
 }
 
-interface DeveloperKey {
-    id: string;
-    name: string;
-    version_id: number;
-    key_prefix: string;
-    is_active: boolean;
-    created_at: string;
-    last_used_at: string | null;
-    raw_key?: string;
-}
-
 const authStore = useAuthStore(),
+    router = useRouter(),
     toast = useToast(),
-    confirm = useConfirm(),
     { client } = useAlcedoClient();
 
 const versions = ref<VersionRow[]>([]),
     loading = ref(true),
     error = ref("");
 
-const keysByVersion = ref<Record<number, DeveloperKey[]>>({}),
-    keysLoading = ref<Record<number, boolean>>({}),
-    keysError = ref<Record<number, string>>({}),
-    showKeyForm = ref<Record<number, boolean>>({}),
-    newKeyName = ref<Record<number, string>>({}),
-    creatingKey = ref<Record<number, boolean>>({});
-
-async function readJson(
-    method: string,
-    path: string,
-    opts?: Record<string, unknown>,
-): Promise<any> {
-    const res = await client.request(method, path, opts);
-    if (res && typeof res.json === "function") {
-        return res.json();
-    }
-    return res;
-}
-
 async function load() {
     loading.value = true;
     error.value = "";
     try {
-        const res = await readJson("get", "/versions");
-        versions.value = (res?.data ?? []) as VersionRow[];
-        await Promise.all(versions.value.map((v) => loadKeys(v.id)));
+        versions.value = await client.versions.list();
     } catch (e) {
         error.value =
             e instanceof Error ? e.message : "Failed to load versions";
@@ -71,27 +38,13 @@ async function load() {
     }
 }
 
-async function loadKeys(versionId: number) {
-    keysLoading.value = { ...keysLoading.value, [versionId]: true };
-    keysError.value = { ...keysError.value, [versionId]: "" };
-    try {
-        const res = await readJson("get", `/versions/${versionId}/keys`);
-        keysByVersion.value = {
-            ...keysByVersion.value,
-            [versionId]: (res ?? []) as DeveloperKey[],
-        };
-    } catch (e) {
-        keysError.value = {
-            ...keysError.value,
-            [versionId]:
-                e instanceof Error ? e.message : "Failed to load API keys",
-        };
-    } finally {
-        keysLoading.value = { ...keysLoading.value, [versionId]: false };
-    }
+function viewApps(version: VersionRow) {
+    router.push({
+        path: "/apps",
+        query: { version: version.version_name },
+    });
 }
 
-// ── Create version ──
 const showCreateVersion = ref(false),
     creatingVersion = ref(false),
     createVersionError = ref(""),
@@ -112,9 +65,7 @@ async function createVersion() {
     creatingVersion.value = true;
     createVersionError.value = "";
     try {
-        await client.request("post", "/versions", {
-            json: { version_name },
-        });
+        await client.versions.create({ version_name });
         showCreateVersion.value = false;
         toast.show("Version created", "success");
         await load();
@@ -126,81 +77,6 @@ async function createVersion() {
     } finally {
         creatingVersion.value = false;
     }
-}
-
-// ── Create key ──
-const showRawKey = ref(false),
-    rawKey = ref(""),
-    rawKeyName = ref("");
-
-function toggleKeyForm(versionId: number) {
-    showKeyForm.value = {
-        ...showKeyForm.value,
-        [versionId]: !showKeyForm.value[versionId],
-    };
-    newKeyName.value = { ...newKeyName.value, [versionId]: "" };
-}
-
-async function createKey(versionId: number) {
-    const name = (newKeyName.value[versionId] ?? "").trim();
-    if (!name) return;
-    creatingKey.value = { ...creatingKey.value, [versionId]: true };
-    try {
-        const res = await readJson("post", "/settings/developer/keys", {
-            json: { name, version_id: versionId },
-        });
-        const key = res as DeveloperKey;
-        rawKey.value = key.raw_key ?? "";
-        rawKeyName.value = key.name;
-        showRawKey.value = true;
-        showKeyForm.value = { ...showKeyForm.value, [versionId]: false };
-        newKeyName.value = { ...newKeyName.value, [versionId]: "" };
-        await loadKeys(versionId);
-    } catch (e) {
-        toast.show(
-            "Failed to create key: " +
-                (e instanceof Error ? e.message : e),
-            "error",
-        );
-    } finally {
-        creatingKey.value = { ...creatingKey.value, [versionId]: false };
-    }
-}
-
-function copyRawKey() {
-    navigator.clipboard.writeText(rawKey.value);
-    toast.show("Copied to clipboard", "success");
-}
-
-// ── Revoke key ──
-function confirmRevoke(versionId: number, key: DeveloperKey) {
-    confirm.require({
-        message: `Revoke developer API key "${key.name}"? This cannot be undone.`,
-        header: "Revoke Key",
-        icon: "pi pi-exclamation-triangle",
-        rejectProps: {
-            label: "Cancel",
-            severity: "secondary",
-            outlined: true,
-        },
-        acceptProps: { label: "Revoke", severity: "danger" },
-        accept: async () => {
-            try {
-                await client.request(
-                    "delete",
-                    `/settings/developer/keys/${key.id}`,
-                );
-                toast.show("Key revoked", "success");
-                await loadKeys(versionId);
-            } catch (e) {
-                toast.show(
-                    "Failed to revoke key: " +
-                        (e instanceof Error ? e.message : e),
-                    "error",
-                );
-            }
-        },
-    });
 }
 
 onMounted(() => {
@@ -234,7 +110,7 @@ onMounted(() => {
                         Versions
                     </h1>
                     <p class="text-sm text-gray-500">
-                        Manage versions and their developer API keys.
+                        Manage deployment versions.
                     </p>
                 </div>
                 <Button
@@ -292,14 +168,19 @@ onMounted(() => {
                                     :value="`#${version.id}`"
                                     severity="secondary"
                                 />
+                                <Tag
+                                    v-if="version.version_name === 'production'"
+                                    value="main"
+                                    severity="success"
+                                />
                             </div>
                             <div class="flex items-center gap-1 shrink-0">
                                 <Button
-                                    label="New Key"
-                                    icon="pi pi-plus"
+                                    label="View apps"
+                                    icon="pi pi-th-large"
                                     size="small"
                                     outlined
-                                    @click="toggleKeyForm(version.id)"
+                                    @click="viewApps(version)"
                                 />
                                 <RouterLink
                                     custom
@@ -314,104 +195,6 @@ onMounted(() => {
                                         @click="navigate"
                                     />
                                 </RouterLink>
-                            </div>
-                        </div>
-                    </template>
-                    <template #content>
-                        <div
-                            v-if="showKeyForm[version.id]"
-                            class="flex flex-wrap items-center gap-2 mb-3"
-                        >
-                            <InputText
-                                v-model="newKeyName[version.id]"
-                                placeholder="Key name (e.g. CI/CD)"
-                                class="flex-1 min-w-40"
-                                @keyup.enter="createKey(version.id)"
-                            />
-                            <Button
-                                label="Create"
-                                icon="pi pi-key"
-                                size="small"
-                                :disabled="
-                                    !(newKeyName[version.id] ?? '').trim() ||
-                                    creatingKey[version.id]
-                                "
-                                @click="createKey(version.id)"
-                            />
-                            <Button
-                                label="Cancel"
-                                severity="secondary"
-                                size="small"
-                                @click="toggleKeyForm(version.id)"
-                            />
-                        </div>
-
-                        <div
-                            v-if="keysLoading[version.id]"
-                            class="text-sm text-gray-400 py-2"
-                        >
-                            Loading keys…
-                        </div>
-
-                        <div
-                            v-else-if="keysError[version.id]"
-                            class="text-sm text-red-600 py-2"
-                        >
-                            {{ keysError[version.id] }}
-                        </div>
-
-                        <div
-                            v-else-if="
-                                (keysByVersion[version.id] ?? []).length === 0
-                            "
-                            class="text-sm text-gray-500 py-2"
-                        >
-                            No developer API keys for this version.
-                        </div>
-
-                        <div v-else class="space-y-2">
-                            <div
-                                v-for="key in keysByVersion[version.id]"
-                                :key="key.id"
-                                class="flex items-center justify-between px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg"
-                            >
-                                <div class="flex-1 min-w-0 mr-3">
-                                    <div
-                                        class="text-sm font-medium text-gray-900 truncate"
-                                    >
-                                        {{ key.name }}
-                                    </div>
-                                    <div class="text-xs text-gray-500 mt-0.5">
-                                        {{ key.key_prefix }}••••• Created
-                                        {{ formatDate(key.created_at) }}
-                                        <span v-if="key.last_used_at">
-                                            · Last used
-                                            {{ formatDate(key.last_used_at) }}
-                                        </span>
-                                    </div>
-                                </div>
-                                <div
-                                    class="flex items-center gap-2 shrink-0"
-                                >
-                                    <Tag
-                                        v-if="key.is_active"
-                                        value="Active"
-                                        severity="success"
-                                    />
-                                    <Tag
-                                        v-else
-                                        value="Inactive"
-                                        severity="warn"
-                                    />
-                                    <Button
-                                        icon="pi pi-trash"
-                                        severity="danger"
-                                        text
-                                        size="small"
-                                        title="Revoke key"
-                                        @click="confirmRevoke(version.id, key)"
-                                    />
-                                </div>
                             </div>
                         </div>
                     </template>
@@ -445,6 +228,10 @@ onMounted(() => {
                             slugify(newVersionName.trim()) || "—"
                         }}</span>
                     </p>
+                    <p class="text-xs text-gray-500">
+                        New versions inherit the apps defined in the
+                        <span class="font-medium">production</span> version.
+                    </p>
                 </div>
                 <p v-if="createVersionError" class="text-sm text-red-600">
                     {{ createVersionError }}
@@ -464,41 +251,6 @@ onMounted(() => {
                     :loading="creatingVersion"
                     @click="createVersion"
                 />
-            </template>
-        </Dialog>
-
-        <!-- Raw key dialog -->
-        <Dialog
-            v-model:visible="showRawKey"
-            header="Developer API Key"
-            :modal="true"
-            :style="{ width: '560px' }"
-            :draggable="false"
-        >
-            <div
-                class="bg-yellow-50 border border-yellow-200 rounded-lg p-4 space-y-2"
-            >
-                <p class="text-sm font-medium text-yellow-800">
-                    Key "{{ rawKeyName }}" created. Copy it now, it won't be
-                    shown again.
-                </p>
-                <div class="flex flex-wrap items-center gap-2">
-                    <InputText
-                        :value="rawKey"
-                        readonly
-                        class="flex-1 font-mono text-xs"
-                    />
-                    <Button
-                        label="Copy"
-                        icon="pi pi-copy"
-                        severity="warn"
-                        size="small"
-                        @click="copyRawKey"
-                    />
-                </div>
-            </div>
-            <template #footer>
-                <Button label="Done" @click="showRawKey = false" />
             </template>
         </Dialog>
     </div>

@@ -28,6 +28,7 @@ import SettingsIndex from "@/pages/Settings/SettingsIndex.vue";
 import SettingsCategory from "@/pages/Settings/SettingsCategory.vue";
 import MediaLibrary from "@/pages/MediaLibrary.vue";
 import ApiDocs from "@/pages/ApiDocs.vue";
+import Development from "@/pages/Development.vue";
 import CollectionBuilder from "@/pages/CollectionBuilder.vue";
 import SettingsSession from "@/pages/Settings/SettingsSession.vue";
 
@@ -56,6 +57,16 @@ const routes: RouteRecordRaw[] = [
         path: "/sessions",
         name: "GlobalSessions",
         component: SettingsSession,
+    },
+    {
+        path: "/development",
+        name: "Development",
+        component: Development,
+    },
+    {
+        path: "/development/api-docs",
+        name: "DevelopmentApiDocs",
+        component: ApiDocs,
     },
     {
         path: "/versions",

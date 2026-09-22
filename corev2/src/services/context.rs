@@ -2,6 +2,7 @@ use axum::{extract::FromRequestParts, http::request::Parts};
 use serde::{Deserialize, Serialize};
 
 use crate::services::errors::AlcedoError;
+use crate::utils::slugify;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum RequestSource {
@@ -44,21 +45,6 @@ impl AppContext {
     pub fn version_api_name(&self) -> String {
         slugify(&self.version)
     }
-}
-fn slugify(input: &str) -> String {
-    input
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if &c.to_string() == "$" {
-                '_'
-            } else if c.is_ascii_alphanumeric() {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 pub struct ExtractContext(pub AppContext);

@@ -6,6 +6,7 @@ import { useMenuStore } from "@/stores/menuStore";
 import type { MenuSection, MenuItem } from "@/types/menu";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAuthStore } from "@/stores/authStore";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useRouter } from "vue-router";
 import ToastContainer from "@/components/ToastContainer.vue";
 import SplashScreen from "@/components/SplashScreen.vue";
@@ -15,6 +16,7 @@ import { useAppContextStore } from "@/stores/appContext";
 import { appPath } from "@/utils/appHeaders";
 
 const authStore = useAuthStore(),
+    { client } = useAlcedoClient(),
     router = useRouter(),
     pluginsStore = usePluginsStore(),
     collectionsStore = useCollectionsStore(),
@@ -34,14 +36,7 @@ const currentAppName = computed(
 
 async function loadAccessibleApps() {
     try {
-        const res = await fetch("/api/me/apps", { credentials: "include" });
-        if (!res.ok) return;
-        const data = await res.json();
-        const apps = (data?.data ?? data ?? []) as {
-            app_name: string;
-            api_name: string;
-            version: string;
-        }[];
+        const apps = await client.apps.me();
         const version = appContext.version;
         accessibleApps.value = apps
             .filter((a) => a.version === version)

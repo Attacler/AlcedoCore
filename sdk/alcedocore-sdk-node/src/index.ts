@@ -17,6 +17,15 @@ export { createLogsResource } from "./logs";
 export { createAuthResource } from "./auth";
 export { createSessionsResource } from "./sessions";
 export type { SessionInfo } from "./sessions";
+export { createAppsResource } from "./apps";
+export type {
+    AppWithVersions,
+    UserAppAccess,
+    CreateAppInput,
+    UpdateAppInput,
+} from "./apps";
+export { createVersionsResource } from "./versions";
+export type { Version, CreateVersionInput } from "./versions";
 export { createUsersResource } from "./users";
 export { createRolesResource } from "./roles";
 export { createPoliciesResource } from "./policies";
@@ -56,5 +65,8 @@ export type {
     WriteSuccessResponse,
 } from "./zod-schemas";
 
-export type { DeveloperKey } from "./types/developerKeys";
+export type {
+    DeveloperKey,
+    DeveloperKeyWithRawKey,
+} from "./types/developerKeys";
 export type { FileFolder, MediaFile, ListFilesParameters } from "./types/files";

@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use utoipa::ToSchema;
 
 use crate::{
     AppState,
@@ -47,16 +48,14 @@ pub struct MeResponse {
     pub is_admin: bool,
 }
 
+#[utoipa::path(get, path = "/api/platform/auth/me", tag = "Auth",
+    responses((status = OK, body = serde_json::Value))
+)]
 async fn get_me(
     State(state): State<AppState>,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<MeResponse>>, AlcedoError> {
-    let uuid = match auth_level {
-        AuthLevel::User(uuid) => uuid,
-        AuthLevel::Public => {
-            return Err(AlcedoError::UnAuthenticated());
-        }
-    };
+    let uuid = auth_level.require_user()?;
 
     let app_context = AppContext::system(RequestSource::API);
 
@@ -88,7 +87,7 @@ async fn get_me(
     Ok(Json(success(response)))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
@@ -104,6 +103,10 @@ pub struct LogoutResponse {
     pub success: bool,
 }
 
+#[utoipa::path(post, path = "/api/platform/auth/login", tag = "Auth",
+    request_body = LoginRequest,
+    responses((status = OK, body = serde_json::Value))
+)]
 pub async fn login_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -165,6 +168,9 @@ pub async fn login_handler(
     ))
 }
 
+#[utoipa::path(post, path = "/api/platform/auth/logout", tag = "Auth",
+    responses((status = OK, body = serde_json::Value))
+)]
 pub async fn logout_handler(
     State(state): State<AppState>,
     headers: HeaderMap,

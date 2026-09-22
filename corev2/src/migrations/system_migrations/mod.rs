@@ -11,6 +11,7 @@ pub(crate) mod m00001_init;
 pub(crate) mod m00002_users;
 pub(crate) mod m00003_settings;
 pub(crate) mod m00004_sessions;
+pub(crate) mod m00005_developer_keys;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -24,6 +25,9 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
             app_context: app_context.clone()
         },
         m00004_sessions::M0004Migration {
+            app_context: app_context.clone()
+        },
+        m00005_developer_keys::M0005Migration {
             app_context: app_context.clone()
         },
     ]

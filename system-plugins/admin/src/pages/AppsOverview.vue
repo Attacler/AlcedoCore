@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useAuthStore } from "@/stores/authStore";
 import { useToast } from "@/composables/useToast";
 import { useConfirm } from "primevue/useconfirm";
 import Select from "primevue/select";
-import MultiSelect from "primevue/multiselect";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import { Drawer } from "primevue";
@@ -38,7 +37,8 @@ interface VersionOption {
     value: string;
 }
 
-const router = useRouter(),
+const route = useRoute(),
+    router = useRouter(),
     authStore = useAuthStore(),
     toast = useToast(),
     confirm = useConfirm(),
@@ -58,18 +58,6 @@ const visibleApps = computed(() =>
     apps.value.filter((a) => a.versions.includes(selectedVersion.value)),
 );
 
-async function readJson(
-    method: string,
-    path: string,
-    opts?: Record<string, unknown>,
-): Promise<any> {
-    const res = await client.request(method, path, opts);
-    if (res && typeof res.json === "function") {
-        return res.json();
-    }
-    return res;
-}
-
 function pickDefaultVersion() {
     if (versions.value.includes("production")) {
         return "production";
@@ -82,16 +70,14 @@ async function load() {
     error.value = "";
     try {
         if (authStore.isAdmin) {
-            const [appsRes, versionsRes] = await Promise.all([
-                readJson("get", "/apps"),
-                readJson("get", "/versions"),
+            const [appsList, versionList] = await Promise.all([
+                client.apps.list(),
+                client.versions.list(),
             ]);
-            apps.value = (appsRes?.data ?? []) as AppWithVersions[];
-            const list = (versionsRes?.data ?? []) as VersionRow[];
-            versions.value = list.map((v) => v.version_name);
+            apps.value = appsList;
+            versions.value = versionList.map((v) => v.version_name);
         } else {
-            const accessRes = await readJson("get", "/me/apps");
-            const entries = (accessRes?.data ?? []) as UserAppAccess[];
+            const entries = await client.apps.me();
             const grouped = new Map<number, AppWithVersions>();
             for (const entry of entries) {
                 let app = grouped.get(entry.app_id);
@@ -118,7 +104,13 @@ async function load() {
             ).sort();
         }
 
-        if (!versions.value.includes(selectedVersion.value)) {
+        const requested = route.query.version;
+        if (
+            typeof requested === "string" &&
+            versions.value.includes(requested)
+        ) {
+            selectedVersion.value = requested;
+        } else if (!versions.value.includes(selectedVersion.value)) {
             selectedVersion.value = pickDefaultVersion();
         }
     } catch (e) {
@@ -165,12 +157,10 @@ async function createApp() {
     creating.value = true;
     createError.value = "";
     try {
-        await client.request("post", "/apps", {
-            json: {
-                name: newApp.value.name.trim(),
-                api_name: newApp.value.apiName.trim(),
-                version: newApp.value.version,
-            },
+        await client.apps.create({
+            name: newApp.value.name.trim(),
+            api_name: newApp.value.apiName.trim(),
+            version: newApp.value.version,
         });
         showCreateDialog.value = false;
         toast.show("App created", "success");
@@ -192,8 +182,7 @@ const showEditDialog = ref(false),
         name: string;
         icon: string;
         logo: string;
-        versions: string[];
-    }>({ name: "", icon: "", logo: "", versions: [] });
+    }>({ name: "", icon: "", logo: "" });
 
 function openEdit(app: AppWithVersions) {
     editingId.value = app.id;
@@ -201,7 +190,6 @@ function openEdit(app: AppWithVersions) {
         name: app.name,
         icon: app.icon ?? "",
         logo: app.logo ?? "",
-        versions: [...app.versions],
     };
     editError.value = "";
     showEditDialog.value = true;
@@ -213,20 +201,13 @@ async function saveEdit() {
         editError.value = "Name is required";
         return;
     }
-    if (editForm.value.versions.length === 0) {
-        editError.value = "Select at least one version";
-        return;
-    }
     saving.value = true;
     editError.value = "";
     try {
-        await client.request("put", `/apps/${editingId.value}`, {
-            json: {
-                name: editForm.value.name.trim(),
-                icon: editForm.value.icon,
-                logo: editForm.value.logo,
-                versions: editForm.value.versions,
-            },
+        await client.apps.update(editingId.value, {
+            name: editForm.value.name.trim(),
+            icon: editForm.value.icon,
+            logo: editForm.value.logo,
         });
         showEditDialog.value = false;
         toast.show("App updated", "success");
@@ -242,7 +223,7 @@ async function saveEdit() {
 // ── Delete ──
 function confirmDelete(app: AppWithVersions) {
     confirm.require({
-        message: `Delete app "${app.name}"? This cannot be undone.`,
+        message: `Delete app "${app.name}"? It will be removed from all versions. This cannot be undone.`,
         header: "Delete App",
         icon: "pi pi-exclamation-triangle",
         rejectProps: {
@@ -253,7 +234,7 @@ function confirmDelete(app: AppWithVersions) {
         acceptProps: { label: "Delete", severity: "danger" },
         accept: async () => {
             try {
-                await client.request("delete", `/apps/${app.id}`);
+                await client.apps.remove(app.id);
                 toast.show("App deleted", "success");
                 await load();
             } catch (e) {
@@ -485,20 +466,6 @@ onMounted(() => {
                     <InputText
                         v-model="editForm.logo"
                         placeholder="https://…"
-                        fluid
-                    />
-                </div>
-                <div class="flex flex-col gap-1">
-                    <label class="text-sm font-medium text-gray-700"
-                        >Versions</label
-                    >
-                    <MultiSelect
-                        v-model="editForm.versions"
-                        :options="versionOptions"
-                        optionLabel="label"
-                        optionValue="value"
-                        placeholder="Select versions"
-                        display="chip"
                         fluid
                     />
                 </div>
