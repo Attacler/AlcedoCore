@@ -55,7 +55,18 @@ watch(
     },
 );
 
+function hasPendingChanges(): boolean {
+    return !!(
+        recordFormRef.value &&
+        typeof recordFormRef.value.hasPendingChanges === "function" &&
+        recordFormRef.value.hasPendingChanges()
+    );
+}
+
 function onVisibleChange(val: boolean) {
+    if (!val && hasPendingChanges()) {
+        if (!window.confirm("Discard unsaved changes?")) return;
+    }
     visibleInner.value = val;
     emit("update:visible", val);
 }
@@ -83,16 +94,13 @@ async function save() {
             if (value === null || value === undefined || value === "") continue;
             payload[key] = value instanceof Date ? value.toISOString() : value;
         }
-        // Merge inlined O2M children into the same request (parent + children, atomic).
-        let inlinedTempIds: string[] = [];
+        // Merge nested relational sections into the same request (atomic).
         if (
             recordFormRef.value &&
-            typeof recordFormRef.value.getCreateBody === "function"
+            typeof recordFormRef.value.getRelationBody === "function"
         ) {
-            const { body, inlinedTempIds: ids } =
-                recordFormRef.value.getCreateBody();
+            const body = recordFormRef.value.getRelationBody();
             if (body) Object.assign(payload, body);
-            inlinedTempIds = ids;
         }
         const createOptions =
             props.targetApp || props.targetVersion
@@ -105,21 +113,6 @@ async function save() {
         );
         const createdRaw = res.created || res.data || res;
         const created = Array.isArray(createdRaw) ? createdRaw[0] : createdRaw;
-        const createdId = created?.id ?? null;
-        // Drop inlined children, then flush any remaining queued ops (nested ones).
-        if (recordFormRef.value) {
-            if (
-                typeof recordFormRef.value.consumeInlinedCreates === "function"
-            ) {
-                recordFormRef.value.consumeInlinedCreates(inlinedTempIds);
-            }
-            if (
-                createdId &&
-                typeof recordFormRef.value.flushPendingChildren === "function"
-            ) {
-                await recordFormRef.value.flushPendingChildren(createdId);
-            }
-        }
         toast.show("Item created successfully", "success");
         emit("created", created);
         visibleInner.value = false;
@@ -135,6 +128,8 @@ async function save() {
 }
 
 function close() {
+    if (hasPendingChanges() && !window.confirm("Discard unsaved changes?"))
+        return;
     visibleInner.value = false;
     emit("update:visible", false);
 }

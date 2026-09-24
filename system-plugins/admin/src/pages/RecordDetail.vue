@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute, useRouter, onBeforeRouteLeave } from "vue-router";
 import {
     useCollectionsStore,
     type FieldDefinition,
@@ -106,11 +106,45 @@ function setRelSectionRef(id: string, el: any) {
     }
 }
 
-async function flushRelationalSections() {
+/** Merge every relational section's queued ops into one nested body. */
+function collectRelationBody(): Record<string, any> {
+    const body: Record<string, any> = {};
     for (const id of Object.keys(relSectionRefs.value)) {
         const el = relSectionRefs.value[id];
-        if (el && typeof el.flushPending === "function") {
-            await el.flushPending(itemId.value);
+        if (el && typeof el.getRelationBody === "function") {
+            const part = el.getRelationBody();
+            if (part) Object.assign(body, part);
+        }
+    }
+    return body;
+}
+
+/** Whether any relational section has queued create/update/delete ops. */
+function hasPendingRelationChanges(): boolean {
+    return Object.keys(relSectionRefs.value).some((id) => {
+        const el = relSectionRefs.value[id];
+        return el && typeof el.hasPendingChanges === "function"
+            ? el.hasPendingChanges()
+            : false;
+    });
+}
+
+/** Reload every relational section after a save (clears queued ops). */
+async function reloadRelationalSections() {
+    for (const id of Object.keys(relSectionRefs.value)) {
+        const el = relSectionRefs.value[id];
+        if (el && typeof el.reload === "function") {
+            await el.reload();
+        }
+    }
+}
+
+/** Discard queued relational ops (e.g. on cancel). */
+function clearRelationalSections() {
+    for (const id of Object.keys(relSectionRefs.value)) {
+        const el = relSectionRefs.value[id];
+        if (el && typeof el.clearRelations === "function") {
+            el.clearRelations();
         }
     }
 }
@@ -317,6 +351,12 @@ function enterEditMode() {
 }
 
 function cancelEdit() {
+    if (
+        hasUnsavedEdits.value &&
+        !window.confirm("You have unsaved changes. Discard them?")
+    )
+        return;
+    clearRelationalSections();
     isEditing.value = false;
     editValues.value = {};
 }
@@ -366,6 +406,29 @@ function fieldChanged(editValue: any, originalValue: any): boolean {
     if (editValue == null || originalValue == null) return true;
     return String(editValue) !== String(originalValue);
 }
+
+/** Pending scalar / inline-parent / relational edits while editing. */
+const hasUnsavedEdits = computed(() => {
+    if (!isEditing.value || saving.value) return false;
+    if (hasInlineParentChanges.value || hasPendingRelationChanges()) return true;
+    for (const [name, value] of Object.entries(editValues.value)) {
+        if (fieldChanged(value, item.value?.[name])) return true;
+    }
+    return false;
+});
+
+function onBeforeUnload(e: BeforeUnloadEvent) {
+    if (!hasUnsavedEdits.value) return;
+    e.preventDefault();
+    e.returnValue = "";
+}
+
+onBeforeRouteLeave(() => {
+    if (hasUnsavedEdits.value) {
+        return window.confirm("You have unsaved changes. Leave anyway?");
+    }
+    return true;
+});
 
 async function saveEdit() {
     if (!validate() || !item.value) return;
@@ -420,6 +483,10 @@ async function doSave() {
             }
         }
 
+        // Merge queued relational-section create/update/delete into the same
+        // atomic PATCH as the parent.
+        Object.assign(parentPayload, collectRelationBody());
+
         // Single PATCH - backend handles parent + children atomically
         const hasParentChanges = Object.keys(parentPayload).length > 0;
         if (hasParentChanges) {
@@ -428,16 +495,10 @@ async function doSave() {
                 itemId.value,
                 parentPayload,
             )) as any;
-        }
-
-        // Flush queued relational-section create/update/delete BEFORE reloading
-        // the record: reloading re-creates the section components and would
-        // discard their pending-op queues.
-        await flushRelationalSections();
-
-        if (hasParentChanges) {
             await loadRecordData(collectionName.value, itemId.value);
             await loadInlineParents();
+            // Re-fetch sections so real ids/links replace optimistic temp rows.
+            await reloadRelationalSections();
         }
 
         toast.show("Record saved successfully", "success");
@@ -504,6 +565,7 @@ watch(
 onMounted(() => {
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", handleResize);
+    window.addEventListener("beforeunload", onBeforeUnload);
 });
 
 async function loadSections() {
@@ -542,6 +604,7 @@ async function switchLayout(layoutId: string) {
 onUnmounted(() => {
     window.removeEventListener("scroll", onScroll);
     window.removeEventListener("resize", handleResize);
+    window.removeEventListener("beforeunload", onBeforeUnload);
 });
 </script>
 
@@ -753,6 +816,7 @@ onUnmounted(() => {
                                     :parent-item="item"
                                     :parent-fields="fields"
                                     :deferred="isEditing"
+                                    :readonly="!isEditing"
                                     :target-app="currentApp"
                                     :target-version="currentVersion"
                                     @count="
