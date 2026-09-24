@@ -145,13 +145,14 @@ const settingsSections = computed<MenuSection[]>(() => {
         },
     ];
     for (const c of collectionsStore.collections) {
-        collectionItems.push({
-            id: `collection-${c.name}-settings`,
-            label: c.display_name || c.name,
-            icon: "table",
-            route: `/collections/${encodeURIComponent(c.name)}/edit`,
-            visible: true,
-        });
+        if (!c.name.startsWith("alcedo_"))
+            collectionItems.push({
+                id: `collection-${c.name}-settings`,
+                label: c.display_name || c.name,
+                icon: "table",
+                route: `/collections/${encodeURIComponent(c.name)}/edit`,
+                visible: true,
+            });
     }
     sections.push({
         id: "settings-collections",
@@ -605,7 +606,10 @@ onUnmounted(() => {
                         >
                             {{ authStore.userInitial }}
                         </div>
-                        <div v-if="!collapsed || isMobile" class="flex-1 min-w-0">
+                        <div
+                            v-if="!collapsed || isMobile"
+                            class="flex-1 min-w-0"
+                        >
                             <p class="text-sm font-medium text-white truncate">
                                 {{ authStore.displayName }}
                             </p>
