@@ -45,6 +45,30 @@ Query parameter:
 <br>or:
 `?filter={"_or": [{"id": {"_eq": 1}},{"name": {"_eq": "Test"}}]}`
 
+## Filtering on relations
+
+To filter on a related collection, nest the relation field. Each level of the
+path becomes a nested object; the leaf holds the operator/value.
+
+```json
+{
+    "_and": [
+        { "customer": { "name": { "_eq": "Test" } } },
+        { "tickets": { "status": { "_eq": "open" } } }
+    ]
+}
+```
+
+- `customer.name` is a **M:1** relation (a FK column on the current row): the
+  related row is joined and matched directly.
+- `tickets.status` is a **1:M** relation (the FK lives on the child): the parent
+  matches when **any** child matches (`EXISTS`), so parents are never duplicated.
+- Paths may be arbitrarily deep (`item.order.customer.full_name`) and may cross
+  apps (`related_app`).
+
+> Dotted filter keys such as `{"customer.name": { "_eq": "Test" }}` are **not**
+> supported — always nest the relation objects.
+
 ## Supported operators
 
 | operator        | description                           |

@@ -17,3 +17,15 @@ export function appPath(path: string): string {
     }
     return p;
 }
+
+export function targetAppPath(
+    targetApp: string | null | undefined,
+    targetVersion: string | null | undefined,
+    path: string,
+): string {
+    const p = path.startsWith("/") ? path : `/${path}`;
+    if (targetApp && targetVersion) {
+        return `/app/${encodeURIComponent(targetApp)}/${encodeURIComponent(targetVersion)}${p}`;
+    }
+    return appPath(p);
+}

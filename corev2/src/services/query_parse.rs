@@ -1,11 +1,6 @@
-use axum::{
-    Json,
-    extract::FromRequestParts,
-    http::{StatusCode, request::Parts},
-    response::{IntoResponse, Response},
-};
+use axum::{extract::FromRequestParts, http::request::Parts};
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::Value;
 use serde_qs::axum::QsQuery;
 use std::collections::HashMap;
 
@@ -78,6 +73,24 @@ where
                             json_obj.insert(key, Value::Null);
                         } else {
                             json_obj.insert(key, Value::String(value));
+                        }
+                    }
+
+                    // A `filter` that is a bare field map (no `_and`/`_or`) is
+                    // treated as an implicit `_and`. The admin UI's relational
+                    // sections send e.g. `filter={"customer":{"_eq":"..."}}`.
+                    let needs_wrapping = match json_obj.get("filter") {
+                        Some(Value::Object(map)) => {
+                            !map.is_empty() && !map.contains_key("_and") && !map.contains_key("_or")
+                        }
+                        _ => false,
+                    };
+                    if needs_wrapping {
+                        if let Some(Value::Object(map)) = json_obj.get("filter").cloned() {
+                            json_obj.insert(
+                                "filter".to_string(),
+                                serde_json::json!({ "_and": [Value::Object(map)] }),
+                            );
                         }
                     }
 

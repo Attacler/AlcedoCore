@@ -5,21 +5,21 @@ use crate::services::{items::query::TableJoin, postgres::inspector::DatabaseSche
 
 pub fn parse_value(
     schema: &DatabaseSchema,
+    schema_name: &str,
     joins: &Vec<TableJoin>,
     table_id: &str,
     field: &str,
     value: Value,
 ) -> Option<SimpleExpr> {
-    let actual_table = joins
-        .iter()
-        .find(|f| f.id == table_id)
-        .map(|join| &join.target_table)
-        .map_or(table_id, |v| v);
+    let (actual_table, actual_schema) = match joins.iter().find(|f| f.id == table_id) {
+        Some(join) => (join.target_table.as_str(), join.target_schema.as_str()),
+        None => (table_id, schema_name),
+    };
 
     let column = schema
         .columns
         .iter()
-        .find(|c| c.table == *actual_table && c.name == field)?;
+        .find(|c| c.table == actual_table && c.name == field && c.schema == actual_schema)?;
 
     let sea_value = match column.data_type.as_str() {
         // Consolidated numeric types
@@ -57,9 +57,16 @@ pub fn parse_value(
         }
 
         // Date/time types - string only
-        "date" | "time" | "timetz" | "timestamp" | "timestamptz" | "interval"
-        | "timestamp without time zone" | "timestamp with time zone"
-        | "time without time zone" | "time with time zone" => {
+        "date"
+        | "time"
+        | "timetz"
+        | "timestamp"
+        | "timestamptz"
+        | "interval"
+        | "timestamp without time zone"
+        | "timestamp with time zone"
+        | "time without time zone"
+        | "time with time zone" => {
             let s = value.as_str()?.to_uppercase();
             match s.as_str() {
                 "CURRENT_DATE" => return Some(Expr::cust("CURRENT_DATE")),

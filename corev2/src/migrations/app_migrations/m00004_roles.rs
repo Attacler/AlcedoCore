@@ -5,9 +5,9 @@ use sqlx_migrator::migration::Migration;
 use sqlx_migrator::operation::Operation;
 
 use crate::migrations::generate_app_state_for_migrations;
+use crate::services::collections::schema::SchemaService;
+use crate::services::collections::schema::TableBuilderExt;
 use crate::services::context::{AppContext, RequestSource};
-use crate::services::postgres::tables::TableBuilderExt;
-use crate::services::postgres::tables::{FieldCreationObject, TableService};
 use futures::FutureExt;
 
 pub(crate) struct M0004Operation {
@@ -24,7 +24,7 @@ impl Operation<Postgres> for M0004Operation {
                 let app_context = self.app_context.clone();
 
                 async move {
-                    let table_service = TableService::new(&state, &app_context);
+                    let table_service = SchemaService::new(&state, &app_context);
                     let global_context = AppContext::system(RequestSource::Migration);
 
                     table_service

@@ -123,6 +123,20 @@ pub fn process_query_error_response(e: Error, query: &str) -> AlcedoError {
                 );
             }
         }
+        // 23503: FK violation (referenced row missing). 23001: restrict
+        // violation (this row is still referenced by another row).
+        if code == "23503" || code == "23001" {
+            if let Some(e) = e.try_downcast_ref::<PgDatabaseError>() {
+                let constraint = e.constraint().unwrap_or("unknown");
+                return AlcedoError::InvalidInput(
+                    format!(
+                        "This record is referenced by another record and cannot be deleted or changed (constraint {}).",
+                        constraint
+                    ),
+                    10008,
+                );
+            }
+        }
     }
     println!("{:?}", e);
     return AlcedoError::Other("Unkown error occured!".to_string(), 10003);

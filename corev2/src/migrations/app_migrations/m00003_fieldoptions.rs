@@ -5,7 +5,7 @@ use sqlx_migrator::operation::Operation;
 
 use crate::migrations::generate_app_state_for_migrations;
 use crate::services::context::AppContext;
-use crate::services::postgres::tables::{FieldCreationObject, TableService};
+use crate::services::collections::schema::{FieldCreationObject, SchemaService};
 
 pub(crate) struct M0003Operation {
     app_context: AppContext,
@@ -17,7 +17,7 @@ impl Operation<Postgres> for M0003Operation {
         let state = generate_app_state_for_migrations().await;
         let app_context = self.app_context.clone();
 
-        let table_service = TableService::new(&state, &app_context);
+        let table_service = SchemaService::new(&state, &app_context);
 
         table_service
             .add_field(
@@ -39,7 +39,7 @@ impl Operation<Postgres> for M0003Operation {
 
     async fn down(&self, _: &mut PgConnection) -> Result<(), Error> {
         let state = generate_app_state_for_migrations().await;
-        let table_service = TableService::new(&state, &self.app_context);
+        let table_service = SchemaService::new(&state, &self.app_context);
         table_service
             .drop_field("alcedo_fields", "options", &mut None)
             .await

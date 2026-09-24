@@ -2,7 +2,7 @@ import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useCollectionsStore } from "@/stores/collections";
 import { getSectionChildCollectionName } from "@/composables/useSectionLayout";
 import { buildSectionFilter } from "@/composables/useSectionView";
-import { toShortForm } from "@/types/filters";
+import { toShortForm, normalizeFilterCondition } from "@/types/filters";
 import type { FieldDefinition } from "@/stores/collections";
 import type { FilterCondition } from "@/types/filters";
 
@@ -15,13 +15,19 @@ export function resolveChildCollection(section: any): string {
 export function findParentFKField(
     sectionFields: FieldDefinition[],
     parentCollectionName: string,
+    parentApp?: string,
 ): FieldDefinition | null {
     return (
-        sectionFields.find(
-            (f: any) =>
-                f.type === "relationship" &&
-                f.related_collection === parentCollectionName,
-        ) || null
+        sectionFields.find((f: any) => {
+            if (
+                f.type !== "relationship" ||
+                f.related_collection !== parentCollectionName
+            ) {
+                return false;
+            }
+            if (parentApp === undefined) return true;
+            return f.related_app === parentApp || f.related_app == null;
+        }) || null
     );
 }
 
@@ -31,27 +37,42 @@ export function buildSectionFilterCondition(
     sectionFields: FieldDefinition[],
     parentCollectionName: string,
     parentItemId: string | null | undefined,
+    parentApp?: string,
 ): FilterCondition | null {
-    const fkField = findParentFKField(sectionFields, parentCollectionName);
+    const fkField = findParentFKField(
+        sectionFields,
+        parentCollectionName,
+        parentApp,
+    );
     const fkRule =
         fkField && parentItemId
             ? {
-                  field: fkField.name,
+                  path: [fkField.name],
                   operator: "eq" as const,
                   value: parentItemId,
               }
             : null;
-    return buildSectionFilter(section?.default_filter?.filter, fkRule);
+    return buildSectionFilter(
+        normalizeFilterCondition(section?.default_filter?.filter),
+        fkRule,
+    );
 }
 
 /** Load the fields of a section's child collection. */
 export async function loadSectionFields(
     childCollectionName: string,
+    target?: { app?: string | null; version?: string | null },
 ): Promise<FieldDefinition[]> {
     if (!childCollectionName) return [];
     try {
-        const coll =
-            await useCollectionsStore().getCollection(childCollectionName);
+        const coll = await useCollectionsStore().getCollection(
+            childCollectionName,
+            false,
+            {
+                app: target?.app ?? undefined,
+                version: target?.version ?? undefined,
+            },
+        );
         return coll.fields || [];
     } catch (e) {
         console.warn("[RelationalSection] Failed to load section fields", e);
@@ -63,12 +84,17 @@ export async function loadSectionFields(
 /** Whether the caller may create records in the child collection. */
 export async function fetchCreatePermission(
     childCollectionName: string,
+    target?: { app?: string | null; version?: string | null },
 ): Promise<boolean> {
     if (!childCollectionName) return false;
     try {
         const policy =
             (await useAlcedoClient().client.collections.getCreatePolicy(
                 childCollectionName,
+                {
+                    app: target?.app ?? undefined,
+                    version: target?.version ?? undefined,
+                },
             )) as any;
         return policy?.$permissions?.create !== false;
     } catch {
@@ -83,6 +109,8 @@ export async function loadSectionData(opts: {
     section: any;
     sectionFields: FieldDefinition[];
     parentCollectionName: string;
+    parentApp?: string;
+    target?: { app?: string | null; version?: string | null };
 }): Promise<{ items: any[]; total: number }> {
     const {
         childCollectionName,
@@ -90,6 +118,8 @@ export async function loadSectionData(opts: {
         section,
         sectionFields,
         parentCollectionName,
+        parentApp,
+        target,
     } = opts;
     if (!childCollectionName || !parentItemId) {
         return { items: [], total: 0 };
@@ -103,6 +133,7 @@ export async function loadSectionData(opts: {
         sectionFields,
         parentCollectionName,
         parentItemId,
+        parentApp,
     );
     if (filterCondition) {
         queryParams.set("filter", JSON.stringify(toShortForm(filterCondition)));
@@ -111,6 +142,10 @@ export async function loadSectionData(opts: {
     const res = (await useAlcedoClient().client.items.list(
         childCollectionName,
         queryParams as unknown as Record<string, string>,
+        {
+            app: target?.app ?? undefined,
+            version: target?.version ?? undefined,
+        },
     )) as any;
     const data = res.data || res;
     const items = data.data || data.items || data || [];

@@ -1,16 +1,78 @@
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { useCollectionsStore, type FieldType } from "@/stores/collections";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
+import { useAppContextStore } from "@/stores/appContext";
 import Select from "primevue/select";
 import Checkbox from "primevue/checkbox";
 import FieldNameLabel from "@/components/FieldNameLabel.vue";
+
+interface AppWithVersions {
+    id: number;
+    name: string;
+    api_name: string;
+    versions: string[];
+}
 
 const props = defineProps<{
     field: any;
     collectionName: string;
 }>();
 
-const store = useCollectionsStore();
+const store = useCollectionsStore(),
+    { client } = useAlcedoClient(),
+    appContext = useAppContextStore();
+
+const apps = ref<AppWithVersions[]>([]);
+const targetCollections = ref<{ name: string; display_name?: string }[]>([]);
+
+const selectedApp = computed(
+        () => props.field?.related_app || appContext.appSlug || undefined,
+    ),
+    currentVersion = computed(() => appContext.version ?? undefined);
+
+const appOptions = computed(() =>
+    apps.value
+        .filter(
+            (a) =>
+                !currentVersion.value ||
+                a.versions?.includes(currentVersion.value),
+        )
+        .map((a) => ({ label: a.name, value: a.api_name })),
+);
+
+async function loadApps() {
+    try {
+        apps.value = ((await client.apps.list()) as any) || [];
+    } catch {
+        apps.value = [];
+    }
+}
+
+async function loadTargetCollections() {
+    try {
+        const res = (await client.collections.list({
+            app: props.field?.related_app || undefined,
+            version: currentVersion.value,
+        })) as any;
+        targetCollections.value = res.collections || [];
+    } catch {
+        targetCollections.value = [];
+    }
+}
+
+function onAppChange(value: string) {
+    if (!props.field) return;
+    props.field.related_app = value === appContext.appSlug ? undefined : value;
+    props.field.related_collection = undefined;
+    props.field.display_field = undefined;
+    loadTargetCollections();
+}
+
+onMounted(() => {
+    loadApps();
+    loadTargetCollections();
+});
 
 const relatedCollectionFields = ref<
     { name: string; display_name?: string; type: FieldType }[]
@@ -33,7 +95,10 @@ watch(
             return;
         }
         try {
-            const c = await store.getCollection(rc);
+            const c = await store.getCollection(rc, true, {
+                app: props.field?.related_app ?? undefined,
+                version: currentVersion.value,
+            });
             relatedCollectionFields.value = (c.fields || []).map((f: any) => ({
                 name: f.name,
                 display_name: f.display_name,
@@ -83,12 +148,26 @@ function toggleInlineParentField(fieldName: string) {
         </h4>
         <div>
             <label class="block text-xs font-medium text-gray-600 mb-1"
+                >App</label
+            >
+            <Select
+                :modelValue="selectedApp"
+                @update:modelValue="onAppChange"
+                :options="appOptions"
+                option-label="label"
+                option-value="value"
+                placeholder="Select..."
+                class="w-full"
+            />
+        </div>
+        <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1"
                 >Related Collection</label
             >
             <Select
                 :modelValue="field.related_collection"
                 @update:modelValue="onRelatedCollectionChange"
-                :options="store.collections"
+                :options="targetCollections"
                 option-label="name"
                 option-value="name"
                 placeholder="Select..."

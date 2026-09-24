@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 
-use futures::FutureExt;
 use sea_query::{
-    Alias, ColumnDef, Expr, ForeignKey, Index, PostgresQueryBuilder, Table, TableAlterStatement,
-    TableCreateStatement, TableForeignKey,
+    Alias, ColumnDef, ForeignKey, ForeignKeyAction, PostgresQueryBuilder, Table,
+    TableAlterStatement, TableCreateStatement,
+};
+
+use super::ddl::{
+    build_add_unique_sql, build_drop_columns_sqls, column_def, drop_table_sql, fk_constraint,
+    spec_from_field_creation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -25,7 +29,6 @@ use crate::{
         postgres::{
             self,
             inspector::{Column, DatabaseSchema, TableMeta},
-            pool::execute_query,
         },
     },
 };
@@ -80,39 +83,6 @@ impl TableBuilderExt for TableCreateStatement {
     }
 }
 
-impl TableBuilderExt for TableAlterStatement {
-    fn add_col(&mut self, name: &str, f: impl FnOnce(ColumnDef) -> ColumnDef) -> &mut Self {
-        self.add_column(f(ColumnDef::new(Alias::new(name))));
-        self
-    }
-
-    fn add_fk(
-        &mut self,
-        from_context: &AppContext,
-        from_table: &str,
-        from_col: &str,
-        to_context: &AppContext,
-        to_table: &str,
-        to_col: &str,
-    ) -> &mut Self {
-        self.add_foreign_key(
-            TableForeignKey::new()
-                .name(format!(
-                    "{}_{}_{}_{}",
-                    from_table, from_col, to_table, to_col
-                ))
-                .from_tbl((
-                    Alias::new(from_context.schema_name()),
-                    Alias::new(from_table),
-                ))
-                .from_col(Alias::new(from_col))
-                .to_tbl((Alias::new(to_context.schema_name()), Alias::new(to_table)))
-                .to_col(Alias::new(to_col)),
-        );
-        self
-    }
-}
-
 /// Drops a schema and every object inside it. Callers are responsible for
 /// refreshing the schema cache afterwards.
 pub async fn drop_schema(state: &AppState, schema_name: &str) -> Result<(), AlcedoError> {
@@ -136,16 +106,6 @@ pub struct FieldCreationObject {
     pub has_auto_increment: Option<bool>,
     pub foreign_key: Option<postgres::inspector::ForeignKey>,
 }
-#[derive(ToSchema, Serialize, Default, Deserialize)]
-pub struct FieldUpdateObject {
-    pub name: Option<String>,
-    pub default_value: Option<String>,
-    pub max_length: Option<u32>,
-    pub numeric_precision: Option<u32>,
-    pub numeric_scale: Option<u32>,
-    pub is_nullable: Option<bool>,
-    pub is_unique: Option<bool>,
-}
 
 #[derive(ToSchema, Serialize, Default, Deserialize, Debug, Clone)]
 pub struct FieldSavedMetaObject {
@@ -154,6 +114,8 @@ pub struct FieldSavedMetaObject {
     pub collection_id: Option<i32>,
     pub id: i32,
     pub options: Option<serde_json::Value>,
+    #[serde(default)]
+    pub ordinal_position: Option<i32>,
 }
 
 #[derive(ToSchema, Serialize, Default, Deserialize, Debug, Clone)]
@@ -164,26 +126,21 @@ pub struct FieldMetaObject {
     pub options: Option<serde_json::Value>,
 }
 
-pub struct TableService<'a> {
+pub struct SchemaService<'a> {
     app_state: &'a AppState,
     app_context: &'a AppContext,
 }
 
-impl TableService<'_> {
-    pub fn new<'a>(app_state: &'a AppState, context: &'a AppContext) -> TableService<'a> {
-        return TableService {
+impl SchemaService<'_> {
+    pub fn new<'a>(app_state: &'a AppState, context: &'a AppContext) -> SchemaService<'a> {
+        return SchemaService {
             app_state,
             app_context: context,
         };
     }
 
     pub async fn refresh_schema(&self) {
-        let mut write_schema_lock = self.app_state.database_schema.write().await;
-        let refresh_schema = write_schema_lock.refresh(&self.app_state).await;
-        write_schema_lock.columns = refresh_schema.columns;
-        write_schema_lock.tables = refresh_schema.tables;
-        write_schema_lock.app_versions = refresh_schema.app_versions;
-        drop(write_schema_lock);
+        self.app_state.refresh_schema().await;
 
         if self.app_context.app_name == "alcedo" {
             return;
@@ -284,6 +241,7 @@ impl TableService<'_> {
     where
         F: FnOnce(&mut TableCreateStatement),
     {
+        let owns_tx = database_transaction.is_none();
         let mut owned_tx: Option<Transaction<Postgres>> = None;
         let tx_ref = match database_transaction {
             Some(existing) => existing,
@@ -325,8 +283,9 @@ impl TableService<'_> {
         if let Some(tx) = owned_tx {
             tx.commit().await.unwrap();
         };
-
-        self.refresh_schema().await;
+        if owns_tx {
+            self.refresh_schema().await;
+        }
 
         Ok(())
     }
@@ -336,6 +295,7 @@ impl TableService<'_> {
         name: &str,
         database_transaction: &mut Option<&mut Transaction<'_, Postgres>>,
     ) -> Result<(), AlcedoError> {
+        let owns_tx = database_transaction.is_none();
         let mut owned_tx: Option<Transaction<Postgres>> = None;
         let tx_ref = match database_transaction {
             Some(existing) => existing,
@@ -400,21 +360,15 @@ impl TableService<'_> {
         }
         drop(read_guard);
 
-        let sql = {
-            let stmt = Table::drop()
-                .table((Alias::new(self.app_context.schema_name()), Alias::new(name)))
-                .if_exists()
-                .to_owned();
-            stmt.to_string(PostgresQueryBuilder)
-        };
-
+        let sql = drop_table_sql(&self.app_context, name, false);
         execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
 
         if let Some(tx) = owned_tx {
             tx.commit().await.unwrap();
         };
-
-        self.refresh_schema().await;
+        if owns_tx {
+            self.refresh_schema().await;
+        }
         Ok(())
     }
 
@@ -425,6 +379,7 @@ impl TableService<'_> {
         meta: Option<FieldMetaObject>,
         database_transaction: &mut Option<&mut Transaction<'_, Postgres>>,
     ) -> Result<(), AlcedoError> {
+        let owns_tx = database_transaction.is_none();
         let mut owned_tx: Option<Transaction<Postgres>> = None;
         let tx_ref = match database_transaction {
             Some(existing) => existing,
@@ -439,19 +394,12 @@ impl TableService<'_> {
                 let find_collection = read_guard.tables.iter().find(|collection| {
                     collection.schema == self.app_context.schema_name() && collection.name == table
                 });
-
                 if let None = find_collection {
-                    return Err(AlcedoError::NotFound(
-                        "Collection not found!".to_string(),
-                        1,
-                    ));
+                    return Err(AlcedoError::NotFound("Collection not found!".to_string(), 1));
                 };
                 let find_collection = find_collection.unwrap();
                 if let None = find_collection.meta {
-                    return Err(AlcedoError::NotFound(
-                        "Collection meta not found!".to_string(),
-                        1,
-                    ));
+                    return Err(AlcedoError::NotFound("Collection meta not found!".to_string(), 1));
                 } else {
                     find_collection.meta.clone().unwrap().id.unwrap()
                 }
@@ -463,10 +411,7 @@ impl TableService<'_> {
 
             let mut meta: Map<String, Value> = match serde_json::to_value(&meta) {
                 Err(_) => {
-                    return Err(AlcedoError::InvalidInput(
-                        "Invalid field meta".to_string(),
-                        1,
-                    ));
+                    return Err(AlcedoError::InvalidInput("Invalid field meta".to_string(), 1));
                 }
                 Ok(meta) => meta.as_object().cloned().ok_or_else(|| {
                     AlcedoError::InvalidInput("Invalid field meta".to_string(), 1)
@@ -478,151 +423,52 @@ impl TableService<'_> {
                 .await?;
         }
 
-        let sql = {
-            let mut stmt = TableAlterStatement::new()
-                .table((
-                    Alias::new(self.app_context.schema_name()),
-                    Alias::new(table),
-                ))
-                .add_col(&field.name.clone(), |mut col| {
-                    let needs_special_default = match field.col_type.as_str() {
-                        "Date" | "DateTime" => true,
-                        _ => false,
-                    };
-
-                    match field.col_type.as_str() {
-                        "Integer" => {
-                            col.integer();
-
-                            if let Some(auto_increment) = field.has_auto_increment {
-                                if auto_increment {
-                                    col.auto_increment();
-                                }
-                            }
-                        }
-                        "Float" => {
-                            col.float();
-
-                            if let Some(nprecision) = field.numeric_precision {
-                                if let Some(nscale) = field.numeric_scale {
-                                    col.decimal_len(nprecision, nscale);
-                                }
-                            }
-                        }
-                        "Boolean" => {
-                            col.boolean();
-                        }
-                        "Date" => {
-                            col.date();
-
-                            if let Some(default_value) = &field.default_value {
-                                match default_value.to_uppercase().as_str() {
-                                    "CURRENT_DATE" => {
-                                        col.default(Expr::cust("CURRENT_DATE"));
-                                    }
-                                    _ => {
-                                        col.default(default_value.clone());
-                                    }
-                                }
-                            }
-                        }
-                        "DateTime" => {
-                            col.timestamp();
-
-                            if let Some(default_value) = &field.default_value {
-                                match default_value.to_uppercase().as_str() {
-                                    "CURRENT_TIMESTAMP" => {
-                                        col.default(Expr::cust("CURRENT_TIMESTAMP"));
-                                    }
-                                    "NOW()" => {
-                                        col.default(Expr::cust("NOW()"));
-                                    }
-                                    _ => {
-                                        col.default(default_value.clone());
-                                    }
-                                }
-                            }
-                        }
-                        "JSONB" => {
-                            col.json_binary();
-                        }
-                        _ => {
-                            col.string();
-
-                            if let Some(max_length) = field.max_length {
-                                col.string_len(max_length);
-                            }
-                        }
-                    };
-                    if let Some(is_nullable) = field.is_nullable {
-                        if !is_nullable {
-                            col.not_null();
-                        }
-                    } else {
-                        col.not_null();
-                    }
-
-                    if !needs_special_default {
-                        if let Some(default_value) = field.default_value {
-                            col.default(default_value);
-                        }
-                    }
-
-                    col.to_owned()
-                })
-                .to_owned();
-            if let Some(fk) = field.foreign_key {
-                let app_name = fk
-                    .schema
-                    .split_once("010")
-                    .unwrap_or((&fk.schema, ""))
-                    .0
-                    .to_string();
-                let to_context = AppContext {
-                    app_name,
-                    request_source: self.app_context.request_source.clone(),
-                    version: self.app_context.version.clone(),
-                };
-                println!(
-                    "Adding fk! {:?} {:?} {:?}",
-                    &self.app_context, &to_context, fk
-                );
-                stmt = stmt
-                    .add_fk(
-                        &self.app_context,
-                        table,
-                        &field.name.clone(),
-                        &to_context,
-                        &fk.table,
-                        &fk.column,
-                    )
-                    .to_owned();
-            }
-            stmt.to_string(PostgresQueryBuilder)
-        };
-
+        let sql = TableAlterStatement::new()
+            .table((
+                Alias::new(self.app_context.schema_name()),
+                Alias::new(table),
+            ))
+            .add_column(column_def(spec_from_field_creation(&field)?))
+            .to_string(PostgresQueryBuilder);
         execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
 
-        if let Some(unique) = field.is_unique {
-            if unique {
-                let sql = Index::create()
-                    .name(format!("uni-{}-{}", table, field.name.clone()))
-                    .table((
-                        Alias::new(self.app_context.schema_name()),
-                        Alias::new(table),
-                    ))
-                    .col(Alias::new(field.name.clone()))
-                    .unique()
-                    .to_string(PostgresQueryBuilder);
+        if let Some(fk) = field.foreign_key.clone() {
+            let app_name = fk
+                .schema
+                .split_once("010")
+                .unwrap_or((&fk.schema, ""))
+                .0
+                .to_string();
+            let to_context = AppContext {
+                app_name,
+                request_source: self.app_context.request_source.clone(),
+                version: self.app_context.version.clone(),
+            };
+            let fk_sql = fk_constraint(
+                &format!("{}_{}_{}_{}", table, field.name, fk.table, fk.column),
+                &self.app_context.schema_name(),
+                table,
+                &field.name,
+                &to_context.schema_name(),
+                &fk.table,
+                &fk.column,
+                ForeignKeyAction::NoAction,
+                ForeignKeyAction::NoAction,
+            );
+            execute_query_transaction(&self.app_state, tx_ref, &fk_sql).await?;
+        }
 
-                execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
-            }
+        if field.is_unique == Some(true) {
+            let unique_sql = build_add_unique_sql(&self.app_context, table, &field.name);
+            execute_query_transaction(&self.app_state, tx_ref, &unique_sql).await?;
         }
 
         if let Some(tx) = owned_tx {
             tx.commit().await.unwrap();
         };
-        self.refresh_schema().await;
+        if owns_tx {
+            self.refresh_schema().await;
+        }
         Ok(())
     }
 
@@ -632,6 +478,7 @@ impl TableService<'_> {
         field: &str,
         database_transaction: &mut Option<&mut Transaction<'_, Postgres>>,
     ) -> Result<(), AlcedoError> {
+        let owns_tx = database_transaction.is_none();
         let mut owned_tx: Option<Transaction<Postgres>> = None;
         let tx_ref = match database_transaction {
             Some(existing) => existing,
@@ -652,10 +499,8 @@ impl TableService<'_> {
             if let Some(field) = &find_field {
                 if let Some(meta) = &field.meta {
                     let collection = "alcedo_fields".to_string();
-
                     let collections_service =
                         ItemsService::new(self.app_state, self.app_context, &collection);
-
                     collections_service
                         .delete_items_by_pks(vec![meta.id.into()], Some(tx_ref))
                         .await?;
@@ -663,232 +508,33 @@ impl TableService<'_> {
             }
         }
 
-        let sql = {
-            let stmt = TableAlterStatement::new()
-                .table((
-                    Alias::new(self.app_context.schema_name()),
-                    Alias::new(table),
-                ))
-                .drop_column(Alias::new(field))
-                .to_owned();
-            stmt.to_string(PostgresQueryBuilder)
-        };
-        execute_query(&self.app_state, sql).await?;
-
-        if let Some(tx) = owned_tx {
-            tx.commit().await.unwrap();
-        };
-
-        self.refresh_schema().await;
-        Ok(())
-    }
-
-    pub async fn update_field(
-        &self,
-        table: &str,
-        api_name: &str,
-        schema: FieldUpdateObject,
-        meta: Option<FieldMetaObject>,
-        database_transaction: &mut Option<&mut Transaction<'_, Postgres>>,
-    ) -> Result<(), AlcedoError> {
-        let mut owned_tx: Option<Transaction<Postgres>> = None;
-        let tx_ref = match database_transaction {
-            Some(existing) => existing,
-            None => {
-                owned_tx = Some(self.app_state.database_pool.begin().await?);
-                owned_tx.as_mut().unwrap()
-            }
-        };
-        {
-            let read_guard = self.app_state.database_schema.read().await;
-            let find_field = read_guard.columns.iter().find(|field| {
-                field.schema == self.app_context.schema_name()
-                    && field.table == table
-                    && field.name == api_name.to_string()
-            });
-            let collection = "alcedo_fields".to_string();
-            let fields_service = ItemsService::new(self.app_state, self.app_context, &collection);
-
-            let mut meta: Map<String, Value> = if let Some(meta) = meta {
-                match serde_json::to_value(&meta) {
-                    Err(_) => {
-                        return Err(AlcedoError::InvalidInput(
-                            "Invalid field meta".to_string(),
-                            1,
-                        ));
-                    }
-                    Ok(meta) => meta.as_object().cloned().ok_or_else(|| {
-                        AlcedoError::InvalidInput("Invalid field meta".to_string(), 1)
-                    })?,
-                }
-            } else {
-                Map::new()
-            };
-
-            if let Some(find_field) = find_field {
-                if let Some(saved_meta) = &find_field.meta {
-                    if let Some(new_api_name) = &schema.name {
-                        meta.insert("api_name".to_string(), new_api_name.clone().into());
-                    }
-
-                    let mut id_filter = FieldFilter {
-                        fields: HashMap::new(),
-                    };
-                    id_filter.fields.insert(
-                        "id".to_string(),
-                        FieldValue::Comparison(Comparison {
-                            _eq: Some(saved_meta.id.into()),
-                            ..Default::default()
-                        }),
-                    );
-
-                    fields_service
-                        .update_items_by_query(
-                            &mut Query {
-                                filter: LogicOp {
-                                    _and: Some(vec![Filter::Field(id_filter)]),
-                                    ..Default::default()
-                                },
-                                ..Default::default()
-                            },
-                            meta,
-                            &mut Some(tx_ref),
-                        )
-                        .await?;
-                } else {
-                    if let Some(new_api_name) = &schema.name {
-                        meta.insert("api_name".to_string(), new_api_name.clone().into());
-                    } else {
-                        meta.insert("api_name".to_string(), api_name.to_string().into());
-                    }
-                    fields_service
-                        .create_many(vec![meta], &mut Some(tx_ref))
-                        .await?;
-                }
-            } else {
-                if let Some(new_api_name) = &schema.name {
-                    meta.insert("api_name".to_string(), new_api_name.clone().into());
-                } else {
-                    meta.insert("api_name".to_string(), api_name.to_string().into());
-                }
-                fields_service
-                    .create_many(vec![meta], &mut Some(tx_ref))
-                    .await?;
-            }
-        }
-
-        if schema.name.is_some()
-            || schema.default_value.is_some()
-            || schema.is_nullable.is_some()
-            || schema.is_unique.is_some()
-            || schema.max_length.is_some()
-            || schema.numeric_precision.is_some()
-            || schema.numeric_scale.is_some()
-        {
-            if let Some(name) = schema.name {
-                let sql = {
-                    let mut stmt = TableAlterStatement::new()
-                        .table((
-                            Alias::new(self.app_context.schema_name()),
-                            Alias::new(table),
-                        ))
-                        .to_owned();
-
-                    stmt.rename_column(Alias::new(api_name), Alias::new(name));
-                    stmt.to_string(PostgresQueryBuilder)
-                };
-                execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
-            }
-
-            if let Some(unique) = schema.is_unique {
-                let unique_key = format!("{}-uniq", api_name);
-                if unique {
-                    let sql = Index::create()
-                        .name(unique_key)
-                        .table((
-                            Alias::new(self.app_context.schema_name()),
-                            Alias::new(table),
-                        ))
-                        .col(Alias::new(api_name))
-                        .unique()
-                        .to_string(PostgresQueryBuilder);
-                    execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
-                } else {
-                    execute_query_transaction(
-                        &self.app_state,
-                        tx_ref,
-                        &Index::drop()
-                            .name(unique_key)
-                            .table((
-                                Alias::new(self.app_context.schema_name()),
-                                Alias::new(table),
-                            ))
-                            .build(PostgresQueryBuilder),
-                    )
-                    .await?;
-                }
-            }
-
-            if schema.default_value.is_some()
-                || schema.is_nullable.is_some()
-                || schema.max_length.is_some()
-                || schema.numeric_precision.is_some() && schema.numeric_scale.is_some()
-            {
-                let sql = {
-                    let mut stmt = TableAlterStatement::new()
-                        .table((
-                            Alias::new(self.app_context.schema_name()),
-                            Alias::new(table),
-                        ))
-                        .to_owned();
-
-                    let mut column_update = ColumnDef::new(Alias::new(api_name));
-
-                    if let Some(default_value) = schema.default_value {
-                        column_update.default(default_value);
-                    }
-                    if let Some(nullable) = schema.is_nullable {
-                        if nullable {
-                            column_update.null();
-                        } else {
-                            column_update.not_null();
-                        }
-                    }
-
-                    if let Some(max_length) = schema.max_length {
-                        column_update.string_len(max_length);
-                    }
-
-                    if let Some(nprecision) = schema.numeric_precision {
-                        if let Some(nscale) = schema.numeric_scale {
-                            column_update.decimal_len(nprecision, nscale);
-                        }
-                    }
-                    stmt.modify_column(column_update);
-                    stmt.to_string(PostgresQueryBuilder)
-                };
-                execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
-            }
+        for sql in build_drop_columns_sqls(&self.app_context, table, &[field]) {
+            execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
         }
 
         if let Some(tx) = owned_tx {
             tx.commit().await.unwrap();
         };
-
-        self.refresh_schema().await;
+        if owns_tx {
+            self.refresh_schema().await;
+        }
         Ok(())
     }
+
 }
 
 pub async fn get_pk_key<'a>(
     schema: &RwLock<DatabaseSchema>,
+    schema_name: &str,
     collection: &'a str,
 ) -> Result<Column, AlcedoError> {
     let schema = schema.read().await;
     let pk = schema
         .columns
         .iter()
-        .find(|col| col.table == collection && col.is_primary_key);
+        .find(|col| {
+            col.table == collection && col.schema == schema_name && col.is_primary_key
+        });
 
     if let None = pk {
         return Err(AlcedoError::SystemError(
@@ -903,6 +549,7 @@ pub async fn get_pk_key<'a>(
 #[cfg(test)]
 mod tests {
 
+    use crate::services::postgres::pool::execute_query;
     use crate::utils;
 
     use super::*;
@@ -915,7 +562,7 @@ mod tests {
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
         };
-        let table_manager = TableService::new(&state, &context);
+        let table_manager = SchemaService::new(&state, &context);
 
         table_manager
             .create_table(
@@ -945,7 +592,7 @@ mod tests {
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
         };
-        let table_manager = TableService::new(&state, &context);
+        let table_manager = SchemaService::new(&state, &context);
 
         table_manager
             .create_table(
@@ -976,7 +623,7 @@ mod tests {
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
         };
-        let table_manager = TableService::new(&state, &context);
+        let table_manager = SchemaService::new(&state, &context);
 
         table_manager
             .create_table(
@@ -1100,7 +747,7 @@ mod tests {
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
         };
-        let table_manager = TableService::new(&state, &context);
+        let table_manager = SchemaService::new(&state, &context);
 
         table_manager
             .create_table(
@@ -1135,62 +782,6 @@ mod tests {
             .expect("Error: could not drop float field");
         table_manager
             .drop_table("automated_remove_field_test", &mut None)
-            .await
-            .expect("Error: could not drop test table");
-        ()
-    }
-    #[tokio::test]
-    async fn test_rename_field_table() {
-        let state = utils::test_utils::get_app_state().await;
-        let context = AppContext {
-            app_name: "testing".to_string(),
-            version: "".to_string(),
-            request_source: RequestSource::SystemTest,
-        };
-        let table_manager = TableService::new(&state, &context);
-
-        table_manager
-            .create_table(
-                "automated_rename_field_test",
-                |builder| {
-                    let mut column = ColumnDef::new(Alias::new("abc"));
-
-                    builder.col(column.string());
-                },
-                None,
-                &mut None,
-            )
-            .await
-            .expect("Error: could not create test table!");
-
-        table_manager
-            .add_field(
-                "automated_rename_field_test",
-                FieldCreationObject {
-                    name: "test_field_float".to_string(),
-                    col_type: "float".to_string(),
-                    ..Default::default()
-                },
-                None,
-                &mut None,
-            )
-            .await
-            .expect("Error: could not add float field");
-        table_manager
-            .update_field(
-                "automated_rename_field_test",
-                "test_field_float",
-                FieldUpdateObject {
-                    name: Some("test_field_float_2".to_string()),
-                    ..Default::default()
-                },
-                None,
-                &mut None,
-            )
-            .await
-            .expect("Error: could not add float field");
-        table_manager
-            .drop_table("automated_rename_field_test", &mut None)
             .await
             .expect("Error: could not drop test table");
         ()

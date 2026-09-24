@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import { useAlcedoClient } from '../composables/useAlcedoClient'
 import { withAsyncHandlingVoid } from '../utils/asyncUtils'
 import type { FilterCondition } from '@/types/filters'
+import { normalizeFilterCondition } from '@/types/filters'
 
 export interface SavedViewConfig {
   render_mode?: string
@@ -45,7 +46,17 @@ export const useSavedViewsStore = defineStore('savedViews', () => {
     await withAsyncHandlingVoid(loading, error, async () => {
       const response = await client.collections.listViews(collectionName) as any
       const data = response.data || response
-      views.value = data.views || []
+      views.value = (data.views || []).map((v: SavedView) => ({
+        ...v,
+        config: v.config
+          ? {
+              ...v.config,
+              filterCondition: normalizeFilterCondition(
+                v.config.filterCondition,
+              ),
+            }
+          : v.config,
+      }))
     })
   }
 

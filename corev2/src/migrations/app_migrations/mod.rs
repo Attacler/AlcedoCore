@@ -7,12 +7,15 @@ use crate::migrations::generate_app_state_for_migrations;
 use crate::services::context::{AppContext, RequestSource};
 use crate::services::items::query::{LogicOp, Query};
 use crate::services::items::service::ItemsService;
-use crate::services::postgres::tables::TableService;
+use crate::services::collections::schema::SchemaService;
 
 pub(crate) mod m00001_init;
 pub(crate) mod m00002_views;
 pub(crate) mod m00003_fieldoptions;
 pub(crate) mod m00004_roles;
+pub(crate) mod m00005_collections_ui;
+pub(crate) mod m00006_section_related_app;
+pub(crate) mod m00007_drop_dead_o2m_columns;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -27,6 +30,15 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
         },
         m00004_roles::M0004Migration {
             app_context: app_context.clone()
+        },
+        m00005_collections_ui::M0005Migration {
+            app_context: app_context.clone()
+        },
+        m00006_section_related_app::M0006Migration {
+            app_context: app_context.clone()
+        },
+        m00007_drop_dead_o2m_columns::M0007Migration {
+            app_context: app_context.clone()
         }
     ]
 }
@@ -36,7 +48,7 @@ pub async fn run_app_migrations(database_pool: &Pool<Postgres>) {
 
     let app_context = AppContext::system(RequestSource::Migration);
     let collection = "alcedo_apps_versions".to_string();
-    let table_service = TableService::new(&app_state, &app_context);
+    let table_service = SchemaService::new(&app_state, &app_context);
     table_service.refresh_schema().await;
 
     let service = ItemsService::new(&app_state, &app_context, &collection);

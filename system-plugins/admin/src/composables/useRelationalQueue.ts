@@ -1,4 +1,4 @@
-import { ref, type Ref } from 'vue'
+import { ref } from 'vue'
 
 export interface PendingOp {
   type: 'create' | 'update' | 'delete'
@@ -8,6 +8,21 @@ export interface PendingOp {
   fkFieldName?: string
   values?: Record<string, any>
   nestedOps?: PendingOp[]
+  app?: string
+  version?: string
+}
+
+export interface TargetContext {
+  app?: string | null
+  version?: string | null
+}
+
+/** Whether a queued op belongs to the given target (unset target matches all). */
+function matchesTarget(op: PendingOp, target?: TargetContext): boolean {
+  if (!target) return true
+  const appOk = !target.app || op.app == null || op.app === target.app
+  const versionOk = !target.version || op.version == null || op.version === target.version
+  return appOk && versionOk
 }
 
 /** A leaf create is one with no nested (grandchild) ops queued under it. */
@@ -20,11 +35,14 @@ export function serializePendingOps(
   pendingOps: PendingOp[],
   childCollectionName: string,
   fkFieldName?: string,
+  target?: TargetContext,
 ): PendingOp[] {
   return pendingOps.map((op) => ({
     ...op,
     childCollection: op.childCollection || childCollectionName,
     fkFieldName: op.fkFieldName ?? fkFieldName,
+    app: op.app ?? target?.app ?? undefined,
+    version: op.version ?? target?.version ?? undefined,
     values: { ...(op.values || {}) },
     nestedOps: op.nestedOps ? op.nestedOps.map((n) => ({ ...n })) : [],
   }))
@@ -47,8 +65,11 @@ export function buildCreateBody(
   pendingOps: PendingOp[],
   childCollectionName: string,
   fkFieldName?: string,
+  target?: TargetContext,
 ): CreateBodyResult {
-  const creates = pendingOps.filter(isLeafCreate)
+  const creates = pendingOps.filter(
+    (op) => isLeafCreate(op) && matchesTarget(op, target),
+  )
   if (creates.length === 0) return { body: null, inlinedTempIds: [] }
   const createObjs = creates.map((op) => {
     const vals = { ...(op.values || {}) }
@@ -65,12 +86,20 @@ export function buildCreateBody(
 export function useRelationalQueue() {
   const pendingOps = ref<PendingOp[]>([])
 
-  function collect(childCollectionName: string, fkFieldName?: string): PendingOp[] {
-    return serializePendingOps(pendingOps.value, childCollectionName, fkFieldName)
+  function collect(
+    childCollectionName: string,
+    fkFieldName?: string,
+    target?: TargetContext,
+  ): PendingOp[] {
+    return serializePendingOps(pendingOps.value, childCollectionName, fkFieldName, target)
   }
 
-  function getCreateBody(childCollectionName: string, fkFieldName?: string): CreateBodyResult {
-    return buildCreateBody(pendingOps.value, childCollectionName, fkFieldName)
+  function getCreateBody(
+    childCollectionName: string,
+    fkFieldName?: string,
+    target?: TargetContext,
+  ): CreateBodyResult {
+    return buildCreateBody(pendingOps.value, childCollectionName, fkFieldName, target)
   }
 
   function consumeInlinedCreates(tempIds: string[]): void {
@@ -99,6 +128,3 @@ export function useRelationalQueue() {
 
   return { pendingOps, collect, getCreateBody, consumeInlinedCreates, clear, push, replaceByTempId, removeByTempId }
 }
-
-export type RelationalQueue = ReturnType<typeof useRelationalQueue>
-export type { Ref }

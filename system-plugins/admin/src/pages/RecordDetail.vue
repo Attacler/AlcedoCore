@@ -16,14 +16,18 @@ import { onUnmounted } from "vue";
 import RelationalSection from "@/components/RelationalSection.vue";
 import FormFieldRenderer from "@/components/FormFieldRenderer.vue";
 import { appPath } from "@/utils/appHeaders";
+import { useAppContextStore } from "@/stores/appContext";
 
 const route = useRoute(),
     router = useRouter(),
     collectionsStore = useCollectionsStore(),
+    appContext = useAppContextStore(),
     { client } = useAlcedoClient(),
     toast = useToast();
 
-const collectionName = computed(() => route.params.collection as string),
+const currentVersion = computed(() => appContext.version ?? undefined),
+    currentApp = computed(() => appContext.appSlug ?? undefined),
+    collectionName = computed(() => route.params.collection as string),
     itemId = computed(() => route.params.id as string);
 
 const allowedFields = computed(() => {
@@ -208,9 +212,23 @@ async function fetchRecord() {
     error.value = null;
 
     try {
+        const params: Record<string, string> = {};
+        const relationFields = (collection.value?.fields || []).filter(
+            (f) =>
+                f.type === "relationship" &&
+                f.related_collection &&
+                f.relationship_type !== "one_to_many",
+        );
+        if (relationFields.length > 0) {
+            params.fields = JSON.stringify([
+                "*",
+                ...relationFields.map((f) => `${f.name}.*`),
+            ]);
+        }
         const res = (await client.items.get(
             collectionName.value,
             itemId.value,
+            params,
         )) as any;
 
         const data = res.data || res;
@@ -236,11 +254,21 @@ async function loadInlineParents() {
             | string[]
             | undefined;
         const related = (f as any).related_collection as string | undefined;
+        const relatedApp = (f as any).related_app as string | undefined;
         const fk = item.value[f.name];
-        if (!inlineFields?.length || !related || !fk || typeof fk !== "string")
+        const fkId = fk && typeof fk === "object" ? fk.id : fk;
+        if (
+            !inlineFields?.length ||
+            !related ||
+            !fkId ||
+            typeof fkId !== "string"
+        )
             continue;
         try {
-            const res: any = await client.items.get(related, fk);
+            const res: any = await client.items.get(related, fkId, undefined, {
+                app: relatedApp ?? undefined,
+                version: currentVersion.value,
+            });
             inlineParentObjects.value[f.name] = res.data || res;
         } catch {
             /* parent unavailable — leave inline fields empty */
@@ -257,7 +285,11 @@ function enterEditMode() {
             existingValue !== undefined && existingValue !== null;
 
         if (hasExisting) {
-            values[field.name] = existingValue;
+            values[field.name] =
+                field.type === "relationship" &&
+                typeof existingValue === "object"
+                    ? existingValue.id
+                    : existingValue;
         } else {
             values[field.name] = field.default_value ?? null;
         }
@@ -378,9 +410,12 @@ async function doSave() {
                 if (cur !== orig) edits[f.name] = cur;
             }
             if (Object.keys(edits).length > 0) {
+                const rawParent = item.value?.[pf.fieldName];
                 const parentId =
                     inlineParentObjects.value[pf.fieldName]?.id ??
-                    item.value?.[pf.fieldName];
+                    (rawParent && typeof rawParent === "object"
+                        ? rawParent.id
+                        : rawParent);
                 parentPayload[pf.fieldName] = { id: parentId, ...edits };
             }
         }
@@ -393,12 +428,17 @@ async function doSave() {
                 itemId.value,
                 parentPayload,
             )) as any;
+        }
 
+        // Flush queued relational-section create/update/delete BEFORE reloading
+        // the record: reloading re-creates the section components and would
+        // discard their pending-op queues.
+        await flushRelationalSections();
+
+        if (hasParentChanges) {
             await loadRecordData(collectionName.value, itemId.value);
             await loadInlineParents();
         }
-
-        await flushRelationalSections();
 
         toast.show("Record saved successfully", "success");
         editValues.value = {};
@@ -713,6 +753,8 @@ onUnmounted(() => {
                                     :parent-item="item"
                                     :parent-fields="fields"
                                     :deferred="isEditing"
+                                    :target-app="currentApp"
+                                    :target-version="currentVersion"
                                     @count="
                                         (n: number) => {
                                             sectionTotal[section.id] = n;
@@ -850,7 +892,11 @@ onUnmounted(() => {
                                                 class="text-sm font-medium text-gray-700"
                                             >
                                                 <router-link
-                                                    :to="appPath(`/collections/${group.collection_name}/data`)"
+                                                    :to="
+                                                        appPath(
+                                                            `/collections/${group.collection_name}/data`,
+                                                        )
+                                                    "
                                                     class="text-blue-500 hover:underline"
                                                 >
                                                     {{ group.collection_name }}
@@ -897,7 +943,11 @@ onUnmounted(() => {
                                                 class="text-sm text-gray-600 flex items-center gap-2"
                                             >
                                                 <router-link
-                                                    :to="appPath(`/detail/${group.collection_name}/${refItem.id}`)"
+                                                    :to="
+                                                        appPath(
+                                                            `/detail/${group.collection_name}/${refItem.id}`,
+                                                        )
+                                                    "
                                                     class="text-blue-500 hover:underline font-mono text-xs truncate"
                                                 >
                                                     {{ refItem.id }}

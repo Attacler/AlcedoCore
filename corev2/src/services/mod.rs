@@ -2,6 +2,7 @@ pub mod app_state;
 pub mod apps;
 pub mod auth;
 pub mod cache;
+pub mod collections;
 pub mod config;
 pub mod context;
 pub mod errors;

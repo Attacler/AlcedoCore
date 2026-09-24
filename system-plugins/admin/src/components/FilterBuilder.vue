@@ -18,6 +18,8 @@ export interface RelatedFieldOption {
     collection: string;
     /** The field type of the related field */
     fieldType: string;
+    /** Target app of the related field, when it lives in another app */
+    app?: string;
 }
 
 const props = defineProps<{

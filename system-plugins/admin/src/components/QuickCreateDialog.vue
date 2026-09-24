@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, computed, watch } from "vue";
 import { useCollectionsStore } from "@/stores/collections";
+import { useAppContextStore } from "@/stores/appContext";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useToast } from "@/composables/useToast";
 import RecordForm from "@/components/RecordForm.vue";
@@ -8,6 +9,7 @@ import RecordForm from "@/components/RecordForm.vue";
 const props = defineProps<{
     visible: boolean;
     collectionName: string;
+    relatedApp?: string;
     deferred?: boolean;
 }>();
 const emit = defineEmits<{
@@ -15,9 +17,12 @@ const emit = defineEmits<{
     created: [item: any];
 }>();
 
-const collectionsStore = useCollectionsStore();
-const { client } = useAlcedoClient();
-const toast = useToast();
+const collectionsStore = useCollectionsStore(),
+    appContext = useAppContextStore(),
+    { client } = useAlcedoClient(),
+    toast = useToast();
+
+const currentVersion = computed(() => appContext.version ?? undefined);
 
 const visibleInner = ref(props.visible);
 const formValues = ref<Record<string, any>>({});
@@ -42,7 +47,10 @@ async function loadFields() {
     loadingFields.value = true;
     fetchError.value = null;
     try {
-        await collectionsStore.getCollection(props.collectionName);
+        await collectionsStore.getCollection(props.collectionName, true, {
+            app: props.relatedApp ?? undefined,
+            version: currentVersion.value,
+        });
         formValues.value = {};
     } catch (e) {
         fetchError.value =
@@ -88,10 +96,10 @@ async function save() {
             if (body) Object.assign(payload, body);
             inlinedTempIds = ids;
         }
-        const res = (await client.items.create(
-            props.collectionName,
-            payload,
-        )) as any;
+        const res = await client.items.create(props.collectionName, payload, {
+            app: props.relatedApp ?? undefined,
+            version: currentVersion.value,
+        });
         const createdRaw = res.created || res.data || res;
         const created = Array.isArray(createdRaw) ? createdRaw : [createdRaw];
         const item = created[0];
@@ -152,6 +160,8 @@ function close() {
                     :collection-name="collectionName"
                     v-model="formValues"
                     :scalar-only="deferred"
+                    :target-app="relatedApp"
+                    :target-version="currentVersion"
                 />
             </div>
         </template>

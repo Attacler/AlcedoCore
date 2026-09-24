@@ -1,12 +1,10 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-
-use futures::FutureExt;
 use futures::future::join_all;
 use sea_query::{Alias, Expr, PostgresQueryBuilder, SimpleExpr};
 use serde_json::{Map, Value};
-use sqlx::{Postgres, Transaction};
+use sqlx::{Postgres, Row, Transaction};
+use std::collections::HashMap;
 
+use crate::services::collections::schema::get_pk_key;
 use crate::services::context::AppContext;
 use crate::services::hooks::HookContext;
 use crate::services::hooks::types::items_create::{ItemsAfterCreate, ItemsBeforeCreate};
@@ -15,14 +13,29 @@ use crate::services::hooks::types::items_update::{ItemsAfterUpdate, ItemsBeforeU
 use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query};
 use crate::services::postgres::jsonvalue_simpleexpr::parse_value;
 use crate::services::postgres::pool::{
-    execute_query_transaction, pgrow_to_json, process_query_error_response,
+    execute_query, execute_query_transaction, pgrow_to_json, process_query_error_response,
 };
-use crate::services::postgres::tables::get_pk_key;
 use crate::{AppState, services::errors::AlcedoError};
 pub struct ItemsService<'a> {
     app_state: &'a AppState,
     collection: &'a String,
     app_context: &'a AppContext,
+}
+
+fn pk_value_to_string(v: &Value) -> Result<String, AlcedoError> {
+    match v {
+        Value::String(s) => Ok(s.clone()),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Bool(b) => Ok(b.to_string()),
+        Value::Null => Err(AlcedoError::SystemError(
+            "Insert/update did not return a primary key".to_string(),
+            1,
+        )),
+        other => Err(AlcedoError::SystemError(
+            format!("Unexpected primary key type: {}", other),
+            1,
+        )),
+    }
 }
 
 impl ItemsService<'_> {
@@ -47,11 +60,44 @@ impl ItemsService<'_> {
             .await?)
     }
 
+    pub async fn count_items_by_query(&self, mut query: Query) -> Result<i64, AlcedoError> {
+        query.limit = 0;
+        query.offset = 0;
+        query.relation_hops = Box::pin(
+            crate::services::items::filter_relations::resolve_filter_relation_hops(
+                self.app_state,
+                self.app_context,
+                self.collection,
+                &query.filter,
+            ),
+        )
+        .await?;
+        let inner = {
+            let schema = self.app_state.database_schema.read().await;
+            let (stmt, _) = query.to_sql(self.collection, &schema, self.app_context)?;
+            stmt.to_string(PostgresQueryBuilder)
+        };
+        let count_sql = format!(
+            "SELECT COUNT(*)::bigint AS count FROM ({}) AS _alcedo_count",
+            inner
+        );
+        let rows = execute_query(self.app_state, count_sql).await?;
+        Ok(rows
+            .get(0)
+            .and_then(|row| row.try_get("count").ok())
+            .unwrap_or(0))
+    }
+
     pub async fn get_items_by_pks<'a>(
         &self,
         pks: Vec<Value>,
     ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
-        let pk = get_pk_key(&self.app_state.database_schema, &self.collection).await?;
+        let pk = get_pk_key(
+            &self.app_state.database_schema,
+            &self.app_context.schema_name(),
+            &self.collection,
+        )
+        .await?;
         let mut query = Query::default();
         let mut hmap = FieldFilter {
             fields: HashMap::new(),
@@ -93,9 +139,13 @@ impl ItemsService<'_> {
         query: &mut Query,
         payload: Map<String, Value>,
     ) -> Result<Vec<String>, AlcedoError> {
-        let pk_name = get_pk_key(&self.app_state.database_schema, &self.collection)
-            .await?
-            .name;
+        let pk_name = get_pk_key(
+            &self.app_state.database_schema,
+            &self.app_context.schema_name(),
+            &self.collection,
+        )
+        .await?
+        .name;
 
         query.fields = vec![pk_name.clone()];
 
@@ -151,7 +201,7 @@ impl ItemsService<'_> {
             let query_str = query.unwrap();
             let result = execute_query_transaction(&self.app_state, tx, &query_str).await?;
             let pk_data = pgrow_to_json(result.get(0).unwrap()).unwrap();
-            let pk = pk_data.get(&pk_name).unwrap().to_string();
+            let pk = pk_value_to_string(pk_data.get(&pk_name).unwrap())?;
             update_items.push(pk);
         }
 
@@ -239,17 +289,20 @@ impl ItemsService<'_> {
             return Err(AlcedoError::InvalidInput(errors.join(","), 1));
         }
 
-        let pk_name = get_pk_key(&self.app_state.database_schema, &self.collection)
-            .await?
-            .name;
+        let pk_name = get_pk_key(
+            &self.app_state.database_schema,
+            &self.app_context.schema_name(),
+            &self.collection,
+        )
+        .await?
+        .name;
         let pk_name_cloned = pk_name.clone();
         let mut created_items = vec![];
         for query in queries {
             let query = query.unwrap();
             let result = execute_query_transaction(&self.app_state, tx, &query).await?;
-            println!("Result: {:?}", result);
             let pk = pgrow_to_json(result.get(0).unwrap()).unwrap();
-            let pk = pk.get(&pk_name).unwrap().to_string();
+            let pk = pk_value_to_string(pk.get(&pk_name).unwrap())?;
 
             created_items.push(pk);
         }
@@ -291,7 +344,12 @@ impl ItemsService<'_> {
         pks: Vec<Value>,
         mut database_transaction: Option<&mut Transaction<'_, Postgres>>,
     ) -> Result<u64, AlcedoError> {
-        let pk = get_pk_key(&self.app_state.database_schema, &self.collection).await?;
+        let pk = get_pk_key(
+            &self.app_state.database_schema,
+            &self.app_context.schema_name(),
+            &self.collection,
+        )
+        .await?;
         let mut query = Query {
             ..Default::default()
         };
@@ -342,9 +400,13 @@ impl ItemsService<'_> {
             tx,
         };
 
-        let pk_name = get_pk_key(&self.app_state.database_schema, &self.collection)
-            .await?
-            .name;
+        let pk_name = get_pk_key(
+            &self.app_state.database_schema,
+            &self.app_context.schema_name(),
+            &self.collection,
+        )
+        .await?
+        .name;
 
         query.fields = vec![pk_name.clone()];
 
@@ -366,7 +428,7 @@ impl ItemsService<'_> {
         self.app_state
             .event_bus
             .trigger(
-                &format!("before.items.create.{}", self.collection),
+                &format!("before.items.delete.{}", self.collection),
                 &mut before,
                 hook_context,
             )
@@ -454,7 +516,14 @@ impl ItemsService<'_> {
                     1,
                 ));
             }
-            let value = match parse_value(&schema, &vec![], &self.collection, &field, value) {
+            let value = match parse_value(
+                &schema,
+                &self.app_context.schema_name(),
+                &vec![],
+                &self.collection,
+                &field,
+                value,
+            ) {
                 None => {
                     if let Some(column) = column {
                         if column.is_nullable || column.has_auto_increment {
@@ -472,7 +541,12 @@ impl ItemsService<'_> {
             columns.push(field);
             values.push(value);
         }
-        let pk = get_pk_key(&self.app_state.database_schema, &self.collection).await?;
+        let pk = get_pk_key(
+            &self.app_state.database_schema,
+            &self.app_context.schema_name(),
+            &self.collection,
+        )
+        .await?;
         stmt.columns(columns.iter().map(|col| Alias::new(col)));
         stmt.returning_col(Alias::new(pk.name.clone()));
         let _ = stmt.values(values);
@@ -508,7 +582,14 @@ impl ItemsService<'_> {
                 ));
             }
             let schema = self.app_state.database_schema.read().await;
-            let value = match parse_value(&schema, &vec![], &self.collection, &field, value) {
+            let value = match parse_value(
+                &schema,
+                &self.app_context.schema_name(),
+                &vec![],
+                &self.collection,
+                &field,
+                value,
+            ) {
                 None => {
                     let is_nullable = column.map_or(false, |c| c.is_nullable);
 
@@ -528,7 +609,12 @@ impl ItemsService<'_> {
 
             values.push((Alias::new(field), value));
         }
-        let pk = get_pk_key(&self.app_state.database_schema, &self.collection).await?;
+        let pk = get_pk_key(
+            &self.app_state.database_schema,
+            &self.app_context.schema_name(),
+            &self.collection,
+        )
+        .await?;
         stmt.returning_col(Alias::new(pk.name.clone()));
         stmt.values(values);
         let parsed_pk = self.parse_pk_value(&pk.name, &pk_val).await?;
@@ -545,20 +631,32 @@ impl ItemsService<'_> {
             Alias::new(self.collection),
         ));
 
-        let pk = get_pk_key(&self.app_state.database_schema, &self.collection).await?;
+        let pk = get_pk_key(
+            &self.app_state.database_schema,
+            &self.app_context.schema_name(),
+            &self.collection,
+        )
+        .await?;
         let parsed_pk = self.parse_pk_value(&pk.name, pk_val).await?;
         stmt.and_where(Expr::eq(Expr::col(Alias::new(pk.name.clone())), parsed_pk));
         Ok(stmt.to_string(PostgresQueryBuilder))
     }
 
-    /// Converts a primary-key JSON value into a correctly-typed SQL expression.
     async fn parse_pk_value(
         &self,
         pk_name: &str,
         pk_val: &Value,
     ) -> Result<SimpleExpr, AlcedoError> {
         let schema = self.app_state.database_schema.read().await;
-        parse_value(&schema, &vec![], &self.collection, pk_name, pk_val.clone()).ok_or_else(|| {
+        parse_value(
+            &schema,
+            &self.app_context.schema_name(),
+            &vec![],
+            &self.collection,
+            pk_name,
+            pk_val.clone(),
+        )
+        .ok_or_else(|| {
             AlcedoError::InvalidInput(
                 format!("Invalid primary key value for field {}", pk_name),
                 1,

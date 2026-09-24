@@ -1,14 +1,13 @@
 use futures::FutureExt;
-use sea_query::{Alias, ColumnDef, ForeignKey, TableCreateStatement};
 use sqlx::{PgConnection, Postgres};
 use sqlx_migrator::error::Error;
 use sqlx_migrator::migration::Migration;
 use sqlx_migrator::operation::Operation;
 
 use crate::migrations::generate_app_state_for_migrations;
+use crate::services::collections::schema::SchemaService;
+use crate::services::collections::schema::TableBuilderExt;
 use crate::services::context::AppContext;
-use crate::services::postgres::tables::TableBuilderExt;
-use crate::services::postgres::tables::TableService;
 pub(crate) struct M0001Operation {
     app_context: AppContext,
 }
@@ -22,7 +21,7 @@ impl Operation<Postgres> for M0001Operation {
                 let state = state.clone();
                 let app_context = self.app_context.clone();
                 async move {
-                    let table_service = TableService::new(&state, &app_context);
+                    let table_service = SchemaService::new(&state, &app_context);
 
                     table_service
                         .create_table(

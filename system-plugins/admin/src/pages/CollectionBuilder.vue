@@ -87,27 +87,17 @@ onMounted(async () => {
 });
 
 async function loadLayouts() {
-    try {
-        const resp = await fetch(
-            "/api/collections/" + collectionName.value + "/layouts",
-            { credentials: "include" },
-        );
-        const json = await resp.json();
-        const raw = json.layouts || [];
-        collLayouts.value = raw;
-        if (raw.length > 0 && !activeLayoutId.value) {
-            activeLayoutId.value = raw[0].id;
-        } else if (raw.length === 0) {
-            activeLayoutId.value = null;
-        } else if (
-            activeLayoutId.value &&
-            !raw.find((l: any) => l.id === activeLayoutId.value)
-        ) {
-            activeLayoutId.value = raw[0].id;
-        }
-    } catch (e) {
-        console.warn("[CollectionBuilder] Failed to load layouts", e);
-        collLayouts.value = [];
+    const raw = await store.listLayouts(collectionName.value);
+    collLayouts.value = raw;
+    if (raw.length > 0 && !activeLayoutId.value) {
+        activeLayoutId.value = raw[0].id;
+    } else if (raw.length === 0) {
+        activeLayoutId.value = null;
+    } else if (
+        activeLayoutId.value &&
+        !raw.find((l: any) => l.id === activeLayoutId.value)
+    ) {
+        activeLayoutId.value = raw[0].id;
     }
 }
 

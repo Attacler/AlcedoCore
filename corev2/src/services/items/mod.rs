@@ -1,4 +1,6 @@
+pub mod filter_relations;
 pub mod query;
+pub mod relational;
 pub mod service;
 
 /// Builds an item payload `Map` for `ItemsService` from `"key" => value` pairs.

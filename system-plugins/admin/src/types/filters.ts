@@ -22,9 +22,8 @@ export type FilterOperator =
 
 export type GroupOperator = "and" | "or";
 
-/** A single leaf filter rule: field + operator + value */
 export interface FilterRule {
-    field: string;
+    path: string[];
     operator: FilterOperator;
     value: unknown;
 }
@@ -129,11 +128,10 @@ export function isFilterGroup(
     return "conditions" in condition;
 }
 
-/** Check if a condition is a rule (has `field` property) */
 export function isFilterRule(
     condition: FilterCondition,
 ): condition is FilterRule {
-    return "field" in condition;
+    return "path" in condition;
 }
 
 /** Recursively check if a filter condition has any meaningful rules */
@@ -141,7 +139,7 @@ export function hasNonEmptyCondition(
     cond: FilterCondition | null | undefined,
 ): boolean {
     if (!cond) return false;
-    if (isFilterRule(cond)) return !!cond.field;
+    if (isFilterRule(cond)) return !!cond.path && cond.path.length > 0;
     if (cond.conditions.length > 0) {
         return cond.conditions.some((c) => hasNonEmptyCondition(c));
     }
@@ -150,7 +148,7 @@ export function hasNonEmptyCondition(
 
 /** Create an empty rule with sensible defaults */
 export function createEmptyRule(): FilterRule {
-    return { field: "", operator: "eq", value: "" };
+    return { path: [], operator: "eq", value: "" };
 }
 
 /** Create an empty group with AND operator */
@@ -196,7 +194,14 @@ const SHORT_TO_OPERATOR: Record<string, string> = {
     _nnull: "not_null",
 };
 
-/** Convert internal FilterCondition to short-form JSON for the API */
+function nestPath(path: string[], leaf: unknown): Record<string, unknown> {
+    let node: unknown = leaf;
+    for (let i = path.length - 1; i >= 0; i--) {
+        node = { [path[i]]: node };
+    }
+    return node as Record<string, unknown>;
+}
+
 export function toShortForm(cond: FilterCondition): Record<string, unknown> {
     if (isFilterGroup(cond)) {
         const key = cond.operator === "and" ? "_and" : "_or";
@@ -208,5 +213,31 @@ export function toShortForm(cond: FilterCondition): Record<string, unknown> {
         rule.value !== undefined && rule.value !== null && rule.value !== ""
             ? rule.value
             : null;
-    return { [rule.field]: { [opKey]: val } };
+    return nestPath(rule.path || [], { [opKey]: val });
+}
+
+export function normalizeFilterCondition(
+    cond: FilterCondition | null | undefined,
+): FilterCondition | null {
+    if (!cond) return null;
+    if (isFilterGroup(cond)) {
+        return {
+            operator: cond.operator,
+            conditions: cond.conditions
+                .map((c) => normalizeFilterCondition(c))
+                .filter((c): c is FilterCondition => !!c),
+        };
+    }
+    const legacy = cond as unknown as {
+        path?: unknown;
+        field?: unknown;
+        operator: FilterOperator;
+        value: unknown;
+    };
+    const path: string[] = Array.isArray(legacy.path)
+        ? (legacy.path as string[])
+        : typeof legacy.field === "string" && legacy.field.length > 0
+          ? legacy.field.split(".")
+          : [];
+    return { path, operator: legacy.operator, value: legacy.value };
 }

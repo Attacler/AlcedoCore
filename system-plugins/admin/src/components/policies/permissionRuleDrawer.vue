@@ -62,9 +62,9 @@ watch(filterConditionKey, () => {
     const result: Array<{ field: string; operator: string; value: string }> =
         [];
     function walk(c: FilterCondition) {
-        if ("field" in c) {
+        if ("path" in c) {
             result.push({
-                field: c.field,
+                field: c.path.join("."),
                 operator: c.operator,
                 value:
                     c.value !== null && c.value !== undefined
@@ -211,7 +211,7 @@ function filtersToCondition(
     if (valid.length === 0) return null;
     if (valid.length === 1) {
         return {
-            field: valid[0].field,
+            path: valid[0].field.split("."),
             operator: valid[0].operator as any,
             value: valid[0].value,
         };
@@ -219,7 +219,7 @@ function filtersToCondition(
     return {
         operator: "and",
         conditions: valid.map((f) => ({
-            field: f.field,
+            path: f.field.split("."),
             operator: f.operator as any,
             value: f.value,
         })),
@@ -262,9 +262,9 @@ watch(validationConditionKey, () => {
     const result: Array<{ field: string; operator: string; value: string }> =
         [];
     function walk(c: FilterCondition) {
-        if ("field" in c) {
+        if ("path" in c) {
             result.push({
-                field: c.field,
+                field: c.path.join("."),
                 operator: c.operator,
                 value:
                     c.value !== null && c.value !== undefined

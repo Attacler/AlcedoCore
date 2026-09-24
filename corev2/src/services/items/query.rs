@@ -10,6 +10,7 @@ use std::str::FromStr;
 use std::vec;
 use utoipa::ToSchema;
 
+use super::filter_relations::{HopMap, OneToManyHop, resolve_filter_relation_hops};
 use crate::services::context::AppContext;
 use crate::services::postgres::jsonvalue_simpleexpr::parse_value;
 use crate::services::postgres::pool::pgrow_to_json;
@@ -39,11 +40,38 @@ pub struct Query {
     pub filter: LogicOp,
     #[serde(default = "limit_default")]
     pub limit: u64,
+    /// Number of rows to skip. UI also sends `page`/`per_page`, which
+    /// `normalize_pagination` converts into `limit`/`offset`.
+    #[serde(default)]
+    pub offset: u64,
+    #[serde(default)]
+    pub page: Option<u64>,
+    #[serde(default)]
+    pub per_page: Option<u64>,
+    /// Virtual 1:M relation hops referenced by `filter`, resolved just before
+    /// the SQL is built. Not part of the wire format.
+    #[serde(skip)]
+    pub relation_hops: HopMap,
+}
+
+impl Query {
+    /// Translates the admin UI's 1-based `page` + `per_page` into `limit` /
+    /// `offset`. A direct `limit`/`offset` still wins if `per_page` is absent.
+    pub fn normalize_pagination(&mut self) {
+        if let Some(per_page) = self.per_page {
+            if per_page > 0 {
+                let page = self.page.unwrap_or(1).max(1);
+                self.limit = per_page;
+                self.offset = (page - 1) * per_page;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RemainingQuery {
     pub table: String,
+    pub schema: String,
     pub fields: Vec<String>,
     pub fk: String,
     pub app_context: AppContext,
@@ -83,6 +111,14 @@ impl Query {
         state: &AppState,
         table: &String,
     ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
+        self.relation_hops = Box::pin(resolve_filter_relation_hops(
+            state,
+            context,
+            table,
+            &self.filter,
+        ))
+        .await?;
+
         let schema = state.database_schema.read().await;
         let (stmt, remaining_queries) = self.to_sql(&table, &schema, context)?;
         drop(schema);
@@ -102,6 +138,7 @@ impl Query {
             let fk_vals: Vec<String> = rows
                 .iter()
                 .filter_map(|row| row.get(&rq.fk))
+                .filter(|v| !v.is_null())
                 .map(|v| v.to_string())
                 .collect();
 
@@ -146,9 +183,8 @@ impl Query {
             let mut nested_query = Query {
                 fields: nested_fields,
                 filter,
-                joins: vec![],
-                sort: vec![],
                 limit: 0,
+                ..Default::default()
             };
 
             let related_rows =
@@ -203,6 +239,9 @@ impl Query {
 
         if self.limit != 0 {
             stmt.limit(self.limit);
+        }
+        if self.offset != 0 {
+            stmt.offset(self.offset);
         }
         // if there are no fields give, we assume that all values will need to be returned
         if self.fields.is_empty() {
@@ -272,22 +311,22 @@ impl Query {
 
                 let find = related_fields
                     .iter_mut()
-                    .find(|rel| rel.table == fk_info.table);
+                    .find(|rel| rel.table == fk_info.table && rel.schema == fk_info.schema);
 
                 if let None = find {
+                    let (app_name, version) = fk_info
+                        .schema
+                        .split_once("010")
+                        .map(|(a, v)| (a.to_string(), v.to_string()))
+                        .unwrap_or_else(|| (fk_info.schema.clone(), context.version.clone()));
                     related_fields.push(RemainingQuery {
                         fields: vec![remaining],
-                        table: fk_info.table,
+                        table: fk_info.table.clone(),
+                        schema: fk_info.schema.clone(),
                         fk: relation_field.to_string(),
-                        //@TODO check for a better way of handling the app_name
                         app_context: AppContext {
-                            app_name: fk_info
-                                .schema
-                                .split_once("010")
-                                .unwrap_or((&fk_info.schema, ""))
-                                .0
-                                .to_string(),
-                            version: context.version.clone(),
+                            app_name,
+                            version,
                             request_source: context.request_source.clone(),
                         },
                     });
@@ -308,19 +347,35 @@ impl Query {
         if let Some(and) = filters._and {
             for filter in and {
                 let mut condition = Condition::all();
-                condition =
-                    self.add_filter(schema, context, condition, &filter, &table, &vec![])?;
+                condition = self.add_filter(
+                    schema,
+                    context,
+                    condition,
+                    &filter,
+                    &context.schema_name(),
+                    &table,
+                    &vec![],
+                )?;
                 stmt.cond_where(condition);
             }
         }
 
         if let Some(or) = filters._or {
+            let mut any = Condition::any();
             for filter in or {
-                let mut condition = Condition::any();
-                condition =
-                    self.add_filter(schema, context, condition, &filter, &table, &vec![])?;
-                stmt.cond_where(condition);
+                let mut condition = Condition::all();
+                condition = self.add_filter(
+                    schema,
+                    context,
+                    condition,
+                    &filter,
+                    &context.schema_name(),
+                    &table,
+                    &vec![],
+                )?;
+                any = any.add(condition);
             }
+            stmt.cond_where(any);
         }
 
         for sort in &self.sort {
@@ -344,8 +399,10 @@ impl Query {
                     Alias::new(&join.target_table),
                 ),
                 Alias::new(&join.id),
-                Expr::col((Alias::new(&join.id), Alias::new(&join.field)))
-                    .equals((Alias::new(&join.source_table), Alias::new(&join.path))),
+                Expr::col((Alias::new(&join.id), Alias::new(&join.field))).equals((
+                    Alias::new(&join.source_table),
+                    Alias::new(&join.source_column),
+                )),
             );
         }
 
@@ -361,6 +418,7 @@ impl Query {
         schema: &DatabaseSchema,
         context: &AppContext,
         logic: &LogicOp,
+        current_schema: &str,
         current_table: &str,
         path: &Vec<&str>,
     ) -> Result<Condition, AlcedoError> {
@@ -368,8 +426,15 @@ impl Query {
             let mut condition = Condition::all();
 
             for field in and {
-                condition =
-                    self.add_filter(schema, context, condition, field, current_table, &path)?;
+                condition = self.add_filter(
+                    schema,
+                    context,
+                    condition,
+                    field,
+                    current_schema,
+                    current_table,
+                    &path,
+                )?;
             }
 
             return Ok(condition);
@@ -378,8 +443,15 @@ impl Query {
             let mut condition = Condition::any();
 
             for field in and {
-                condition =
-                    self.add_filter(schema, context, condition, field, current_table, &path)?;
+                condition = self.add_filter(
+                    schema,
+                    context,
+                    condition,
+                    field,
+                    current_schema,
+                    current_table,
+                    &path,
+                )?;
             }
 
             return Ok(condition);
@@ -400,15 +472,29 @@ impl Query {
         context: &AppContext,
         mut condition: Condition,
         filter: &Filter,
+        current_schema: &str,
         current_table: &str,
         path: &Vec<&str>,
     ) -> Result<Condition, AlcedoError> {
         if let Filter::Logic(logic) = filter {
-            condition =
-                condition.add(self.process_logic(schema, context, logic, current_table, path)?);
+            condition = condition.add(self.process_logic(
+                schema,
+                context,
+                logic,
+                current_schema,
+                current_table,
+                path,
+            )?);
         } else if let Filter::Field(field) = filter {
-            condition =
-                self.add_field_filter(schema, context, condition, field, current_table, path)?;
+            condition = self.add_field_filter(
+                schema,
+                context,
+                condition,
+                field,
+                current_schema,
+                current_table,
+                path,
+            )?;
         }
 
         Ok(condition)
@@ -425,6 +511,7 @@ impl Query {
         context: &AppContext,
         mut condition: Condition,
         field_filter: &FieldFilter,
+        current_schema: &str,
         current_table: &str,
         path: &Vec<&str>,
     ) -> Result<Condition, AlcedoError> {
@@ -450,8 +537,14 @@ impl Query {
 
                     for (opt_val, op) in comparisons {
                         if let Some(val) = opt_val {
-                            let parsed =
-                                parse_value(schema, &self.joins, current_table, field, val.clone());
+                            let parsed = parse_value(
+                                schema,
+                                current_schema,
+                                &self.joins,
+                                current_table,
+                                field,
+                                val.clone(),
+                            );
 
                             if let None = parsed {
                                 return Err(AlcedoError::InvalidInput(
@@ -485,6 +578,7 @@ impl Query {
                         if let Some(val) = opt_val {
                             let parsed1 = parse_value(
                                 schema,
+                                current_schema,
                                 &self.joins,
                                 current_table,
                                 field,
@@ -501,6 +595,7 @@ impl Query {
                             }
                             let parsed2 = parse_value(
                                 schema,
+                                current_schema,
                                 &self.joins,
                                 current_table,
                                 field,
@@ -514,7 +609,8 @@ impl Query {
                     }
 
                     if let Some(_in) = &comparison._in {
-                        let in_values = self.value_to_vec(_in, schema, current_table, field)?;
+                        let in_values =
+                            self.value_to_vec(_in, schema, current_schema, current_table, field)?;
 
                         condition = condition.add(col.clone().is_in(in_values));
                     }
@@ -523,6 +619,7 @@ impl Query {
                         condition = condition.add(col.clone().is_not_in(self.value_to_vec(
                             _nin,
                             schema,
+                            current_schema,
                             current_table,
                             field,
                         )?));
@@ -606,42 +703,77 @@ impl Query {
                 }
                 FieldValue::Nested(nested_filter) => {
                     let mut current_table = current_table.to_string();
+                    let mut current_schema = current_schema.to_string();
                     let mut path = path.clone();
                     path.push(field);
 
                     let path_str = path.join(":");
-                    let find_schema = self
+                    let find_join = self
                         .joins
                         .iter()
                         .find(|f| f.source_table == current_table && f.path == path_str);
 
-                    match find_schema {
-                        Some(val) => current_table = val.id.clone(),
+                    match find_join {
+                        Some(val) => {
+                            current_schema = val.target_schema.clone();
+                            current_table = val.id.clone();
+                        }
                         None => {
-                            let id: String = rand::rng()
-                                .sample_iter(&Alphanumeric)
-                                .take(7)
-                                .map(char::from)
-                                .collect();
+                            let lookup_table = self
+                                .joins
+                                .iter()
+                                .find(|j| j.id == current_table)
+                                .map(|j| j.target_table.clone())
+                                .unwrap_or_else(|| current_table.clone());
 
-                            let target_table = schema.clone();
-                            let target_table = target_table.columns.iter().find(|col| {
-                                col.schema == context.schema_name()
-                                    && col.table == current_table
+                            let target_column = schema.columns.iter().find(|col| {
+                                col.schema == current_schema
+                                    && col.table == lookup_table
                                     && col.name == *field
                             });
 
-                            if let Some(t) = target_table {
+                            let mut joined = false;
+                            if let Some(t) = target_column {
                                 if let Some(fk) = &t.foreign_key {
+                                    let id: String = rand::rng()
+                                        .sample_iter(&Alphanumeric)
+                                        .take(7)
+                                        .map(char::from)
+                                        .collect();
                                     self.joins.push(TableJoin {
                                         id: id.clone(),
                                         path: path_str,
                                         field: fk.column.clone(),
+                                        source_column: field.to_string(),
                                         target_table: fk.table.clone(),
                                         source_table: current_table.to_string(),
                                         target_schema: fk.schema.clone(),
                                     });
+                                    current_schema = fk.schema.clone();
                                     current_table = id;
+                                    joined = true;
+                                }
+                            }
+
+                            if !joined {
+                                let hop_key = (
+                                    current_schema.clone(),
+                                    lookup_table.clone(),
+                                    field.to_string(),
+                                );
+                                if let Some(hop) = self.relation_hops.get(&hop_key).cloned() {
+                                    condition = self.add_exists_condition(
+                                        condition,
+                                        schema,
+                                        context,
+                                        nested_filter,
+                                        &current_table,
+                                        &lookup_table,
+                                        &current_schema,
+                                        &hop,
+                                        &path,
+                                    )?;
+                                    continue;
                                 }
                             }
                         }
@@ -652,6 +784,7 @@ impl Query {
                         context,
                         condition,
                         nested_filter,
+                        &current_schema,
                         &current_table,
                         &path,
                     )?;
@@ -659,6 +792,66 @@ impl Query {
             }
         }
         Ok(condition)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn add_exists_condition(
+        &mut self,
+        condition: Condition,
+        schema: &DatabaseSchema,
+        context: &AppContext,
+        nested_filter: &FieldFilter,
+        parent_alias: &str,
+        parent_table: &str,
+        parent_schema: &str,
+        hop: &OneToManyHop,
+        path: &Vec<&str>,
+    ) -> Result<Condition, AlcedoError> {
+        // Build the child condition in a fresh join scope so the outer query's
+        // joins are not polluted.
+        let outer_joins = std::mem::take(&mut self.joins);
+        let child_condition = self.add_field_filter(
+            schema,
+            context,
+            Condition::all(),
+            nested_filter,
+            &hop.child_schema,
+            &hop.child_table,
+            path,
+        )?;
+        let child_joins = std::mem::take(&mut self.joins);
+        self.joins = outer_joins;
+
+        let parent_pk = schema
+            .columns
+            .iter()
+            .find(|c| c.schema == parent_schema && c.table == parent_table && c.is_primary_key)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "id".to_string());
+
+        let mut sub = sea_query::Query::select();
+        sub.from((Alias::new(&hop.child_schema), Alias::new(&hop.child_table)));
+        for join in &child_joins {
+            sub.join_as(
+                JoinType::LeftJoin,
+                (
+                    Alias::new(&join.target_schema),
+                    Alias::new(&join.target_table),
+                ),
+                Alias::new(&join.id),
+                Expr::col((Alias::new(&join.id), Alias::new(&join.field))).equals((
+                    Alias::new(&join.source_table),
+                    Alias::new(&join.source_column),
+                )),
+            );
+        }
+        sub.cond_where(child_condition);
+        sub.and_where(
+            Expr::col((Alias::new(&hop.child_table), Alias::new(&hop.fk_column)))
+                .equals((Alias::new(parent_alias), Alias::new(&parent_pk))),
+        );
+
+        Ok(condition.add(Expr::exists(sub)))
     }
 
     /// Converts the value into a Vec<SimpleExpr>
@@ -671,21 +864,35 @@ impl Query {
         &mut self,
         value: &serde_json::Value,
         parse_schema: &DatabaseSchema,
+        schema_name: &str,
         current_table: &str,
         field: &str,
     ) -> Result<Vec<SimpleExpr>, AlcedoError> {
         let values: Vec<SimpleExpr> = if value.is_array() {
-            value
-                .as_array()
-                .unwrap_or(&Vec::new())
-                .iter()
-                .map(|v| {
-                    parse_value(parse_schema, &self.joins, current_table, field, v.clone()).unwrap()
-                })
-                .collect()
+            let mut values = Vec::new();
+            for v in value.as_array().unwrap_or(&Vec::new()) {
+                match parse_value(
+                    parse_schema,
+                    schema_name,
+                    &self.joins,
+                    current_table,
+                    field,
+                    v.clone(),
+                ) {
+                    Some(parsed) => values.push(parsed),
+                    None => {
+                        return Err(AlcedoError::InvalidInput(
+                            format!("The column '{}' in invalid or has invalid input", field),
+                            1,
+                        ));
+                    }
+                }
+            }
+            values
         } else {
             let parsed = parse_value(
                 parse_schema,
+                schema_name,
                 &self.joins,
                 current_table,
                 field,
@@ -710,6 +917,7 @@ pub struct TableJoin {
     pub id: String,
     pub path: String,
     pub field: String,
+    pub source_column: String,
     pub target_table: String,
     pub source_table: String,
     pub target_schema: String,
@@ -744,6 +952,20 @@ pub enum FieldValue {
     Comparison(Comparison),
 }
 
+/// Accepts a boolean, but treats JSON `null` as `true`. The admin UI's
+/// short-form filter emits `{"field": {"_null": null}}` for "is null".
+fn de_nullable_bool<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(Value::Null) => Some(true),
+        Some(Value::Bool(b)) => Some(b),
+        Some(other) => Some(other.as_bool().unwrap_or(true)),
+    })
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default, ToSchema)]
 pub struct Comparison {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -770,10 +992,18 @@ pub struct Comparison {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _nin: Option<Value>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "de_nullable_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub _null: Option<bool>,
 
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "de_nullable_bool",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub _nnull: Option<bool>,
 
     #[serde(skip_serializing_if = "Option::is_none")]

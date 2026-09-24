@@ -6,8 +6,9 @@ use utoipa::ToSchema;
 use crate::{
     AppState,
     services::{
+        collections::schema::FieldSavedMetaObject,
         context::{AppContext, RequestSource},
-        postgres::{pool::execute_query, tables::FieldSavedMetaObject},
+        postgres::pool::execute_query,
     },
 };
 

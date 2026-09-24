@@ -7,7 +7,10 @@
     "test": "playwright test",
     "test:ui": "playwright test --ui",
     "test:headed": "playwright test --headed",
-    "test:api": "tsx --test ./api/permissions.test.ts ./api/plugin-auth.test.ts"
+    "test:api": "tsx --test ./api/permissions.test.ts ./api/plugin-auth.test.ts",
+    "test:api:corev2": "node --test ./api/collection-data.test.ts",
+    "test:api:crossapp": "node --test ./api/cross-app-relations.test.ts",
+    "test:api:relations": "node --test ./api/relations-advanced.test.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.44.0",

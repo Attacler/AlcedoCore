@@ -8,7 +8,7 @@ use crate::item_map;
 use crate::migrations::generate_app_state_for_migrations;
 use crate::services::context::AppContext;
 use crate::services::items::service::ItemsService;
-use crate::services::postgres::tables::{TableBuilderExt, TableService};
+use crate::services::collections::schema::{TableBuilderExt, SchemaService};
 pub(crate) struct M0001Operation {
     app_context: AppContext,
 }
@@ -20,7 +20,7 @@ impl Operation<Postgres> for M0001Operation {
 
         let mut app_context = self.app_context.clone();
         app_context.request_source = crate::services::context::RequestSource::FirstMigration;
-        let table_service = TableService::new(&state, &app_context);
+        let table_service = SchemaService::new(&state, &app_context);
 
         table_service
             .create_table(
@@ -110,8 +110,20 @@ impl Operation<Postgres> for M0001Operation {
             .await
             .map_err(|e| Error::Box(Box::new(e)))?;
 
-        let collections_id = collection_data.get(0).unwrap();
-        let fields_id = collection_data.get(1).unwrap();
+        let collections_id: i64 = collection_data
+            .get(0)
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| Error::Box(Box::new(crate::services::errors::AlcedoError::SystemError(
+                "Could not resolve alcedo_collections id".to_string(),
+                1,
+            ))))?;
+        let fields_id: i64 = collection_data
+            .get(1)
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| Error::Box(Box::new(crate::services::errors::AlcedoError::SystemError(
+                "Could not resolve alcedo_fields id".to_string(),
+                1,
+            ))))?;
 
         let collection = "alcedo_fields".to_string();
         let fields_service = ItemsService::new(&state, &app_context, &collection);
@@ -154,7 +166,7 @@ impl Operation<Postgres> for M0001Operation {
 
     async fn down(&self, _: &mut PgConnection) -> Result<(), Error> {
         let state = generate_app_state_for_migrations().await;
-        let table_service = TableService::new(&state, &self.app_context);
+        let table_service = SchemaService::new(&state, &self.app_context);
         table_service
             .drop_table("alcedo_fields", &mut None)
             .await

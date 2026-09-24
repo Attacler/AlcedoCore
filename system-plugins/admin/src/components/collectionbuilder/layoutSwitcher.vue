@@ -65,6 +65,8 @@ const activeLayout = computed(
 async function openEditLayoutDialog() {
     if (!activeLayoutId.value) return;
     editLayoutName.value = activeLayout.value?.name ?? "";
+    layoutRoles.value = [];
+    selectedLayoutRoleIds.value = [];
     try {
         await rolesStore.fetchRoles();
         const assigned = await store.getLayoutRoles(
@@ -73,13 +75,10 @@ async function openEditLayoutDialog() {
         );
         layoutRoles.value = assigned;
         selectedLayoutRoleIds.value = assigned.map((r: any) => r.role_id);
-        showEditLayoutDialog.value = true;
     } catch (e) {
-        toast.show(
-            `Failed to load layout: ${e instanceof Error ? e.message : "Unknown error"}`,
-            "error",
-        );
+        console.warn("[CollectionBuilder] Failed to load layout roles", e);
     }
+    showEditLayoutDialog.value = true;
 }
 
 async function saveEditLayout() {

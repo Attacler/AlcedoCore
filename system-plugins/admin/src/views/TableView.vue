@@ -6,14 +6,17 @@ import DataTable from "primevue/datatable";
 import Column from "primevue/column";
 import { inject } from "vue";
 import { useDrawerStackStore } from "@/stores/drawerStack";
-import { appPath } from "@/utils/appHeaders";
+import { useAppContextStore } from "@/stores/appContext";
+import { appPath, targetAppPath } from "@/utils/appHeaders";
+import { relationId, relationLabel } from "@/utils/relations";
 
-const FormFieldRenderer = inject("FormFieldRenderer"),
-    useDisplayComponents = inject<any>("useDisplayComponents"),
+const useDisplayComponents = inject<any>("useDisplayComponents"),
     FieldNameLabel = inject("FieldNameLabel");
 
-const router = useRouter();
-const route = useRoute();
+const router = useRouter(),
+    route = useRoute(),
+    appContext = useAppContextStore();
+
 const { getDisplayComponentForField } = useDisplayComponents();
 
 interface ExpandedRowState {
@@ -48,6 +51,7 @@ const props = withDefaults(
         editValues?: Record<string, Record<string, any>>;
         lazy?: boolean;
         rowLinkTo?: (item: any) => string;
+        rowHref?: (item: any) => string;
     }>(),
     {
         embedded: false,
@@ -73,6 +77,8 @@ const emit = defineEmits<{
     "update:per-page": [perPage: number];
     "delete-item": [item: any];
 }>();
+
+const currentVersion = computed(() => appContext.version ?? undefined);
 
 const sortOrderNum = computed(() =>
     props.sortOrder === "desc" ? -1 : props.sortOrder === "asc" ? 1 : undefined,
@@ -169,7 +175,13 @@ const displayFields = computed(() => {
                         </span>
                         <router-link
                             v-if="field.related_collection"
-                            :to="appPath(`/collections/${field.related_collection}/data`)"
+                            :to="
+                                targetAppPath(
+                                    field.related_app,
+                                    currentVersion,
+                                    `/collections/${field.related_collection}/data`,
+                                )
+                            "
                             class="text-blue-400 hover:text-blue-600 text-xs hover:underline"
                             :title="`Browse ${field.related_collection}`"
                             >browse</router-link
@@ -184,14 +196,28 @@ const displayFields = computed(() => {
                         />
                         <router-link
                             v-else
-                            :to="appPath(`/detail/${field.related_collection}/${slotProps.data[field.name]}`)"
+                            :to="
+                                targetAppPath(
+                                    field.related_app,
+                                    currentVersion,
+                                    `/detail/${field.related_collection}/${relationId(slotProps.data[field.name])}`,
+                                )
+                            "
                             class="text-blue-500 hover:text-blue-700 hover:underline font-medium"
                             :title="`View in ${field.related_collection}`"
                         >
                             {{
-                                slotProps.data[
-                                    field.name + "__display_value"
-                                ] || slotProps.data[field.name]
+                                slotProps.data[field.name] &&
+                                typeof slotProps.data[field.name] === "object"
+                                    ? relationLabel(
+                                          slotProps.data[field.name],
+                                          {
+                                              displayField: field.display_field,
+                                          },
+                                      )
+                                    : slotProps.data[
+                                          field.name + "__display_value"
+                                      ] || slotProps.data[field.name]
                             }}
                         </router-link>
                     </template>
@@ -207,6 +233,17 @@ const displayFields = computed(() => {
             >
                 <template #body="slotProps">
                     <div class="flex items-center justify-end gap-2">
+                        <a
+                            v-if="rowHref"
+                            :href="rowHref(slotProps.data)"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="inline-flex items-center justify-center w-7 h-7 rounded-md text-gray-500 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                            title="Open in new tab"
+                            @click.stop
+                        >
+                            <i class="pi pi-external-link text-sm"></i>
+                        </a>
                         <Button
                             v-if="
                                 enableEdit &&

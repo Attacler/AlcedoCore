@@ -5,7 +5,7 @@ use crate::services::{
         MultiEventBus,
         types::{items_create::ItemsAfterCreate, items_update::ItemsAfterUpdate},
     },
-    postgres::tables::TableService,
+    collections::schema::SchemaService,
 };
 
 pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
@@ -13,7 +13,7 @@ pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
         "after.items.update.alcedo_collections",
         |_, context, state, _| {
             Box::pin(async move {
-                let table_service = TableService::new(&state, &context);
+                let table_service = SchemaService::new(&state, &context);
                 table_service.refresh_schema().await;
             })
         },
@@ -23,7 +23,7 @@ pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
         "after.items.create.alcedo_fields",
         |_, context, state, _| {
             Box::pin(async move {
-                let table_service = TableService::new(&state, &context);
+                let table_service = SchemaService::new(&state, &context);
                 table_service.refresh_schema().await;
             })
         },

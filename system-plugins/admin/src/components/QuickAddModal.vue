@@ -10,6 +10,8 @@ const props = defineProps<{
     visible: boolean;
     collectionName: string;
     fields: FieldDefinition[];
+    targetApp?: string;
+    targetVersion?: string;
     createPolicy?: {
         allowed_fields: any[];
         field_validation: any[];
@@ -92,10 +94,15 @@ async function save() {
             if (body) Object.assign(payload, body);
             inlinedTempIds = ids;
         }
-        const res = (await client.items.create(
+        const createOptions =
+            props.targetApp || props.targetVersion
+                ? { app: props.targetApp, version: props.targetVersion }
+                : undefined;
+        const res = await client.items.create(
             props.collectionName,
             payload,
-        )) as any;
+            createOptions,
+        );
         const createdRaw = res.created || res.data || res;
         const created = Array.isArray(createdRaw) ? createdRaw[0] : createdRaw;
         const createdId = created?.id ?? null;
@@ -148,6 +155,8 @@ function close() {
                 :collection-name="collectionName"
                 v-model="formValues"
                 :fields-override="fields"
+                :target-app="targetApp"
+                :target-version="targetVersion"
             />
         </div>
         <template #footer>

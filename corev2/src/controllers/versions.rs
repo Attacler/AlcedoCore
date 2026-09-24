@@ -15,7 +15,7 @@ use crate::{
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
-        postgres::tables::drop_schema,
+        collections::schema::drop_schema,
         respond::{JSendResponse, success},
         versions::{PRODUCTION_VERSION, VersionsService},
     },

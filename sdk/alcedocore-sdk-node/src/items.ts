@@ -1,41 +1,76 @@
 export function createItemsResource(ky: any) {
     return {
-        list: (name: string, params?: Record<string, string>) =>
+        list: (
+            name: string,
+            params?: Record<string, string>,
+            options?: Record<string, any>,
+        ) =>
             ky
                 .get(
-                    `${name == "users" ? "platform/users" : "items" + `/${encodeURIComponent(name)}`}`,
-                    { searchParams: params },
+                    `${name == "users" ? "platform/users" : "app/items" + `/${encodeURIComponent(name)}`}`,
+                    { searchParams: params, ...options },
                 )
                 .json(),
 
-        create: (name: string, data: any) =>
-            ky.post(`items/${encodeURIComponent(name)}`, { json: data }).json(),
-
-        update: (name: string, data: { filter: any; update: any }) =>
-            ky.put(`items/${encodeURIComponent(name)}`, { json: data }).json(),
-
-        delete: (name: string, data: { filter?: any; pk_values?: any[] }) =>
+        create: (name: string, data: any, options?: Record<string, any>) =>
             ky
-                .delete(`items/${encodeURIComponent(name)}`, { json: data })
+                .post(`app/items/${encodeURIComponent(name)}`, {
+                    json: data,
+                    ...options,
+                })
                 .json(),
 
-        get: (name: string, id: string, params?: Record<string, string>) =>
+        update: (
+            name: string,
+            data: { filter: any; update: any },
+            options?: Record<string, any>,
+        ) =>
+            ky
+                .put(`app/items/${encodeURIComponent(name)}`, {
+                    json: data,
+                    ...options,
+                })
+                .json(),
+
+        delete: (
+            name: string,
+            data: { filter?: any; pk_values?: any[] },
+            options?: Record<string, any>,
+        ) =>
+            ky
+                .delete(`app/items/${encodeURIComponent(name)}`, {
+                    json: data,
+                    ...options,
+                })
+                .json(),
+
+        get: (
+            name: string,
+            id: string,
+            params?: Record<string, string>,
+            options?: Record<string, any>,
+        ) =>
             ky
                 .get(
-                    `items/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
-                    { searchParams: params },
+                    `app/items/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
+                    { searchParams: params, ...options },
                 )
                 .json(),
 
-        patch: (name: string, id: string, data: any) =>
+        patch: (
+            name: string,
+            id: string,
+            data: any,
+            options?: Record<string, any>,
+        ) =>
             ky
                 .patch(
-                    `items/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
-                    { json: data },
+                    `app/items/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
+                    { json: data, ...options },
                 )
                 .json(),
 
-        query: (name: string, data: any) => {
+        query: (name: string, data: any, options?: Record<string, any>) => {
             const params = new URLSearchParams();
             if (data.filter) params.set("filter", JSON.stringify(data.filter));
             if (data.limit) params.set("limit", String(data.limit));
@@ -51,23 +86,26 @@ export function createItemsResource(ky: any) {
                 }
             }
             return ky
-                .get(`items/${encodeURIComponent(name)}`, {
+                .get(`app/items/${encodeURIComponent(name)}`, {
                     searchParams: params,
+                    ...options,
                 })
                 .json();
         },
 
-        grouped: (name: string, data: any) =>
+        grouped: (name: string, data: any, options?: Record<string, any>) =>
             ky
-                .post(`items/${encodeURIComponent(name)}/grouped`, {
+                .post(`app/items/${encodeURIComponent(name)}/grouped`, {
                     json: data,
+                    ...options,
                 })
                 .json(),
 
-        references: (name: string, id: string) =>
+        references: (name: string, id: string, options?: Record<string, any>) =>
             ky
                 .get(
-                    `items/${encodeURIComponent(name)}/${encodeURIComponent(id)}/references`,
+                    `app/items/${encodeURIComponent(name)}/${encodeURIComponent(id)}/references`,
+                    options,
                 )
                 .json(),
     };

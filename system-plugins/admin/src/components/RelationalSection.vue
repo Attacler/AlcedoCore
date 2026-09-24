@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
+import { useRouter } from "vue-router";
+import { targetAppPath } from "@/utils/appHeaders";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useToast } from "@/composables/useToast";
 import { useSectionView } from "@/composables/useSectionView";
@@ -28,6 +30,8 @@ const props = withDefaults(
         parentItem: Record<string, any> | null;
         parentFields?: FieldDefinition[];
         deferred?: boolean;
+        targetApp?: string;
+        targetVersion?: string;
     }>(),
     {
         parentItem: null,
@@ -37,7 +41,8 @@ const props = withDefaults(
 );
 
 const { client } = useAlcedoClient(),
-    toast = useToast();
+    toast = useToast(),
+    router = useRouter();
 
 const emit = defineEmits<{
     count: [total: number];
@@ -48,6 +53,22 @@ const { sectionViewComponent } = useSectionView();
 const isDeferred = computed(() => props.deferred ?? !props.parentItem?.id),
     collectionName = computed(() => props.parentCollectionName),
     childCollectionName = computed(() => resolveChildCollection(props.section));
+
+const childTarget = computed(() => ({
+    app: props.section?.related_app ?? props.targetApp,
+    version: props.targetVersion,
+}));
+
+function childRowHref(row: any): string {
+    if (!row?.id || isTempId(row.id)) return "";
+    return router.resolve(
+        targetAppPath(
+            childTarget.value.app,
+            childTarget.value.version,
+            `/detail/${childCollectionName.value}/${row.id}`,
+        ),
+    ).href;
+}
 
 const sectionLoading = ref(false),
     sectionError = ref<string | null>(null),
@@ -78,7 +99,11 @@ const queue = useRelationalQueue(),
     childToDelete = ref<any>(null);
 
 function findParentFKField(): FieldDefinition | null {
-    return findParentFKFieldIn(sectionFields.value, collectionName.value);
+    return findParentFKFieldIn(
+        sectionFields.value,
+        collectionName.value,
+        props.targetApp,
+    );
 }
 
 const sectionViewSettings = computed(
@@ -91,16 +116,21 @@ const sectionFilterCondition = computed(() =>
         sectionFields.value,
         collectionName.value,
         props.parentItem?.id,
+        props.targetApp,
     ),
 );
 
 async function loadSectionFields() {
-    sectionFields.value = await loadChildFields(childCollectionName.value);
+    sectionFields.value = await loadChildFields(
+        childCollectionName.value,
+        childTarget.value,
+    );
 }
 
 async function fetchCreatePermission() {
     canCreate.value = await fetchChildCreatePermission(
         childCollectionName.value,
+        childTarget.value,
     );
 }
 
@@ -114,6 +144,8 @@ async function loadSectionData() {
             section: props.section,
             sectionFields: sectionFields.value,
             parentCollectionName: collectionName.value,
+            parentApp: props.targetApp,
+            target: childTarget.value,
         });
         sectionItems.value = items;
         sectionTotal.value = total;
@@ -199,12 +231,14 @@ async function saveChild() {
                 childCreateEditItem.value?.id &&
                 !isTempId(childCreateEditItem.value.id)
             ) {
-                pendingOps.value.push({
+                queue.push({
                     type: "update",
                     id: childCreateEditItem.value.id,
                     childCollection: childColl,
                     values: payload,
                     nestedOps,
+                    app: childTarget.value.app ?? undefined,
+                    version: childTarget.value.version ?? undefined,
                 });
                 sectionItems.value = sectionItems.value.map((it: any) =>
                     it.id === childCreateEditItem.value.id
@@ -216,10 +250,7 @@ async function saveChild() {
                 isTempId(childCreateEditItem.value.id)
             ) {
                 // Editing a queued temp row — update the queued create payload in place.
-                const op = pendingOps.value.find(
-                    (o: any) => o.tempId === childCreateEditItem.value.id,
-                );
-                if (op) op.values = payload;
+                queue.replaceByTempId(childCreateEditItem.value.id, payload);
                 sectionItems.value = sectionItems.value.map((it: any) =>
                     it.id === childCreateEditItem.value.id
                         ? { ...it, ...payload }
@@ -227,13 +258,15 @@ async function saveChild() {
                 );
             } else {
                 const tempId = generateTempId();
-                pendingOps.value.push({
+                queue.push({
                     type: "create",
                     tempId,
                     childCollection: childColl,
                     fkFieldName: fkField?.name,
                     values: payload,
                     nestedOps,
+                    app: childTarget.value.app ?? undefined,
+                    version: childTarget.value.version ?? undefined,
                 });
                 sectionItems.value = [
                     ...sectionItems.value,
@@ -248,6 +281,7 @@ async function saveChild() {
                     childColl,
                     childCreateEditItem.value.id,
                     payload,
+                    childTarget.value,
                 );
                 if (nestedOps.length > 0) {
                     await flushNestedOps(
@@ -258,10 +292,11 @@ async function saveChild() {
             } else {
                 const createPayload = { ...payload };
                 if (fkField) createPayload[fkField.name] = props.parentItem?.id;
-                const res = (await client.items.create(
+                const res = await client.items.create(
                     childColl,
                     createPayload,
-                )) as any;
+                    childTarget.value,
+                );
                 const createdId = extractCreatedId(res);
                 if (nestedOps.length > 0 && createdId) {
                     await flushNestedOps(nestedOps, createdId);
@@ -285,6 +320,10 @@ async function saveChild() {
 
 async function executePendingOp(op: PendingOp, parentId: string | null) {
     const payload = { ...(op.values || {}) };
+    const target = {
+        app: op.app ?? undefined,
+        version: op.version ?? undefined,
+    };
     if (op.type === "create") {
         if (op.fkFieldName && parentId != null) {
             payload[op.fkFieldName] = parentId;
@@ -292,18 +331,23 @@ async function executePendingOp(op: PendingOp, parentId: string | null) {
         const res = (await client.items.create(
             op.childCollection,
             payload,
+            target,
         )) as any;
         const createdId = extractCreatedId(res);
         for (const nested of op.nestedOps || []) {
             await executePendingOp(nested, createdId);
         }
     } else if (op.type === "update") {
-        await client.items.patch(op.childCollection, op.id!, payload);
+        await client.items.patch(op.childCollection, op.id!, payload, target);
         for (const nested of op.nestedOps || []) {
             await executePendingOp(nested, op.id!);
         }
     } else if (op.type === "delete") {
-        await client.items.delete(op.childCollection, { pk_values: [op.id!] });
+        await client.items.delete(
+            op.childCollection,
+            { pk_values: [op.id!] },
+            target,
+        );
     }
 }
 
@@ -314,12 +358,16 @@ async function flushNestedOps(ops: PendingOp[], parentId: string | null) {
 }
 
 function collectPendingOps(): PendingOp[] {
-    return queue.collect(childCollectionName.value, findParentFKField()?.name);
+    return queue.collect(
+        childCollectionName.value,
+        findParentFKField()?.name,
+        childTarget.value,
+    );
 }
 
 async function flushPending(parentId: string) {
     const ops = pendingOps.value.slice();
-    pendingOps.value = [];
+    queue.clear();
     for (const op of ops) {
         await executePendingOp(op, parentId);
     }
@@ -330,9 +378,16 @@ function getCreateBody(): {
     body: Record<string, any> | null;
     inlinedTempIds: string[];
 } {
+    if (
+        props.section?.related_app &&
+        props.section.related_app !== props.targetApp
+    ) {
+        return { body: null, inlinedTempIds: [] };
+    }
     return queue.getCreateBody(
         childCollectionName.value,
         findParentFKField()?.name,
+        childTarget.value,
     );
 }
 
@@ -361,24 +416,28 @@ async function handleDeleteConfirmed() {
         if (isDeferred.value) {
             if (isTempId(row.id)) {
                 // Remove a queued create (temp row) entirely.
-                pendingOps.value = pendingOps.value.filter(
-                    (op: any) => op.tempId !== row.id,
-                );
+                queue.removeByTempId(row.id);
                 sectionItems.value = sectionItems.value.filter(
                     (it: any) => it.id !== row.id,
                 );
             } else {
-                pendingOps.value.push({
+                queue.push({
                     type: "delete",
                     id: row.id,
                     childCollection: childColl,
+                    app: childTarget.value.app ?? undefined,
+                    version: childTarget.value.version ?? undefined,
                 });
                 sectionItems.value = sectionItems.value.filter(
                     (it: any) => it.id !== row.id,
                 );
             }
         } else {
-            await client.items.delete(childColl, { pk_values: [row.id] });
+            await client.items.delete(
+                childColl,
+                { pk_values: [row.id] },
+                childTarget.value,
+            );
             await loadSectionData();
         }
         toast.show("Item deleted", "success");
@@ -494,6 +553,7 @@ defineExpose({
                 embedded
                 :actions="true"
                 :enable-edit="true"
+                :row-href="isDeferred ? undefined : childRowHref"
                 @edit-item="onEditChild"
                 @delete-item="confirmDeleteChild"
             />
@@ -528,6 +588,8 @@ defineExpose({
                     "
                     :parent-item="childCreateEditItem"
                     :deferred-children="true"
+                    :target-app="childTarget.app"
+                    :target-version="childTarget.version"
                 />
 
                 <div

@@ -23,36 +23,36 @@ export function createCollectionsResource(ky: KyInstance) {
     return {
         list: (options?: any) =>
             ky
-                .get("collections", options)
+                .get("app/collections", options)
                 .json<{ collections: Collection[] }>(),
         get: (name: string, options?: any) =>
             ky
-                .get(`collections/${encodeURIComponent(name)}`, options)
+                .get(`app/collections/${encodeURIComponent(name)}`, options)
                 .json<Collection>(),
         create: (data: any, options?: any) =>
             ky
-                .post("collections", { json: data, ...options })
+                .post("app/collections", { json: data, ...options })
                 .json<Collection>(),
         update: (name: string, data: any, options?: any) =>
             ky
-                .put(`collections/${encodeURIComponent(name)}`, {
+                .put(`app/collections/${encodeURIComponent(name)}`, {
                     json: data,
                     ...options,
                 })
                 .json<{ success: true }>(),
         delete: (name: string, options?: any) =>
             ky
-                .delete(`collections/${encodeURIComponent(name)}`, options)
+                .delete(`app/collections/${encodeURIComponent(name)}`, options)
                 .json<{ deleted: true }>(),
 
         // Layouts
         listLayouts: (name: string, options?: any) =>
             ky
-                .get(`collections/${encodeURIComponent(name)}/layouts`, options)
+                .get(`app/collections/${encodeURIComponent(name)}/layouts`, options)
                 .json(),
         createLayout: (name: string, data: any, options?: any) =>
             ky
-                .post(`collections/${encodeURIComponent(name)}/layouts`, {
+                .post(`app/collections/${encodeURIComponent(name)}/layouts`, {
                     json: data,
                     ...options,
                 })
@@ -65,21 +65,21 @@ export function createCollectionsResource(ky: KyInstance) {
         ) =>
             ky
                 .put(
-                    `collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}`,
+                    `app/collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}`,
                     { json: data, ...options },
                 )
                 .json(),
         deleteLayout: (name: string, layoutId: string, options?: any) =>
             ky
                 .delete(
-                    `collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}`,
+                    `app/collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}`,
                     options,
                 )
                 .json(),
         getLayoutRoles: (name: string, layoutId: string, options?: any) =>
             ky
                 .get(
-                    `collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/roles`,
+                    `app/collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/roles`,
                     options,
                 )
                 .json(),
@@ -91,20 +91,20 @@ export function createCollectionsResource(ky: KyInstance) {
         ) =>
             ky
                 .put(
-                    `collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/roles`,
+                    `app/collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/roles`,
                     { json: { role_ids: roleIds }, ...options },
                 )
                 .json(),
         getResolvedLayout: (name: string, options?: any) =>
             ky
-                .get(`collections/${encodeURIComponent(name)}/layout`, options)
+                .get(`app/collections/${encodeURIComponent(name)}/layout`, options)
                 .json(),
 
         // Layout-scoped sections
         listLayoutSections: (name: string, layoutId: string, options?: any) =>
             ky
                 .get(
-                    `collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections`,
+                    `app/collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections`,
                     options,
                 )
                 .json(),
@@ -116,7 +116,7 @@ export function createCollectionsResource(ky: KyInstance) {
         ) =>
             ky
                 .post(
-                    `collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections`,
+                    `app/collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections`,
                     { json: data, ...options },
                 )
                 .json(),
@@ -129,7 +129,7 @@ export function createCollectionsResource(ky: KyInstance) {
         ) =>
             ky
                 .put(
-                    `collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections/${encodeURIComponent(sectionId)}`,
+                    `app/collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections/${encodeURIComponent(sectionId)}`,
                     { json: data, ...options },
                 )
                 .json(),
@@ -141,7 +141,7 @@ export function createCollectionsResource(ky: KyInstance) {
         ) =>
             ky
                 .delete(
-                    `collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections/${encodeURIComponent(sectionId)}`,
+                    `app/collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections/${encodeURIComponent(sectionId)}`,
                     options,
                 )
                 .json(),
@@ -153,7 +153,7 @@ export function createCollectionsResource(ky: KyInstance) {
         ) =>
             ky
                 .patch(
-                    `collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections`,
+                    `app/collections/${encodeURIComponent(name)}/layouts/${encodeURIComponent(layoutId)}/sections`,
                     { json: { sections }, ...options },
                 )
                 .json(),
@@ -161,11 +161,11 @@ export function createCollectionsResource(ky: KyInstance) {
         // Saved views
         listViews: (name: string, options?: any) =>
             ky
-                .get(`collections/${encodeURIComponent(name)}/views`, options)
+                .get(`app/collections/${encodeURIComponent(name)}/views`, options)
                 .json(),
         createView: (name: string, data: any, options?: any) =>
             ky
-                .post(`collections/${encodeURIComponent(name)}/views`, {
+                .post(`app/collections/${encodeURIComponent(name)}/views`, {
                     json: data,
                     ...options,
                 })
@@ -173,27 +173,27 @@ export function createCollectionsResource(ky: KyInstance) {
         updateView: (name: string, viewId: string, data: any, options?: any) =>
             ky
                 .put(
-                    `collections/${encodeURIComponent(name)}/views/${encodeURIComponent(viewId)}`,
+                    `app/collections/${encodeURIComponent(name)}/views/${encodeURIComponent(viewId)}`,
                     { json: data, ...options },
                 )
                 .json(),
         deleteView: (name: string, viewId: string, options?: any) =>
             ky
                 .delete(
-                    `collections/${encodeURIComponent(name)}/views/${encodeURIComponent(viewId)}`,
+                    `app/collections/${encodeURIComponent(name)}/views/${encodeURIComponent(viewId)}`,
                     options,
                 )
                 .json(),
         setDefaultView: (name: string, viewId: string, options?: any) =>
             ky
                 .put(
-                    `collections/${encodeURIComponent(name)}/views/${encodeURIComponent(viewId)}/default`,
+                    `app/collections/${encodeURIComponent(name)}/views/${encodeURIComponent(viewId)}/default`,
                     options,
                 )
                 .json(),
         getCreatePolicy: (name: string, options?: any) =>
             ky
-                .get(`collections/${encodeURIComponent(name)}/$create`, options)
+                .get(`app/collections/${encodeURIComponent(name)}/$create`, options)
                 .json(),
     };
 }

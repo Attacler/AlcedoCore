@@ -7,8 +7,8 @@ use sqlx_migrator::operation::Operation;
 
 use crate::migrations::generate_app_state_for_migrations;
 use crate::services::context::AppContext;
-use crate::services::postgres::tables::TableBuilderExt;
-use crate::services::postgres::tables::TableService;
+use crate::services::collections::schema::TableBuilderExt;
+use crate::services::collections::schema::SchemaService;
 
 pub(crate) struct M0005Operation {
     pub(crate) app_context: AppContext,
@@ -23,7 +23,7 @@ impl Operation<Postgres> for M0005Operation {
                 let state = state.clone();
                 let app_context = self.app_context.clone();
                 async move {
-                    let table_service = TableService::new(&state, &app_context);
+                    let table_service = SchemaService::new(&state, &app_context);
 
                     table_service
                         .create_table(

@@ -27,7 +27,8 @@ use crate::{
             HookContext, MultiEventBus, systemhooks::setup_system_hooks,
             types::lifecycle::CoreLoaded,
         },
-        postgres::{inspector::DatabaseSchema, tables::TableService},
+        collections::schema::SchemaService,
+        postgres::inspector::DatabaseSchema,
         versions::VersionsService,
     },
 };
@@ -74,7 +75,7 @@ async fn main() -> Result<()> {
             version: version.version_name.clone(),
             request_source: services::context::RequestSource::Inspector,
         };
-        let table_service = TableService::new(&state, &app_context);
+        let table_service = SchemaService::new(&state, &app_context);
         table_service.refresh_meta().await;
     }
 

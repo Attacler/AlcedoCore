@@ -1,17 +1,14 @@
-use futures::FutureExt;
 use sqlx::{PgConnection, Postgres};
 use sqlx_migrator::error::Error;
 use sqlx_migrator::migration::Migration;
 use sqlx_migrator::operation::Operation;
 
 use crate::migrations::generate_app_state_for_migrations;
-use crate::services::context::AppContext;
-use crate::services::items::service::ItemsService;
-use crate::services::postgres::inspector::{ForeignKey, TableMeta};
-use crate::services::postgres::tables::{
-    FieldCreationObject, FieldMetaObject, TableBuilderExt, TableService,
+use crate::services::collections::schema::{
+    FieldCreationObject, FieldMetaObject, SchemaService, TableBuilderExt,
 };
-use serde_json::json;
+use crate::services::context::AppContext;
+use crate::services::postgres::inspector::{ForeignKey, TableMeta};
 pub(crate) struct M0002Operation {
     app_context: AppContext,
 }
@@ -29,7 +26,7 @@ impl Operation<Postgres> for M0002Operation {
         }
         let app_context = self.app_context.clone();
 
-        let table_service = TableService::new(&state, &app_context);
+        let table_service = SchemaService::new(&state, &app_context);
 
         table_service
             .create_table(
@@ -315,7 +312,7 @@ impl Operation<Postgres> for M0002Operation {
 
     async fn down(&self, _: &mut PgConnection) -> Result<(), Error> {
         let state = generate_app_state_for_migrations().await;
-        let table_service = TableService::new(&state, &self.app_context);
+        let table_service = SchemaService::new(&state, &self.app_context);
         table_service
             .drop_table("alcedo_collection_views", &mut None)
             .await

@@ -27,8 +27,8 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
         init?.headers ?? (input instanceof Request ? input.headers : undefined);
     const headers = new Headers(baseHeaders);
     const ctx = getAppHeaders();
-    if (ctx.app) headers.set("X-App", ctx.app);
-    if (ctx.version) headers.set("X-Version", ctx.version);
+    if (ctx.app && !headers.has("X-App")) headers.set("X-App", ctx.app);
+    if (ctx.version && !headers.has("X-Version")) headers.set("X-Version", ctx.version);
     return origFetch(input, { ...init, headers }).then((res) => {
         if (res.status === 401 && !res.url.includes("/api/auth/login")) {
             window.location.hash = "#/login";
