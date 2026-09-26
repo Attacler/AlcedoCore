@@ -29,6 +29,8 @@ pub struct PoliciesService<'a> {
     permissions_table: String,
 }
 
+const VALID_ACTIONS: [&str; 4] = ["create", "read", "update", "delete"];
+
 impl PoliciesService<'_> {
     pub fn new<'a>(app_state: &'a AppState, app_context: &'a AppContext) -> PoliciesService<'a> {
         PoliciesService {
@@ -37,6 +39,60 @@ impl PoliciesService<'_> {
             policies_table: "alcedocore_policies".to_string(),
             permissions_table: "alcedocore_policy_permissions".to_string(),
         }
+    }
+
+    fn validate_action(action: &str) -> Result<(), AlcedoError> {
+        if VALID_ACTIONS.contains(&action) {
+            Ok(())
+        } else {
+            Err(AlcedoError::InvalidInput(
+                format!(
+                    "Invalid action '{}'; expected one of {:?}",
+                    action, VALID_ACTIONS
+                ),
+                0,
+            ))
+        }
+    }
+
+    /// Validates that every name in a `fields` payload is a real column of the
+    /// collection (system fields included).
+    async fn validate_fields(
+        &self,
+        collection_name: &str,
+        fields: &Value,
+    ) -> Result<(), AlcedoError> {
+        let Some(array) = fields.as_array() else {
+            return Ok(());
+        };
+        let schema_name = self.app_context.schema_name();
+        let columns: std::collections::HashSet<String> = {
+            let guard = self.app_state.database_schema.read().await;
+            guard
+                .columns
+                .iter()
+                .filter(|c| c.schema == schema_name && c.table == collection_name)
+                .map(|c| c.name.clone())
+                .collect()
+        };
+        for value in array {
+            match value.as_str() {
+                Some(name) if columns.contains(name) => {}
+                Some(name) => {
+                    return Err(AlcedoError::InvalidInput(
+                        format!("Field '{}' does not exist on '{}'", name, collection_name),
+                        0,
+                    ))
+                }
+                None => {
+                    return Err(AlcedoError::InvalidInput(
+                        "Field names must be strings".to_string(),
+                        0,
+                    ))
+                }
+            }
+        }
+        Ok(())
     }
 
     fn policies(&self) -> ItemsService<'_> {
@@ -51,6 +107,15 @@ impl PoliciesService<'_> {
         let schema = self.app_context.schema_name();
         let guard = self.app_state.database_schema.read().await;
         guard.collection_id(&schema, name).map(|id| id as i32)
+    }
+
+    async fn collection_name_by_id(&self, id: i64) -> Option<String> {
+        let schema = self.app_context.schema_name();
+        self.app_state
+            .database_schema
+            .read()
+            .await
+            .collection_table(&schema, id)
     }
 
     /// Turns the stored `collection` id into `collection_name`, dropping the id.
@@ -238,6 +303,9 @@ impl PoliciesService<'_> {
         filter: Value,
         field_validation: Value,
     ) -> Result<Value, AlcedoError> {
+        Self::validate_action(action)?;
+        self.validate_fields(collection_name, &fields).await?;
+
         let collection_id = self
             .collection_id_by_name(collection_name)
             .await
@@ -287,14 +355,26 @@ impl PoliciesService<'_> {
             ("id", json!(permission_id.to_string())),
             ("policy_id", json!(policy_id.to_string())),
         ]);
-        existing_query.fields = vec!["id".to_string()];
+        existing_query.fields = vec!["id".to_string(), "collection".to_string()];
         existing_query.limit = 0;
-        if service
+        let Some(existing) = service
             .read_items_by_query(existing_query)
             .await?
-            .is_empty()
-        {
+            .into_iter()
+            .next()
+        else {
             return Ok(None);
+        };
+
+        if let Some(action) = action {
+            Self::validate_action(action)?;
+        }
+        if let Some(fields) = &fields {
+            if let Some(collection_id) = existing.get("collection").and_then(Value::as_i64) {
+                if let Some(name) = self.collection_name_by_id(collection_id).await {
+                    self.validate_fields(&name, fields).await?;
+                }
+            }
         }
 
         let mut payload = Map::new();

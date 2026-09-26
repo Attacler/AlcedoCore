@@ -1,7 +1,7 @@
 use rand::{Rng, distr::Alphanumeric};
 use sea_query::{
-    Alias, Condition, Expr, JoinType, Order, PostgresQueryBuilder, SelectStatement, SimpleExpr,
-    extension::postgres::PgExpr,
+    Alias, CaseStatement, Condition, Expr, JoinType, Order, PostgresQueryBuilder, SelectStatement,
+    SimpleExpr, extension::postgres::PgExpr,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -52,6 +52,35 @@ pub struct Query {
     /// the SQL is built. Not part of the wire format.
     #[serde(skip)]
     pub relation_hops: HopMap,
+    /// Server-side policy projection: field masks, denied fields and the
+    /// per-row `_can_update`/`_can_delete` flags. Never client-settable.
+    #[serde(skip)]
+    pub permission: Option<PermissionSpec>,
+    /// Caller identity used to enforce read policy when expanding related rows.
+    #[serde(skip)]
+    pub read_guard: Option<crate::middelware::auth::AuthLevel>,
+}
+
+/// Everything `to_sql` needs to render permission projections. All rule
+/// evaluation happens here in SQL — nothing is matched against rows in Rust.
+#[derive(Debug, Clone, Default)]
+pub struct PermissionSpec {
+    /// OR-ed read rules — pushed into the WHERE by `apply_spec`.
+    pub read_rules: Vec<LogicOp>,
+    /// Per-field `CASE WHEN <rule> THEN col END` projections (partial access).
+    pub field_masks: HashMap<String, Vec<LogicOp>>,
+    /// Fields no read rule grants are dropped from the SELECT.
+    pub denied_fields: std::collections::HashSet<String>,
+    /// OR-ed update rules → `_can_update` computed column.
+    pub update_rules: Vec<LogicOp>,
+    /// OR-ed delete rules → `_can_delete` computed column.
+    pub delete_rules: Vec<LogicOp>,
+    /// Union of update-rule fields (metadata for `$permissions.fields`).
+    pub update_fields: Vec<String>,
+    /// True when any update rule grants all fields.
+    pub update_unrestricted: bool,
+    /// Emit `_can_update`/`_can_delete` (top-level reads only).
+    pub emit_flags: bool,
 }
 
 impl Query {
@@ -135,6 +164,50 @@ impl Query {
 
         // Lets execute the remaining queries based on the fk`s that came from our "base" query
         for rq in remaining_queries {
+            // Resolve the target collection's read policy once. `denied` also
+            // suppresses the raw FK value so an inaccessible id cannot leak.
+            let mut denied = false;
+            let mut nested_query = Query {
+                fields: rq.fields.clone(),
+                ..Default::default()
+            };
+            if let Some(guard) = self.read_guard.clone() {
+                match crate::services::permissions::check_permission(
+                    &state,
+                    &guard,
+                    &rq.app_context,
+                    &rq.table,
+                    "read",
+                )
+                .await?
+                {
+                    crate::services::permissions::PermissionCheck::Bypass => {}
+                    crate::services::permissions::PermissionCheck::Granted(perms) => {
+                        let spec = crate::services::permissions::build_read_spec(
+                            &state,
+                            &rq.app_context,
+                            &perms,
+                            &rq.table,
+                            false,
+                        )
+                        .await;
+                        crate::services::permissions::apply_spec(&mut nested_query, &spec);
+                        nested_query.read_guard = self.read_guard.clone();
+                    }
+                    crate::services::permissions::PermissionCheck::Denied { .. } => {
+                        denied = true;
+                    }
+                }
+            }
+
+            if denied {
+                // Drop the FK column so an inaccessible relation id cannot leak.
+                for row in rows.iter_mut() {
+                    row.remove(&rq.fk);
+                }
+                continue;
+            }
+
             let fk_vals: Vec<String> = rows
                 .iter()
                 .filter_map(|row| row.get(&rq.fk))
@@ -171,21 +244,13 @@ impl Query {
                 }),
             );
 
-            let filter = LogicOp {
+            nested_query.filter = LogicOp {
                 _and: Some(vec![Filter::Field(FieldFilter {
                     fields: field_filter,
                 })]),
                 _or: None,
             };
-
-            let mut nested_fields = rq.fields.clone();
-            nested_fields.push(pk.name.clone());
-            let mut nested_query = Query {
-                fields: nested_fields,
-                filter,
-                limit: 0,
-                ..Default::default()
-            };
+            nested_query.fields.push(pk.name.clone());
 
             let related_rows =
                 Box::pin(nested_query.execute_query(&rq.app_context, &state, &rq.table)).await?;
@@ -269,12 +334,35 @@ impl Query {
             self.fields = fields;
         }
 
+        // Field-level policy: drop fields no read rule grants (system fields stay).
+        let no_denied = std::collections::HashSet::new();
+        let denied = self
+            .permission
+            .as_ref()
+            .map(|p| &p.denied_fields)
+            .unwrap_or(&no_denied);
+        self.fields.retain(|f| {
+            !denied.contains(f) || matches!(f.as_str(), "id" | "created_at" | "updated_at")
+        });
+
         let fields = &self.fields.clone();
 
         let mut related_fields: Vec<RemainingQuery> = vec![];
 
         // based on the provided fields, we should fill the related_fields vector
         for field in fields {
+            // Partially-granted field: project through a policy CASE expression.
+            if !field.contains('.') {
+                let mask = self
+                    .permission
+                    .as_ref()
+                    .and_then(|p| p.field_masks.get(field).cloned());
+                if let Some(rules) = mask {
+                    let case = self.build_case_expr(field, &rules, schema, context, table)?;
+                    stmt.expr_as(case, Alias::new(field));
+                    continue;
+                }
+            }
             // its a relation if the field contains a dot
             let field = if field.contains(".") {
                 let relation_field = field.split(".").next().unwrap();
@@ -342,6 +430,28 @@ impl Query {
             stmt.column((Alias::new(table), Alias::new(field)));
         }
 
+        // Per-row capability flags, evaluated in SQL (never in Rust).
+        if let Some(spec) = self.permission.clone() {
+            if spec.emit_flags && !spec.update_rules.is_empty() {
+                let cond = self.rules_condition(
+                    &spec.update_rules,
+                    schema,
+                    context,
+                    table,
+                )?;
+                stmt.expr_as(Expr::case(cond, true).finally(false), Alias::new("_can_update"));
+            }
+            if spec.emit_flags && !spec.delete_rules.is_empty() {
+                let cond = self.rules_condition(
+                    &spec.delete_rules,
+                    schema,
+                    context,
+                    table,
+                )?;
+                stmt.expr_as(Expr::case(cond, true).finally(false), Alias::new("_can_delete"));
+            }
+        }
+
         // Now we must also apply the filters which we do trough the add_filter fn
         let filters = self.clone().filter;
         if let Some(and) = filters._and {
@@ -407,6 +517,56 @@ impl Query {
         }
 
         Ok((stmt, related_fields))
+    }
+
+    /// OR-combines several rules into a single SQL condition (used for the
+    /// `_can_update`/`_can_delete` computed columns).
+    fn rules_condition(
+        &mut self,
+        rules: &[LogicOp],
+        schema: &DatabaseSchema,
+        context: &AppContext,
+        table: &str,
+    ) -> Result<Condition, AlcedoError> {
+        let mut any = Condition::any();
+        for rule in rules {
+            let condition = self.process_logic(
+                schema,
+                context,
+                rule,
+                &context.schema_name(),
+                table,
+                &vec![],
+            )?;
+            any = any.add(condition);
+        }
+        Ok(any)
+    }
+
+    /// Builds `CASE WHEN <rule> THEN "field" END` for a partially-granted
+    /// field. Rules are the read rules that list the field; no ELSE means a row
+    /// that matches none of them gets NULL for this field.
+    fn build_case_expr(
+        &mut self,
+        field: &str,
+        rules: &[LogicOp],
+        schema: &DatabaseSchema,
+        context: &AppContext,
+        table: &str,
+    ) -> Result<CaseStatement, AlcedoError> {
+        let mut case = CaseStatement::new();
+        for rule in rules {
+            let condition = self.process_logic(
+                schema,
+                context,
+                rule,
+                &context.schema_name(),
+                table,
+                &vec![],
+            )?;
+            case = case.case(condition, Expr::col((Alias::new(table), Alias::new(field))));
+        }
+        Ok(case)
     }
 
     /// Creates a condition based on the provided logic

@@ -26,6 +26,7 @@ use crate::{
             service::ItemsService,
         },
         collections::schema::get_pk_key,
+        permissions::{check_write, row_matches_action_sql, WriteGuard},
     },
 };
 
@@ -243,9 +244,30 @@ async fn assign_children(
     fk: &str,
     parent_id: &str,
     ids: &[Value],
+    guard: Option<&WriteGuard>,
 ) -> Result<(), AlcedoError> {
     if ids.is_empty() {
         return Ok(());
+    }
+    if let Some(guard) = guard {
+        if let Some(perms) = guard.permissions_for(state, ctx, child, "update").await? {
+            let mut payload = Map::new();
+            payload.insert(fk.to_string(), Value::String(parent_id.to_string()));
+            check_write(&perms, "update", &payload)?;
+            // ponytail: one membership query per id; batch with `pk IN (...)`
+            // + a count comparison if child batches grow large.
+            for id in ids {
+                let id = id.as_str().ok_or_else(|| {
+                    AlcedoError::InvalidInput("Child ids must be strings".to_string(), 1)
+                })?;
+                if !row_matches_action_sql(state, ctx, child, &perms, "update", id).await? {
+                    return Err(AlcedoError::Forbidden(
+                        "Child record is not editable with your permissions".to_string(),
+                        0,
+                    ));
+                }
+            }
+        }
     }
     let pk_name = get_pk_key(&state.database_schema, &ctx.schema_name(), child)
         .await?
@@ -268,7 +290,36 @@ async fn unlink_children(
     child: &str,
     fk: &str,
     parent_id: &str,
+    guard: Option<&WriteGuard>,
 ) -> Result<(), AlcedoError> {
+    if let Some(guard) = guard {
+        if let Some(perms) = guard.permissions_for(state, ctx, child, "update").await? {
+            let mut payload = Map::new();
+            payload.insert(fk.to_string(), Value::Null);
+            check_write(&perms, "update", &payload)?;
+
+            let pk_name = get_pk_key(&state.database_schema, &ctx.schema_name(), child)
+                .await?
+                .name;
+            let table = child.to_string();
+            let service = ItemsService::new(state, ctx, &table);
+            let mut existing =
+                query_and(vec![(fk, cmp_eq(Value::String(parent_id.to_string())))]);
+            existing.fields = vec![pk_name.clone()];
+            existing.limit = 0;
+            // ponytail: one membership query per child; batch if child batches grow.
+            for row in service.read_items_by_query(existing).await? {
+                if let Some(id) = row.get(pk_name.as_str()).and_then(Value::as_str) {
+                    if !row_matches_action_sql(state, ctx, child, &perms, "update", id).await? {
+                        return Err(AlcedoError::Forbidden(
+                            "Child record is not editable with your permissions".to_string(),
+                            0,
+                        ));
+                    }
+                }
+            }
+        }
+    }
     let table = child.to_string();
     let service = ItemsService::new(state, ctx, &table);
     let mut query = query_and(vec![(fk, cmp_eq(Value::String(parent_id.to_string())))]);
@@ -288,9 +339,19 @@ async fn delete_children(
     fk: &str,
     parent_id: &str,
     ids: &[Value],
+    guard: Option<&WriteGuard>,
 ) -> Result<(), AlcedoError> {
     if ids.is_empty() {
         return Ok(());
+    }
+    if let Some(guard) = guard {
+        // ponytail: one membership query per id; batch if child batches grow.
+        for id in ids {
+            let id = id.as_str().ok_or_else(|| {
+                AlcedoError::InvalidInput("Child ids must be strings".to_string(), 1)
+            })?;
+            guard.check_delete_row(state, ctx, child, id).await?;
+        }
     }
     let pk_name = get_pk_key(&state.database_schema, &ctx.schema_name(), child)
         .await?
@@ -325,18 +386,42 @@ fn collect_create_objects(value: &Value) -> Vec<Map<String, Value>> {
 }
 
 /// Creates `item` (and any nested relations) in `collection`, returning the
-/// created row's primary key. Recurses to unlimited depth.
+/// created row's primary key. Recurses to unlimited depth. When `guard` is
+/// present every target collection's `create`/`update`/`delete` policy is
+/// enforced and relationship FKs are verified against the target read policy.
 pub fn create_recursive<'a>(
     state: &'a AppState,
     ctx: &'a AppContext,
     tx: &'a mut Transaction<'_, Postgres>,
     collection: String,
     item: Map<String, Value>,
+    guard: Option<&'a WriteGuard>,
+    injected_fk: Option<String>,
 ) -> BoxFuture<'a, Result<String, AlcedoError>> {
     Box::pin(async move {
         let fields = collection_fields(state, ctx, &collection).await?;
         let mut scalar = item;
         let mut o2m: Vec<(String, String, Value, Option<String>)> = Vec::new();
+        // (target_app, target_collection, id) to verify before insert.
+        let mut verify: Vec<(Option<String>, String, String)> = Vec::new();
+
+        // Existing scalar FK ids (not converted by the loop below). The FK
+        // injected by the parent link points at a row created in this same
+        // transaction, so it is not re-verified.
+        for field in &fields {
+            if Some(field.name.as_str()) == injected_fk.as_deref() {
+                continue;
+            }
+            if field.is_relationship() && !field.is_virtual() {
+                if let (Some(target), Some(Value::String(id))) =
+                    (field.related_collection.clone(), scalar.get(&field.name))
+                {
+                    if !id.is_empty() {
+                        verify.push((field.related_app.clone(), target, id.clone()));
+                    }
+                }
+            }
+        }
 
         for key in scalar.keys().cloned().collect::<Vec<_>>() {
             let value = scalar.get(&key).cloned().unwrap_or(Value::Null);
@@ -346,10 +431,21 @@ pub fn create_recursive<'a>(
             match detect_direction(state, ctx, &fields, &collection, &key).await? {
                 Some(Direction::ManyToOne { target, target_app }) => {
                     if let Some(obj) = value.as_object() {
-                        if !obj.contains_key("id") {
+                        if let Some(id) = obj.get("id").and_then(|v| v.as_str()) {
+                            scalar.insert(key, Value::String(id.to_string()));
+                            verify.push((target_app, target, id.to_string()));
+                        } else {
                             let tctx = target_ctx(ctx, &target_app);
-                            let child_id =
-                                create_recursive(state, &tctx, &mut *tx, target, obj.clone()).await?;
+                            let child_id = create_recursive(
+                                state,
+                                &tctx,
+                                &mut *tx,
+                                target,
+                                obj.clone(),
+                                guard,
+                                None,
+                            )
+                            .await?;
                             scalar.insert(key, Value::String(child_id));
                         }
                     }
@@ -366,13 +462,40 @@ pub fn create_recursive<'a>(
             }
         }
 
+        if let Some(guard) = guard {
+            // The parent link FK is server-injected, not user input, so it is
+            // exempt from the create field allowlist/validation.
+            let validated = match &injected_fk {
+                Some(fk) => {
+                    let mut body = scalar.clone();
+                    body.remove(fk);
+                    body
+                }
+                None => scalar.clone(),
+            };
+            guard.check_create(state, ctx, &collection, &validated).await?;
+            for (target_app, target, id) in &verify {
+                let tctx = target_ctx(ctx, target_app);
+                guard.verify_reference(state, &tctx, target, id).await?;
+            }
+        }
+
         let id = insert_one(state, ctx, &mut *tx, &collection, scalar).await?;
 
         for (target, fk, value, target_app) in o2m {
             let tctx = target_ctx(ctx, &target_app);
             for mut child in collect_create_objects(&value) {
                 child.insert(fk.clone(), Value::String(id.clone()));
-                create_recursive(state, &tctx, &mut *tx, target.clone(), child).await?;
+                create_recursive(
+                    state,
+                    &tctx,
+                    &mut *tx,
+                    target.clone(),
+                    child,
+                    guard,
+                    Some(fk.clone()),
+                )
+                .await?;
             }
         }
         Ok(id)
@@ -388,11 +511,12 @@ async fn process_o2m_update(
     fk: &str,
     parent_id: &str,
     value: &Value,
+    guard: Option<&WriteGuard>,
 ) -> Result<(), AlcedoError> {
     let tctx = target_ctx(ctx, target_app);
 
     if value.is_null() {
-        return unlink_children(state, &tctx, tx, target, fk, parent_id).await;
+        return unlink_children(state, &tctx, tx, target, fk, parent_id, guard).await;
     }
 
     if let Some(array) = value.as_array() {
@@ -401,7 +525,16 @@ async fn process_o2m_update(
             if let Some(obj) = element.as_object() {
                 let mut child = obj.clone();
                 child.insert(fk.to_string(), Value::String(parent_id.to_string()));
-                create_recursive(state, &tctx, &mut *tx, target.to_string(), child).await?;
+                create_recursive(
+                    state,
+                    &tctx,
+                    &mut *tx,
+                    target.to_string(),
+                    child,
+                    guard,
+                    Some(fk.to_string()),
+                )
+                .await?;
             } else if let Some(id) = element.as_str() {
                 assign_ids.push(Value::String(id.to_string()));
             } else {
@@ -411,7 +544,7 @@ async fn process_o2m_update(
                 ));
             }
         }
-        return assign_children(state, &tctx, tx, target, fk, parent_id, &assign_ids).await;
+        return assign_children(state, &tctx, tx, target, fk, parent_id, &assign_ids, guard).await;
     }
 
     if let Some(obj) = value.as_object() {
@@ -427,7 +560,16 @@ async fn process_o2m_update(
                 if let Some(child_obj) = create.as_object() {
                     let mut child = child_obj.clone();
                     child.insert(fk.to_string(), Value::String(parent_id.to_string()));
-                    create_recursive(state, &tctx, &mut *tx, target.to_string(), child).await?;
+                    create_recursive(
+                        state,
+                        &tctx,
+                        &mut *tx,
+                        target.to_string(),
+                        child,
+                        guard,
+                        Some(fk.to_string()),
+                    )
+                    .await?;
                 }
             }
         }
@@ -444,6 +586,7 @@ async fn process_o2m_update(
                             target.to_string(),
                             id.to_string(),
                             body,
+                            guard,
                         )
                         .await?;
                     }
@@ -455,7 +598,7 @@ async fn process_o2m_update(
                 .iter()
                 .filter_map(|v| v.as_str().map(|s| Value::String(s.to_string())))
                 .collect();
-            delete_children(state, &tctx, tx, target, fk, parent_id, &ids).await?;
+            delete_children(state, &tctx, tx, target, fk, parent_id, &ids, guard).await?;
         }
         return Ok(());
     }
@@ -478,11 +621,13 @@ pub fn update_recursive<'a>(
     collection: String,
     id: String,
     body: Map<String, Value>,
+    guard: Option<&'a WriteGuard>,
 ) -> BoxFuture<'a, Result<(), AlcedoError>> {
     Box::pin(async move {
         let fields = collection_fields(state, ctx, &collection).await?;
         let mut scalar = Map::new();
         let mut o2m: Vec<(String, String, Value, Option<String>)> = Vec::new();
+        let mut verify: Vec<(Option<String>, String, String)> = Vec::new();
 
         for (key, value) in body {
             let direction = if value.is_object() || value.is_array() || value.is_null() {
@@ -507,16 +652,26 @@ pub fn update_recursive<'a>(
                                 target,
                                 related_id.to_string(),
                                 child_body,
+                                guard,
                             )
                             .await?;
                             // FK is unchanged.
                         } else {
-                            let new_id =
-                                create_recursive(state, &tctx, &mut *tx, target, obj.clone()).await?;
+                            let new_id = create_recursive(
+                                state,
+                                &tctx,
+                                &mut *tx,
+                                target,
+                                obj.clone(),
+                                guard,
+                                None,
+                            )
+                            .await?;
                             scalar.insert(key, Value::String(new_id));
                         }
                     } else if let Some(s) = value.as_str() {
                         scalar.insert(key, Value::String(s.to_string()));
+                        verify.push((target_app, target, s.to_string()));
                     }
                 }
                 Some(Direction::OneToMany {
@@ -532,9 +687,21 @@ pub fn update_recursive<'a>(
             }
         }
 
-        for (target, fk, value, target_app) in o2m {
-            process_o2m_update(state, ctx, &mut *tx, &target, &target_app, &fk, &id, &value)
+        if let Some(guard) = guard {
+            guard
+                .check_update_row(state, ctx, &collection, &id, &scalar)
                 .await?;
+            for (target_app, target, ref_id) in &verify {
+                let tctx = target_ctx(ctx, target_app);
+                guard.verify_reference(state, &tctx, target, ref_id).await?;
+            }
+        }
+
+        for (target, fk, value, target_app) in o2m {
+            process_o2m_update(
+                state, ctx, &mut *tx, &target, &target_app, &fk, &id, &value, guard,
+            )
+            .await?;
         }
 
         if !scalar.is_empty() {

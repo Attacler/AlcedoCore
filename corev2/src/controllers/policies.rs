@@ -8,13 +8,13 @@ use serde_json::{Value, json};
 
 use crate::{
     AppState,
-    controllers::require_admin,
     middelware::auth::AuthLevel,
     services::{
         context::ExtractContext,
         errors::AlcedoError,
         policies::PoliciesService,
         respond::{JSendResponse, success},
+        scopes::require_scope,
     },
     utils::parse_uuid,
 };
@@ -87,7 +87,7 @@ async fn list_policies(
     auth_level: AuthLevel,
     ExtractContext(context): ExtractContext,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.read").await?;
     let service = PoliciesService::new(&state, &context);
     let policies = service.list_policies().await?;
     Ok(Json(success(json!({ "data": policies }))))
@@ -103,7 +103,7 @@ async fn create_policy(
     ExtractContext(context): ExtractContext,
     Json(payload): Json<CreatePolicyRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.write").await?;
     let name = payload.name.trim();
     if name.is_empty() || name.len() > 255 {
         return Err(AlcedoError::InvalidInput(
@@ -127,7 +127,7 @@ async fn get_policy(
     ExtractContext(context): ExtractContext,
     Path(id): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.read").await?;
     let id = parse_uuid(&id)?;
     let service = PoliciesService::new(&state, &context);
     let policy = service
@@ -148,7 +148,7 @@ async fn update_policy(
     Path(id): Path<String>,
     Json(payload): Json<UpdatePolicyRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.write").await?;
     let id = parse_uuid(&id)?;
     let service = PoliciesService::new(&state, &context);
     let policy = service
@@ -167,7 +167,7 @@ async fn delete_policy(
     ExtractContext(context): ExtractContext,
     Path(id): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.write").await?;
     let id = parse_uuid(&id)?;
     let service = PoliciesService::new(&state, &context);
     let deleted = service.delete_policy(id).await?;
@@ -186,7 +186,7 @@ async fn list_permissions(
     ExtractContext(context): ExtractContext,
     Path(id): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.read").await?;
     let id = parse_uuid(&id)?;
     let service = PoliciesService::new(&state, &context);
     let permissions = service.list_permissions(id).await?;
@@ -204,7 +204,7 @@ async fn create_permission(
     Path(id): Path<String>,
     Json(payload): Json<CreatePermissionRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.write").await?;
     let id = parse_uuid(&id)?;
     if payload.collection_name.trim().is_empty() {
         return Err(AlcedoError::InvalidInput(
@@ -243,7 +243,7 @@ async fn update_permission(
     Path((id, permission_id)): Path<(String, String)>,
     Json(payload): Json<UpdatePermissionRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.write").await?;
     let id = parse_uuid(&id)?;
     let permission_id = parse_uuid(&permission_id)?;
     let service = PoliciesService::new(&state, &context);
@@ -270,7 +270,7 @@ async fn delete_permission(
     ExtractContext(context): ExtractContext,
     Path((id, permission_id)): Path<(String, String)>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.write").await?;
     let id = parse_uuid(&id)?;
     let permission_id = parse_uuid(&permission_id)?;
     let service = PoliciesService::new(&state, &context);
@@ -293,7 +293,7 @@ async fn delete_collection_permissions(
     ExtractContext(context): ExtractContext,
     Path((id, name)): Path<(String, String)>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "policies.write").await?;
     let id = parse_uuid(&id)?;
     let service = PoliciesService::new(&state, &context);
     let count = service.delete_collection_permissions(id, &name).await?;

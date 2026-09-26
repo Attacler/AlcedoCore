@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
+use crate::middelware::auth::AuthLevel;
 use crate::services::items::service::ItemsService;
 use crate::services::items::{query::Query, relational};
+use crate::services::permissions::{self, PermissionCheck, PolicyPermission, WriteGuard};
 use crate::services::respond::JSendResponse;
 use crate::services::respond::success;
 use crate::services::{
-    context::ExtractContext,
+    context::{AppContext, ExtractContext},
     errors::AlcedoError,
     items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp},
     collections::schema::get_pk_key,
@@ -31,6 +33,76 @@ pub fn items_controller() -> Router<AppState> {
         )
         .route("/{collection}/{id}", get(get_item).patch(update_item))
         .route("/{collection}/{id}/references", get(get_references));
+}
+
+/// Resolves the caller's rules for an action. `None` = bypass (admin/dev-key).
+async fn action_permissions(
+    state: &AppState,
+    auth_level: &AuthLevel,
+    context: &AppContext,
+    collection: &str,
+    action: &str,
+) -> Result<Option<Vec<PolicyPermission>>, AlcedoError> {
+    match permissions::check_permission(state, auth_level, context, collection, action).await? {
+        PermissionCheck::Bypass => Ok(None),
+        PermissionCheck::Granted(perms) => Ok(Some(perms)),
+        PermissionCheck::Denied { reason } => Err(AlcedoError::Forbidden(reason, 0)),
+    }
+}
+
+/// Fetches rows by primary keys, applying read policy when `perms` is present.
+async fn read_by_ids(
+    state: &AppState,
+    context: &AppContext,
+    collection: &str,
+    ids: Vec<Value>,
+    perms: Option<&[PolicyPermission]>,
+    auth_level: &AuthLevel,
+) -> Result<Vec<Value>, AlcedoError> {
+    let pk = get_pk_key(&state.database_schema, &context.schema_name(), collection)
+        .await?
+        .name;
+    let mut hmap = FieldFilter {
+        fields: HashMap::new(),
+    };
+    hmap.fields.insert(
+        pk,
+        FieldValue::Comparison(Comparison {
+            _in: Some(Value::Array(ids)),
+            ..Default::default()
+        }),
+    );
+    let query = Query {
+        filter: LogicOp {
+            _and: Some(vec![Filter::Field(hmap)]),
+            _or: None,
+        },
+        limit: 0,
+        ..Default::default()
+    };
+
+    match perms {
+        None => {
+            let table = collection.to_string();
+            Ok(ItemsService::new(state, context, &table)
+                .read_items_by_query(query)
+                .await?
+                .into_iter()
+                .map(Value::Object)
+                .collect())
+        }
+        Some(perms) => {
+            permissions::read_with_permissions(
+                state,
+                context,
+                collection,
+                query,
+                perms,
+                auth_level,
+            )
+            .await
+        }
+    }
 }
 
 // @TODO Better support for de API explorer/docs. Ticket https://github.com/Authress-Engineering/openapi-explorer/issues/294 describes the issue.
@@ -62,13 +134,52 @@ async fn get_items(
     CustomQuery(mut query): CustomQuery<Query>,
     Path(collection): Path<String>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     query.normalize_pagination();
+    let perms = action_permissions(&state, &auth_level, &context, &collection, "read").await?;
+
     let service = ItemsService::new(&state, &context, &collection);
-    let total = service.count_items_by_query(query.clone()).await?;
     let limit = query.limit;
     let offset = query.offset;
-    let items = service.read_items_by_query(query).await?;
+
+    let (total, items): (i64, Vec<Value>) = match perms {
+        None => {
+            let total = service.count_items_by_query(query.clone()).await?;
+            let items = service
+                .read_items_by_query(query)
+                .await?
+                .into_iter()
+                .map(Value::Object)
+                .collect();
+            (total, items)
+        }
+        Some(perms) => {
+            // Apply the read spec once so both the count and the rows are
+            // filtered by the same policy.
+            let spec = permissions::build_read_spec(
+                &state,
+                &context,
+                &perms,
+                &collection,
+                true,
+            )
+            .await;
+            permissions::apply_spec(&mut query, &spec);
+            query.read_guard = Some(auth_level.clone());
+
+            let total = service.count_items_by_query(query.clone()).await?;
+            let rows = service.read_items_by_query(query).await?;
+            let items = rows
+                .into_iter()
+                .map(|mut row| {
+                    let perm = permissions::permissions_from_row(&mut row, &spec);
+                    permissions::inject_permissions(&Value::Object(row), perm)
+                })
+                .collect();
+            (total, items)
+        }
+    };
 
     Ok(Json(success(json!({
         "data": items,
@@ -94,21 +205,43 @@ async fn get_item(
     Path((collection, id)): Path<(String, String)>,
     CustomQuery(mut query): CustomQuery<Query>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Map<String, Value>>>, AlcedoError> {
-    let service = ItemsService::new(&state, &context, &collection);
+    let perms = action_permissions(&state, &auth_level, &context, &collection, "read").await?;
+
     let pk = get_pk_key(&state.database_schema, &context.schema_name(), &collection)
         .await?
         .name;
-
     query.filter = Query::eq(&pk, Value::String(id.clone())).filter;
-    let item = service
-        .read_items_by_query(query)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| AlcedoError::NotFound(format!("Item '{}' not found", id), 1))?;
 
-    Ok(Json(success(item)))
+    let item: Value = match perms {
+        None => ItemsService::new(&state, &context, &collection)
+            .read_items_by_query(query)
+            .await?
+            .into_iter()
+            .next()
+            .map(Value::Object),
+        Some(perms) => {
+            permissions::read_with_permissions(
+                &state,
+                &context,
+                &collection,
+                query,
+                &perms,
+                &auth_level,
+            )
+            .await?
+            .into_iter()
+            .next()
+        }
+    }
+    .ok_or_else(|| AlcedoError::NotFound(format!("Item '{}' not found", id), 1))?;
+
+    let map = item
+        .as_object()
+        .cloned()
+        .ok_or_else(|| AlcedoError::NotFound(format!("Item '{}' not found", id), 1))?;
+    Ok(Json(success(map)))
 }
 
 #[utoipa::path(post, path = "/api/app/items/{collection}",
@@ -126,6 +259,7 @@ async fn create_items(
     State(state): State<AppState>,
     Path(collection): Path<String>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
     Json(body): Json<Value>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     let items: Vec<Map<String, Value>> = match body {
@@ -142,6 +276,13 @@ async fn create_items(
         }
     };
 
+    let perms = action_permissions(&state, &auth_level, &context, &collection, "create").await?;
+    let guard = perms
+        .as_ref()
+        .map(|_| WriteGuard {
+            auth_level: auth_level.clone(),
+        });
+
     let mut transaction = state.database_pool.begin().await?;
     let mut ids: Vec<Value> = Vec::new();
     for item in items {
@@ -151,14 +292,23 @@ async fn create_items(
             &mut transaction,
             collection.clone(),
             item,
+            guard.as_ref(),
+            None,
         )
         .await?;
         ids.push(Value::String(id));
     }
     transaction.commit().await?;
 
-    let service = ItemsService::new(&state, &context, &collection);
-    let created = service.get_items_by_pks(ids).await?;
+    let created = read_by_ids(
+        &state,
+        &context,
+        &collection,
+        ids,
+        perms.as_deref(),
+        &auth_level,
+    )
+    .await?;
     Ok(Json(success(json!({ "created": created }))))
 }
 
@@ -178,8 +328,15 @@ async fn update_item(
     State(state): State<AppState>,
     Path((collection, id)): Path<(String, String)>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
     Json(body): Json<Map<String, Value>>,
 ) -> Result<Json<JSendResponse<Map<String, Value>>>, AlcedoError> {
+    let perms = action_permissions(&state, &auth_level, &context, &collection, "update").await?;
+
+    let guard = perms.as_ref().map(|_| WriteGuard {
+        auth_level: auth_level.clone(),
+    });
+
     let mut transaction = state.database_pool.begin().await?;
     relational::update_recursive(
         &state,
@@ -188,16 +345,26 @@ async fn update_item(
         collection.clone(),
         id.clone(),
         body,
+        guard.as_ref(),
     )
     .await?;
     transaction.commit().await?;
 
-    let service = ItemsService::new(&state, &context, &collection);
-    let item = service
-        .get_single_item_by_pk(Value::String(id.clone()))
-        .await?
+    let updated = read_by_ids(
+        &state,
+        &context,
+        &collection,
+        vec![Value::String(id.clone())],
+        perms.as_deref(),
+        &auth_level,
+    )
+    .await?;
+    let map = updated
+        .into_iter()
+        .next()
+        .and_then(|v| v.as_object().cloned())
         .ok_or_else(|| AlcedoError::NotFound(format!("Item '{}' not found", id), 1))?;
-    Ok(Json(success(item)))
+    Ok(Json(success(map)))
 }
 
 #[utoipa::path(patch, path = "/api/app/items/{collection}",
@@ -217,39 +384,38 @@ async fn update_items(
     Path(collection): Path<String>,
     CustomQuery(mut query): CustomQuery<Query>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
     Json(item): Json<Map<String, Value>>,
-) -> Result<Json<JSendResponse<Vec<Map<String, Value>>>>, AlcedoError> {
+) -> Result<Json<JSendResponse<Vec<Value>>>, AlcedoError> {
+    let perms = action_permissions(&state, &auth_level, &context, &collection, "update").await?;
+
     if query.filter._and.as_ref().map_or(true, |v| v.is_empty()) {
         return Err(AlcedoError::InvalidInput(
             "A non-empty _and filter is required for updating items.".to_string(),
             1,
         ));
     }
+
+    if let Some(perms) = &perms {
+        permissions::apply_action_filter(&mut query, perms, "update");
+        permissions::check_write(perms, "update", &item)?;
+    }
+
     let service = ItemsService::new(&state, &context, &collection);
     let result = service
         .update_items_by_query(&mut query.clone(), item, &mut None)
         .await?;
 
-    let pk = get_pk_key(&state.database_schema, &context.schema_name(), &collection)
-        .await?
-        .name;
-    let mut hmap = FieldFilter {
-        fields: HashMap::new(),
-    };
-    hmap.fields.insert(
-        pk,
-        FieldValue::Comparison(Comparison {
-            _in: Some(result.into()),
-            ..Default::default()
-        }),
-    );
-    query.filter = LogicOp {
-        _and: Some(vec![Filter::Field(hmap)]),
-        _or: None,
-    };
-
-    let result = service.read_items_by_query(query).await?;
-    Ok(Json(success(result)))
+    let rows = read_by_ids(
+        &state,
+        &context,
+        &collection,
+        result.into_iter().map(Value::String).collect(),
+        perms.as_deref(),
+        &auth_level,
+    )
+    .await?;
+    Ok(Json(success(rows)))
 }
 
 #[utoipa::path(delete, path = "/api/app/items/{collection}",
@@ -269,18 +435,41 @@ async fn delete_items(
     Path(collection): Path<String>,
     CustomQuery(query): CustomQuery<Query>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
     body: Option<Json<Value>>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     let service = ItemsService::new(&state, &context, &collection);
+    let pk = get_pk_key(&state.database_schema, &context.schema_name(), &collection)
+        .await?
+        .name;
 
-    let deleted = match body {
+    let perms = action_permissions(&state, &auth_level, &context, &collection, "delete").await?;
+
+    // Resolve the caller's selection into a single query so the policy row
+    // filter can be applied uniformly (including pk_values selections).
+    let mut query = match body {
         Some(Json(value)) => {
             if let Some(pk_values) = value.get("pk_values").and_then(|v| v.as_array()) {
-                service.delete_items_by_pks(pk_values.clone(), None).await?
+                let mut hmap = FieldFilter {
+                    fields: HashMap::new(),
+                };
+                hmap.fields.insert(
+                    pk.clone(),
+                    FieldValue::Comparison(Comparison {
+                        _in: Some(Value::Array(pk_values.clone())),
+                        ..Default::default()
+                    }),
+                );
+                Query {
+                    filter: LogicOp {
+                        _and: Some(vec![Filter::Field(hmap)]),
+                        _or: None,
+                    },
+                    ..Default::default()
+                }
             } else if let Some(filter) = value.get("filter") {
-                let query: Query = serde_json::from_value(json!({ "filter": filter }))
-                    .map_err(|e| AlcedoError::InvalidInput(format!("Invalid filter: {}", e), 1))?;
-                service.delete_items_by_query(query, &mut None).await?
+                serde_json::from_value(json!({ "filter": filter }))
+                    .map_err(|e| AlcedoError::InvalidInput(format!("Invalid filter: {}", e), 1))?
             } else {
                 return Err(AlcedoError::InvalidInput(
                     "Request body must contain 'pk_values' or 'filter'".to_string(),
@@ -295,10 +484,15 @@ async fn delete_items(
                     1,
                 ));
             }
-            service.delete_items_by_query(query, &mut None).await?
+            query
         }
     };
 
+    if let Some(perms) = &perms {
+        permissions::apply_action_filter(&mut query, perms, "delete");
+    }
+
+    let deleted = service.delete_items_by_query(query, &mut None).await?;
     Ok(Json(success(json!({ "deleted": deleted }))))
 }
 
@@ -314,10 +508,12 @@ async fn delete_items(
     )
 )]
 async fn get_references(
-    State(_state): State<AppState>,
-    Path((_collection, _id)): Path<(String, String)>,
-    ExtractContext(_context): ExtractContext,
+    State(state): State<AppState>,
+    Path((collection, _id)): Path<(String, String)>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     // TODO: resolve actual back-references. The detail page degrades gracefully.
+    action_permissions(&state, &auth_level, &context, &collection, "read").await?;
     Ok(Json(success(json!({ "references": [] }))))
 }

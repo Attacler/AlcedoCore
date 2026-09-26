@@ -5,6 +5,7 @@ import { useAppContextStore } from "@/stores/appContext";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useToast } from "@/composables/useToast";
 import RecordForm from "@/components/RecordForm.vue";
+import { Drawer } from "primevue";
 
 const props = defineProps<{
     visible: boolean;

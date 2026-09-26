@@ -5,6 +5,7 @@ use crate::{
     AppState, item_map,
     services::{
         auth::AuthService,
+        collections::ddl::quote,
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
@@ -97,6 +98,10 @@ impl UsersService<'_> {
 
         service.create_many(vec![user], &mut None).await?;
 
+        if is_admin {
+            self.sync_admin_roles(id, true).await?;
+        }
+
         let created = service
             .get_single_item_by_pk(json!(id.to_string()))
             .await?
@@ -138,6 +143,10 @@ impl UsersService<'_> {
             service
                 .update_items_by_query(&mut query, update, &mut None)
                 .await?;
+        }
+
+        if let Some(is_admin) = is_admin {
+            self.sync_admin_roles(id, is_admin).await?;
         }
 
         service
@@ -204,6 +213,57 @@ impl UsersService<'_> {
         service
             .get_single_item_by_pk(Value::String(id.to_string()))
             .await
+    }
+
+    /// Grants (or revokes) the per-app `admin` role for a global admin across
+    /// every existing app×version schema. Keeps role assignments in sync with
+    /// the global `is_admin` flag so promotions take effect immediately and
+    /// demotions do not retain app-admin power.
+    async fn sync_admin_roles(&self, user_id: Uuid, is_admin: bool) -> Result<(), AlcedoError> {
+        let schemas: Vec<String> = self
+            .app_state
+            .database_schema
+            .read()
+            .await
+            .app_versions
+            .iter()
+            .map(|version| version.schema_name.clone())
+            .collect();
+
+        for schema in schemas {
+            let schema = quote(&schema);
+            if is_admin {
+                let admin_id: Option<Uuid> = sqlx::query_scalar(&format!(
+                    "SELECT id FROM {schema}.alcedo_roles WHERE name = 'admin'"
+                ))
+                .fetch_optional(&*self.app_state.database_pool)
+                .await
+                .unwrap_or(None);
+                let Some(admin_id) = admin_id else {
+                    continue;
+                };
+                sqlx::query(&format!(
+                    "INSERT INTO {schema}.alcedo_user_roles (id, user_id, role_id) \
+                     SELECT $1, $2, $3 \
+                     WHERE NOT EXISTS (SELECT 1 FROM {schema}.alcedo_user_roles \
+                                       WHERE user_id = $2 AND role_id = $3)"
+                ))
+                .bind(Uuid::new_v4())
+                .bind(user_id)
+                .bind(admin_id)
+                .execute(&*self.app_state.database_pool)
+                .await?;
+            } else {
+                sqlx::query(&format!(
+                    "DELETE FROM {schema}.alcedo_user_roles WHERE user_id = $1 \
+                     AND role_id = (SELECT id FROM {schema}.alcedo_roles WHERE name = 'admin')"
+                ))
+                .bind(user_id)
+                .execute(&*self.app_state.database_pool)
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     async fn email_taken(&self, email: &str, exclude: Option<Uuid>) -> Result<bool, AlcedoError> {

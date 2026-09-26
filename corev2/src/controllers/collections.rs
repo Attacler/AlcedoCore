@@ -18,8 +18,10 @@ use crate::{
         },
         context::ExtractContext,
         errors::AlcedoError,
+        permissions::{self, PermissionCheck},
         postgres::{columntypetots::column_type_to_ts, inspector::DatabaseSchema},
         respond::{JSendResponse, success},
+        scopes::require_scope,
     },
 };
 
@@ -194,8 +196,14 @@ async fn get_ts_schema(
 async fn list_collections(
     State(state): State<AppState>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    let result = collections_service::list_collections(&state, &context).await?;
+    let mut result = collections_service::list_collections(&state, &context).await?;
+    if let Some(allowed) =
+        permissions::accessible_collections(&state, &auth_level, &context).await?
+    {
+        result.retain(|collection| allowed.contains(&collection.name));
+    }
     Ok(Json(success(serde_json::json!({ "collections": result }))))
 }
 
@@ -213,7 +221,9 @@ async fn get_collection(
     State(state): State<AppState>,
     Path(name): Path<String>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<CollectionResponse>>, AlcedoError> {
+    permissions::assert_collection_accessible(&state, &auth_level, &context, &name).await?;
     let result = collections_service::get_collection(&state, &context, &name).await?;
     Ok(Json(success(result)))
 }
@@ -234,7 +244,7 @@ async fn create_collection(
     auth_level: AuthLevel,
     Json(req): Json<CreateCollectionRequest>,
 ) -> Result<Json<JSendResponse<CollectionResponse>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result = collections_service::create_collection(&state, &context, req).await?;
     Ok(Json(success(result)))
 }
@@ -257,7 +267,7 @@ async fn update_collection(
     auth_level: AuthLevel,
     Json(req): Json<UpdateCollectionRequest>,
 ) -> Result<Json<JSendResponse<CollectionResponse>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result = collections_service::update_collection(&state, &context, &name, req).await?;
     Ok(Json(success(result)))
 }
@@ -278,7 +288,7 @@ async fn delete_collection(
     ExtractContext(context): ExtractContext,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.delete").await?;
     collections_service::delete_collection(&state, &context, &name).await?;
     Ok(Json(success(serde_json::json!({ "deleted": true }))))
 }
@@ -299,9 +309,43 @@ async fn create_policy(
     ExtractContext(context): ExtractContext,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    let check =
+        permissions::check_permission(&state, &auth_level, &context, &name, "create").await?;
+    let perms = match check {
+        PermissionCheck::Bypass => None,
+        PermissionCheck::Granted(perms) => Some(perms),
+        PermissionCheck::Denied { reason } => return Err(AlcedoError::Forbidden(reason, 0)),
+    };
+
     let result = collections_service::create_policy(&state, &context, &name).await?;
-    Ok(Json(success(result)))
+    let mut obj = result.as_object().cloned().unwrap_or_default();
+    obj.insert("$permissions".to_string(), serde_json::json!({ "create": true }));
+
+    // Restrict the allowed fields and expose the create validation rules.
+    if let Some(perms) = &perms {
+        let allowed = permissions::writable_fields(perms, "create");
+        let validation = permissions::field_validation_for(perms, "create");
+        obj.insert("field_validation".to_string(), Value::Array(validation));
+        if let Some(allowed) = allowed {
+            let fields = obj
+                .get("allowed_fields")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|field| {
+                    field
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(|name| allowed.contains(name))
+                        .unwrap_or(false)
+                })
+                .collect();
+            obj.insert("allowed_fields".to_string(), Value::Array(fields));
+        }
+    }
+
+    Ok(Json(success(Value::Object(obj))))
 }
 
 #[utoipa::path(get, path = "/api/app/collections/{name}/layouts",
@@ -316,7 +360,9 @@ async fn list_layouts(
     State(state): State<AppState>,
     Path(name): Path<String>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    permissions::assert_collection_accessible(&state, &auth_level, &context, &name).await?;
     let layouts = collections_service::list_layouts(&state, &context, &name).await?;
     Ok(Json(success(serde_json::json!({ "layouts": layouts }))))
 }
@@ -337,7 +383,7 @@ async fn create_layout(
     auth_level: AuthLevel,
     Json(body): Json<Value>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let layout_name = body
         .get("name")
         .and_then(|v| v.as_str())
@@ -364,7 +410,7 @@ async fn update_layout(
     auth_level: AuthLevel,
     Json(body): Json<Value>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result =
         collections_service::update_layout(&state, &context, &name, &layout_id, &body).await?;
     Ok(Json(success(result)))
@@ -385,7 +431,7 @@ async fn delete_layout(
     ExtractContext(context): ExtractContext,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result = collections_service::delete_layout(&state, &context, &name, &layout_id).await?;
     Ok(Json(success(result)))
 }
@@ -402,7 +448,9 @@ async fn resolve_layout(
     State(state): State<AppState>,
     Path(name): Path<String>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    permissions::assert_collection_accessible(&state, &auth_level, &context, &name).await?;
     let result = collections_service::resolve_layout(&state, &context, &name).await?;
     Ok(Json(success(result)))
 }
@@ -420,7 +468,9 @@ async fn get_layout_roles(
     State(state): State<AppState>,
     Path((name, layout_id)): Path<(String, String)>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    permissions::assert_collection_accessible(&state, &auth_level, &context, &name).await?;
     let result = collections_service::get_layout_roles(&state, &context, &name, &layout_id).await?;
     Ok(Json(success(result)))
 }
@@ -442,7 +492,7 @@ async fn set_layout_roles(
     auth_level: AuthLevel,
     Json(body): Json<Value>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result =
         collections_service::set_layout_roles(&state, &context, &name, &layout_id, &body).await?;
     Ok(Json(success(result)))
@@ -461,7 +511,9 @@ async fn list_sections(
     State(state): State<AppState>,
     Path((name, layout_id)): Path<(String, String)>,
     ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    permissions::assert_collection_accessible(&state, &auth_level, &context, &name).await?;
     let sections = collections_service::list_sections(&state, &context, &name, &layout_id).await?;
     Ok(Json(success(serde_json::json!({ "sections": sections }))))
 }
@@ -483,7 +535,7 @@ async fn create_section(
     auth_level: AuthLevel,
     Json(req): Json<SectionRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result =
         collections_service::create_section(&state, &context, &name, &layout_id, req).await?;
     Ok(Json(success(result)))
@@ -507,7 +559,7 @@ async fn update_section(
     auth_level: AuthLevel,
     Json(req): Json<SectionRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result =
         collections_service::update_section(&state, &context, &name, &layout_id, &section_id, req)
             .await?;
@@ -530,7 +582,7 @@ async fn delete_section(
     ExtractContext(context): ExtractContext,
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result =
         collections_service::delete_section(&state, &context, &name, &layout_id, &section_id)
             .await?;
@@ -554,7 +606,7 @@ async fn reorder_sections(
     auth_level: AuthLevel,
     Json(body): Json<Value>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result =
         collections_service::reorder_sections(&state, &context, &name, &layout_id, &body).await?;
     Ok(Json(success(result)))

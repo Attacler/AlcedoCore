@@ -401,10 +401,19 @@ const hasInlineParentChanges = computed(() => {
     );
 });
 
+function comparable(v: any): string {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "object") {
+        if ("id" in v) return String(v.id);
+        return JSON.stringify(v);
+    }
+    return String(v);
+}
+
 function fieldChanged(editValue: any, originalValue: any): boolean {
     if (editValue == null && originalValue == null) return false;
     if (editValue == null || originalValue == null) return true;
-    return String(editValue) !== String(originalValue);
+    return comparable(editValue) !== comparable(originalValue);
 }
 
 /** Pending scalar / inline-parent / relational edits while editing. */
