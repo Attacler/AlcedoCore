@@ -22,6 +22,7 @@ import PoliciesIndex from "@/pages/PoliciesIndex.vue";
 import PolicyDetail from "@/pages/PolicyDetail.vue";
 import UsersIndex from "@/pages/UsersIndex.vue";
 import UserDetail from "@/pages/UserDetail.vue";
+import AppUsersIndex from "@/pages/AppUsersIndex.vue";
 import RolesIndex from "@/pages/RolesIndex.vue";
 import RoleDetail from "@/pages/RoleDetail.vue";
 import SettingsIndex from "@/pages/Settings/SettingsIndex.vue";
@@ -199,6 +200,21 @@ const routes: RouteRecordRaw[] = [
                 component: SettingsIndex,
             },
             {
+                path: "settings/users",
+                name: "AppUsers",
+                component: AppUsersIndex,
+            },
+            {
+                path: "settings/users/new",
+                name: "AppUserNew",
+                component: UserDetail,
+            },
+            {
+                path: "settings/users/:id",
+                name: "AppUserDetail",
+                component: UserDetail,
+            },
+            {
                 path: "settings/:category",
                 name: "AppSettingsCategory",
                 component: SettingsCategory,
@@ -258,6 +274,8 @@ const router = createRouter({
     routes,
 });
 
+let lastScopeContext: string | null = null;
+
 router.beforeEach(async (to, _from) => {
     if (to.meta.public) return true;
 
@@ -275,6 +293,14 @@ router.beforeEach(async (to, _from) => {
     const version = (to.params.version as string) || null;
     appContext.setContext(appSlug, version);
     setAppHeaders(appSlug, version);
+
+    // Scopes are app-scoped, so re-resolve them whenever the app context
+    // changes (initialize() ran before the headers were set).
+    const scopeContext = `${appSlug ?? ""}::${version ?? ""}`;
+    if (scopeContext !== lastScopeContext) {
+        lastScopeContext = scopeContext;
+        await authStore.refreshScopes();
+    }
 
     return true;
 });

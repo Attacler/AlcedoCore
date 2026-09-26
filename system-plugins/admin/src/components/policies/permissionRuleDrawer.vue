@@ -164,10 +164,11 @@ async function saveRule() {
         } else {
             await store.createPermission(props.policy.id, data);
         }
+        const wasEditing = editingRule.value;
         emit("reload");
         closeRuleDialog();
         toast.show(
-            editingRule.value ? "Rule updated" : "Rule added",
+            wasEditing ? "Rule updated" : "Rule added",
             "success",
         );
     } catch (e) {

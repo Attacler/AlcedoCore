@@ -28,6 +28,21 @@ impl DatabaseSchema {
         };
     }
 
+    pub fn collection_id(&self, schema: &str, table: &str) -> Option<i64> {
+        self.tables
+            .iter()
+            .find(|t| t.schema == schema && t.name == table)
+            .and_then(|t| t.meta.as_ref())
+            .and_then(|m| m.id)
+    }
+
+    pub fn collection_table(&self, schema: &str, id: i64) -> Option<String> {
+        self.tables
+            .iter()
+            .find(|t| t.schema == schema && t.meta.as_ref().and_then(|m| m.id) == Some(id))
+            .map(|t| t.name.clone())
+    }
+
     pub async fn refresh(&self, app_state: &AppState) -> Self {
         let mut schema = DatabaseSchema {
             app_versions: vec![],

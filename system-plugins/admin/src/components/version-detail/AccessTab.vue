@@ -38,6 +38,14 @@ interface GlobalUser {
     display_name: string | null;
 }
 
+interface UserAppAccess {
+    app_id: number;
+    app_name: string;
+    api_name: string;
+    version: string;
+    roles: string[];
+}
+
 interface Column {
     appId: number;
     name: string;
@@ -64,24 +72,42 @@ const columns = ref<Column[]>([]),
     loading = ref(true),
     error = ref("");
 
-async function readJson(
-    method: string,
-    path: string,
-    opts?: Record<string, unknown>,
-): Promise<any> {
-    const res = await client.request(method, path, opts);
-    if (res && typeof res.json === "function") {
-        return res.json();
+let userAccessCache: Promise<
+    { user: GlobalUser; access: UserAppAccess[] }[]
+> | null = null;
+
+async function fetchUserAccess() {
+    if (!userAccessCache) {
+        userAccessCache = (async () => {
+            const raw = (await client.users.list()) as
+                | GlobalUser[]
+                | { data?: GlobalUser[] };
+            const users = Array.isArray(raw) ? raw : (raw?.data ?? []);
+            return Promise.all(
+                users.map(async (user) => {
+                    let access: UserAppAccess[] = [];
+                    try {
+                        access =
+                            ((await client.apps.getUserAccess(
+                                user.id,
+                            )) as UserAppAccess[]) ?? [];
+                    } catch {
+                        access = [];
+                    }
+                    return { user, access };
+                }),
+            );
+        })();
     }
-    return res;
+    return userAccessCache;
 }
 
 async function load() {
     loading.value = true;
     error.value = "";
+    userAccessCache = null;
     try {
-        const appsRes = await readJson("get", "/apps");
-        const apps = (appsRes?.data ?? []) as AppWithVersions[];
+        const apps = (await client.apps.list()) as AppWithVersions[];
         const matching = apps.filter((a) =>
             a.versions.includes(props.versionName),
         );
@@ -113,15 +139,30 @@ async function fetchColumn(col: Column) {
     col.loading = true;
     col.error = "";
     try {
-        const res = await readJson(
-            "get",
-            `/apps/${col.appId}/versions/${props.versionId}/access`,
-        );
-        const data = res?.data ?? res;
-        col.roles = (data?.roles ?? []) as AccessRole[];
+        const rolesRes = (await client.roles.list({
+            app: col.apiName,
+            version: props.versionName,
+        })) as { data?: AccessRole[] };
+        col.roles = (rolesRes?.data ?? []) as AccessRole[];
+        const roleIdByName = new Map(col.roles.map((r) => [r.name, r.id]));
         const byUser: Record<string, AccessUser> = {};
-        for (const user of (data?.users ?? []) as AccessUser[]) {
-            byUser[user.user_id] = user;
+        for (const { user, access } of await fetchUserAccess()) {
+            const entry = access.find(
+                (a) =>
+                    a.api_name === col.apiName &&
+                    a.version === props.versionName,
+            );
+            const names = entry?.roles ?? [];
+            if (names.length === 0) continue;
+            byUser[user.id] = {
+                user_id: user.id,
+                email: user.email,
+                display_name: user.display_name,
+                role_names: names,
+                role_ids: names
+                    .map((name) => roleIdByName.get(name))
+                    .filter((id): id is string => Boolean(id)),
+            };
         }
         col.byUser = byUser;
     } catch (e) {
@@ -172,11 +213,11 @@ async function saveCell() {
     saving.value = true;
     editError.value = "";
     try {
-        await client.request(
-            "put",
-            `/apps/${col.appId}/versions/${props.versionId}/access`,
-            { json: { user_id: row.user_id, role_ids: editRoleIds.value } },
-        );
+        await client.apps.setUserAccess(row.user_id, {
+            app: col.apiName,
+            version: props.versionName,
+            role_ids: editRoleIds.value,
+        });
         showEditDialog.value = false;
         toast.show("Access updated", "success");
         await fetchColumn(col);
@@ -204,10 +245,11 @@ function confirmRevokeCell() {
         acceptProps: { label: "Revoke", severity: "danger" },
         accept: async () => {
             try {
-                await client.request(
-                    "delete",
-                    `/apps/${col.appId}/versions/${props.versionId}/access/${row.user_id}`,
-                );
+                await client.apps.setUserAccess(row.user_id, {
+                    app: col.apiName,
+                    version: props.versionName,
+                    role_ids: [],
+                });
                 showEditDialog.value = false;
                 toast.show("Access revoked", "success");
                 await fetchColumn(col);
@@ -270,8 +312,10 @@ async function openAddUser() {
     addUsersLoading.value = true;
     addUsersError.value = "";
     try {
-        const res = await readJson("get", "/users");
-        addUserSearch.value = (res?.data ?? []) as GlobalUser[];
+        const raw = (await client.users.list()) as
+            | GlobalUser[]
+            | { data?: GlobalUser[] };
+        addUserSearch.value = Array.isArray(raw) ? raw : (raw?.data ?? []);
     } catch (e) {
         addUsersError.value =
             e instanceof Error ? e.message : "Failed to load users";
@@ -299,16 +343,11 @@ async function saveAddUser() {
     try {
         await Promise.all(
             changed.map((col) =>
-                client.request(
-                    "put",
-                    `/apps/${col.appId}/versions/${props.versionId}/access`,
-                    {
-                        json: {
-                            user_id: selectedUserId.value,
-                            role_ids: addAssignments.value[col.appId] ?? [],
-                        },
-                    },
-                ),
+                client.apps.setUserAccess(selectedUserId.value as string, {
+                    app: col.apiName,
+                    version: props.versionName,
+                    role_ids: addAssignments.value[col.appId] ?? [],
+                }),
             ),
         );
         showAddDialog.value = false;

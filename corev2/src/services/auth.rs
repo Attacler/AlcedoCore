@@ -71,14 +71,12 @@ impl AuthService<'_> {
     pub async fn is_admin(&self, user_id: Uuid) -> Result<bool, AlcedoError> {
         let service = ItemsService::new(&self.app_state, &self.app_context, &self.collection);
 
-        let rows = service
-            .get_items_by_pks(vec![Value::String(user_id.to_string())])
+        let row = service
+            .get_single_item_by_pk(Value::String(user_id.to_string()))
             .await?;
 
-        Ok(rows
-            .first()
-            .and_then(|row| row.get("is_admin"))
-            .and_then(Value::as_bool)
+        Ok(row
+            .and_then(|row| row.get("is_admin").and_then(Value::as_bool))
             .unwrap_or(false))
     }
 

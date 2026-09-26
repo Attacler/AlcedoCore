@@ -117,6 +117,13 @@ impl ItemsService<'_> {
         self.read_items_by_query(query).await
     }
 
+    pub async fn get_single_item_by_pk(
+        &self,
+        pk: Value,
+    ) -> Result<Option<Map<String, Value>>, AlcedoError> {
+        Ok(self.get_items_by_pks(vec![pk]).await?.into_iter().next())
+    }
+
     pub async fn update_items_by_query<'a>(
         &self,
         query: &mut Query,

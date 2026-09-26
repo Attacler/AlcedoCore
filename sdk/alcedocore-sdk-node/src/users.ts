@@ -16,6 +16,17 @@ export function createUsersResource(ky: any) {
             ky
                 .delete(`platform/users/${encodeURIComponent(id)}`, options)
                 .json(),
+        changePassword: (
+            id: string,
+            data: { current_password?: string; new_password: string },
+            options?: any,
+        ) =>
+            ky
+                .post(`platform/users/${encodeURIComponent(id)}/password`, {
+                    json: data,
+                    ...options,
+                })
+                .json(),
         sessions: (id: string, options?: any) =>
             ky
                 .get(`platform/users/${encodeURIComponent(id)}/sessions`, options)
@@ -32,10 +43,10 @@ export function createUsersResource(ky: any) {
                 .delete(`platform/users/${encodeURIComponent(id)}/sessions`, options)
                 .json(),
         listRoles: (id: string, options?: any) =>
-            ky.get(`platform/users/${encodeURIComponent(id)}/roles`, options).json(),
+            ky.get(`app/users/${encodeURIComponent(id)}/roles`, options).json(),
         assignRole: (id: string, roleId: string, options?: any) =>
             ky
-                .post(`platform/users/${encodeURIComponent(id)}/roles`, {
+                .post(`app/users/${encodeURIComponent(id)}/roles`, {
                     json: { role_id: roleId },
                     ...options,
                 })
@@ -43,7 +54,7 @@ export function createUsersResource(ky: any) {
         removeRole: (id: string, roleId: string, options?: any) =>
             ky
                 .delete(
-                    `platform/users/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}`,
+                    `app/users/${encodeURIComponent(id)}/roles/${encodeURIComponent(roleId)}`,
                     options,
                 )
                 .json(),

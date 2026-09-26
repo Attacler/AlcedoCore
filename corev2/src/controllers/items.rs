@@ -194,10 +194,8 @@ async fn update_item(
 
     let service = ItemsService::new(&state, &context, &collection);
     let item = service
-        .get_items_by_pks(vec![Value::String(id.clone())])
+        .get_single_item_by_pk(Value::String(id.clone()))
         .await?
-        .into_iter()
-        .next()
         .ok_or_else(|| AlcedoError::NotFound(format!("Item '{}' not found", id), 1))?;
     Ok(Json(success(item)))
 }

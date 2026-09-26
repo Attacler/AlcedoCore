@@ -64,7 +64,25 @@ export const useAuthStore = defineStore("auth", () => {
     }
 
     function hasScope(scope: string): boolean {
-        return scopes.value.includes(scope);
+        if (isAdmin.value) return true;
+        return scopes.value.some((granted) => {
+            if (granted === scope || granted === "rootaccess.all") return true;
+            if (granted.endsWith(".all")) {
+                return scope.startsWith(granted.slice(0, -4) + ".");
+            }
+            return false;
+        });
+    }
+
+    async function refreshScopes() {
+        try {
+            const res = await client.auth.me();
+            user.value = res.user;
+            scopes.value = res.scopes || [];
+            isAdmin.value = res.user.is_admin === true;
+        } catch {
+            // Keep the current state when the refresh fails.
+        }
     }
 
     function clearError() {
@@ -112,6 +130,7 @@ export const useAuthStore = defineStore("auth", () => {
         logout,
         clearError,
         hasScope,
+        refreshScopes,
         resolveLanding,
         displayName,
         userInitial,

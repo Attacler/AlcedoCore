@@ -276,10 +276,13 @@ pub async fn collection_tables(
     state: &AppState,
     ctx: &AppContext,
 ) -> Result<Vec<String>, AlcedoError> {
-    let rows = read_collection_rows(state, ctx).await?;
-    Ok(rows
+    let schema = ctx.schema_name();
+    let guard = state.database_schema.read().await;
+    Ok(guard
+        .tables
         .iter()
-        .filter_map(|row| jstr(row.get("table")))
+        .filter(|t| t.schema == schema && t.meta.is_some())
+        .map(|t| t.name.clone())
         .collect())
 }
 
@@ -433,8 +436,7 @@ pub async fn update_collection(
 ) -> Result<CollectionResponse, AlcedoError> {
     validate_fields(&req.fields)?;
 
-    let row = read_collection_row(state, ctx, name).await?;
-    let collection_id = ji64(row.get("id")).unwrap_or(0);
+    let collection_id = collection_id_for(state, ctx, name).await?;
 
     let current_fields: Vec<FieldDefinition> = read_field_rows(state, ctx, collection_id)
         .await?
@@ -623,8 +625,7 @@ pub async fn delete_collection(
     ctx: &AppContext,
     name: &str,
 ) -> Result<(), AlcedoError> {
-    let row = read_collection_row(state, ctx, name).await?;
-    let collection_id = ji64(row.get("id")).unwrap_or(0);
+    let collection_id = collection_id_for(state, ctx, name).await?;
 
     let mut tx = state.database_pool.begin().await?;
     let drop_sql = drop_table_sql(ctx, name, true);
@@ -677,9 +678,12 @@ async fn collection_id_for(
     ctx: &AppContext,
     name: &str,
 ) -> Result<i64, AlcedoError> {
-    let row = read_collection_row(state, ctx, name).await?;
-    ji64(row.get("id"))
-        .ok_or_else(|| AlcedoError::SystemError("Collection has no id".to_string(), 1))
+    state
+        .database_schema
+        .read()
+        .await
+        .collection_id(&ctx.schema_name(), name)
+        .ok_or_else(|| AlcedoError::NotFound(format!("Collection '{}' not found", name), 1))
 }
 
 pub async fn list_layouts(

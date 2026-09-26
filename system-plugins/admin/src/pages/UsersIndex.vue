@@ -52,7 +52,7 @@ async function handleDelete() {
             :data-source="dataSource"
             :default-view-config="{ render_mode: 'table' }"
             :create-action="
-                authStore.scopes.includes('users.all')
+                authStore.hasScope('users.all')
                     ? {
                           label: 'New User',
                           run: () => router.push('/users/new'),

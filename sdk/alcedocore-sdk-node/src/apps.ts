@@ -56,5 +56,20 @@ export function createAppsResource(ky: KyInstance) {
                 .json<{ success: boolean }>(),
         me: (options?: any) =>
             ky.get("platform/me/apps", options).json<UserAppAccess[]>(),
+        getUserAccess: (userId: string, options?: any) =>
+            ky
+                .get(`platform/users/${encodeURIComponent(userId)}/app-access`, options)
+                .json<UserAppAccess[]>(),
+        setUserAccess: (
+            userId: string,
+            data: { app: string; version: string; role_ids: string[] },
+            options?: any,
+        ) =>
+            ky
+                .put(`platform/users/${encodeURIComponent(userId)}/app-access`, {
+                    json: data,
+                    ...options,
+                })
+                .json<{ success: boolean }>(),
     };
 }

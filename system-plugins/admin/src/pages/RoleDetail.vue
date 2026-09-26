@@ -158,7 +158,7 @@ async function assignPolicies() {
                                 <ToggleSwitch
                                     :modelValue="enabledScopes.has(scope)"
                                     :disabled="
-                                        !authStore.scopes.includes('roles.all')
+                                        !authStore.hasScope('roles.all')
                                     "
                                     @update:modelValue="toggleScope(scope)"
                                 />
@@ -168,21 +168,21 @@ async function assignPolicies() {
                     <Divider />
                     <div class="flex gap-2">
                         <Button
-                            v-if="authStore.scopes.includes('roles.all')"
+                            v-if="authStore.hasScope('roles.all')"
                             label="Save Scopes"
                             icon="pi pi-check"
                             :loading="saving"
                             @click="handleSaveScopes"
                         />
                         <Button
-                            v-if="authStore.scopes.includes('roles.all')"
+                            v-if="authStore.hasScope('roles.all')"
                             label="Select All"
                             severity="secondary"
                             outlined
                             @click="selectAll"
                         />
                         <Button
-                            v-if="authStore.scopes.includes('roles.all')"
+                            v-if="authStore.hasScope('roles.all')"
                             label="Clear All"
                             severity="secondary"
                             outlined
@@ -234,7 +234,7 @@ async function assignPolicies() {
                     </div>
                     <div class="flex gap-2">
                         <Button
-                            v-if="authStore.scopes.includes('policies.all')"
+                            v-if="authStore.hasScope('policies.all')"
                             label="Assign Policies"
                             @click="assignPolicies"
                         />

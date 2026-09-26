@@ -14,5 +14,10 @@ pub fn platform_controller() -> Router<AppState> {
             controllers::developer_keys::developer_keys_controller(),
         )
         .route("/me/apps", get(controllers::apps::me_apps))
+        .route(
+            "/users/{id}/app-access",
+            get(controllers::apps::get_user_app_access)
+                .put(controllers::apps::set_user_app_access),
+        )
         .nest("/settings", controllers::settings::settings_controller());
 }

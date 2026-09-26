@@ -132,6 +132,13 @@ const settingsSections = computed<MenuSection[]>(() => {
                 route: "/roles",
                 visible: true,
             },
+            {
+                id: "users",
+                label: "Users",
+                icon: "group",
+                route: "/settings/users",
+                visible: true,
+            },
         ],
     });
 

@@ -15,7 +15,7 @@ use crate::{
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
-        collections::schema::drop_schema,
+        collections::schema::{drop_schema, SchemaService},
         respond::{JSendResponse, success},
         versions::{PRODUCTION_VERSION, VersionsService},
     },
@@ -151,7 +151,7 @@ async fn delete_version(
         drop_schema(&state, &schema_name).await?;
     }
 
-    state.refresh_schema().await;
+    SchemaService::refresh_schema_and_meta(&state).await;
 
     Ok(Json(success(serde_json::json!({ "success": true }))))
 }

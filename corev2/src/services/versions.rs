@@ -5,6 +5,7 @@ use crate::{
     migrations::app_migrations::run_app_migrations,
     services::{
         apps::AppsService,
+        collections::schema::SchemaService,
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
@@ -223,7 +224,7 @@ impl VersionsService<'_> {
             .link_apps_to_version(&pairs)
             .await?;
         run_app_migrations(&self.app_state.database_pool).await;
-        self.app_state.refresh_schema().await;
+        SchemaService::refresh_schema_and_meta(self.app_state).await;
         Ok(())
     }
 }

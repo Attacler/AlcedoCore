@@ -4,13 +4,13 @@ import { useRoute, useRouter } from "vue-router";
 import { useUsersStore } from "@/stores/usersStore";
 import { useAuthStore } from "@/stores/authStore";
 import { useRolesStore } from "@/stores/rolesStore";
+import { useAppContextStore } from "@/stores/appContext";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
-import RecordForm from "@/components/RecordForm.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import SessionsPanel from "@/components/SessionsPanel.vue";
 import type { Role } from "@/stores/rolesStore";
 import type { User } from "@/types/user";
-type UserData = User & { $permissions?: Record<string, unknown> };
+import { appPath } from "@/utils/appHeaders";
 import Password from "primevue/password";
 import Select from "primevue/select";
 import MultiSelect from "primevue/multiselect";
@@ -20,9 +20,16 @@ const route = useRoute(),
     authStore = useAuthStore(),
     usersStore = useUsersStore(),
     rolesStore = useRolesStore(),
+    appContext = useAppContextStore(),
     { client } = useAlcedoClient();
 
-const user = ref<UserData | null>(null),
+const isAppContext = computed(() => !!appContext.appSlug);
+
+const listPath = computed(() =>
+    isAppContext.value ? appPath("/settings/users") : "/users",
+);
+
+const user = ref<User | null>(null),
     loading = ref(true),
     loadError = ref<string | null>(null),
     saving = ref(false),
@@ -30,8 +37,7 @@ const user = ref<UserData | null>(null),
     showDeleteDialog = ref(false),
     deleting = ref(false);
 
-const recordFormRef = ref<any>(null),
-    editValues = ref<Record<string, any>>({}),
+const editValues = ref<Record<string, any>>({}),
     editPassword = ref(""),
     repeatPassword = ref(""),
     currentPassword = ref(""),
@@ -73,28 +79,15 @@ const selectedAppVersion = computed(
         null,
 );
 
-async function readJson(
-    method: string,
-    path: string,
-    opts?: Record<string, unknown>,
-): Promise<any> {
-    const res = await client.request(method, path, opts);
-    if (res && typeof res.json === "function") {
-        return res.json();
-    }
-    return res;
-}
-
 async function loadAppAccess() {
     if (!user.value || !authStore.isAdmin) return;
     appAccessLoading.value = true;
     appAccessError.value = null;
     try {
-        const res = await readJson(
-            "get",
-            `/users/${user.value.id}/app-access`,
-        );
-        appAccess.value = (res?.data ?? res ?? []) as AppAccessEntry[];
+        const access = (await client.apps.getUserAccess(
+            user.value.id,
+        )) as AppAccessEntry[];
+        appAccess.value = access ?? [];
     } catch (e: any) {
         appAccessError.value = e?.message || "Failed to load app access";
     } finally {
@@ -105,8 +98,7 @@ async function loadAppAccess() {
 async function loadAppOptions() {
     if (!authStore.isAdmin) return;
     try {
-        const res = await readJson("get", "/me/apps");
-        const entries = (res?.data ?? res ?? []) as AppAccessEntry[];
+        const entries = (await client.apps.me()) as AppAccessEntry[];
         appVersionOptions.value = entries.map((e) => ({
             key: `${e.api_name}::${e.version}`,
             label: `${e.app_name} (${e.version})`,
@@ -126,10 +118,10 @@ async function loadAppRoles() {
     appRolesLoading.value = true;
     appAccessError.value = null;
     try {
-        const res = await readJson("get", "/roles", {
+        const res = (await client.roles.list({
             app: target.api_name,
             version: target.version,
-        });
+        })) as { data?: { id: string; name: string }[] };
         const data = res?.data ?? res ?? [];
         appRoles.value = (Array.isArray(data) ? data : []) as {
             id: string;
@@ -158,12 +150,10 @@ async function saveAppAccess() {
     appAccessSaving.value = true;
     appAccessError.value = null;
     try {
-        await client.request("put", `/users/${user.value.id}/app-access`, {
-            json: {
-                app: target.api_name,
-                version: target.version,
-                role_ids: selectedAppRoleIds.value,
-            },
+        await client.apps.setUserAccess(user.value.id, {
+            app: target.api_name,
+            version: target.version,
+            role_ids: selectedAppRoleIds.value,
         });
         await loadAppAccess();
         await loadAppRoles();
@@ -178,12 +168,10 @@ async function revokeAppAccess(entry: AppAccessEntry) {
     if (!user.value) return;
     appAccessError.value = null;
     try {
-        await client.request("put", `/users/${user.value.id}/app-access`, {
-            json: {
-                app: entry.api_name,
-                version: entry.version,
-                role_ids: [],
-            },
+        await client.apps.setUserAccess(user.value.id, {
+            app: entry.api_name,
+            version: entry.version,
+            role_ids: [],
         });
         await loadAppAccess();
         if (
@@ -197,25 +185,25 @@ async function revokeAppAccess(entry: AppAccessEntry) {
     }
 }
 
-const isNew = computed(() => route.name === "UserNew");
+const isNew = computed(() =>
+    ["UserNew", "AppUserNew"].includes(route.name as string),
+);
+
+const isSelf = computed(
+    () => !!user.value && user.value.id === authStore.user?.id,
+);
 
 const availableRolesToAdd = computed(() => {
     const assignedIds = new Set(userRoles.value.map((r) => r.id));
     return rolesStore.roles.filter((r) => !assignedIds.has(r.id));
 });
 
-function canEditField(fieldName: string): boolean {
-    if (!user.value?.$permissions) return true;
-    const fields = user.value.$permissions.fields as string[] | undefined;
-    if (!fields) return true;
-    return fields.includes(fieldName);
-}
-
 onMounted(async () => {
-    await rolesStore.fetchRoles();
+    if (isAppContext.value) {
+        await rolesStore.fetchRoles();
+    }
 
-    if (!isNew.value) {
-    } else {
+    if (isNew.value) {
         editValues.value = { display_name: "", email: "", is_admin: false };
     }
     loading.value = false;
@@ -224,7 +212,21 @@ onMounted(async () => {
 watch(
     () => route.params.id,
     async (id) => {
-        if (id == "new" || !id) return;
+        editPassword.value = "";
+        repeatPassword.value = "";
+        currentPassword.value = "";
+        passwordError.value = null;
+        if (id == "new" || !id) {
+            user.value = null;
+            loadError.value = null;
+            userRoles.value = [];
+            editValues.value = {
+                display_name: "",
+                email: "",
+                is_admin: false,
+            };
+            return;
+        }
         const fetched = await usersStore.fetchUser(id + "");
         if (fetched) {
             user.value = fetched;
@@ -247,7 +249,7 @@ watch(
 );
 
 async function loadUserRoles() {
-    if (!user.value) return;
+    if (!user.value || !isAppContext.value) return;
     const roles = await rolesStore.fetchUserRoles(user.value.id);
     userRoles.value = roles;
 }
@@ -293,7 +295,7 @@ async function handleChangePassword() {
         passwordError.value = "Password must be at least 8 characters";
         return;
     }
-    if (!currentPassword.value) {
+    if (isSelf.value && !currentPassword.value) {
         passwordError.value = "Current password is required";
         return;
     }
@@ -304,11 +306,9 @@ async function handleChangePassword() {
 
     passwordSaving.value = true;
     try {
-        await client.request("post", `users/${user.value.id}/password`, {
-            json: {
-                current_password: currentPassword.value,
-                new_password: editPassword.value,
-            },
+        await client.users.changePassword(user.value.id, {
+            current_password: isSelf.value ? currentPassword.value : undefined,
+            new_password: editPassword.value,
         });
         editPassword.value = "";
         repeatPassword.value = "";
@@ -324,24 +324,23 @@ async function handleChangePassword() {
 async function handleSave() {
     saveError.value = null;
 
-    if (recordFormRef.value && !recordFormRef.value.validate()) {
+    const email = String(editValues.value.email || "").trim();
+    if (!email || !email.includes("@")) {
+        saveError.value = "A valid email is required";
         return;
-    }
-
-    const payload: Record<string, any> = {};
-    for (const key of ["display_name", "email", "is_admin"]) {
-        if (
-            editValues.value[key] !== undefined &&
-            editValues.value[key] !== null &&
-            editValues.value[key] !== ""
-        ) {
-            payload[key] = editValues.value[key];
-        }
     }
 
     if (isNew.value && (!editPassword.value || editPassword.value.length < 8)) {
         saveError.value = "Password must be at least 8 characters";
         return;
+    }
+
+    const payload: Record<string, any> = {
+        email,
+        display_name: editValues.value.display_name || "",
+    };
+    if (authStore.isAdmin) {
+        payload.is_admin = !!editValues.value.is_admin;
     }
 
     saving.value = true;
@@ -353,7 +352,7 @@ async function handleSave() {
                     password: editPassword.value,
                 })) as any;
 
-                router.push(`/users/${(result as any).id}`);
+                router.push(`${listPath.value}/${result.id}`);
             } catch (e: any) {
                 saveError.value =
                     e.data?.detail || e?.message || "Failed to create user";
@@ -379,7 +378,7 @@ async function handleDelete() {
     deleting.value = false;
     showDeleteDialog.value = false;
     if (ok) {
-        router.push("/users");
+        router.push(listPath.value);
     }
 }
 
@@ -394,7 +393,7 @@ function handleSessionsRevokedAll() {
     <div class="space-y-6">
         <div class="flex items-center gap-3 mb-3">
             <router-link
-                to="/users"
+                :to="listPath"
                 class="material-symbols-outlined text-gray-400 hover:text-gray-600 transition-colors"
             >
                 arrow_back
@@ -419,7 +418,7 @@ function handleSessionsRevokedAll() {
         </div>
 
         <template v-else-if="user || isNew">
-            <!-- RecordForm — layout-driven user fields -->
+            <!-- User profile fields -->
             <Card>
                 <template #title>
                     <div class="flex items-center gap-2">
@@ -430,31 +429,54 @@ function handleSessionsRevokedAll() {
                     </div>
                 </template>
                 <template #content>
-                    <RecordForm
-                        ref="recordFormRef"
-                        collection-name="alcedo_users"
-                        v-model="editValues"
-                        :field-readonly="
-                            (field: any) => !canEditField(field.name)
-                        "
-                    />
+                    <div class="grid gap-4 max-w-lg">
+                        <div class="flex flex-col gap-1">
+                            <label class="text-sm font-medium"
+                                >Display Name</label
+                            >
+                            <InputText
+                                v-model="editValues.display_name"
+                                placeholder="Display name"
+                                fluid
+                            />
+                        </div>
+                        <div class="flex flex-col gap-1">
+                            <label class="text-sm font-medium">Email</label>
+                            <InputText
+                                v-model="editValues.email"
+                                placeholder="Email"
+                                type="email"
+                                fluid
+                            />
+                        </div>
+                        <div class="flex items-center justify-between">
+                            <div>
+                                <div class="text-sm font-medium">
+                                    Administrator
+                                </div>
+                                <div class="text-xs text-gray-500">
+                                    Full system access
+                                </div>
+                            </div>
+                            <ToggleSwitch
+                                v-model="editValues.is_admin"
+                                :disabled="!authStore.isAdmin"
+                            />
+                        </div>
+                    </div>
                     <div v-if="saveError" class="text-sm text-red-600 mt-2">
                         {{ saveError }}
                     </div>
                     <div class="flex gap-2 mt-4">
                         <Button
-                            v-if="
-                                isNew
-                                    ? authStore.scopes.includes('users.all')
-                                    : user?.$permissions?.update
-                            "
+                            v-if="isNew || authStore.isAdmin || isSelf"
                             :label="isNew ? 'Create User' : 'Save Changes'"
                             icon="pi pi-check"
                             :loading="saving"
                             @click="handleSave"
                         />
                         <Button
-                            v-if="!isNew && user?.$permissions?.update"
+                            v-if="!isNew && (authStore.isAdmin || isSelf)"
                             label="Reset"
                             severity="secondary"
                             outlined
@@ -464,8 +486,8 @@ function handleSessionsRevokedAll() {
                 </template>
             </Card>
 
-            <!-- Roles Card (only for existing users) // TODO: allow adding roles while creating a new user -->
-            <Card v-if="!isNew">
+            <!-- Roles Card (app context only) // TODO: allow adding roles while creating a new user -->
+            <Card v-if="!isNew && isAppContext">
                 <template #title>
                     <div class="flex items-center gap-2">
                         <span class="material-symbols-outlined text-purple-500"
@@ -530,8 +552,8 @@ function handleSessionsRevokedAll() {
                 </template>
             </Card>
 
-            <!-- App Access Card (global admins only) -->
-            <Card v-if="!isNew && authStore.isAdmin">
+            <!-- App Access Card (global zone, admins only) -->
+            <Card v-if="!isNew && !isAppContext && authStore.isAdmin">
                 <template #title>
                     <div class="flex items-center gap-2">
                         <span class="material-symbols-outlined text-teal-500"
@@ -661,7 +683,7 @@ function handleSessionsRevokedAll() {
 
             <div class="grid md:grid-cols-2 gap-4">
                 <!-- Password Card -->
-                <Card v-if="isNew || user?.$permissions?.update">
+                <Card v-if="isNew || authStore.isAdmin || isSelf">
                     <template #title>
                         <div class="flex items-center gap-2">
                             <span
@@ -670,7 +692,13 @@ function handleSessionsRevokedAll() {
                                 lock
                             </span>
                             <span>
-                                {{ isNew ? "Password" : "Change Password" }}
+                                {{
+                                    isNew
+                                        ? "Password"
+                                        : isSelf
+                                          ? "Change Password"
+                                          : "Reset Password"
+                                }}
                             </span>
                         </div>
                     </template>
@@ -693,7 +721,7 @@ function handleSessionsRevokedAll() {
                         </template>
                         <template v-else>
                             <div class="max-w-lg space-y-4">
-                                <div class="flex flex-col gap-1">
+                                <div v-if="isSelf" class="flex flex-col gap-1">
                                     <label class="text-sm font-medium"
                                         >Current Password</label
                                     >
@@ -735,13 +763,13 @@ function handleSessionsRevokedAll() {
                                 >
                                     {{ passwordError }}
                                 </div>
-                                <div>
+                                <div v-if="!isNew">
                                     <Button
                                         label="Save Password"
                                         icon="pi pi-check"
                                         :loading="passwordSaving"
                                         :disabled="
-                                            !currentPassword ||
+                                            (isSelf && !currentPassword) ||
                                             !editPassword ||
                                             !repeatPassword
                                         "
@@ -754,7 +782,7 @@ function handleSessionsRevokedAll() {
                 </Card>
 
                 <!-- Danger Zone (only for existing users) -->
-                <Card v-if="!isNew && user?.$permissions?.delete">
+                <Card v-if="!isNew && authStore.isAdmin">
                     <template #title>
                         <div class="flex items-center gap-2 text-red-600">
                             <span class="material-symbols-outlined"

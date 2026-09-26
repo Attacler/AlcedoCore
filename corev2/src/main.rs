@@ -65,19 +65,10 @@ async fn main() -> Result<()> {
     let refresh_schema = write_schema_lock.refresh(&state).await;
     write_schema_lock.columns = refresh_schema.columns;
     write_schema_lock.tables = refresh_schema.tables;
-    let app_versions = refresh_schema.app_versions.clone();
     write_schema_lock.app_versions = refresh_schema.app_versions;
 
     drop(write_schema_lock);
-    for version in app_versions {
-        let app_context = AppContext {
-            app_name: version.app_name.clone(),
-            version: version.version_name.clone(),
-            request_source: services::context::RequestSource::Inspector,
-        };
-        let table_service = SchemaService::new(&state, &app_context);
-        table_service.refresh_meta().await;
-    }
+    SchemaService::refresh_all_meta(&state).await;
 
     VersionsService::new(&state).ensure_default().await?;
 

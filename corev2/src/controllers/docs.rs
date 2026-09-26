@@ -4,7 +4,8 @@ use utoipa::OpenApi;
 use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
 use crate::controllers::{
-    apps, auth, collections, developer_keys, items, sessions, settings, users, versions,
+    apps, auth, collections, developer_keys, items, policies, roles, sessions, settings, users,
+    versions,
 };
 
 #[derive(OpenApi)]
@@ -48,6 +49,10 @@ use crate::controllers::{
         // Users
         users::list_users,
         users::get_user,
+        users::create_user,
+        users::update_user,
+        users::delete_user,
+        users::change_password,
         users::get_user_sessions,
         users::revoke_user_session,
         users::revoke_all_user_sessions,
@@ -70,6 +75,35 @@ use crate::controllers::{
         developer_keys::list_keys,
         developer_keys::create_key,
         developer_keys::delete_key,
+        // Roles
+        roles::list_roles,
+        roles::create_role,
+        roles::get_role,
+        roles::update_role,
+        roles::delete_role,
+        roles::list_role_scopes,
+        roles::set_role_scopes,
+        roles::delete_role_scope,
+        roles::list_role_policies,
+        roles::assign_role_policy,
+        roles::remove_role_policy,
+        roles::list_user_roles,
+        roles::assign_user_role,
+        roles::remove_user_role,
+        // Policies
+        policies::list_policies,
+        policies::create_policy,
+        policies::get_policy,
+        policies::update_policy,
+        policies::delete_policy,
+        policies::list_permissions,
+        policies::create_permission,
+        policies::update_permission,
+        policies::delete_permission,
+        policies::delete_collection_permissions,
+        // App access
+        apps::get_user_app_access,
+        apps::set_user_app_access,
     ),
     info(
         title = "Alcedo Core API",
@@ -93,6 +127,8 @@ use crate::controllers::{
         (name = "Users", description = "User administration"),
         (name = "Sessions", description = "Session management"),
         (name = "Settings", description = "Platform settings"),
+        (name = "Roles", description = "App-scoped roles, scopes and user assignments"),
+        (name = "Policies", description = "Record access policies and permission rules"),
     ),
     components(
         schemas (

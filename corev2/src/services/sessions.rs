@@ -119,15 +119,16 @@ pub async fn owns(state: &AppState, id: &str, user_id: Uuid) -> Result<bool, Alc
     let collection = SESSION_COLLECTION.to_string();
     let service = ItemsService::new(state, &context, &collection);
 
-    let rows = service
-        .get_items_by_pks(vec![Value::String(id.to_string())])
+    let row = service
+        .get_single_item_by_pk(Value::String(id.to_string()))
         .await?;
 
-    Ok(rows
-        .first()
-        .and_then(|row| row.get("user_id"))
-        .and_then(|value| value.as_str())
-        .map(|owner| owner == user_id.to_string())
+    Ok(row
+        .and_then(|row| {
+            row.get("user_id")
+                .and_then(Value::as_str)
+                .map(|owner| owner == user_id.to_string())
+        })
         .unwrap_or(false))
 }
 

@@ -4,29 +4,30 @@ use axum::{
     http::HeaderMap,
     routing::{delete, get},
 };
+use serde::Deserialize;
 use serde_json::{Map, Value};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
     AppState,
     middelware::auth::AuthLevel,
     services::{
-        context::{AppContext, RequestSource},
         errors::AlcedoError,
-        items::{query::Query, service::ItemsService},
+        items::query::Query,
         query_parse::CustomQuery,
         respond::{JSendResponse, success},
         sessions,
+        users::UsersService,
     },
-    utils::session_cookie::read_session_cookie,
+    utils::{parse_uuid_named, session_cookie::read_session_cookie},
 };
-
-const USERS_COLLECTION: &str = "alcedo_users";
 
 pub fn users_controller() -> Router<AppState> {
     Router::new()
-        .route("/", get(list_users))
-        .route("/{id}", get(get_user))
+        .route("/", get(list_users).post(create_user))
+        .route("/{id}", get(get_user).put(update_user).delete(delete_user))
+        .route("/{id}/password", axum::routing::post(change_password))
         .route(
             "/{id}/sessions",
             get(get_user_sessions).delete(revoke_all_user_sessions),
@@ -34,32 +35,8 @@ pub fn users_controller() -> Router<AppState> {
         .route("/{id}/sessions/{session_id}", delete(revoke_user_session))
 }
 
-fn without_secret(mut user: Map<String, Value>) -> Map<String, Value> {
-    user.remove("password_hash");
-    user
-}
-
-async fn caller_is_admin(state: &AppState, user_id: Uuid) -> Result<bool, AlcedoError> {
-    let context = AppContext::system(RequestSource::API);
-    let collection = USERS_COLLECTION.to_string();
-    let service = ItemsService::new(state, &context, &collection);
-
-    let rows = service
-        .get_items_by_pks(vec![Value::String(user_id.to_string())])
-        .await?;
-
-    Ok(rows
-        .first()
-        .and_then(|row| row.get("is_admin"))
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false))
-}
-
-async fn authorize(state: &AppState, caller: Uuid, target: Uuid) -> Result<(), AlcedoError> {
-    if caller == target {
-        return Ok(());
-    }
-    if caller_is_admin(state, caller).await? {
+async fn require_admin(state: &AppState, caller: Uuid) -> Result<(), AlcedoError> {
+    if UsersService::new(state).is_admin(caller).await? {
         return Ok(());
     }
     Err(AlcedoError::Forbidden(
@@ -68,8 +45,15 @@ async fn authorize(state: &AppState, caller: Uuid, target: Uuid) -> Result<(), A
     ))
 }
 
+async fn authorize(state: &AppState, caller: Uuid, target: Uuid) -> Result<(), AlcedoError> {
+    if caller == target {
+        return Ok(());
+    }
+    require_admin(state, caller).await
+}
+
 fn parse_user_id(id: &str) -> Result<Uuid, AlcedoError> {
-    Uuid::parse_str(id).map_err(|_| AlcedoError::InvalidInput("Invalid user id".to_string(), 0))
+    parse_uuid_named(id, "user id")
 }
 
 #[utoipa::path(get, path = "/api/platform/users", tag = "Users",
@@ -81,24 +65,9 @@ async fn list_users(
     auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<Vec<Map<String, Value>>>>, AlcedoError> {
     let caller = auth_level.require_user()?;
-    if !caller_is_admin(&state, caller).await? {
-        return Err(AlcedoError::Forbidden(
-            "Admin access required".to_string(),
-            0,
-        ));
-    }
+    require_admin(&state, caller).await?;
 
-    let context = AppContext::system(RequestSource::API);
-    let collection = USERS_COLLECTION.to_string();
-    let service = ItemsService::new(&state, &context, &collection);
-
-    let users = service
-        .read_items_by_query(query)
-        .await?
-        .into_iter()
-        .map(without_secret)
-        .collect();
-
+    let users = UsersService::new(&state).list(query).await?;
     Ok(Json(success(users)))
 }
 
@@ -115,18 +84,148 @@ async fn get_user(
     let target = parse_user_id(&id)?;
     authorize(&state, caller, target).await?;
 
-    let context = AppContext::system(RequestSource::API);
-    let collection = USERS_COLLECTION.to_string();
-    let service = ItemsService::new(&state, &context, &collection);
-
-    let user = service
-        .get_items_by_pks(vec![Value::String(target.to_string())])
+    let user = UsersService::new(&state)
+        .get(target)
         .await?
-        .into_iter()
-        .next()
         .ok_or_else(|| AlcedoError::NotFound("User not found".to_string(), 0))?;
 
-    Ok(Json(success(without_secret(user))))
+    Ok(Json(success(user)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateUserRequest {
+    pub email: String,
+    pub password: String,
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub is_admin: bool,
+}
+
+#[utoipa::path(post, path = "/api/platform/users", tag = "Users",
+    request_body = CreateUserRequest,
+    responses((status = OK, body = serde_json::Value))
+)]
+async fn create_user(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Json(payload): Json<CreateUserRequest>,
+) -> Result<Json<JSendResponse<Map<String, Value>>>, AlcedoError> {
+    let caller = auth_level.require_user()?;
+    require_admin(&state, caller).await?;
+
+    let created = UsersService::new(&state)
+        .create(
+            &payload.email,
+            &payload.password,
+            payload.display_name,
+            payload.is_admin,
+        )
+        .await?;
+
+    Ok(Json(success(created)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateUserRequest {
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    pub is_admin: Option<bool>,
+}
+
+#[utoipa::path(put, path = "/api/platform/users/{id}", tag = "Users",
+    params(("id" = Uuid, Path, description = "User id")),
+    request_body = UpdateUserRequest,
+    responses((status = OK, body = serde_json::Value))
+)]
+async fn update_user(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    auth_level: AuthLevel,
+    Json(payload): Json<UpdateUserRequest>,
+) -> Result<Json<JSendResponse<Map<String, Value>>>, AlcedoError> {
+    let caller = auth_level.require_user()?;
+    let target = parse_user_id(&id)?;
+    authorize(&state, caller, target).await?;
+
+    if payload.is_admin.is_some() && !UsersService::new(&state).is_admin(caller).await? {
+        return Err(AlcedoError::Forbidden(
+            "Only admins can change admin status".to_string(),
+            0,
+        ));
+    }
+
+    let user = UsersService::new(&state)
+        .update(target, payload.email, payload.display_name, payload.is_admin)
+        .await?;
+
+    Ok(Json(success(user)))
+}
+
+#[utoipa::path(delete, path = "/api/platform/users/{id}", tag = "Users",
+    params(("id" = Uuid, Path, description = "User id")),
+    responses((status = OK, body = JSendResponse<bool>))
+)]
+async fn delete_user(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    auth_level: AuthLevel,
+) -> Result<Json<JSendResponse<bool>>, AlcedoError> {
+    let caller = auth_level.require_user()?;
+    let target = parse_user_id(&id)?;
+    require_admin(&state, caller).await?;
+    if caller == target {
+        return Err(AlcedoError::InvalidInput(
+            "You cannot delete your own account".to_string(),
+            0,
+        ));
+    }
+
+    if !UsersService::new(&state).delete(target).await? {
+        return Err(AlcedoError::NotFound("User not found".to_string(), 0));
+    }
+
+    Ok(Json(success(true)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ChangePasswordRequest {
+    pub current_password: Option<String>,
+    pub new_password: String,
+}
+
+#[utoipa::path(post, path = "/api/platform/users/{id}/password", tag = "Users",
+    params(("id" = Uuid, Path, description = "User id")),
+    request_body = ChangePasswordRequest,
+    responses((status = OK, body = JSendResponse<bool>))
+)]
+async fn change_password(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    auth_level: AuthLevel,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> Result<Json<JSendResponse<bool>>, AlcedoError> {
+    let caller = auth_level.require_user()?;
+    let target = parse_user_id(&id)?;
+    authorize(&state, caller, target).await?;
+
+    // Changing your own password requires proving the current one; admins may
+    // reset another user's password without it.
+    if caller == target && payload.current_password.is_none() {
+        return Err(AlcedoError::InvalidInput(
+            "Current password is required".to_string(),
+            0,
+        ));
+    }
+
+    UsersService::new(&state)
+        .change_password(
+            target,
+            payload.current_password.as_deref(),
+            &payload.new_password,
+        )
+        .await?;
+
+    Ok(Json(success(true)))
 }
 
 #[utoipa::path(get, path = "/api/platform/users/{id}/sessions", tag = "Users",

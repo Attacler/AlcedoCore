@@ -77,7 +77,7 @@ async function handleDelete() {
             is-system-collection
             :data-source="dataSource"
             :create-action="
-                authStore.scopes.includes('roles.all')
+                authStore.hasScope('roles.all')
                     ? {
                           label: 'New Role',
                           run: () => (showCreateDialog = true),

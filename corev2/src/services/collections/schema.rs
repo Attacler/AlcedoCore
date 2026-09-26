@@ -164,14 +164,14 @@ impl SchemaService<'_> {
                 ..Default::default()
             })
             .await
-            .unwrap();
+            .unwrap_or_default();
 
         let meta_fields = meta_fields_service
             .read_items_by_query(Query {
                 ..Default::default()
             })
             .await
-            .unwrap();
+            .unwrap_or_default();
 
         let mut write_schema_lock = self.app_state.database_schema.write().await;
 
@@ -229,6 +229,24 @@ impl SchemaService<'_> {
                 }
             }
         }
+    }
+
+    pub async fn refresh_all_meta(state: &AppState) {
+        let app_versions = state.database_schema.read().await.app_versions.clone();
+        for version in app_versions {
+            let ctx = AppContext {
+                app_name: version.app_name,
+                version: version.version_name,
+                request_source: RequestSource::Inspector,
+            };
+            SchemaService::new(state, &ctx).refresh_meta().await;
+        }
+    }
+
+    /// Refreshes the in-memory schema and repopulates collection meta.
+    pub async fn refresh_schema_and_meta(state: &AppState) {
+        state.refresh_schema().await;
+        SchemaService::refresh_all_meta(state).await;
     }
 
     pub async fn create_table<F>(
@@ -395,11 +413,17 @@ impl SchemaService<'_> {
                     collection.schema == self.app_context.schema_name() && collection.name == table
                 });
                 if let None = find_collection {
-                    return Err(AlcedoError::NotFound("Collection not found!".to_string(), 1));
+                    return Err(AlcedoError::NotFound(
+                        "Collection not found!".to_string(),
+                        1,
+                    ));
                 };
                 let find_collection = find_collection.unwrap();
                 if let None = find_collection.meta {
-                    return Err(AlcedoError::NotFound("Collection meta not found!".to_string(), 1));
+                    return Err(AlcedoError::NotFound(
+                        "Collection meta not found!".to_string(),
+                        1,
+                    ));
                 } else {
                     find_collection.meta.clone().unwrap().id.unwrap()
                 }
@@ -411,7 +435,10 @@ impl SchemaService<'_> {
 
             let mut meta: Map<String, Value> = match serde_json::to_value(&meta) {
                 Err(_) => {
-                    return Err(AlcedoError::InvalidInput("Invalid field meta".to_string(), 1));
+                    return Err(AlcedoError::InvalidInput(
+                        "Invalid field meta".to_string(),
+                        1,
+                    ));
                 }
                 Ok(meta) => meta.as_object().cloned().ok_or_else(|| {
                     AlcedoError::InvalidInput("Invalid field meta".to_string(), 1)
@@ -520,7 +547,6 @@ impl SchemaService<'_> {
         }
         Ok(())
     }
-
 }
 
 pub async fn get_pk_key<'a>(
@@ -532,9 +558,7 @@ pub async fn get_pk_key<'a>(
     let pk = schema
         .columns
         .iter()
-        .find(|col| {
-            col.table == collection && col.schema == schema_name && col.is_primary_key
-        });
+        .find(|col| col.table == collection && col.schema == schema_name && col.is_primary_key);
 
     if let None = pk {
         return Err(AlcedoError::SystemError(

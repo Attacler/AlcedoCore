@@ -20,6 +20,7 @@ use crate::{
         errors::AlcedoError,
         items::service::ItemsService,
         respond::{JSendResponse, success},
+        roles::RolesService,
         sessions,
     },
     utils::session_cookie::{build_session_cookie, clear_session_cookie, read_session_cookie},
@@ -54,6 +55,7 @@ pub struct MeResponse {
 async fn get_me(
     State(state): State<AppState>,
     auth_level: AuthLevel,
+    headers: HeaderMap,
 ) -> Result<Json<JSendResponse<MeResponse>>, AlcedoError> {
     let uuid = auth_level.require_user()?;
 
@@ -62,26 +64,38 @@ async fn get_me(
     let collection = "alcedo_users".to_string();
     let service = ItemsService::new(&state, &app_context, &collection);
 
-    let user = match service
-        .get_items_by_pks(vec![uuid.to_string().into()])
-        .await
-    {
-        Err(e) => {
-            return Err(e);
-        }
-        Ok(user) => {
-            if user.len() != 1 {
-                return Err(AlcedoError::UnAuthenticated());
-            } else {
-                user.get(0).unwrap().clone()
-            }
-        }
-    };
+    let user = service
+        .get_single_item_by_pk(uuid.to_string().into())
+        .await?
+        .ok_or_else(AlcedoError::UnAuthenticated)?;
 
-    let user: AlcedoUser = Value::Object(user.clone()).try_into()?;
+    let user: AlcedoUser = Value::Object(user).try_into()?;
+
+    // Scopes are app-scoped: resolve them against the request's app context.
+    let mut scopes = match (
+        headers.get("x-app").and_then(|v| v.to_str().ok()),
+        headers.get("x-version").and_then(|v| v.to_str().ok()),
+    ) {
+        (Some(app), Some(version)) => {
+            let ctx = AppContext {
+                app_name: app.to_string(),
+                version: version.to_string(),
+                request_source: RequestSource::API,
+            };
+            RolesService::new(&state, &ctx)
+                .scopes_for_user(uuid)
+                .await
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
+    if user.is_admin {
+        scopes.push("rootaccess.all".to_string());
+    }
+
     let response = MeResponse {
         is_admin: user.is_admin,
-        scopes: vec!["all".to_string()],
+        scopes,
         user,
     };
     Ok(Json(success(response)))

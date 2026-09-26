@@ -6,6 +6,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use utoipa::ToSchema;
+use uuid::Uuid;
 
 use crate::{
     AppState,
@@ -19,11 +20,12 @@ use crate::{
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
-        collections::schema::drop_schema,
+        collections::schema::{drop_schema, SchemaService},
         respond::{JSendResponse, success},
+        roles::RolesService,
         versions::VersionsService,
     },
-    utils::slugify,
+    utils::{parse_uuid_named, slugify},
 };
 
 pub fn apps_controller() -> Router<AppState> {
@@ -110,12 +112,10 @@ async fn fetch_app_row(state: &AppState, id: i32) -> Result<Option<AppRow>, Alce
     let context = AppContext::system(RequestSource::API);
     let collection = "alcedo_apps".to_string();
     let service = ItemsService::new(state, &context, &collection);
-    let rows = service
-        .get_items_by_pks(vec![Value::String(id.to_string())])
+    let row = service
+        .get_single_item_by_pk(Value::String(id.to_string()))
         .await?;
-    rows.first()
-        .map(|row| app_row_from_json(Value::Object(row.clone())))
-        .transpose()
+    row.map(|row| app_row_from_json(Value::Object(row))).transpose()
 }
 
 async fn fetch_app(state: &AppState, id: i32) -> Result<Option<AppWithVersions>, AlcedoError> {
@@ -233,7 +233,7 @@ async fn create_app(
         .link_apps_to_version(&[(app_id, version_id)])
         .await?;
     run_app_migrations(&state.database_pool).await;
-    state.refresh_schema().await;
+    SchemaService::refresh_schema_and_meta(&state).await;
 
     let app = fetch_app(&state, app_id)
         .await?
@@ -331,7 +331,7 @@ async fn delete_app(
     if deleted == 0 {
         return Err(AlcedoError::NotFound(format!("App not found: {}", id), 0));
     }
-    state.refresh_schema().await;
+    SchemaService::refresh_schema_and_meta(&state).await;
 
     Ok(Json(success(serde_json::json!({ "success": true }))))
 }
@@ -414,6 +414,53 @@ pub async fn me_apps(
     });
 
     Ok(Json(success(result)))
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetUserAppAccessRequest {
+    pub app: String,
+    pub version: String,
+    #[serde(default)]
+    pub role_ids: Vec<Uuid>,
+}
+
+/// Per user, every app×version they can access plus their role names. Admins
+/// listing another user get entries with no roles included too.
+#[utoipa::path(get, path = "/api/platform/users/{id}/app-access", tag = "Apps",
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+pub async fn get_user_app_access(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(id): Path<String>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let user_id = parse_uuid_named(&id, "user id")?;
+    let context = AppContext::system(RequestSource::API);
+    let service = RolesService::new(&state, &context);
+    let access = service.collect_user_app_access(user_id, true).await?;
+    Ok(Json(success(Value::Array(access))))
+}
+
+/// Replaces a user's roles within a single app×version schema.
+#[utoipa::path(put, path = "/api/platform/users/{id}/app-access", tag = "Apps",
+    request_body = SetUserAppAccessRequest,
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+pub async fn set_user_app_access(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(id): Path<String>,
+    Json(payload): Json<SetUserAppAccessRequest>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let user_id = parse_uuid_named(&id, "user id")?;
+    let context = AppContext::system(RequestSource::API);
+    let service = RolesService::new(&state, &context);
+    service
+        .set_user_app_access(user_id, &payload.app, &payload.version, &payload.role_ids)
+        .await?;
+    Ok(Json(success(serde_json::json!({ "success": true }))))
 }
 
 async fn roles_for_user(
