@@ -8,6 +8,7 @@ use crate::{
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
+        roles::RolesService,
     },
 };
 
@@ -97,6 +98,10 @@ impl UsersService<'_> {
 
         service.create_many(vec![user], &mut None).await?;
 
+        if is_admin {
+            self.sync_admin_roles(id, true).await?;
+        }
+
         let created = service
             .get_single_item_by_pk(json!(id.to_string()))
             .await?
@@ -138,6 +143,10 @@ impl UsersService<'_> {
             service
                 .update_items_by_query(&mut query, update, &mut None)
                 .await?;
+        }
+
+        if let Some(is_admin) = is_admin {
+            self.sync_admin_roles(id, is_admin).await?;
         }
 
         service
@@ -204,6 +213,47 @@ impl UsersService<'_> {
         service
             .get_single_item_by_pk(Value::String(id.to_string()))
             .await
+    }
+
+    /// Grants (or revokes) the per-app `admin` role for a global admin across
+    /// every existing app×version schema. Keeps role assignments in sync with
+    /// the global `is_admin` flag so promotions take effect immediately and
+    /// demotions do not retain app-admin power.
+    async fn sync_admin_roles(&self, user_id: Uuid, is_admin: bool) -> Result<(), AlcedoError> {
+        let versions: Vec<(String, String)> = self
+            .app_state
+            .database_schema
+            .read()
+            .await
+            .app_versions
+            .iter()
+            .map(|version| (version.app_name.clone(), version.version_name.clone()))
+            .collect();
+
+        for (app_name, version_name) in versions {
+            let ctx = AppContext {
+                app_name,
+                version: version_name,
+                request_source: RequestSource::API,
+            };
+            let roles = RolesService::new(self.app_state, &ctx);
+
+            let Some(admin_id) = roles
+                .find_role_by_name("admin")
+                .await?
+                .and_then(|role| role.get("id").and_then(Value::as_str).map(String::from))
+                .and_then(|id| Uuid::parse_str(&id).ok())
+            else {
+                continue;
+            };
+
+            if is_admin {
+                roles.assign_user_role(user_id, admin_id).await?;
+            } else {
+                roles.remove_user_role(user_id, admin_id).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn email_taken(&self, email: &str, exclude: Option<Uuid>) -> Result<bool, AlcedoError> {

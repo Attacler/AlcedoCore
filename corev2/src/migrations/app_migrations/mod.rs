@@ -19,6 +19,7 @@ pub(crate) mod m00007_drop_dead_o2m_columns;
 pub(crate) mod m00008_policies_timestamps;
 pub(crate) mod m00009_fix_policy_permissions_fk;
 pub(crate) mod m00010_user_roles_fk_cascade;
+pub(crate) mod m00011_seed_app_roles;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -50,6 +51,9 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
             app_context: app_context.clone()
         },
         m00010_user_roles_fk_cascade::M0010Migration {
+            app_context: app_context.clone()
+        },
+        m00011_seed_app_roles::M0011Migration {
             app_context: app_context.clone()
         }
     ]

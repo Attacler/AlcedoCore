@@ -12,6 +12,7 @@ pub mod policies;
 pub mod postgres;
 pub mod query_parse;
 pub mod roles;
+pub mod scopes;
 pub mod respond;
 pub mod sessions;
 pub mod users;

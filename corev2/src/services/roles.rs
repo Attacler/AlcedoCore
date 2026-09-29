@@ -103,6 +103,43 @@ impl RolesService<'_> {
             .map(Value::Object))
     }
 
+    pub async fn find_role_by_name(&self, name: &str) -> Result<Option<Value>, AlcedoError> {
+        let mut query = Query::eq("name", json!(name));
+        query.limit = 1;
+        Ok(self
+            .roles()
+            .read_items_by_query(query)
+            .await?
+            .into_iter()
+            .next()
+            .map(Value::Object))
+    }
+
+    pub async fn scopes_for_role_name(&self, name: &str) -> Result<Vec<String>, AlcedoError> {
+        let Some(role_id) = self
+            .find_role_by_name(name)
+            .await?
+            .and_then(|role| role.get("id").cloned())
+        else {
+            return Ok(vec![]);
+        };
+
+        let mut query = in_filter("role_id", vec![role_id]);
+        query.fields = vec!["scope".to_string()];
+        query.limit = 0;
+
+        let mut scopes: Vec<String> = self
+            .role_scopes()
+            .read_items_by_query(query)
+            .await?
+            .iter()
+            .filter_map(|row| row.get("scope").and_then(Value::as_str).map(String::from))
+            .collect();
+        scopes.sort();
+        scopes.dedup();
+        Ok(scopes)
+    }
+
     pub async fn create_role(
         &self,
         name: &str,

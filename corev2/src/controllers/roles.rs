@@ -9,13 +9,13 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    controllers::require_admin,
     middelware::auth::AuthLevel,
     services::{
         context::ExtractContext,
         errors::AlcedoError,
         respond::{JSendResponse, success},
         roles::RolesService,
+        scopes::require_scope,
     },
     utils::parse_uuid,
 };
@@ -84,7 +84,7 @@ async fn list_roles(
     auth_level: AuthLevel,
     ExtractContext(context): ExtractContext,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.read").await?;
     let service = RolesService::new(&state, &context);
     let roles = service.list_roles().await?;
     Ok(Json(success(json!({ "data": roles }))))
@@ -100,7 +100,7 @@ async fn create_role(
     ExtractContext(context): ExtractContext,
     Json(payload): Json<CreateRoleRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.write").await?;
     let name = payload.name.trim();
     if name.is_empty() {
         return Err(AlcedoError::InvalidInput(
@@ -124,7 +124,7 @@ async fn get_role(
     ExtractContext(context): ExtractContext,
     Path(id): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.read").await?;
     let id = parse_uuid(&id)?;
     let service = RolesService::new(&state, &context);
     let role = service
@@ -145,7 +145,7 @@ async fn update_role(
     Path(id): Path<String>,
     Json(payload): Json<UpdateRoleRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.write").await?;
     let id = parse_uuid(&id)?;
     let service = RolesService::new(&state, &context);
     let role = service
@@ -164,7 +164,7 @@ async fn delete_role(
     ExtractContext(context): ExtractContext,
     Path(id): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.write").await?;
     let id = parse_uuid(&id)?;
     let service = RolesService::new(&state, &context);
     let role = service
@@ -186,7 +186,7 @@ async fn list_role_scopes(
     ExtractContext(context): ExtractContext,
     Path(id): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.read").await?;
     let id = parse_uuid(&id)?;
     let service = RolesService::new(&state, &context);
     let scopes = service.list_role_scopes(id).await?;
@@ -204,7 +204,7 @@ async fn set_role_scopes(
     Path(id): Path<String>,
     Json(payload): Json<SetScopesRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.write").await?;
     let id = parse_uuid(&id)?;
     let service = RolesService::new(&state, &context);
     service
@@ -224,7 +224,7 @@ async fn delete_role_scope(
     ExtractContext(context): ExtractContext,
     Path((id, permission_id)): Path<(String, String)>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.write").await?;
     let id = parse_uuid(&id)?;
     let permission_id = parse_uuid(&permission_id)?;
     let service = RolesService::new(&state, &context);
@@ -244,7 +244,7 @@ async fn list_role_policies(
     ExtractContext(context): ExtractContext,
     Path(id): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.read").await?;
     let id = parse_uuid(&id)?;
     let service = RolesService::new(&state, &context);
     let policies = service.list_role_policies(id).await?;
@@ -262,7 +262,7 @@ async fn assign_role_policy(
     Path(id): Path<String>,
     Json(payload): Json<AssignPolicyRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.write").await?;
     let id = parse_uuid(&id)?;
     let service = RolesService::new(&state, &context);
     service.assign_role_policy(id, payload.policy_id).await?;
@@ -278,7 +278,7 @@ async fn remove_role_policy(
     ExtractContext(context): ExtractContext,
     Path((id, policy_id)): Path<(String, String)>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.write").await?;
     let id = parse_uuid(&id)?;
     let policy_id = parse_uuid(&policy_id)?;
     let service = RolesService::new(&state, &context);
@@ -298,7 +298,7 @@ async fn list_user_roles(
     ExtractContext(context): ExtractContext,
     Path(id): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.read").await?;
     let id = parse_uuid(&id)?;
     let service = RolesService::new(&state, &context);
     let roles = service.list_user_roles(id).await?;
@@ -316,7 +316,7 @@ async fn assign_user_role(
     Path(id): Path<String>,
     Json(payload): Json<AssignRoleRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.write").await?;
     let id = parse_uuid(&id)?;
     let service = RolesService::new(&state, &context);
     service.assign_user_role(id, payload.role_id).await?;
@@ -332,7 +332,7 @@ async fn remove_user_role(
     ExtractContext(context): ExtractContext,
     Path((id, role_id)): Path<(String, String)>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_admin(&state, auth_level).await?;
+    require_scope(&state, &auth_level, &context, "roles.write").await?;
     let id = parse_uuid(&id)?;
     let role_id = parse_uuid(&role_id)?;
     let service = RolesService::new(&state, &context);
