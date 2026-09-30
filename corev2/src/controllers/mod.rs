@@ -9,6 +9,7 @@ pub mod roles;
 pub mod sessions;
 pub mod settings;
 pub mod users;
+pub mod users_lookup;
 pub mod versions;
 
 use crate::{

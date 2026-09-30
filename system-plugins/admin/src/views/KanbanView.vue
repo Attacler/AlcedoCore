@@ -247,7 +247,7 @@ watch(
                                 {{ getCardTitle(item) }}
                             </div>
                             <Button
-                                v-if="item.$permissions?.delete !== false"
+                                v-if="item.$delete_permission !== false"
                                 icon="pi pi-trash"
                                 severity="danger"
                                 text

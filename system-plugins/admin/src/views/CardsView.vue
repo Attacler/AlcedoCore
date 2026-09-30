@@ -133,7 +133,7 @@ function onCardClick(item: any) {
                         <Button
                             v-if="
                                 (!embedded || actions) &&
-                                item.$permissions?.delete !== false
+                                item.$delete_permission !== false
                             "
                             icon="pi pi-trash"
                             severity="danger"

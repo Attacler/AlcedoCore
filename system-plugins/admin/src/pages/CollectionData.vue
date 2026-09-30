@@ -339,12 +339,34 @@ async function fetchItems() {
         const rawItems = data.data || data.items || data;
         items.value = Array.isArray(rawItems) ? rawItems : [];
         total.value = data.total || items.value.length;
+        await fetchDeletePermissions();
     } catch (e) {
         error.value = e instanceof Error ? e.message : "Failed to load data";
         items.value = [];
         total.value = 0;
     } finally {
         loading.value = false;
+    }
+}
+
+/**
+ * Delete permission is not carried on the item payload; ask the dedicated
+ * `$delete` endpoint for this page's pks and stash the flag per row.
+ */
+async function fetchDeletePermissions() {
+    if (!items.value.length) return;
+    try {
+        const pks = items.value.map((item: any) => item.id).filter(Boolean);
+        const permissions = (await client.items.deletePermissions(
+            collectionName.value,
+            pks,
+        )) as Record<string, boolean>;
+        for (const item of items.value) {
+            item.$delete_permission = permissions[String(item.id)] !== false;
+        }
+    } catch {
+        // Fail closed: without an answer, hide delete.
+        for (const item of items.value) item.$delete_permission = false;
     }
 }
 

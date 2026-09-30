@@ -108,5 +108,17 @@ export function createItemsResource(ky: any) {
                     options,
                 )
                 .json(),
+
+        deletePermissions: (
+            name: string,
+            pkValues: any[],
+            options?: Record<string, any>,
+        ) =>
+            ky
+                .post(`app/items/${encodeURIComponent(name)}/$delete`, {
+                    json: { pk_values: pkValues },
+                    ...options,
+                })
+                .json() as Promise<Record<string, boolean>>,
     };
 }

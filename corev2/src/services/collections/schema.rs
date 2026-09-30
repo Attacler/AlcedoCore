@@ -148,7 +148,7 @@ impl SchemaService<'_> {
 
         match self.app_context.request_source {
             RequestSource::FirstMigration => (),
-            _ => self.refresh_meta().await,
+            _ => SchemaService::refresh_all_meta(&self.app_state).await,
         };
     }
 
@@ -238,6 +238,7 @@ impl SchemaService<'_> {
                 app_name: version.app_name,
                 version: version.version_name,
                 request_source: RequestSource::Inspector,
+                identity: None,
             };
             SchemaService::new(state, &ctx).refresh_meta().await;
         }
@@ -470,6 +471,7 @@ impl SchemaService<'_> {
                 app_name,
                 request_source: self.app_context.request_source.clone(),
                 version: self.app_context.version.clone(),
+                identity: None,
             };
             let fk_sql = fk_constraint(
                 &format!("{}_{}_{}_{}", table, field.name, fk.table, fk.column),
@@ -585,6 +587,7 @@ mod tests {
             app_name: "testing".to_string(),
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
+            identity: None,
         };
         let table_manager = SchemaService::new(&state, &context);
 
@@ -615,6 +618,7 @@ mod tests {
             app_name: "testing".to_string(),
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
+            identity: None,
         };
         let table_manager = SchemaService::new(&state, &context);
 
@@ -646,6 +650,7 @@ mod tests {
             app_name: "testing".to_string(),
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
+            identity: None,
         };
         let table_manager = SchemaService::new(&state, &context);
 
@@ -770,6 +775,7 @@ mod tests {
             app_name: "testing".to_string(),
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
+            identity: None,
         };
         let table_manager = SchemaService::new(&state, &context);
 

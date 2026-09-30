@@ -21,6 +21,7 @@ use crate::{
         context::AppContext,
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
+        permissions,
         postgres::pool::execute_query_transaction,
     },
 };
@@ -70,6 +71,14 @@ impl FieldDefinition {
 
     pub(crate) fn is_relationship(&self) -> bool {
         self.field_type == "relationship"
+    }
+
+    pub(crate) fn is_user_field(&self) -> bool {
+        self.field_type == "user"
+    }
+
+    pub(crate) fn is_fk_field(&self) -> bool {
+        (self.is_relationship() && !self.is_virtual()) || self.is_user_field()
     }
 }
 
@@ -245,11 +254,17 @@ async fn build_collection_response(
         .iter()
         .map(field_from_row)
         .collect();
+    let namespaced = jstr(row.get("table")).unwrap_or_default();
+    // Framework (`alcedo_*`) collections are not user-managed: the admin
+    // dashboard filters them out and the collection list hides Delete. This
+    // includes `alcedo_users`, which is policy-able but still a system
+    // collection (it must not collide with the built-in Users page).
+    let is_system = namespaced.starts_with("alcedo");
     Ok(CollectionResponse {
-        name: jstr(row.get("table")).unwrap_or_default(),
+        name: namespaced,
         display_name: jstr(row.get("name")),
         fields,
-        is_system: false,
+        is_system,
         created_at: row.get("created_at").cloned(),
         updated_at: row.get("updated_at").cloned(),
     })
@@ -291,6 +306,21 @@ pub async fn list_collections(
     ctx: &AppContext,
 ) -> Result<Vec<CollectionResponse>, AlcedoError> {
     let rows = read_collection_rows(state, ctx).await?;
+    let accessible =
+        permissions::read::list_accessible_collections(state, ctx, ctx.identity.as_ref()).await?;
+    let rows = match &accessible {
+        None => rows,
+        Some(ids) => rows
+            .into_iter()
+            .filter(|row| {
+                let table = jstr(row.get("table")).unwrap_or_default();
+                crate::services::permissions::read::is_framework_collection(&table)
+                    || ji64(row.get("id"))
+                        .map(|id| ids.contains(&id))
+                        .unwrap_or(false)
+            })
+            .collect(),
+    };
     let mut result = Vec::new();
     for row in &rows {
         result.push(build_collection_response(state, ctx, row).await?);
@@ -372,10 +402,7 @@ pub async fn create_collection(
     let layout_ids = layouts_service
         .create_many(vec![layout_payload], &mut Some(&mut tx))
         .await?;
-    let layout_id = layout_ids
-        .get(0)
-        .map(|s| s.to_string())
-        .unwrap_or_default();
+    let layout_id = layout_ids.get(0).map(|s| s.to_string()).unwrap_or_default();
 
     let sections_table = "alcedo_collection_sections".to_string();
     let sections_service = ItemsService::new(state, ctx, &sections_table);
@@ -407,11 +434,9 @@ pub async fn create_collection(
         .collect();
     exec_all(state, &mut tx, unique_sqls).await?;
 
-    let non_virtual_rel: Vec<&FieldDefinition> = req
-        .fields
-        .iter()
-        .filter(|f| f.is_relationship() && !f.is_virtual())
-        .collect();
+    // M:1 FKs for relationship fields; user fields FK to the global users table.
+    let non_virtual_rel: Vec<&FieldDefinition> =
+        req.fields.iter().filter(|f| f.is_fk_field()).collect();
     exec_all(
         state,
         &mut tx,
@@ -466,7 +491,7 @@ pub async fn update_collection(
         .filter(|n| {
             current_fields
                 .iter()
-                .any(|f| f.name == **n && f.is_relationship())
+                .any(|f| f.name == **n && f.is_fk_field())
         })
         .collect();
     let renamed_rel_old: Vec<&str> = renamed
@@ -474,7 +499,7 @@ pub async fn update_collection(
         .filter(|(old, _)| {
             current_fields
                 .iter()
-                .any(|f| f.name == *old && f.is_relationship() && !f.is_virtual())
+                .any(|f| f.name == *old && f.is_fk_field())
         })
         .map(|(old, _)| *old)
         .collect();
@@ -572,11 +597,8 @@ pub async fn update_collection(
     }
 
     // 5. Add M:1 FKs for newly added relationship fields.
-    let added_rel: Vec<&FieldDefinition> = added
-        .iter()
-        .copied()
-        .filter(|f| f.is_relationship() && !f.is_virtual())
-        .collect();
+    let added_rel: Vec<&FieldDefinition> =
+        added.iter().copied().filter(|f| f.is_fk_field()).collect();
     exec_all(state, &mut tx, build_add_fk_sqls(ctx, name, &added_rel)?).await?;
 
     // 6. Update display_name.
@@ -747,10 +769,7 @@ pub async fn create_layout(
         "ordinal_position" => next,
     };
     let ids = service.create_many(vec![payload], &mut None).await?;
-    let id = ids
-        .get(0)
-        .map(|s| s.to_string())
-        .unwrap_or_default();
+    let id = ids.get(0).map(|s| s.to_string()).unwrap_or_default();
     Ok(json!({ "id": id }))
 }
 
@@ -778,11 +797,7 @@ pub async fn update_layout(
     if set_default == Some(true) {
         let mut clear = Query::eq("collection_id", json!(collection_id));
         service
-            .update_items_by_query(
-                &mut clear,
-                item_map! { "is_default" => false },
-                &mut None,
-            )
+            .update_items_by_query(&mut clear, item_map! { "is_default" => false }, &mut None)
             .await?;
         payload.insert("is_default".to_string(), json!(true));
     }
@@ -928,10 +943,7 @@ pub async fn create_section(
         "ordinal_position" => req.ordinal_position.unwrap_or(next),
     };
     let ids = service.create_many(vec![payload], &mut None).await?;
-    let id = ids
-        .get(0)
-        .map(|s| s.to_string())
-        .unwrap_or_default();
+    let id = ids.get(0).map(|s| s.to_string()).unwrap_or_default();
     Ok(json!({ "id": id }))
 }
 

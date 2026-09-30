@@ -149,5 +149,38 @@ export async function loadSectionData(opts: {
     )) as any;
     const data = res.data || res;
     const items = data.data || data.items || data || [];
-    return { items, total: data.total || items.length };
+    const total = data.total || items.length;
+
+    // Delete permission comes from the dedicated `$delete` endpoint, not the
+    // item payload; annotate the rows the section will render.
+    await annotateDeletePermissions(items, childCollectionName, target);
+
+    return { items, total };
+}
+
+/** Attaches `$delete_permission` to each row via `POST /items/:collection/$delete`. */
+export async function annotateDeletePermissions(
+    items: any[],
+    collectionName: string,
+    target?: { app?: string | null; version?: string | null },
+): Promise<void> {
+    if (!items.length) return;
+    const options = {
+        app: target?.app ?? undefined,
+        version: target?.version ?? undefined,
+    };
+    try {
+        const pks = items.map((item) => item.id).filter(Boolean);
+        const permissions = (await useAlcedoClient().client.items.deletePermissions(
+            collectionName,
+            pks,
+            options,
+        )) as Record<string, boolean>;
+        for (const item of items) {
+            item.$delete_permission = permissions[String(item.id)] !== false;
+        }
+    } catch {
+        // Fail closed: without an answer, hide delete.
+        for (const item of items) item.$delete_permission = false;
+    }
 }

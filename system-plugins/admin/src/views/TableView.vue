@@ -256,7 +256,9 @@ const displayFields = computed(() => {
                             @click.stop="$emit('edit-item', slotProps.data)"
                         />
                         <Button
-                            v-if="slotProps.data.$permissions?.delete !== false"
+                            v-if="
+                                slotProps.data.$delete_permission !== false
+                            "
                             icon="pi pi-trash"
                             text
                             severity="danger"

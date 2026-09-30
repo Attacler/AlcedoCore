@@ -270,12 +270,31 @@ async function fetchRecord() {
         if (!item.value) {
             throw new Error(`Record with id "${itemId.value}" not found`);
         }
+        await fetchDeletePermission();
         await loadInlineParents();
     } catch (e) {
         error.value = e instanceof Error ? e.message : "Failed to load record";
         item.value = null;
     } finally {
         loading.value = false;
+    }
+}
+
+/**
+ * Delete permission is not carried on the item payload; ask the dedicated
+ * `$delete` endpoint for this record's pk and stash the flag.
+ */
+async function fetchDeletePermission() {
+    if (!item.value || !collectionName.value) return;
+    try {
+        const permissions = (await client.items.deletePermissions(
+            collectionName.value,
+            [item.value.id],
+        )) as Record<string, boolean>;
+        item.value.$delete_permission =
+            permissions[String(item.value.id)] !== false;
+    } catch {
+        item.value.$delete_permission = false;
     }
 }
 
@@ -1104,7 +1123,7 @@ onUnmounted(() => {
                     icon="pi pi-trash"
                     severity="danger"
                     @click="confirmDelete"
-                    v-if="item.$permissions?.delete !== false"
+                    v-if="item.$delete_permission !== false"
                 />
             </template>
             <!-- Edit mode: Cancel + Save buttons -->

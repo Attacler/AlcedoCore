@@ -12,5 +12,6 @@ pub fn app_controller() -> Router<AppState> {
         .nest("/settings", controllers::settings::settings_controller())
         .nest("/roles", controllers::roles::roles_controller())
         .nest("/policies", controllers::policies::policies_controller())
-        .nest("/users", controllers::roles::user_roles_controller());
+        .nest("/users", controllers::roles::user_roles_controller())
+        .nest("/lookup", controllers::users_lookup::users_lookup_controller());
 }

@@ -50,6 +50,7 @@ pub(crate) fn target_ctx(ctx: &AppContext, target_app: &Option<String>) -> AppCo
         app_name: target_app.clone().unwrap_or_else(|| ctx.app_name.clone()),
         version: ctx.version.clone(),
         request_source: ctx.request_source.clone(),
+        identity: None,
     }
 }
 
@@ -135,6 +136,7 @@ pub async fn detect_direction(
             app_name: app_name.clone(),
             version: ctx.version.clone(),
             request_source: ctx.request_source.clone(),
+            identity: None,
         };
         let tables = collections::collection_tables(state, &tctx).await?;
         if !tables.iter().any(|t| t == key) {

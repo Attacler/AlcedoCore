@@ -77,6 +77,7 @@ join alcedo.alcedo_versions on alcedo.alcedo_versions.id = alcedo.alcedo_apps_ve
                         app_name: version.get("api_name"),
                         version: version.get("version_name"),
                         request_source: RequestSource::Inspector,
+                        identity: None,
                     }
                     .schema_name(),
                 })
@@ -276,6 +277,41 @@ ORDER BY tc.table_schema, tc.table_name, kcu.ordinal_position;
                 .find(|c| c.schema == table_schema && c.name == column && c.table == tablename)
             {
                 col.is_primary_key = true;
+            }
+        }
+
+        // Register the global users table as a collection in every app schema so
+        // it can be a policy target and be referenced by `user` fields. The
+        // physical table lives in the `alcedo` schema; the synthetic entry uses
+        // the reserved collection id `-1`.
+        let users_columns: Vec<Column> = schema
+            .columns
+            .iter()
+            .filter(|c| c.schema == "alcedo" && c.table == "alcedo_users")
+            .cloned()
+            .collect();
+        if !users_columns.is_empty() {
+            for version in schema.app_versions.clone() {
+                let app_schema = version.schema_name.clone();
+                if schema
+                    .tables
+                    .iter()
+                    .any(|t| t.schema == app_schema && t.name == "alcedo_users")
+                {
+                    continue;
+                }
+                schema.tables.push(Table {
+                    name: "alcedo_users".to_string(),
+                    schema: app_schema.clone(),
+                    // Meta is attached from the seeded `alcedo_collections` row
+                    // by `refresh_meta`.
+                    meta: None,
+                });
+                for column in &users_columns {
+                    let mut synthetic = column.clone();
+                    synthetic.schema = app_schema.clone();
+                    schema.columns.push(synthetic);
+                }
             }
         }
 

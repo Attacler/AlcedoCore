@@ -8,6 +8,7 @@ pub mod context;
 pub mod errors;
 pub mod hooks;
 pub mod items;
+pub mod permissions;
 pub mod policies;
 pub mod postgres;
 pub mod query_parse;

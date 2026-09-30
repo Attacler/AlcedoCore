@@ -12,6 +12,7 @@ export type FieldType =
     | "datetime"
     | "uuid"
     | "relationship"
+    | "user"
     | "boolean"
     | "file";
 

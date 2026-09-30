@@ -1,8 +1,10 @@
 use axum::{extract::FromRequestParts, http::request::Parts};
 use serde::{Deserialize, Serialize};
 
+use crate::middelware::auth::AuthLevel;
 use crate::services::errors::AlcedoError;
 use crate::utils::slugify;
+use crate::AppState;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum RequestSource {
@@ -18,6 +20,8 @@ pub struct AppContext {
     pub app_name: String,
     pub version: String,
     pub request_source: RequestSource,
+    #[serde(default)]
+    pub identity: Option<AuthLevel>,
 }
 
 impl AppContext {
@@ -28,6 +32,7 @@ impl AppContext {
             app_name: "alcedo".to_string(),
             version: String::new(),
             request_source,
+            identity: None,
         }
     }
 
@@ -49,13 +54,13 @@ impl AppContext {
 
 pub struct ExtractContext(pub AppContext);
 
-impl<S> FromRequestParts<S> for ExtractContext
-where
-    S: Send + Sync,
-{
+impl FromRequestParts<AppState> for ExtractContext {
     type Rejection = AlcedoError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         let app: Option<&axum::http::HeaderValue> = parts.headers.get("x-app");
         let version = parts.headers.get("x-version");
 
@@ -66,10 +71,18 @@ where
             return Err(AlcedoError::InvalidInput("No app provided".to_string(), 0));
         }
 
+        // Take owned copies so the immutable borrow of `parts` ends before the
+        // identity extractor mutably borrows it.
+        let app_name = app.unwrap().to_str().unwrap().to_string();
+        let version = version.unwrap().to_str().unwrap().to_string();
+
+        let identity = AuthLevel::from_request_parts(parts, state).await?;
+
         Ok(ExtractContext(AppContext {
-            app_name: app.unwrap().to_str().unwrap().to_string(),
-            version: version.unwrap().to_str().unwrap().to_string(),
+            app_name,
+            version,
             request_source: RequestSource::API,
+            identity: Some(identity),
         }))
     }
 }

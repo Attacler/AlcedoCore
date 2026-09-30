@@ -17,6 +17,7 @@ import { createRolesResource } from "./roles.js";
 import { createPoliciesResource } from "./policies.js";
 import { createCollectionsResource } from "./collections.js";
 import { createItemsResource } from "./items.js";
+import { createLookupResource } from "./lookup.js";
 import { createFilesResource } from "./files.js";
 import { createRegistriesResource } from "./registries.js";
 import { createActivityLogsResource } from "./activityLogs.js";
@@ -167,6 +168,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
         policies: createPoliciesResource(kyInstance),
         collections: createCollectionsResource(kyInstance),
         items: createItemsResource(kyInstance),
+        lookup: createLookupResource(kyInstance),
         files: createFilesResource(kyInstance),
         request: createRequest(kyInstance),
     };

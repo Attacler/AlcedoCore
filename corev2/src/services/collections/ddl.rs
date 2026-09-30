@@ -144,6 +144,7 @@ pub(crate) fn spec_from_field(field: &FieldDefinition) -> Result<ColumnSpec, Alc
         "datetime" => ColumnSql::Timestamptz,
         "uuid" => ColumnSql::Uuid,
         "relationship" => ColumnSql::Uuid,
+        "user" => ColumnSql::Uuid,
         "boolean" => ColumnSql::Boolean,
         "file" => ColumnSql::UuidArray,
         _ => ColumnSql::Text,
@@ -177,6 +178,24 @@ pub(crate) fn related_app_schema(ctx: &AppContext, related_app: &Option<String>)
         crate::utils::slugify(&app),
         ctx.version_api_name()
     )
+}
+
+/// The global users collection is named `alcedo_users` but lives in the `alcedo`
+/// schema, not an app-version schema, so it is special-cased as a relationship
+/// target (e.g. a `customers_users` join collection referencing a user).
+pub(crate) const GLOBAL_USERS_COLLECTION: &str = "alcedo_users";
+
+/// Resolves the `(schema, table)` a relationship field points at.
+pub(crate) fn relation_target<'a>(
+    ctx: &AppContext,
+    related_app: &Option<String>,
+    related: &'a str,
+) -> (String, &'a str) {
+    if related == GLOBAL_USERS_COLLECTION {
+        ("alcedo".to_string(), related)
+    } else {
+        (related_app_schema(ctx, related_app), related)
+    }
 }
 
 pub(crate) fn escape_sql_string(s: &str) -> String {
@@ -362,19 +381,24 @@ pub(crate) fn build_add_fk_sqls(
 ) -> Result<Vec<String>, AlcedoError> {
     let mut out = Vec::new();
     for field in fields.iter().copied() {
-        if !field.is_relationship() || field.is_virtual() {
+        if !field.is_fk_field() {
             continue;
         }
-        let related = field.related_collection.clone().ok_or_else(|| {
-            AlcedoError::InvalidInput(
-                format!(
-                    "Relationship field '{}' missing related_collection",
-                    field.name
-                ),
-                1,
-            )
-        })?;
-        let target_schema = related_app_schema(ctx, &field.related_app);
+        // A `user` field always targets the global users table.
+        let related = if field.is_user_field() {
+            GLOBAL_USERS_COLLECTION.to_string()
+        } else {
+            field.related_collection.clone().ok_or_else(|| {
+                AlcedoError::InvalidInput(
+                    format!(
+                        "Relationship field '{}' missing related_collection",
+                        field.name
+                    ),
+                    1,
+                )
+            })?
+        };
+        let target_schema = relation_target(ctx, &field.related_app, &related).0;
         out.push(fk_constraint(
             &format!("fk_{}_{}", table, field.name),
             &ctx.schema_name(),

@@ -31,6 +31,8 @@ export { createRolesResource } from "./roles";
 export { createPoliciesResource } from "./policies";
 export { createCollectionsResource } from "./collections";
 export { createItemsResource } from "./items";
+export { createLookupResource } from "./lookup";
+export type { UserOption } from "./lookup";
 export { createFilesResource } from "./files";
 export { createRegistriesResource } from "./registries";
 export { createActivityLogsResource } from "./activityLogs";

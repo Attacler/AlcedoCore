@@ -6,7 +6,7 @@ use crate::{
 };
 
 use super::FieldDefinition;
-use super::ddl::related_app_schema;
+use super::ddl::{GLOBAL_USERS_COLLECTION, related_app_schema};
 
 pub(crate) fn valid_name(name: &str) -> bool {
     let mut chars = name.chars();
@@ -25,6 +25,15 @@ pub(crate) fn validate_collection_name(name: &str) -> Result<(), AlcedoError> {
         return Err(AlcedoError::InvalidInput(
             format!(
                 "Invalid collection name '{}'. Must start with a lowercase letter and contain only lowercase letters, numbers and underscores (max 59 chars).",
+                name
+            ),
+            1,
+        ));
+    }
+    if name.starts_with("alcedo") {
+        return Err(AlcedoError::InvalidInput(
+            format!(
+                "'{}' uses the reserved 'alcedo' prefix, which is treated as framework data and bypasses record permissions",
                 name
             ),
             1,
@@ -123,6 +132,22 @@ pub(crate) async fn validate_related_apps(
             Some(r) if !r.is_empty() => r.clone(),
             _ => continue,
         };
+
+        if related == GLOBAL_USERS_COLLECTION {
+            let schema = state.database_schema.read().await;
+            let ok = schema
+                .tables
+                .iter()
+                .any(|t| t.schema == "alcedo" && t.name == GLOBAL_USERS_COLLECTION);
+            if !ok {
+                return Err(AlcedoError::InvalidInput(
+                    "Related collection 'alcedo_users' not found".to_string(),
+                    1,
+                ));
+            }
+            continue;
+        }
+
         let target_app = field
             .related_app
             .clone()

@@ -2,7 +2,7 @@ use futures::future::join_all;
 use sea_query::{Alias, Expr, PostgresQueryBuilder, SimpleExpr};
 use serde_json::{Map, Value};
 use sqlx::{Postgres, Row, Transaction};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::services::collections::schema::get_pk_key;
 use crate::services::context::AppContext;
@@ -11,15 +11,32 @@ use crate::services::hooks::types::items_create::{ItemsAfterCreate, ItemsBeforeC
 use crate::services::hooks::types::items_delete::{ItemsAfterDelete, ItemsBeforeDelete};
 use crate::services::hooks::types::items_update::{ItemsAfterUpdate, ItemsBeforeUpdate};
 use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query};
+use crate::services::permissions::read::{ReadAccess, resolve_access, resolve_read_access};
 use crate::services::postgres::jsonvalue_simpleexpr::parse_value;
 use crate::services::postgres::pool::{
     execute_query, execute_query_transaction, pgrow_to_json, process_query_error_response,
 };
 use crate::{AppState, services::errors::AlcedoError};
+use tokio::sync::OnceCell;
+
 pub struct ItemsService<'a> {
     app_state: &'a AppState,
     collection: &'a String,
     app_context: &'a AppContext,
+    /// Lazily resolved, per-service cache of the caller's record-level read
+    /// access for `collection`.
+    resolved_access: OnceCell<ReadAccess>,
+    /// Lazily resolved, per-service cache of the caller's record-level `delete`
+    /// access for `collection`.
+    resolved_delete_access: OnceCell<ReadAccess>,
+}
+
+/// A pk as a plain map key (strings unquoted, everything else rendered as-is).
+fn json_value_to_key(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
 }
 
 fn pk_value_to_string(v: &Value) -> Result<String, AlcedoError> {
@@ -48,13 +65,49 @@ impl ItemsService<'_> {
             app_state,
             collection,
             app_context: context,
+            resolved_access: OnceCell::new(),
+            resolved_delete_access: OnceCell::new(),
         };
+    }
+
+    /// Resolves (and caches) the caller's record-level read access for this
+    /// service's collection.
+    async fn read_access(&self) -> Result<&ReadAccess, AlcedoError> {
+        self.resolved_access
+            .get_or_try_init(|| async {
+                resolve_read_access(
+                    self.app_state,
+                    self.app_context,
+                    self.collection,
+                    self.app_context.identity.as_ref(),
+                )
+                .await
+            })
+            .await
+    }
+
+    async fn delete_access(&self) -> Result<&ReadAccess, AlcedoError> {
+        self.resolved_delete_access
+            .get_or_try_init(|| async {
+                resolve_access(
+                    self.app_state,
+                    self.app_context,
+                    self.collection,
+                    self.app_context.identity.as_ref(),
+                    "delete",
+                )
+                .await
+            })
+            .await
     }
 
     pub async fn read_items_by_query(
         &self,
         mut query: Query,
     ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
+        // `Box::pin` breaks the async recursion cycle
+        // (`resolve_read_access` -> `AuthService::is_admin` -> items read).
+        query.access = Box::pin(self.read_access()).await?.clone();
         Ok(query
             .execute_query(self.app_context, self.app_state, self.collection)
             .await?)
@@ -63,6 +116,13 @@ impl ItemsService<'_> {
     pub async fn count_items_by_query(&self, mut query: Query) -> Result<i64, AlcedoError> {
         query.limit = 0;
         query.offset = 0;
+        query.access = Box::pin(self.read_access()).await?.clone();
+        if matches!(query.access, ReadAccess::Deny) {
+            return Ok(0);
+        }
+        // `count` bypasses `execute_query`, so it must apply the access filter
+        // itself before the relation hops and SQL are resolved.
+        query.apply_access();
         query.relation_hops = Box::pin(
             crate::services::items::filter_relations::resolve_filter_relation_hops(
                 self.app_state,
@@ -86,6 +146,89 @@ impl ItemsService<'_> {
             .get(0)
             .and_then(|row| row.try_get("count").ok())
             .unwrap_or(0))
+    }
+
+    /// Maps each pk in `pks` (max 100) to whether the caller may delete it,
+    /// mirroring exactly what `delete_items_by_query` enforces.
+    ///
+    /// `Unrestricted` (admin / dev key / framework collection) is true for every
+    /// pk; `Deny` is false for every pk; otherwise the delete-rule filter is
+    /// run once over the pk set and its survivors are true.
+    pub async fn delete_permissions_for_pks(
+        &self,
+        pks: &[Value],
+    ) -> Result<Map<String, Value>, AlcedoError> {
+        const MAX_PKS: usize = 100;
+        if pks.len() > MAX_PKS {
+            return Err(AlcedoError::InvalidInput(
+                format!("At most {} pks may be checked at once", MAX_PKS),
+                0,
+            ));
+        }
+
+        let mut result: Map<String, Value> = Map::new();
+        if pks.is_empty() {
+            return Ok(result);
+        }
+
+        match self.delete_access().await? {
+            ReadAccess::Unrestricted => {
+                for pk in pks {
+                    result.insert(json_value_to_key(pk), Value::Bool(true));
+                }
+                return Ok(result);
+            }
+            ReadAccess::Deny => {
+                for pk in pks {
+                    result.insert(json_value_to_key(pk), Value::Bool(false));
+                }
+                return Ok(result);
+            }
+            access => {
+                let pk_name = get_pk_key(
+                    &self.app_state.database_schema,
+                    &self.app_context.schema_name(),
+                    &self.collection,
+                )
+                .await?
+                .name;
+
+                let mut pk_filter = FieldFilter {
+                    fields: HashMap::new(),
+                };
+                pk_filter.fields.insert(
+                    pk_name.clone(),
+                    FieldValue::Comparison(Comparison {
+                        _in: Some(Value::Array(pks.to_vec())),
+                        ..Default::default()
+                    }),
+                );
+
+                let mut query = Query {
+                    fields: vec![pk_name.clone()],
+                    filter: LogicOp {
+                        _and: Some(vec![Filter::Field(pk_filter)]),
+                        _or: None,
+                    },
+                    limit: 0,
+                    ..Default::default()
+                };
+                query.access = access.clone();
+                let allowed: HashSet<String> = query
+                    .execute_query(self.app_context, self.app_state, &self.collection)
+                    .await?
+                    .iter()
+                    .filter_map(|row| row.get(&pk_name))
+                    .map(json_value_to_key)
+                    .collect();
+
+                for pk in pks {
+                    let key = json_value_to_key(pk);
+                    result.insert(key.clone(), Value::Bool(allowed.contains(&key)));
+                }
+                Ok(result)
+            }
+        }
     }
 
     pub async fn get_items_by_pks<'a>(
@@ -401,6 +544,22 @@ impl ItemsService<'_> {
         tx: &'a mut Transaction<'_, Postgres>,
         mut query: Query,
     ) -> Result<u64, AlcedoError> {
+        // Record-level delete policy: a caller with no matching `delete` rule is
+        // rejected outright; otherwise the rules are AND-ed into the
+        // pk-selection query below, so out-of-policy rows are never deleted.
+        match self.delete_access().await? {
+            ReadAccess::Deny => {
+                return Err(AlcedoError::Forbidden(
+                    format!(
+                        "You do not have permission to delete items from '{}'",
+                        self.collection
+                    ),
+                    0,
+                ));
+            }
+            access => query.access = access.clone(),
+        }
+
         let hook_context = HookContext {
             context: self.app_context.clone(),
             state: self.app_state.clone(),

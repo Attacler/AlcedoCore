@@ -475,6 +475,7 @@ impl RolesService<'_> {
             app_name: api_name.to_string(),
             version: version_name.to_string(),
             request_source: RequestSource::API,
+            identity: None,
         };
 
         let user_roles_table = "alcedo_user_roles".to_string();
@@ -584,6 +585,7 @@ impl RolesService<'_> {
             app_name: app,
             version,
             request_source: RequestSource::API,
+            identity: None,
         };
         let user_roles_table = "alcedo_user_roles".to_string();
         let service = ItemsService::new(self.app_state, &ctx, &user_roles_table);

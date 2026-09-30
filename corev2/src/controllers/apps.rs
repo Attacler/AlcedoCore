@@ -315,6 +315,7 @@ async fn delete_app(
             app_name: app.api_name.clone(),
             version: version_name.clone(),
             request_source: RequestSource::API,
+            identity: None,
         }
         .schema_name();
         drop_schema(&state, &schema_name).await?;
@@ -473,6 +474,7 @@ async fn roles_for_user(
         app_name: api_name.to_string(),
         version: version_name.to_string(),
         request_source: RequestSource::API,
+        identity: None,
     };
     let collection = "alcedo_user_roles".to_string();
     let service = ItemsService::new(state, &context, &collection);

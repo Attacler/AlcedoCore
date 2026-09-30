@@ -16,6 +16,7 @@ import LookupInput from "./LookupInput.vue";
 import MultiSelectLookupInput from "./MultiSelectLookupInput.vue";
 import FileListInput from "./FileListInput.vue";
 import UuidInput from "./UuidInput.vue";
+import UserInput from "./UserInput.vue";
 
 /** Input widgets available for EDITING field values. */
 export const INPUT_COMPONENT_REGISTRY: InputComponentDef[] = [
@@ -201,6 +202,14 @@ export const INPUT_COMPONENT_REGISTRY: InputComponentDef[] = [
         supportedFieldTypes: ["uuid"],
         component: UuidInput,
     },
+    {
+        type: "user",
+        label: "User",
+        icon: "person",
+        group: "Relationship",
+        supportedFieldTypes: ["user"],
+        component: UserInput,
+    },
 ];
 
 /** Default widget per field type, when the field has no input_component override. */
@@ -213,6 +222,7 @@ const DEFAULT_INPUT_BY_FIELD_TYPE: Record<FieldType, string> = {
     boolean: "checkbox",
     relationship: "lookup",
     uuid: "uuid",
+    user: "user",
     file: "file",
 };
 

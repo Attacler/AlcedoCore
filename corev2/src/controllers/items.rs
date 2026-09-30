@@ -14,7 +14,7 @@ use crate::services::{
 use axum::{
     Json, Router,
     extract::{Path, State},
-    routing::get,
+    routing::{get, post},
 };
 use serde_json::{Map, Value, json};
 
@@ -30,7 +30,8 @@ pub fn items_controller() -> Router<AppState> {
                 .delete(delete_items),
         )
         .route("/{collection}/{id}", get(get_item).patch(update_item))
-        .route("/{collection}/{id}/references", get(get_references));
+        .route("/{collection}/{id}/references", get(get_references))
+        .route("/{collection}/$delete", post(check_delete_permissions));
 }
 
 // @TODO Better support for de API explorer/docs. Ticket https://github.com/Authress-Engineering/openapi-explorer/issues/294 describes the issue.
@@ -300,6 +301,35 @@ async fn delete_items(
     };
 
     Ok(Json(success(json!({ "deleted": deleted }))))
+}
+
+#[utoipa::path(post, path = "/api/app/items/{collection}/$delete",
+    params(
+        ("collection" = String, Path, description = "Collection name."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    request_body(content = Value, content_type = "application/json", description="{\"pk_values\": [...]} — at most 100 primary keys."),
+    responses(
+        (status = OK)
+    )
+)]
+async fn check_delete_permissions(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+    ExtractContext(context): ExtractContext,
+    Json(body): Json<Value>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    let Some(pk_values) = body.get("pk_values").and_then(Value::as_array) else {
+        return Err(AlcedoError::InvalidInput(
+            "Request body must contain a 'pk_values' array".to_string(),
+            1,
+        ));
+    };
+
+    let service = ItemsService::new(&state, &context, &collection);
+    let permissions = service.delete_permissions_for_pks(pk_values).await?;
+    Ok(Json(success(Value::Object(permissions))))
 }
 
 #[utoipa::path(get, path = "/api/app/items/{collection}/{id}/references",

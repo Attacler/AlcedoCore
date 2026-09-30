@@ -81,6 +81,7 @@ async fn get_me(
                 app_name: app.to_string(),
                 version: version.to_string(),
                 request_source: RequestSource::API,
+                identity: None,
             };
             RolesService::new(&state, &ctx)
                 .scopes_for_user(uuid)

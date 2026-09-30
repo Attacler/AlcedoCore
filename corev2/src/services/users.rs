@@ -235,6 +235,7 @@ impl UsersService<'_> {
                 app_name,
                 version: version_name,
                 request_source: RequestSource::API,
+                identity: None,
             };
             let roles = RolesService::new(self.app_state, &ctx);
 
