@@ -324,6 +324,14 @@ impl Query {
         schema: &DatabaseSchema,
         context: &AppContext,
     ) -> Result<(SelectStatement, Vec<RemainingQuery>), AlcedoError> {
+        self.apply_access();
+
+        if matches!(self.access, ReadAccess::Deny) {
+            return Err(AlcedoError::Forbidden(
+                format!("No access to collection '{}'", table),
+                0,
+            ));
+        }
         let table_schema = schema
             .tables
             .iter()
@@ -1407,42 +1415,65 @@ mod tests {
         }
     }
 
-    /// `get_app_state` does not run `refresh_meta`, so inject the `customers`
-    /// collection metadata the nested resolver reads. Returns the collection id.
+    /// System context: trusted, no identity, used by tests that drive `Query`
+    /// directly (the access gate is covered separately).
+    fn crm_system_ctx() -> AppContext {
+        AppContext {
+            app_name: "crm".to_string(),
+            version: "production".to_string(),
+            request_source: RequestSource::Migration,
+            identity: None,
+        }
+    }
+
     async fn inject_customers_meta(state: &AppState) -> Option<i64> {
-        let row = sqlx::query(&format!(
-            "SELECT id, app_name, app_version, \"table\", name FROM \"{CRM_SCHEMA}\".alcedo_collections \
-             WHERE \"table\" = 'customers' ORDER BY id LIMIT 1"
+        let rows = sqlx::query(&format!(
+            "SELECT id, app_name, app_version, \"table\", name FROM \"{CRM_SCHEMA}\".alcedo_collections"
         ))
-        .fetch_optional(&*state.database_pool)
+        .fetch_all(&*state.database_pool)
         .await
-        .ok()
-        .flatten()?;
+        .ok()?;
 
-        let id = row.try_get::<i32, _>("id").ok()? as i64;
-        let app_name: String = row.try_get("app_name").ok()?;
-        let app_version: String = row.try_get("app_version").ok()?;
-        let table: String = row.try_get("table").ok()?;
-        let name: String = row.try_get("name").ok()?;
-
+        let mut customers_id = None;
         let mut schema = state.database_schema.write().await;
-        let target = schema
-            .tables
-            .iter_mut()
-            .find(|t| t.schema == CRM_SCHEMA && t.name == "customers")?;
-        target.meta = Some(TableMeta {
-            id: Some(id),
-            app_name,
-            app_version,
-            table,
-            name,
-            icon_name: None,
-            icon_color: None,
-            singleton: false,
-            hidden: false,
-            sort_field: None,
-        });
-        Some(id)
+        for row in rows {
+            let id = row.try_get::<i32, _>("id").ok();
+            let Ok(app_name) = row.try_get::<String, _>("app_name") else {
+                continue;
+            };
+            let Ok(app_version) = row.try_get::<String, _>("app_version") else {
+                continue;
+            };
+            let Ok(table) = row.try_get::<String, _>("table") else {
+                continue;
+            };
+            let Ok(name) = row.try_get::<String, _>("name") else {
+                continue;
+            };
+            if table == "customers" {
+                customers_id = id.map(i64::from);
+            }
+            let Some(target) = schema
+                .tables
+                .iter_mut()
+                .find(|t| t.schema == CRM_SCHEMA && t.name == table)
+            else {
+                continue;
+            };
+            target.meta = Some(TableMeta {
+                id: id.map(i64::from),
+                app_name,
+                app_version,
+                table,
+                name,
+                icon_name: None,
+                icon_color: None,
+                singleton: false,
+                hidden: false,
+                sort_field: None,
+            });
+        }
+        customers_id
     }
 
     async fn count_contacts(state: &AppState, predicate: &str) -> Option<i64> {
@@ -1499,7 +1530,7 @@ mod tests {
             ],
         };
 
-        let ctx = crm_ctx(None);
+        let ctx = crm_system_ctx();
         let rows = query
             .execute_query(&ctx, &state, &"contacts".to_string())
             .await
@@ -1551,9 +1582,30 @@ mod tests {
             return;
         };
 
-        let acme = "6f6ac101-2d92-4446-a586-d8bddddb8660";
-        let expected = count_contacts(&state, &format!("customer = '{acme}'")).await;
-        let non_acme = count_contacts(&state, &format!("customer IS DISTINCT FROM '{acme}'")).await;
+        // The caller can see every customer they are a member of (which may be
+        // more than Acme). Derive the visible set from `customers_users`.
+        let visible_ids: Vec<String> = sqlx::query_scalar::<_, uuid::Uuid>(&format!(
+            "SELECT customer FROM \"{CRM_SCHEMA}\".customers_users WHERE \"user\" = $1"
+        ))
+        .bind(user_id)
+        .fetch_all(&*state.database_pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+        let Some(_acme) = visible_ids.first().cloned() else {
+            eprintln!("skipping: customer@acme.example has no customers_users membership");
+            return;
+        };
+        let visible_literal = visible_ids
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let expected = count_contacts(&state, &format!("customer IN ({visible_literal})")).await;
+        let non_acme =
+            count_contacts(&state, &format!("customer NOT IN ({visible_literal})")).await;
         let (Some(expected), Some(non_acme)) = (expected, non_acme) else {
             eprintln!("skipping: crm010production.contacts not seeded");
             return;
@@ -1588,17 +1640,20 @@ mod tests {
                 Some(Value::Null) | None => nulled += 1,
                 Some(Value::Object(obj)) => {
                     resolved += 1;
-                    assert_eq!(
-                        obj.get("name").and_then(Value::as_str),
-                        Some("Acme Corp"),
-                        "only the policy-visible customer is fetched"
+                    let id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
+                    assert!(
+                        visible_ids.iter().any(|v| v == id),
+                        "relation resolved a customer the caller cannot see: {id}"
                     );
                 }
                 Some(other) => panic!("unexpected relation value: {:?}", other),
             }
         }
 
-        assert_eq!(resolved, expected, "contacts pointing at Acme resolve");
+        assert_eq!(
+            resolved, expected,
+            "contacts pointing at a visible customer resolve"
+        );
         assert_eq!(
             nulled, non_acme,
             "contacts pointing at hidden customers are NULL"

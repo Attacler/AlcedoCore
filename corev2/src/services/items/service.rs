@@ -305,9 +305,9 @@ impl ItemsService<'_> {
 
         let mut before = ItemsBeforeUpdate {
             keys: get_pks
-                .clone()
                 .iter()
-                .map(|item| item.get(&pk_name).unwrap().clone().to_string())
+                .filter_map(|item| item.get(&pk_name))
+                .map(json_value_to_key)
                 .collect(),
             payload,
             collection: self.collection.clone(),
@@ -462,7 +462,7 @@ impl ItemsService<'_> {
             .iter_mut()
             .enumerate()
             .for_each(|(index, item)| {
-                let pk = created_items[index].to_string();
+                let pk = created_items[index].clone();
                 item.insert(pk_name_cloned.clone(), pk.into());
             });
 

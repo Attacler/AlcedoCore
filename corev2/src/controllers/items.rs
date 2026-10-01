@@ -5,10 +5,10 @@ use crate::services::items::{query::Query, relational};
 use crate::services::respond::JSendResponse;
 use crate::services::respond::success;
 use crate::services::{
+    collections::schema::get_pk_key,
     context::ExtractContext,
     errors::AlcedoError,
     items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp},
-    collections::schema::get_pk_key,
     query_parse::CustomQuery,
 };
 use axum::{
@@ -22,6 +22,7 @@ use crate::AppState;
 
 pub fn items_controller() -> Router<AppState> {
     return Router::new()
+        .route("/{collection}/$delete", post(check_delete_permissions))
         .route(
             "/{collection}",
             get(get_items)
@@ -30,8 +31,7 @@ pub fn items_controller() -> Router<AppState> {
                 .delete(delete_items),
         )
         .route("/{collection}/{id}", get(get_item).patch(update_item))
-        .route("/{collection}/{id}/references", get(get_references))
-        .route("/{collection}/$delete", post(check_delete_permissions));
+        .route("/{collection}/{id}/references", get(get_references));
 }
 
 // @TODO Better support for de API explorer/docs. Ticket https://github.com/Authress-Engineering/openapi-explorer/issues/294 describes the issue.

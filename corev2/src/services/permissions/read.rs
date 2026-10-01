@@ -6,9 +6,10 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::middelware::auth::AuthLevel;
-use crate::services::context::AppContext;
-use crate::services::errors::AlcedoError;
 use crate::services::collections::ddl::GLOBAL_USERS_COLLECTION;
+use crate::services::context::AppContext;
+use crate::services::context::RequestSource;
+use crate::services::errors::AlcedoError;
 use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter};
 use crate::services::postgres::pool::{execute_query, pgrow_to_json};
 
@@ -459,7 +460,8 @@ async fn is_app_admin(
                 .equals((Alias::new("ur"), Alias::new("role_id"))),
         )
         .and_where(
-            Expr::col((Alias::new("ur"), Alias::new("user_id"))).eq(Expr::value(user_id.to_string())),
+            Expr::col((Alias::new("ur"), Alias::new("user_id")))
+                .eq(Expr::value(user_id.to_string())),
         )
         .cond_where(
             Condition::any()
@@ -483,7 +485,10 @@ fn policy_permissions_select(schema: &str) -> SelectStatement {
     let mut select = sea_query::Query::select();
     select
         .from_as(
-            (Alias::new(schema), Alias::new("alcedocore_policy_permissions")),
+            (
+                Alias::new(schema),
+                Alias::new("alcedocore_policy_permissions"),
+            ),
             Alias::new("pp"),
         )
         .join_as(
@@ -739,7 +744,25 @@ pub async fn resolve_access(
     action: &str,
 ) -> Result<ReadAccess, AlcedoError> {
     let Some(identity) = identity else {
-        return Ok(ReadAccess::Unrestricted);
+        return match context.request_source {
+            RequestSource::Migration
+            | RequestSource::FirstMigration
+            | RequestSource::Inspector
+            | RequestSource::SystemTest => Ok(ReadAccess::Unrestricted),
+            // The global/platform zone (`AppContext::system`) legitimately runs
+            // without a user: its tables are not app-bound and carry no policies.
+            RequestSource::API if context.version.is_empty() => Ok(ReadAccess::Unrestricted),
+            // An *app-scoped* API read with no identity is a bug: HTTP requests
+            // always resolve an `AuthLevel` (anonymous = `Public`). Fail closed.
+            RequestSource::API => {
+                tracing::warn!(
+                    collection = %collection,
+                    action = %action,
+                    "app-scoped access check with no identity; failing closed"
+                );
+                Ok(ReadAccess::Deny)
+            }
+        };
     };
 
     if matches!(identity, AuthLevel::DeveloperKey { .. }) {
@@ -849,7 +872,17 @@ pub async fn list_accessible_collections(
     identity: Option<&AuthLevel>,
 ) -> Result<Option<HashSet<i64>>, AlcedoError> {
     let Some(identity) = identity else {
-        return Ok(None);
+        return match context.request_source {
+            RequestSource::Migration
+            | RequestSource::FirstMigration
+            | RequestSource::Inspector
+            | RequestSource::SystemTest => Ok(None),
+            RequestSource::API if context.version.is_empty() => Ok(None),
+            RequestSource::API => {
+                tracing::warn!("app-scoped collection listing with no identity; failing closed");
+                Ok(Some(HashSet::new()))
+            }
+        };
     };
 
     if matches!(identity, AuthLevel::DeveloperKey { .. }) {
@@ -964,34 +997,91 @@ mod tests {
         let cases: Vec<(&str, Value)> = vec![
             ("eq", json!({"field": "f", "operator": "eq", "value": 1})),
             ("neq", json!({"field": "f", "operator": "neq", "value": 1})),
-            ("not_eq", json!({"field": "f", "operator": "not_eq", "value": 1})),
+            (
+                "not_eq",
+                json!({"field": "f", "operator": "not_eq", "value": 1}),
+            ),
             ("gt", json!({"field": "f", "operator": "gt", "value": 1})),
             ("gte", json!({"field": "f", "operator": "gte", "value": 1})),
             ("lt", json!({"field": "f", "operator": "lt", "value": 1})),
             ("lte", json!({"field": "f", "operator": "lte", "value": 1})),
-            ("contains", json!({"field": "f", "operator": "contains", "value": "x"})),
-            ("ncontains", json!({"field": "f", "operator": "ncontains", "value": "x"})),
-            ("not_contains", json!({"field": "f", "operator": "not_contains", "value": "x"})),
-            ("icontains", json!({"field": "f", "operator": "icontains", "value": "x"})),
-            ("nicontains", json!({"field": "f", "operator": "nicontains", "value": "x"})),
-            ("starts_with", json!({"field": "f", "operator": "starts_with", "value": "x"})),
-            ("istarts_with", json!({"field": "f", "operator": "istarts_with", "value": "x"})),
-            ("nstarts_with", json!({"field": "f", "operator": "nstarts_with", "value": "x"})),
-            ("nistarts_with", json!({"field": "f", "operator": "nistarts_with", "value": "x"})),
-            ("ends_with", json!({"field": "f", "operator": "ends_with", "value": "x"})),
-            ("iends_with", json!({"field": "f", "operator": "iends_with", "value": "x"})),
-            ("nends_with", json!({"field": "f", "operator": "nends_with", "value": "x"})),
-            ("niends_with", json!({"field": "f", "operator": "niends_with", "value": "x"})),
+            (
+                "contains",
+                json!({"field": "f", "operator": "contains", "value": "x"}),
+            ),
+            (
+                "ncontains",
+                json!({"field": "f", "operator": "ncontains", "value": "x"}),
+            ),
+            (
+                "not_contains",
+                json!({"field": "f", "operator": "not_contains", "value": "x"}),
+            ),
+            (
+                "icontains",
+                json!({"field": "f", "operator": "icontains", "value": "x"}),
+            ),
+            (
+                "nicontains",
+                json!({"field": "f", "operator": "nicontains", "value": "x"}),
+            ),
+            (
+                "starts_with",
+                json!({"field": "f", "operator": "starts_with", "value": "x"}),
+            ),
+            (
+                "istarts_with",
+                json!({"field": "f", "operator": "istarts_with", "value": "x"}),
+            ),
+            (
+                "nstarts_with",
+                json!({"field": "f", "operator": "nstarts_with", "value": "x"}),
+            ),
+            (
+                "nistarts_with",
+                json!({"field": "f", "operator": "nistarts_with", "value": "x"}),
+            ),
+            (
+                "ends_with",
+                json!({"field": "f", "operator": "ends_with", "value": "x"}),
+            ),
+            (
+                "iends_with",
+                json!({"field": "f", "operator": "iends_with", "value": "x"}),
+            ),
+            (
+                "nends_with",
+                json!({"field": "f", "operator": "nends_with", "value": "x"}),
+            ),
+            (
+                "niends_with",
+                json!({"field": "f", "operator": "niends_with", "value": "x"}),
+            ),
             ("in", json!({"field": "f", "operator": "in", "value": [1]})),
-            ("not_in", json!({"field": "f", "operator": "not_in", "value": [1]})),
-            ("nin", json!({"field": "f", "operator": "nin", "value": [1]})),
+            (
+                "not_in",
+                json!({"field": "f", "operator": "not_in", "value": [1]}),
+            ),
+            (
+                "nin",
+                json!({"field": "f", "operator": "nin", "value": [1]}),
+            ),
             ("null", json!({"field": "f", "operator": "null"})),
             ("is_null", json!({"field": "f", "operator": "is_null"})),
             ("nnull", json!({"field": "f", "operator": "nnull"})),
             ("not_null", json!({"field": "f", "operator": "not_null"})),
-            ("between", json!({"field": "f", "operator": "between", "value": [1, 5]})),
-            ("nbetween", json!({"field": "f", "operator": "nbetween", "value": [1, 5]})),
-            ("not_between", json!({"field": "f", "operator": "not_between", "value": [1, 5]})),
+            (
+                "between",
+                json!({"field": "f", "operator": "between", "value": [1, 5]}),
+            ),
+            (
+                "nbetween",
+                json!({"field": "f", "operator": "nbetween", "value": [1, 5]}),
+            ),
+            (
+                "not_between",
+                json!({"field": "f", "operator": "not_between", "value": [1, 5]}),
+            ),
         ];
         for (name, filter) in cases {
             let conditions =
@@ -1006,9 +1096,10 @@ mod tests {
         .unwrap();
         assert_eq!(single_comparison(&neq[0])._neq, Some(json!(true)));
 
-        let icontains =
-            conditions_from_json(&json!([{ "field": "name", "operator": "icontains", "value": "acme" }]))
-                .unwrap();
+        let icontains = conditions_from_json(
+            &json!([{ "field": "name", "operator": "icontains", "value": "acme" }]),
+        )
+        .unwrap();
         assert_eq!(
             single_comparison(&icontains[0])._icontains,
             Some("acme".to_string())
@@ -1023,9 +1114,10 @@ mod tests {
             Some("x".to_string())
         );
 
-        let between =
-            conditions_from_json(&json!([{ "field": "age", "operator": "between", "value": [1, 5] }]))
-                .unwrap();
+        let between = conditions_from_json(
+            &json!([{ "field": "age", "operator": "between", "value": [1, 5] }]),
+        )
+        .unwrap();
         assert_eq!(
             single_comparison(&between[0])._between,
             Some((json!(1), json!(5)))
@@ -1040,10 +1132,10 @@ mod tests {
             conditions_from_json(&json!([{ "field": "age", "operator": "between", "value": 5 }]))
                 .is_err()
         );
-        assert!(conditions_from_json(
-            &json!([{ "field": "age", "operator": "between", "value": [1] }])
-        )
-        .is_err());
+        assert!(
+            conditions_from_json(&json!([{ "field": "age", "operator": "between", "value": [1] }]))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1259,9 +1351,31 @@ mod tests {
 
         let system_ctx = AppContext::system(RequestSource::API);
 
-        // None identity / developer key / framework collection all bypass.
+        // Missing identity: allowed only in the global zone / migration, and
+        // failed closed for an app-scoped API read (a bug — HTTP always
+        // resolves an identity, anonymous = Public).
+        let system_ctx = AppContext::system(RequestSource::API); // global zone
         assert!(matches!(
             resolve_read_access(&state, &system_ctx, "orders", None)
+                .await
+                .unwrap(),
+            ReadAccess::Unrestricted
+        ));
+        let app_ctx = AppContext {
+            app_name: "crm".to_string(),
+            version: "production".to_string(),
+            request_source: RequestSource::API,
+            identity: None,
+        };
+        assert!(matches!(
+            resolve_read_access(&state, &app_ctx, "orders", None)
+                .await
+                .unwrap(),
+            ReadAccess::Deny
+        ));
+        let migration_ctx = AppContext::system(RequestSource::Migration);
+        assert!(matches!(
+            resolve_read_access(&state, &migration_ctx, "orders", None)
                 .await
                 .unwrap(),
             ReadAccess::Unrestricted
@@ -1464,50 +1578,83 @@ mod integration_tests {
 
     const CRM_SCHEMA: &str = "crm010production";
 
-    /// `get_app_state` does not run `refresh_meta`, so inject the `customers`
-    /// collection metadata the resolver reads. Returns the collection id.
+    /// `get_app_state` does not run `refresh_meta`, so inject the `alcedo_collections`
+    /// metadata the resolver reads. Injects *every* collection in the schema so
+    /// tests referencing relation tables (`customers_users`, `tickets`, …) resolve.
+    /// Returns the `customers` collection id for convenience.
     async fn inject_customers_meta(state: &AppState) -> Option<i64> {
-        let row = sqlx::query(&format!(
-            "SELECT id, app_name, app_version, \"table\", name FROM \"{CRM_SCHEMA}\".alcedo_collections \
-             WHERE \"table\" = 'customers' ORDER BY id LIMIT 1"
-        ))
-        .fetch_optional(&*state.database_pool)
-        .await
-        .ok()
-        .flatten()?;
-
-        let id = row.try_get::<i32, _>("id").ok()? as i64;
-        let app_name: String = row.try_get("app_name").ok()?;
-        let app_version: String = row.try_get("app_version").ok()?;
-        let table: String = row.try_get("table").ok()?;
-        let name: String = row.try_get("name").ok()?;
-
-        let mut schema = state.database_schema.write().await;
-        let target = schema
-            .tables
-            .iter_mut()
-            .find(|t| t.schema == CRM_SCHEMA && t.name == "customers")?;
-        target.meta = Some(TableMeta {
-            id: Some(id),
-            app_name,
-            app_version,
-            table,
-            name,
-            icon_name: None,
-            icon_color: None,
-            singleton: false,
-            hidden: false,
-            sort_field: None,
-        });
-        Some(id)
+        inject_schema_meta(state, CRM_SCHEMA).await
     }
 
+    /// Injects collection metadata for all collections in `schema_name`.
+    async fn inject_schema_meta(state: &AppState, schema_name: &str) -> Option<i64> {
+        let rows = sqlx::query(&format!(
+            "SELECT id, app_name, app_version, \"table\", name FROM \"{schema_name}\".alcedo_collections"
+        ))
+        .fetch_all(&*state.database_pool)
+        .await
+        .ok()?;
+
+        let mut customers_id = None;
+        let mut schema = state.database_schema.write().await;
+        for row in rows {
+            let id = row.try_get::<i32, _>("id").ok();
+            let Ok(app_name) = row.try_get::<String, _>("app_name") else {
+                continue;
+            };
+            let Ok(app_version) = row.try_get::<String, _>("app_version") else {
+                continue;
+            };
+            let Ok(table) = row.try_get::<String, _>("table") else {
+                continue;
+            };
+            let Ok(name) = row.try_get::<String, _>("name") else {
+                continue;
+            };
+            if table == "customers" {
+                customers_id = id.map(i64::from);
+            }
+            let Some(target) = schema
+                .tables
+                .iter_mut()
+                .find(|t| t.schema == schema_name && t.name == table)
+            else {
+                continue;
+            };
+            target.meta = Some(TableMeta {
+                id: id.map(i64::from),
+                app_name,
+                app_version,
+                table,
+                name,
+                icon_name: None,
+                icon_color: None,
+                singleton: false,
+                hidden: false,
+                sort_field: None,
+            });
+        }
+        customers_id
+    }
+
+    /// Test context with an authenticated identity (the normal HTTP shape).
     fn crm_ctx(identity: Option<AuthLevel>) -> AppContext {
         AppContext {
             app_name: "crm".to_string(),
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity,
+        }
+    }
+
+    /// System/migration context: trusted, no identity. Used by tests that drive
+    /// `Query` directly to assert masking rather than exercise the access gate.
+    fn crm_system_ctx() -> AppContext {
+        AppContext {
+            app_name: "crm".to_string(),
+            version: "production".to_string(),
+            request_source: RequestSource::Migration,
+            identity: None,
         }
     }
 
@@ -1544,10 +1691,34 @@ mod integration_tests {
         let collection = "customers".to_string();
         let service = ItemsService::new(&state, &ctx, &collection);
         let rows = service.read_items_by_query(Query::default()).await.unwrap();
-        assert_eq!(rows.len(), 1, "policy should restrict to exactly one row");
+
+        // Derive the expectation from the membership rows rather than assuming a
+        // single customer: the filter is `customers_users.user = me`.
+        let expected_ids: Vec<String> = sqlx::query_scalar::<_, Uuid>(&format!(
+            "SELECT customer FROM \"{CRM_SCHEMA}\".customers_users WHERE \"user\" = $1"
+        ))
+        .bind(user_id)
+        .fetch_all(&*state.database_pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+        assert!(
+            !expected_ids.is_empty(),
+            "customer@acme.example has no customers_users membership; fixture missing"
+        );
+
+        let mut actual_ids: Vec<String> = rows
+            .iter()
+            .filter_map(|r| r.get("id").and_then(Value::as_str).map(String::from))
+            .collect();
+        actual_ids.sort();
+        let mut expected_sorted = expected_ids.clone();
+        expected_sorted.sort();
         assert_eq!(
-            rows[0].get("id").and_then(Value::as_str),
-            Some("6f6ac101-2d92-4446-a586-d8bddddb8660")
+            actual_ids, expected_sorted,
+            "policy must return exactly the customer's member customers"
         );
     }
 
@@ -1656,7 +1827,7 @@ mod integration_tests {
     #[tokio::test]
     async fn restricted_access_filters_rows_and_masks_fields() {
         let state = crate::utils::test_utils::get_app_state().await;
-        let ctx = crm_ctx(None);
+        let ctx = crm_system_ctx();
 
         let mut query = Query::default();
         query.access = ReadAccess::Restricted {
@@ -1720,7 +1891,7 @@ mod integration_tests {
     #[tokio::test]
     async fn permission_filter_supports_relationships() {
         let state = crate::utils::test_utils::get_app_state().await;
-        let ctx = crm_ctx(None);
+        let ctx = crm_system_ctx();
 
         // many-to-one FK: contacts whose related customer is Acme Corp.
         let mut fk_query = Query {
@@ -1787,13 +1958,23 @@ mod integration_tests {
         }
     }
 
+    /// Helpdesk system context for tests driving `Query` directly.
+    fn helpdesk_system_ctx() -> AppContext {
+        AppContext {
+            app_name: "helpdesk".to_string(),
+            version: "production".to_string(),
+            request_source: RequestSource::Migration,
+            identity: None,
+        }
+    }
+
     /// A rule path that crosses two relations `M:1 then 1:M`
     /// (`tickets.customer.contacts.first_name`) must resolve: only the tickets
     /// whose customer has a contact named Alice (Acme) are readable.
     #[tokio::test]
     async fn permission_filter_supports_multi_hop_relationships() {
         let state = crate::utils::test_utils::get_app_state().await;
-        let ctx = helpdesk_ctx(None);
+        let ctx = helpdesk_system_ctx();
 
         let mut query = Query {
             fields: vec!["subject".to_string()],
@@ -1833,7 +2014,7 @@ mod integration_tests {
     #[tokio::test]
     async fn permission_filter_resolves_user_placeholder_on_relation() {
         let state = crate::utils::test_utils::get_app_state().await;
-        let ctx = crm_ctx(None);
+        let ctx = crm_system_ctx();
 
         // A synthetic resolved user value; `substitute_user_placeholders` runs
         // before `conditions_from_json` in `resolve_read_access`.
@@ -2042,6 +2223,138 @@ mod integration_tests {
             matches!(err, AlcedoError::Forbidden(_, _)),
             "expected Forbidden, got {err:?}"
         );
+    }
+
+    /// The seeded helpdesk policy gives `customer@acme.example` a *scoped*
+    /// `delete` rule on `tickets` (`customer.customers_users.user = {user.id}`
+    /// AND `manages_tickets`). `$delete` must report `true` only for tickets the
+    /// filter matches, and a real delete must leave out-of-policy rows intact.
+    #[tokio::test]
+    async fn scoped_delete_rule_filters_pks_and_blocks_foreign_rows() {
+        const HELPDESK_SCHEMA: &str = "helpdesk010production";
+
+        let state = crate::utils::test_utils::get_app_state().await;
+        // The delete resolver needs `tickets` + `customers_users` collection meta.
+        inject_schema_meta(&state, CRM_SCHEMA).await;
+        if inject_schema_meta(&state, HELPDESK_SCHEMA).await.is_none() {
+            eprintln!("skipping: helpdesk010production not seeded");
+            return;
+        }
+
+        let user_id = sqlx::query_scalar::<_, Uuid>(
+            "SELECT id FROM alcedo.alcedo_users WHERE email = 'customer@acme.example'",
+        )
+        .fetch_optional(&*state.database_pool)
+        .await
+        .unwrap();
+        let Some(user_id) = user_id else {
+            eprintln!("skipping: customer@acme.example not seeded");
+            return;
+        };
+
+        // The scoped rule is the prerequisite for this test.
+        let has_scoped_delete: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(
+                SELECT 1 FROM \"{HELPDESK_SCHEMA}\".alcedocore_policy_permissions pp
+                JOIN \"{HELPDESK_SCHEMA}\".alcedo_collections c ON c.id = pp.collection
+                WHERE c.\"table\" = 'tickets' AND pp.action = 'delete'
+                  AND pp.filter::text LIKE '%%{{user.id}}%%')"
+        ))
+        .fetch_one(&*state.database_pool)
+        .await
+        .unwrap();
+        if !has_scoped_delete {
+            eprintln!("skipping: no scoped delete rule on helpdesk tickets");
+            return;
+        }
+
+        // In-policy pks = tickets the rule matches: a membership row for the user
+        // AND manages_tickets = true (mirrors the policy filter exactly).
+        let in_policy: Vec<String> = sqlx::query_scalar::<_, Uuid>(&format!(
+            "SELECT t.id FROM \"{HELPDESK_SCHEMA}\".tickets t
+             WHERE EXISTS (
+                SELECT 1 FROM \"{CRM_SCHEMA}\".customers_users cu
+                WHERE cu.customer = t.customer AND cu.\"user\" = $1
+                  AND cu.manages_tickets = true)"
+        ))
+        .bind(user_id)
+        .fetch_all(&*state.database_pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+
+        // Out-of-policy pks = tickets with no matching membership.
+        let out_of_policy: Vec<String> = sqlx::query_scalar::<_, Uuid>(&format!(
+            "SELECT t.id FROM \"{HELPDESK_SCHEMA}\".tickets t
+             WHERE NOT EXISTS (
+                SELECT 1 FROM \"{CRM_SCHEMA}\".customers_users cu
+                WHERE cu.customer = t.customer AND cu.\"user\" = $1
+                  AND cu.manages_tickets = true)
+             LIMIT 5"
+        ))
+        .bind(user_id)
+        .fetch_all(&*state.database_pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+
+        if in_policy.is_empty() || out_of_policy.is_empty() {
+            eprintln!("skipping: helpdesk tickets lack mixed ownership rows");
+            return;
+        }
+
+        let ctx = AppContext {
+            app_name: "helpdesk".to_string(),
+            version: "production".to_string(),
+            request_source: RequestSource::API,
+            identity: Some(AuthLevel::User(user_id)),
+        };
+        let collection = "tickets".to_string();
+        let service = ItemsService::new(&state, &ctx, &collection);
+
+        // `$delete` answers per pk.
+        let mut pks: Vec<Value> = in_policy
+            .iter()
+            .chain(out_of_policy.iter())
+            .cloned()
+            .map(Value::String)
+            .collect();
+        pks.truncate(100);
+        let permissions = service.delete_permissions_for_pks(&pks).await.unwrap();
+        for id in &in_policy {
+            assert_eq!(
+                permissions.get(id),
+                Some(&Value::Bool(true)),
+                "in-policy ticket {id} must be deletable"
+            );
+        }
+        for id in &out_of_policy {
+            assert_eq!(
+                permissions.get(id),
+                Some(&Value::Bool(false)),
+                "out-of-policy ticket {id} must not be deletable"
+            );
+        }
+
+        // A real delete of an out-of-policy pk affects nothing and the row stays.
+        let target = Value::String(out_of_policy[0].clone());
+        let deleted = service
+            .delete_items_by_pks(vec![target.clone()], None)
+            .await
+            .unwrap();
+        assert_eq!(deleted, 0, "out-of-policy delete must affect no rows");
+        let still_there: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM \"{HELPDESK_SCHEMA}\".tickets WHERE id = $1)"
+        ))
+        .bind(target.as_str().unwrap())
+        .fetch_one(&*state.database_pool)
+        .await
+        .unwrap();
+        assert!(still_there, "out-of-policy ticket must still exist");
     }
 
     async fn count_helpdesk_rows(state: &AppState, table: &str) -> usize {

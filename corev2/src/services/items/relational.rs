@@ -18,6 +18,7 @@ use sqlx::{Postgres, Transaction};
 use crate::{
     AppState,
     services::{
+        collections::schema::get_pk_key,
         collections::{self, FieldDefinition},
         context::AppContext,
         errors::AlcedoError,
@@ -25,7 +26,6 @@ use crate::{
             query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query},
             service::ItemsService,
         },
-        collections::schema::get_pk_key,
     },
 };
 
@@ -50,7 +50,7 @@ pub(crate) fn target_ctx(ctx: &AppContext, target_app: &Option<String>) -> AppCo
         app_name: target_app.clone().unwrap_or_else(|| ctx.app_name.clone()),
         version: ctx.version.clone(),
         request_source: ctx.request_source.clone(),
-        identity: None,
+        identity: ctx.identity.clone(),
     }
 }
 
@@ -142,14 +142,18 @@ pub async fn detect_direction(
         if !tables.iter().any(|t| t == key) {
             continue;
         }
-        if let Some(field) = collection_fields(state, &tctx, key).await?.iter().find(|f| {
-            f.is_relationship()
-                && f.related_collection.as_deref() == Some(source)
-                && !f.is_virtual()
-                && f.related_app
-                    .as_deref()
-                    .map_or(true, |a| a == ctx.app_api_name())
-        }) {
+        if let Some(field) = collection_fields(state, &tctx, key)
+            .await?
+            .iter()
+            .find(|f| {
+                f.is_relationship()
+                    && f.related_collection.as_deref() == Some(source)
+                    && !f.is_virtual()
+                    && f.related_app
+                        .as_deref()
+                        .map_or(true, |a| a == ctx.app_api_name())
+            })
+        {
             if candidate.is_some() {
                 return Err(AlcedoError::InvalidInput(
                     format!(
@@ -211,10 +215,7 @@ async fn insert_one(
     let table = collection.to_string();
     let service = ItemsService::new(state, ctx, &table);
     let ids = service.create_many(vec![item], &mut Some(tx)).await?;
-    Ok(ids
-        .get(0)
-        .map(|s| s.to_string())
-        .unwrap_or_default())
+    Ok(ids.get(0).map(|s| s.to_string()).unwrap_or_default())
 }
 
 async fn update_one(
@@ -303,9 +304,7 @@ async fn delete_children(
         (pk_name.as_str(), cmp_in(ids.to_vec())),
         (fk, cmp_eq(Value::String(parent_id.to_string()))),
     ]);
-    service
-        .delete_items_by_query(query, &mut Some(tx))
-        .await?;
+    service.delete_items_by_query(query, &mut Some(tx)).await?;
     Ok(())
 }
 
@@ -351,7 +350,8 @@ pub fn create_recursive<'a>(
                         if !obj.contains_key("id") {
                             let tctx = target_ctx(ctx, &target_app);
                             let child_id =
-                                create_recursive(state, &tctx, &mut *tx, target, obj.clone()).await?;
+                                create_recursive(state, &tctx, &mut *tx, target, obj.clone())
+                                    .await?;
                             scalar.insert(key, Value::String(child_id));
                         }
                     }
@@ -514,7 +514,8 @@ pub fn update_recursive<'a>(
                             // FK is unchanged.
                         } else {
                             let new_id =
-                                create_recursive(state, &tctx, &mut *tx, target, obj.clone()).await?;
+                                create_recursive(state, &tctx, &mut *tx, target, obj.clone())
+                                    .await?;
                             scalar.insert(key, Value::String(new_id));
                         }
                     } else if let Some(s) = value.as_str() {
