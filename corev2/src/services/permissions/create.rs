@@ -811,7 +811,7 @@ pub fn create_permission_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::items::query::Comparison;
+    use crate::services::{items::query::Comparison, permissions::read::ReadRule};
     use serde_json::json;
 
     fn field(name: &str) -> FieldDefinition {
@@ -1056,6 +1056,7 @@ mod integration_tests {
     use crate::services::context::RequestSource;
     use crate::services::items::query::LogicOp;
     use crate::services::items::service::ItemsService;
+    use crate::services::permissions::read::ReadRule;
     use crate::services::postgres::inspector::TableMeta;
 
     const HELPDESK_SCHEMA: &str = "helpdesk010production";
