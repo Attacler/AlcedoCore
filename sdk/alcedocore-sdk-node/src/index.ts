@@ -42,6 +42,21 @@ export { createDeveloperApiKeysResource } from "./developerApiKeys";
 export { createClient, resolveAppHeaders } from "./client";
 
 export {
+    evaluateFilter,
+    evaluateCondition,
+    matchesFilter,
+    matchesAnyFilter,
+    proposedValues,
+    KNOWN_OPERATORS,
+} from "./filters";
+export type {
+    Filter,
+    FilterCondition,
+    FilterResult,
+    ConditionStatus,
+} from "./filters";
+
+export {
     PluginSchema,
     PluginListSchema,
     PluginSchemaResponseSchema,
@@ -72,3 +87,4 @@ export type {
     DeveloperKeyWithRawKey,
 } from "./types/developerKeys";
 export type { FileFolder, MediaFile, ListFilesParameters } from "./types/files";
+export type { ItemPermissions, PermissionRule, PermissionViolation } from "./types/permissions";

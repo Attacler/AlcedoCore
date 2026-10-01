@@ -245,6 +245,15 @@ watch(
 );
 
 watch(
+    () => props.fieldsOverride,
+    (val) => {
+        if (val) {
+            fields.value = val;
+        }
+    },
+);
+
+watch(
     () => props.sectionsOverride,
     (val) => {
         if (val) {

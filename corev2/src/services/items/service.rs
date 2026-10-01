@@ -11,6 +11,7 @@ use crate::services::hooks::types::items_create::{ItemsAfterCreate, ItemsBeforeC
 use crate::services::hooks::types::items_delete::{ItemsAfterDelete, ItemsBeforeDelete};
 use crate::services::hooks::types::items_update::{ItemsAfterUpdate, ItemsBeforeUpdate};
 use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query};
+use crate::services::permissions;
 use crate::services::permissions::read::{ReadAccess, resolve_access, resolve_read_access};
 use crate::services::postgres::jsonvalue_simpleexpr::parse_value;
 use crate::services::postgres::pool::{
@@ -419,6 +420,28 @@ impl ItemsService<'_> {
                 hook_context,
             )
             .await;
+
+        let create_access = permissions::create::resolve_create_access(
+            self.app_state,
+            self.app_context,
+            self.collection,
+            self.app_context.identity.as_ref(),
+        )
+        .await?;
+        let eligible = permissions::create::check_create_fields(
+            &create_access,
+            self.collection,
+            &before.items,
+        )?;
+        permissions::create::check_create_values(
+            self.app_state,
+            self.app_context,
+            self.collection,
+            &create_access,
+            &before.items,
+            &eligible,
+        )
+        .await?;
 
         let queries: Vec<Result<String, AlcedoError>> = join_all(
             before

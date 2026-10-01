@@ -1314,6 +1314,7 @@ mod tests {
         ReadRule {
             fields: fields.map(|f| f.iter().map(|s| s.to_string()).collect()),
             conditions: vec![],
+            raw: json!([]),
         }
     }
 
@@ -1371,6 +1372,7 @@ mod tests {
                     { "field": "customer", "operator": "eq", "value": "acme" }
                 ]))
                 .unwrap(),
+                raw: Value::Null,
             }],
         };
 
@@ -1519,6 +1521,7 @@ mod tests {
                         &json!([{ "field": "first_name", "operator": "not_null" }]),
                     )
                     .unwrap(),
+                    raw: Value::Null,
                 },
                 ReadRule {
                     fields: Some(vec!["first_name".to_string(), "customer".to_string()]),
@@ -1526,6 +1529,7 @@ mod tests {
                         &json!([{ "field": "is_primary", "operator": "eq", "value": true }]),
                     )
                     .unwrap(),
+                    raw: Value::Null,
                 },
             ],
         };
@@ -1624,6 +1628,7 @@ mod tests {
             rules: vec![ReadRule {
                 fields: None,
                 conditions: vec![],
+                raw: Value::Null,
             }],
         };
 

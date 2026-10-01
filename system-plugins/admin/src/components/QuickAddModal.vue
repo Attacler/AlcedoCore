@@ -1,6 +1,12 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, computed, watch } from "vue";
 import type { FieldDefinition } from "@/stores/collections";
+import {
+    proposedValues,
+    type FilterCondition,
+    type ItemPermissions,
+    type PermissionViolation,
+} from "@alcedocore/sdk";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useToast } from "@/composables/useToast";
 import RecordForm from "@/components/RecordForm.vue";
@@ -30,30 +36,136 @@ const { client } = useAlcedoClient(),
 const visibleInner = ref(props.visible),
     formValues = ref<Record<string, any>>({}),
     recordFormRef = ref<any>(null),
-    saving = ref(false);
+    saving = ref(false),
+    permissions = ref<ItemPermissions | null>(null);
+/**
+ * `createPolicy.field_validation` may be the flat `{field, operator, value}`
+ * shape `proposedValues` understands, or the mongo-style shorthand the API
+ * actually stores. Only prefill when it is the former; otherwise skip.
+ */
+function isFlatFilter(value: unknown): value is FilterCondition[] {
+    return (
+        Array.isArray(value) &&
+        value.every(
+            (c) =>
+                c !== null &&
+                typeof c === "object" &&
+                typeof (c as any).field === "string",
+        )
+    );
+}
+
+function prefillValues(): Record<string, any> {
+    const validation = props.createPolicy?.field_validation;
+    if (!isFlatFilter(validation)) return {};
+    return proposedValues(validation);
+}
+
+/**
+ * Fields the form may show. `allowed_fields` is the authoritative union; the
+ * probe's accepted rules refine it. A field is settable only as part of a rule
+ * the payload currently satisfies, so an empty rule-fields list means "any".
+ */
+const effectiveFields = computed<FieldDefinition[]>(() => {
+    const base = props.fields || [];
+    const rules = permissions.value?.rules;
+    if (!rules || rules.length === 0) return base;
+    // Union of the rules that accept: those are the shapes we can submit.
+    const accepted = rules.filter((r) => r.allowed);
+    const pool = accepted.length ? accepted : rules;
+    if (pool.some((r) => r.fields.length === 0)) return base;
+    const allowed = new Set(pool.flatMap((r) => r.fields));
+    return base.filter((f) => allowed.has(f.name));
+});
+
+/** The exact object `save()` would POST — probe and POST must agree. */
+function buildPayload(): Record<string, any> {
+    const payload: Record<string, any> = {};
+    for (const [key, value] of Object.entries(formValues.value)) {
+        if (value === null || value === undefined || value === "") continue;
+        payload[key] = value instanceof Date ? value.toISOString() : value;
+    }
+    // Merge nested relational sections into the same request (atomic).
+    if (
+        recordFormRef.value &&
+        typeof recordFormRef.value.getRelationBody === "function"
+    ) {
+        const body = recordFormRef.value.getRelationBody();
+        if (body) Object.assign(payload, body);
+    }
+    return payload;
+}
+
+let probeTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function runProbe() {
+    if (!props.collectionName) return;
+    try {
+        const result = await client.items.permissions(
+            props.collectionName,
+            buildPayload(),
+        );
+        permissions.value = result;
+    } catch {
+        // Never brick the form on a probe failure — let the server enforce.
+        permissions.value = null;
+    }
+}
+
+function scheduleProbe() {
+    if (probeTimer) clearTimeout(probeTimer);
+    probeTimer = setTimeout(runProbe, 500);
+}
 
 watch(
     () => props.visible,
     (val) => {
         visibleInner.value = val;
         if (val) {
-            formValues.value = {};
-
-            if (props.createPolicy?.field_validation) {
-                const defaults: Record<string, any> = {};
-                for (const rule of props.createPolicy.field_validation) {
-                    if (
-                        rule.operator === "eq" &&
-                        !formValues.value[rule.field]
-                    ) {
-                        defaults[rule.field] = rule.value;
-                    }
-                }
-                formValues.value = { ...defaults, ...formValues.value };
-            }
+            formValues.value = { ...prefillValues() };
+            scheduleProbe();
+        } else {
+            if (probeTimer) clearTimeout(probeTimer);
+            permissions.value = null;
         }
     },
 );
+
+watch(
+    formValues,
+    () => {
+        if (visibleInner.value) scheduleProbe();
+    },
+    { deep: true },
+);
+
+const saveBlocked = computed(
+    () => !!permissions.value && !permissions.value.allowed,
+);
+
+function describeViolation(v: PermissionViolation): string {
+    if (v.reason === "not_permitted") return `${v.field} is not allowed`;
+    if (v.reason === "relation_mismatch")
+        return `the selected related record for ${v.field} does not satisfy this permission`;
+    if (v.reason) return `${v.field} is not permitted (${v.reason})`;
+    if (v.operator)
+        return `${v.field} must be ${v.operator} ${JSON.stringify(v.expected)}`;
+    return `${v.field} is not allowed`;
+}
+
+const denyReason = computed<string | null>(() => {
+    const p = permissions.value;
+    if (!p || p.allowed) return null;
+    const reasons = [
+        ...(p.violations || []).map(describeViolation),
+        ...(p.unresolved || []).map(
+            (u) => `waiting for a related selection for ${u.field}`,
+        ),
+    ];
+    return reasons.length
+        ? reasons.join("; ")
+        : "This item cannot be created with the current values";
+});
 
 function hasPendingChanges(): boolean {
     return !!(
@@ -74,34 +186,9 @@ function onVisibleChange(val: boolean) {
 async function save() {
     if (recordFormRef.value && !recordFormRef.value.validate()) return;
 
-    if (props.createPolicy?.field_validation) {
-        for (const rule of props.createPolicy.field_validation) {
-            const value = formValues.value[rule.field];
-            if (rule.operator === "eq" && value !== rule.value) {
-                toast.show(
-                    `Field "${rule.field}" must be "${rule.value}"`,
-                    "error",
-                );
-                return;
-            }
-        }
-    }
-
     saving.value = true;
     try {
-        const payload: Record<string, any> = {};
-        for (const [key, value] of Object.entries(formValues.value)) {
-            if (value === null || value === undefined || value === "") continue;
-            payload[key] = value instanceof Date ? value.toISOString() : value;
-        }
-        // Merge nested relational sections into the same request (atomic).
-        if (
-            recordFormRef.value &&
-            typeof recordFormRef.value.getRelationBody === "function"
-        ) {
-            const body = recordFormRef.value.getRelationBody();
-            if (body) Object.assign(payload, body);
-        }
+        const payload = buildPayload();
         const createOptions =
             props.targetApp || props.targetVersion
                 ? { app: props.targetApp, version: props.targetVersion }
@@ -149,20 +236,31 @@ function close() {
                 ref="recordFormRef"
                 :collection-name="collectionName"
                 v-model="formValues"
-                :fields-override="fields"
+                :fields-override="effectiveFields"
                 :target-app="targetApp"
                 :target-version="targetVersion"
             />
         </div>
         <template #footer>
-            <div class="flex gap-2 justify-end">
+            <div class="flex items-center gap-3 justify-end">
+                <span
+                    v-if="denyReason"
+                    class="mr-auto text-xs text-red-500"
+                >
+                    {{ denyReason }}
+                </span>
                 <Button
                     label="Cancel"
                     severity="secondary"
                     :disabled="saving"
                     @click="close"
                 />
-                <Button label="Save" :loading="saving" @click="save" />
+                <Button
+                    label="Save"
+                    :loading="saving"
+                    :disabled="saveBlocked"
+                    @click="save"
+                />
             </div>
         </template>
     </Drawer>

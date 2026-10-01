@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::services::items::service::ItemsService;
 use crate::services::items::{query::Query, relational};
+use crate::services::permissions::create::create_permission_detail;
 use crate::services::respond::JSendResponse;
 use crate::services::respond::success;
 use crate::services::{
@@ -23,6 +24,7 @@ use crate::AppState;
 pub fn items_controller() -> Router<AppState> {
     return Router::new()
         .route("/{collection}/$delete", post(check_delete_permissions))
+        .route("/{collection}/$permissions", post(item_permissions))
         .route(
             "/{collection}",
             get(get_items)
@@ -330,6 +332,48 @@ async fn check_delete_permissions(
     let service = ItemsService::new(&state, &context, &collection);
     let permissions = service.delete_permissions_for_pks(pk_values).await?;
     Ok(Json(success(Value::Object(permissions))))
+}
+
+#[utoipa::path(post, path = "/api/app/items/{collection}/$permissions",
+    params(
+        ("collection" = String, Path, description = "Collection name."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    request_body(content = Value, content_type = "application/json", description="{\"action\": \"create\", \"item\": { ...candidate values }}"),
+    responses(
+        (status = OK)
+    )
+)]
+async fn item_permissions(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+    ExtractContext(context): ExtractContext,
+    Json(body): Json<Value>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    let action = body
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("create");
+    if action != "create" {
+        return Err(AlcedoError::InvalidInput(
+            format!(
+                "Unsupported action '{}'; only 'create' is implemented",
+                action
+            ),
+            1,
+        ));
+    }
+    let item = body
+        .get("item")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| {
+            AlcedoError::InvalidInput("Request body must contain an 'item' object".to_string(), 1)
+        })?;
+
+    let result = create_permission_detail(&state, &context, &collection, &item).await?;
+    Ok(Json(success(result)))
 }
 
 #[utoipa::path(get, path = "/api/app/items/{collection}/{id}/references",

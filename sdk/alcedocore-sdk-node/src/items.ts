@@ -120,5 +120,20 @@ export function createItemsResource(ky: any) {
                     ...options,
                 })
                 .json() as Promise<Record<string, boolean>>,
+
+        permissions: (
+            name: string,
+            item: Record<string, any>,
+            action: "create" | "update" = "create",
+            options?: Record<string, any>,
+        ) =>
+            ky
+                .post(`app/items/${encodeURIComponent(name)}/$permissions`, {
+                    json: { action, item },
+                    ...options,
+                })
+                .json() as Promise<
+                import("./types/permissions").ItemPermissions
+            >,
     };
 }

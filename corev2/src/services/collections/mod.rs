@@ -21,7 +21,10 @@ use crate::{
         context::AppContext,
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
-        permissions,
+        permissions::{
+            self,
+            create::{create_permission_summary, resolve_create_access},
+        },
         postgres::pool::execute_query_transaction,
     },
 };
@@ -683,12 +686,8 @@ pub async fn create_policy(
     name: &str,
 ) -> Result<Value, AlcedoError> {
     let collection = get_collection(state, ctx, name).await?;
-    Ok(json!({
-        "collection_name": name,
-        "allowed_fields": collection.fields,
-        "field_validation": [],
-        "$permissions": { "create": true }
-    }))
+    let access = resolve_create_access(state, ctx, name, ctx.identity.as_ref()).await?;
+    Ok(create_permission_summary(&access, &collection.fields, name))
 }
 
 // ---------------------------------------------------------------------------

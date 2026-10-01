@@ -17,6 +17,7 @@ use crate::services::postgres::pool::{execute_query, pgrow_to_json};
 pub struct ReadRule {
     pub fields: Option<Vec<String>>,
     pub conditions: Vec<Filter>,
+    pub raw: Value,
 }
 
 /// The resolved read access for a collection. `Unrestricted` means no rule
@@ -728,14 +729,6 @@ pub async fn resolve_read_access(
     resolve_access(state, context, collection, identity, "read").await
 }
 
-/// Resolves the record-level access for `collection` and `action` for the given
-/// caller identity. Shared by read and the write actions (currently `delete`):
-/// the rules are scoped by `alcedocore_policy_permissions.action`.
-///
-/// Returns `Unrestricted` for anonymous/system callers, developer keys, global
-/// admins and framework collections. Otherwise the caller's applicable policy
-/// permissions are loaded and turned into OR-ed [`ReadRule`]s. Missing rules
-/// mean `Deny`; a malformed stored filter fails closed to `Deny`.
 pub async fn resolve_access(
     state: &AppState,
     context: &AppContext,
@@ -743,6 +736,15 @@ pub async fn resolve_access(
     identity: Option<&AuthLevel>,
     action: &str,
 ) -> Result<ReadAccess, AlcedoError> {
+    // Framework/meta collections (`alcedo_*`, `alcedocore_*`) carry no policies,
+    // so they are never subject to record-level checks. This must be decided
+    // before the no-identity guard below: internal helpers (e.g. resolving a
+    // user's role names) read those tables with `identity: None` in an
+    // app-scoped API context, which is not a policy bug.
+    if is_framework_collection(collection) {
+        return Ok(ReadAccess::Unrestricted);
+    }
+
     let Some(identity) = identity else {
         return match context.request_source {
             RequestSource::Migration
@@ -775,10 +777,6 @@ pub async fn resolve_access(
         }
     }
 
-    if is_framework_collection(collection) {
-        return Ok(ReadAccess::Unrestricted);
-    }
-
     // No collection metadata (e.g. a table created outside the collections API,
     // or a stale schema cache) means access cannot be evaluated: fail closed.
     let Some(collection_id) = state
@@ -795,10 +793,18 @@ pub async fn resolve_access(
     // all app-bound tables are qualified explicitly. `alcedo_users` is global.
     let schema = context.schema_name();
 
+    // `create` stores its allowed-value conditions in `field_validation`;
+    // every other action reads them from `filter`.
+    let condition_column = if action == "create" {
+        "field_validation"
+    } else {
+        "filter"
+    };
+
     let mut select = policy_permissions_select(&schema);
     select
         .column((Alias::new("pp"), Alias::new("fields")))
-        .column((Alias::new("pp"), Alias::new("filter")))
+        .column((Alias::new("pp"), Alias::new(condition_column)))
         .and_where(
             Expr::col((Alias::new("pp"), Alias::new("collection"))).eq(Expr::value(collection_id)),
         )
@@ -816,7 +822,7 @@ pub async fn resolve_access(
     let mut paths = BTreeSet::new();
     for row in &rows {
         let map = pgrow_to_json(row)?;
-        if let Some(filter) = map.get("filter") {
+        if let Some(filter) = map.get(condition_column) {
             collect_user_paths(filter, &mut paths);
         }
     }
@@ -846,7 +852,7 @@ pub async fn resolve_access(
         let map = pgrow_to_json(row)?;
         let fields = normalize_fields(map.get("fields").unwrap_or(&Value::Null));
 
-        let mut filter = map.get("filter").cloned().unwrap_or(Value::Null);
+        let mut filter = map.get(condition_column).cloned().unwrap_or(Value::Null);
         if let (AuthLevel::User(_), Some(user)) = (identity, &user) {
             substitute_user_placeholders(&mut filter, user);
         }
@@ -856,7 +862,11 @@ pub async fn resolve_access(
             Err(_) => return Ok(ReadAccess::Deny),
         };
 
-        rules.push(ReadRule { fields, conditions });
+        rules.push(ReadRule {
+            fields,
+            conditions,
+            raw: filter,
+        });
     }
 
     Ok(ReadAccess::Restricted { rules })
@@ -1158,6 +1168,7 @@ mod tests {
                         &json!([{ "field": "owner", "operator": "eq", "value": 1 }]),
                     )
                     .unwrap(),
+                    raw: Value::Null,
                 },
                 ReadRule {
                     fields: None,
@@ -1165,6 +1176,7 @@ mod tests {
                         &json!([{ "field": "owner", "operator": "eq", "value": 2 }]),
                     )
                     .unwrap(),
+                    raw: Value::Null,
                 },
             ],
         };
@@ -1838,6 +1850,7 @@ mod integration_tests {
                         &json!([{ "field": "status", "operator": "eq", "value": "active" }]),
                     )
                     .unwrap(),
+                    raw: Value::Null,
                 },
                 ReadRule {
                     fields: Some(vec!["name".to_string(), "email".to_string()]),
@@ -1845,6 +1858,7 @@ mod integration_tests {
                         &json!([{ "field": "company", "operator": "eq", "value": "Acme Corp" }]),
                     )
                     .unwrap(),
+                    raw: Value::Null,
                 },
             ],
         };
@@ -1905,6 +1919,7 @@ mod integration_tests {
                     { "field": "customer.name", "operator": "eq", "value": "Acme Corp" }
                 ]))
                 .unwrap(),
+                raw: Value::Null,
             }],
         };
         let fk_rows = fk_query
@@ -1932,6 +1947,7 @@ mod integration_tests {
                     { "field": "contacts.first_name", "operator": "eq", "value": "Alice" }
                 ]))
                 .unwrap(),
+                raw: Value::Null,
             }],
         };
         let o2m_rows = o2m_query
@@ -1987,6 +2003,7 @@ mod integration_tests {
                     { "field": "customer.contacts.first_name", "operator": "eq", "value": "Alice" }
                 ]))
                 .unwrap(),
+                raw: Value::Null,
             }],
         };
         let rows = query
@@ -2035,6 +2052,7 @@ mod integration_tests {
             rules: vec![ReadRule {
                 fields: None,
                 conditions: conditions_from_json(&filter).unwrap(),
+                raw: Value::Null,
             }],
         };
         let rows = query
