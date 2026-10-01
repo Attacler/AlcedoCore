@@ -17,8 +17,17 @@ use crate::services::postgres::pool::{execute_query, pgrow_to_json};
 #[derive(Debug, Clone, Default)]
 pub struct ReadRule {
     pub fields: Option<Vec<String>>,
+    /// The rule's **scope**: which rows it governs, from the stored `filter`
+    /// column. Empty means every row. For `create` there is no row, so the scope
+    /// is evaluated against the payload.
     pub conditions: Vec<Filter>,
-    pub raw: Value,
+    /// The rule's **value constraint** on what is being written, from the stored
+    /// `field_validation` column. Always evaluated against the request payload
+    /// itself (never the resulting row), and only for the keys it contains.
+    pub validations: Vec<Filter>,
+    /// The stored `field_validation` JSON before parsing, same verbatim shape as
+    /// [`Self::raw`]. This is what a create/update form needs (e.g. to prefill).
+    pub raw_validations: Value,
 }
 
 /// The resolved read access for a collection. `Unrestricted` means no rule
@@ -859,18 +868,13 @@ pub async fn resolve_access(
     // all app-bound tables are qualified explicitly. `alcedo_users` is global.
     let schema = context.schema_name();
 
-    // `create` stores its allowed-value conditions in `field_validation`;
-    // every other action reads them from `filter`.
-    let condition_column = if action == "create" {
-        "field_validation"
-    } else {
-        "filter"
-    };
-
+    // Both condition sources are read for every action: `filter` is the rule's
+    // row scope, `field_validation` its value constraint on the payload.
     let mut select = policy_permissions_select(&schema);
     select
         .column((Alias::new("pp"), Alias::new("fields")))
-        .column((Alias::new("pp"), Alias::new(condition_column)))
+        .column((Alias::new("pp"), Alias::new("filter")))
+        .column((Alias::new("pp"), Alias::new("field_validation")))
         .and_where(
             Expr::col((Alias::new("pp"), Alias::new("collection"))).eq(Expr::value(collection_id)),
         )
@@ -888,8 +892,10 @@ pub async fn resolve_access(
     let mut paths = BTreeSet::new();
     for row in &rows {
         let map = pgrow_to_json(row)?;
-        if let Some(filter) = map.get(condition_column) {
-            collect_user_paths(filter, &mut paths);
+        for column in ["filter", "field_validation"] {
+            if let Some(value) = map.get(column) {
+                collect_user_paths(value, &mut paths);
+            }
         }
     }
 
@@ -918,20 +924,27 @@ pub async fn resolve_access(
         let map = pgrow_to_json(row)?;
         let fields = normalize_fields(map.get("fields").unwrap_or(&Value::Null));
 
-        let mut filter = map.get(condition_column).cloned().unwrap_or(Value::Null);
+        let mut scope = map.get("filter").cloned().unwrap_or(Value::Null);
+        let mut validation = map.get("field_validation").cloned().unwrap_or(Value::Null);
         if let (AuthLevel::User(_), Some(user)) = (identity, &user) {
-            substitute_user_placeholders(&mut filter, user);
+            substitute_user_placeholders(&mut scope, user);
+            substitute_user_placeholders(&mut validation, user);
         }
 
-        let conditions = match conditions_from_json(&filter) {
+        let conditions = match conditions_from_json(&scope) {
             Ok(conditions) => conditions,
+            Err(_) => return Ok(ReadAccess::Deny),
+        };
+        let validations = match conditions_from_json(&validation) {
+            Ok(validations) => validations,
             Err(_) => return Ok(ReadAccess::Deny),
         };
 
         rules.push(ReadRule {
             fields,
             conditions,
-            raw: filter,
+            validations,
+            raw_validations: validation,
         });
     }
 
@@ -1234,7 +1247,8 @@ mod tests {
                         &json!([{ "field": "owner", "operator": "eq", "value": 1 }]),
                     )
                     .unwrap(),
-                    raw: Value::Null,
+                    validations: vec![],
+                    raw_validations: Value::Null,
                 },
                 ReadRule {
                     fields: None,
@@ -1242,7 +1256,8 @@ mod tests {
                         &json!([{ "field": "owner", "operator": "eq", "value": 2 }]),
                     )
                     .unwrap(),
-                    raw: Value::Null,
+                    validations: vec![],
+                    raw_validations: Value::Null,
                 },
             ],
         };
@@ -1916,7 +1931,8 @@ mod integration_tests {
                         &json!([{ "field": "status", "operator": "eq", "value": "active" }]),
                     )
                     .unwrap(),
-                    raw: Value::Null,
+                    validations: vec![],
+                    raw_validations: Value::Null,
                 },
                 ReadRule {
                     fields: Some(vec!["name".to_string(), "email".to_string()]),
@@ -1924,7 +1940,8 @@ mod integration_tests {
                         &json!([{ "field": "company", "operator": "eq", "value": "Acme Corp" }]),
                     )
                     .unwrap(),
-                    raw: Value::Null,
+                    validations: vec![],
+                    raw_validations: Value::Null,
                 },
             ],
         };
@@ -1985,7 +2002,8 @@ mod integration_tests {
                     { "field": "customer.name", "operator": "eq", "value": "Acme Corp" }
                 ]))
                 .unwrap(),
-                raw: Value::Null,
+                validations: vec![],
+                raw_validations: Value::Null,
             }],
         };
         let fk_rows = fk_query
@@ -2013,7 +2031,8 @@ mod integration_tests {
                     { "field": "contacts.first_name", "operator": "eq", "value": "Alice" }
                 ]))
                 .unwrap(),
-                raw: Value::Null,
+                validations: vec![],
+                raw_validations: Value::Null,
             }],
         };
         let o2m_rows = o2m_query
@@ -2069,7 +2088,8 @@ mod integration_tests {
                     { "field": "customer.contacts.first_name", "operator": "eq", "value": "Alice" }
                 ]))
                 .unwrap(),
-                raw: Value::Null,
+                validations: vec![],
+                raw_validations: Value::Null,
             }],
         };
         let rows = query
@@ -2118,7 +2138,8 @@ mod integration_tests {
             rules: vec![ReadRule {
                 fields: None,
                 conditions: conditions_from_json(&filter).unwrap(),
-                raw: Value::Null,
+                validations: vec![],
+                raw_validations: Value::Null,
             }],
         };
         let rows = query

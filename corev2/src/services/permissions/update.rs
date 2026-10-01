@@ -192,12 +192,18 @@ pub async fn check_update(
             if !per_rule[index].contains(row_key) {
                 continue;
             }
-            if rule.conditions.is_empty()
-                || result_satisfies(state, context, collection, payload, &result, &rule.conditions)
+            if !rule.conditions.is_empty()
+                && !result_satisfies(state, context, collection, payload, &result, &rule.conditions)
                     .await?
             {
-                covering.push(index);
+                continue;
             }
+            // `field_validation` is a value constraint on the payload itself
+            // (never the result), so it is checked like create's validations.
+            if !payload_satisfies(state, context, collection, &rule.validations, payload).await? {
+                continue;
+            }
+            covering.push(index);
         }
 
         // Every changed key must be authorized by some covering rule.
@@ -232,6 +238,89 @@ fn rule_authorizes_key(rule: &ReadRule, key: &str, fields: &[FieldDefinition]) -
     match &rule.fields {
         None => true,
         Some(allowed) => is_nested_write || allowed.iter().any(|field| field == key),
+    }
+}
+
+/// Evaluates a rule's `field_validation` conditions against the **payload**
+/// (never the resulting row), matching create's semantics: a condition on a key
+/// the payload does not carry is skipped, and a relation path is re-rooted at
+/// the payload's foreign key.
+async fn payload_satisfies(
+    state: &AppState,
+    context: &AppContext,
+    collection: &str,
+    validations: &[Filter],
+    payload: &Map<String, Value>,
+) -> Result<bool, AlcedoError> {
+    if validations.is_empty() {
+        return Ok(true);
+    }
+
+    let fields = collection_fields(state, context, collection).await?;
+
+    for condition in validations {
+        let Filter::Field(FieldFilter { fields: inner }) = condition else {
+            // Logical groups cannot be judged against a payload.
+            return Ok(false);
+        };
+        let Some((name, value)) = inner.iter().next() else {
+            continue;
+        };
+
+        match value {
+            FieldValue::Comparison(comparison) => {
+                // A key the payload does not carry has nothing to judge.
+                let Some(actual) = payload.get(name) else {
+                    continue;
+                };
+                if !crate::services::permissions::create::comparison_matches(comparison, actual) {
+                    return Ok(false);
+                }
+            }
+            FieldValue::Nested(rest) => {
+                let field = fields.iter().find(|field| &field.name == name);
+                let Some(field) = field.filter(|field| field.is_relationship() && !field.is_virtual())
+                else {
+                    return Ok(false);
+                };
+                let target = field.related_collection.clone().ok_or_else(|| {
+                    AlcedoError::InvalidInput(
+                        format!("Relation '{}' has no related collection", name),
+                        0,
+                    )
+                })?;
+                let pks = payload.get(name).map(relation_pks).unwrap_or_default();
+                if pks.is_empty() {
+                    return Ok(false);
+                }
+                let conditions = vec![Filter::Field(rest.clone())];
+                let related_ctx = crate::services::items::relational::target_ctx(
+                    context,
+                    &field.related_app,
+                );
+                let matched =
+                    matching_pks(state, &related_ctx, &target, &conditions, &pks).await?;
+                if matched.len() != pks.len() {
+                    return Ok(false);
+                }
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+/// The pks referenced by a relation value (a scalar fk, or an array of them).
+fn relation_pks(value: &Value) -> Vec<Value> {
+    match value {
+        Value::Null => Vec::new(),
+        Value::Array(values) => values
+            .iter()
+            .filter(|value| !value.is_object() && !value.is_array())
+            .cloned()
+            .collect(),
+        other if !other.is_object() => vec![other.clone()],
+        _ => Vec::new(),
     }
 }
 
@@ -279,7 +368,8 @@ async fn result_satisfies(
             rules: vec![ReadRule {
                 fields: None,
                 conditions: stored_only,
-                raw: Value::Null,
+                validations: vec![],
+                raw_validations: Value::Null,
             }],
         };
         query.apply_access();
@@ -456,6 +546,9 @@ pub async fn update_permission_detail(
     let mut per_rule_detail = Vec::with_capacity(rules.len());
     let mut unauthorized: Vec<Value> = Vec::new();
     let mut covered = false;
+    // Indexes of the rules that cover this row (filter holds and validation
+    // accepts the payload); only these can authorize a key.
+    let mut holding: Vec<usize> = Vec::new();
 
     for (index, rule) in rules.iter().enumerate() {
         if !per_rule[index].contains(&key) {
@@ -470,21 +563,27 @@ pub async fn update_permission_detail(
             }
         }
 
-        // The rule covers the row only if its filter still matches the result.
+        // The rule covers the row only if its filter still matches the result
+        // and its `field_validation` accepts the payload.
         let filter_holds = rule.conditions.is_empty()
             || result_satisfies(state, context, collection, payload, &result, &rule.conditions)
                 .await?;
-        if !filter_holds {
+        let validation_holds =
+            payload_satisfies(state, context, collection, &rule.validations, payload).await?;
+        if !filter_holds || !validation_holds {
             per_rule_detail.push(json!({
                 "fields": rule.fields.clone().unwrap_or_default(),
                 "allowed": false,
                 "authorizes": authorized_keys,
-                "violations": [json!({ "reason": "filter_failed" })],
+                "violations": [json!({
+                    "reason": if !filter_holds { "filter_failed" } else { "validation_failed" }
+                })],
             }));
             continue;
         }
 
         covered = true;
+        holding.push(index);
         per_rule_detail.push(json!({
             "fields": rule.fields.clone().unwrap_or_default(),
             "allowed": !authorized_keys.is_empty(),
@@ -493,11 +592,11 @@ pub async fn update_permission_detail(
         }));
     }
 
-    // Every changed key must be authorized by at least one covering rule.
+    // Every changed key must be authorized by at least one rule that holds.
     for field in payload.keys() {
-        let authorized = rules.iter().enumerate().any(|(index, rule)| {
-            per_rule[index].contains(&key) && rule_authorizes_key(rule, field, &fields)
-        });
+        let authorized = holding
+            .iter()
+            .any(|&index| rule_authorizes_key(&rules[index], field, &fields));
         if !authorized {
             unauthorized.push(json!({ "field": field, "reason": "not_permitted" }));
         }
@@ -701,8 +800,10 @@ mod integration_tests {
     /// Adds one `update` permission rule (policy + role-policy + permission)
     /// for `seed`'s role on `table`. `fields` is the whitelist (`[]` = any),
     /// `filter` is the row filter (stored in the `filter` column, which is where
-    /// `update` reads its conditions from).
-    async fn add_update_grant(
+    /// `update` reads its row scope from), and `field_validation` is the
+    /// payload value constraint (also `[]` = none).
+    #[allow(clippy::too_many_arguments)]
+    async fn add_update_grant_full(
         state: &AppState,
         marker: &str,
         seed: &Seed,
@@ -710,6 +811,7 @@ mod integration_tests {
         table: &str,
         fields: Value,
         filter: Value,
+        field_validation: Value,
     ) {
         let collection = collection_id(state, schema, table)
             .await
@@ -739,16 +841,42 @@ mod integration_tests {
         sqlx::query(&format!(
             "INSERT INTO \"{schema}\".alcedocore_policy_permissions \
              (id, policy_id, collection, action, fields, filter, field_validation) \
-             VALUES ($1, $2, $3, 'update', $4::json, $5::json, '[]'::json)"
+             VALUES ($1, $2, $3, 'update', $4::json, $5::json, $6::json)"
         ))
         .bind(Uuid::new_v4())
         .bind(policy_id)
         .bind(collection)
         .bind(serde_json::to_string(&fields).unwrap())
         .bind(serde_json::to_string(&filter).unwrap())
+        .bind(serde_json::to_string(&field_validation).unwrap())
         .execute(&*state.database_pool)
         .await
         .expect("insert policy permission");
+    }
+
+    /// Adds one `update` permission rule with no `field_validation`. Thin
+    /// wrapper over [`add_update_grant_full`] so pre-validation tests keep their
+    /// original call shape.
+    async fn add_update_grant(
+        state: &AppState,
+        marker: &str,
+        seed: &Seed,
+        schema: &str,
+        table: &str,
+        fields: Value,
+        filter: Value,
+    ) {
+        add_update_grant_full(
+            state,
+            marker,
+            seed,
+            schema,
+            table,
+            fields,
+            filter,
+            json!([]),
+        )
+        .await;
     }
 
     /// Inserts a ticket directly (bypassing policies) so a test can pin an exact
@@ -1393,5 +1521,303 @@ mod integration_tests {
             .await
             .unwrap();
         assert!(count > 0, "crm customers should be seeded");
+    }
+
+    /// 11. `field_validation` blocks a bad payload through `check_update`, and
+    /// the real `ItemsService` path rejects it without writing.
+    #[tokio::test]
+    async fn update_validation_blocks_bad_payload() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        inject_schema_meta(&state, HELPDESK_SCHEMA).await;
+        let seed = seed_role(&state, "valblock").await;
+        add_update_grant_full(
+            &state,
+            "valblock",
+            &seed,
+            HELPDESK_SCHEMA,
+            "tickets",
+            json!(["status"]),
+            json!([]),
+            json!([{ "field": "status", "operator": "eq", "value": "closed" }]),
+        )
+        .await;
+
+        let pk = insert_ticket(&state, "ut-valblock-row", "open").await;
+        let ctx = helpdesk_ctx(Some(AuthLevel::User(seed.user_id)));
+        let pks = [json!(pk.to_string())];
+
+        // A payload satisfying the validation is allowed and persists.
+        let good = item(json!({ "status": "closed" }));
+        let access = resolve_update(&state, &ctx, "tickets", &pks).await.unwrap();
+        check_update(&state, &ctx, "tickets", &access, &good)
+            .await
+            .expect("a payload satisfying field_validation must be allowed");
+        service_update(&state, &ctx, "tickets", pk, good)
+            .await
+            .expect("service update must succeed");
+        assert_eq!(ticket_status(&state, pk).await.as_deref(), Some("closed"));
+
+        // A payload failing the validation is rejected and writes nothing.
+        let bad = item(json!({ "status": "open" }));
+        let access = resolve_update(&state, &ctx, "tickets", &pks).await.unwrap();
+        let err = check_update(&state, &ctx, "tickets", &access, &bad)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
+        assert_eq!(
+            err.into_response().status(),
+            StatusCode::FORBIDDEN,
+            "rejection maps to HTTP 403"
+        );
+
+        let err = service_update(&state, &ctx, "tickets", pk, bad)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
+        assert_eq!(
+            ticket_status(&state, pk).await.as_deref(),
+            Some("closed"),
+            "a validation failure must not write"
+        );
+
+        cleanup_marker(&state, "valblock").await;
+    }
+
+    /// 12. `field_validation` is evaluated against the **payload only**: a
+    /// condition on a key the payload does not carry is skipped, so the rule
+    /// still passes. A payload that does carry the key with a bad value fails.
+    #[tokio::test]
+    async fn update_validation_on_unsent_key_is_skipped() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        inject_schema_meta(&state, HELPDESK_SCHEMA).await;
+        let seed = seed_role(&state, "valskip").await;
+        add_update_grant_full(
+            &state,
+            "valskip",
+            &seed,
+            HELPDESK_SCHEMA,
+            "tickets",
+            json!(["status", "priority"]),
+            json!([]),
+            json!([{ "field": "priority", "operator": "eq", "value": "high" }]),
+        )
+        .await;
+
+        let pk = insert_ticket(&state, "ut-valskip-row", "open").await;
+        let ctx = helpdesk_ctx(Some(AuthLevel::User(seed.user_id)));
+        let pks = [json!(pk.to_string())];
+
+        // `priority` is absent from the payload, so the validator is skipped and
+        // the payload changing only `status` is allowed.
+        let status_only = item(json!({ "status": "closed" }));
+        let access = resolve_update(&state, &ctx, "tickets", &pks).await.unwrap();
+        check_update(&state, &ctx, "tickets", &access, &status_only)
+            .await
+            .expect("a validation on an unsent key must be skipped");
+        service_update(&state, &ctx, "tickets", pk, status_only)
+            .await
+            .expect("service update must succeed");
+        assert_eq!(ticket_status(&state, pk).await.as_deref(), Some("closed"));
+
+        // Sending the validated key with a failing value is rejected.
+        let bad_priority = item(json!({ "priority": "low" }));
+        let access = resolve_update(&state, &ctx, "tickets", &pks).await.unwrap();
+        let err = check_update(&state, &ctx, "tickets", &access, &bad_priority)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
+
+        let err = service_update(&state, &ctx, "tickets", pk, bad_priority)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
+
+        cleanup_marker(&state, "valskip").await;
+    }
+
+    /// 13. A rule whose `field_validation` fails contributes nothing: it cannot
+    /// authorize any key. Here rule A whitelists `status` but validates
+    /// `status eq "closed"`; rule B whitelists `priority` only. A payload
+    /// `{status:"open", priority:"low"}` is rejected because rule A is dropped
+    /// (validation failed) and rule B does not list `status`.
+    #[tokio::test]
+    async fn update_validation_failure_stops_rule_from_authorizing() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        inject_schema_meta(&state, HELPDESK_SCHEMA).await;
+        let seed = seed_role(&state, "valauth").await;
+        // Rule A: authorizes `status`, but only for `status == "closed"`.
+        add_update_grant_full(
+            &state,
+            "valauth",
+            &seed,
+            HELPDESK_SCHEMA,
+            "tickets",
+            json!(["status"]),
+            json!([]),
+            json!([{ "field": "status", "operator": "eq", "value": "closed" }]),
+        )
+        .await;
+        // Rule B: authorizes `priority`, no validation.
+        add_update_grant_full(
+            &state,
+            "valauth",
+            &seed,
+            HELPDESK_SCHEMA,
+            "tickets",
+            json!(["priority"]),
+            json!([]),
+            json!([]),
+        )
+        .await;
+
+        let pk = insert_ticket(&state, "ut-valauth-row", "open").await;
+        let ctx = helpdesk_ctx(Some(AuthLevel::User(seed.user_id)));
+        let pks = [json!(pk.to_string())];
+
+        let bad = item(json!({ "status": "open", "priority": "low" }));
+        let access = resolve_update(&state, &ctx, "tickets", &pks).await.unwrap();
+        let err = check_update(&state, &ctx, "tickets", &access, &bad)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AlcedoError::Forbidden(_, _)),
+            "a validation-failing rule must not authorize `status`: {err:?}"
+        );
+
+        let err = service_update(&state, &ctx, "tickets", pk, bad)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
+        assert_eq!(
+            ticket_status(&state, pk).await.as_deref(),
+            Some("open"),
+            "the rejected payload must not write"
+        );
+
+        // Sanity: with `status:"closed"` rule A holds again and the same payload
+        // shape is allowed, so the rejection above is due to the validation.
+        let access = resolve_update(&state, &ctx, "tickets", &pks).await.unwrap();
+        check_update(
+            &state,
+            &ctx,
+            "tickets",
+            &access,
+            &item(json!({ "status": "closed", "priority": "low" })),
+        )
+        .await
+        .expect("with the validation satisfied both keys are authorized");
+
+        cleanup_marker(&state, "valauth").await;
+    }
+
+    /// 14. `update_permission_detail` reports a validation failure distinctly
+    /// from a filter failure: the failing rule carries
+    /// `violations[0].reason == "validation_failed"` and the payload is denied.
+    #[tokio::test]
+    async fn update_permission_detail_reports_validation_failure() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        inject_schema_meta(&state, HELPDESK_SCHEMA).await;
+        let seed = seed_role(&state, "valdet").await;
+        add_update_grant_full(
+            &state,
+            "valdet",
+            &seed,
+            HELPDESK_SCHEMA,
+            "tickets",
+            json!(["status"]),
+            json!([]),
+            json!([{ "field": "status", "operator": "eq", "value": "closed" }]),
+        )
+        .await;
+
+        let pk = insert_ticket(&state, "ut-valdet-row", "open").await;
+        let ctx = helpdesk_ctx(Some(AuthLevel::User(seed.user_id)));
+
+        // A payload failing the rule's validation: denied, with the failing rule
+        // tagged `validation_failed` (not `filter_failed`).
+        let detail = update_permission_detail(
+            &state,
+            &ctx,
+            "tickets",
+            &json!(pk.to_string()),
+            &item(json!({ "status": "open" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(detail["allowed"], json!(false), "detail: {detail}");
+        let rules = detail["rules"].as_array().expect("rules array");
+        assert_eq!(rules.len(), 1, "one rule seeded: {detail}");
+        assert_eq!(rules[0]["allowed"], json!(false), "detail: {detail}");
+        let violations = rules[0]["violations"].as_array().expect("violations");
+        assert_eq!(
+            violations[0]["reason"],
+            json!("validation_failed"),
+            "a validation failure must not be reported as filter_failed: {detail}"
+        );
+
+        // A payload satisfying the validation is allowed.
+        let ok = update_permission_detail(
+            &state,
+            &ctx,
+            "tickets",
+            &json!(pk.to_string()),
+            &item(json!({ "status": "closed" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok["allowed"], json!(true), "detail: {ok}");
+        assert_eq!(ok["violations"], json!([]), "detail: {ok}");
+
+        cleanup_marker(&state, "valdet").await;
+    }
+
+    /// 15. `editable_pks` is row-filter-only and ignores `field_validation`: a
+    /// row matching the (empty) filter is editable even though a particular
+    /// value would fail validation.
+    #[tokio::test]
+    async fn editable_pks_ignores_validation() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        inject_schema_meta(&state, HELPDESK_SCHEMA).await;
+        let seed = seed_role(&state, "valedit").await;
+        // A rule whose validation would reject most payloads; the row filter is
+        // empty, so every row matches and is reported editable.
+        add_update_grant_full(
+            &state,
+            "valedit",
+            &seed,
+            HELPDESK_SCHEMA,
+            "tickets",
+            json!(["status"]),
+            json!([]),
+            json!([{ "field": "status", "operator": "eq", "value": "closed" }]),
+        )
+        .await;
+
+        let row = insert_ticket(&state, "ut-valedit-row", "open").await;
+        let ctx = helpdesk_ctx(Some(AuthLevel::User(seed.user_id)));
+
+        let editable = editable_pks(&state, &ctx, "tickets", &[json!(row.to_string())])
+            .await
+            .unwrap();
+        assert_eq!(
+            editable.get(&row.to_string()),
+            Some(&Value::Bool(true)),
+            "editable_pks must ignore field_validation: {editable:?}"
+        );
+
+        // And the same payload that `editable_pks` called editable is genuinely
+        // rejected when submitted, proving the probe is row-scope only.
+        let err = service_update(
+            &state,
+            &ctx,
+            "tickets",
+            row,
+            item(json!({ "status": "open" })),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
+
+        cleanup_marker(&state, "valedit").await;
     }
 }

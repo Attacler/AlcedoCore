@@ -453,18 +453,12 @@ impl ItemsService<'_> {
             self.app_context.identity.as_ref(),
         )
         .await?;
-        let eligible = permissions::create::check_create_fields(
-            &create_access,
-            self.collection,
-            &before.items,
-        )?;
-        permissions::create::check_create_values(
+        permissions::create::check_create(
             self.app_state,
             self.app_context,
             self.collection,
             &create_access,
             &before.items,
-            &eligible,
         )
         .await?;
 

@@ -1,19 +1,20 @@
 //! `create` permission enforcement.
 //!
-//! A `create` policy rule is an atomic grant: an allowed-fields whitelist plus
-//! allowed-value conditions. The caller may create an item iff there exists at
-//! least one rule whose whitelist accepts every top-level key of the payload
-//! *and* whose conditions the persisted row satisfies. Rules OR together; the
-//! field lists are never unioned and the validations are never AND-ed across
-//! different rules.
+//! A `create` rule has no row to scope, so only two parts apply: its `fields`
+//! whitelist and its `validations` (the stored `field_validation` column). The
+//! stored `filter` is unused for create.
 //!
-//! Enforcement is fully pre-insert: [`check_create_fields`] runs the
-//! allowed-fields whitelist on the incoming payload and returns, per item, the
-//! indices of the rules that accept its shape; [`check_create_values`] then
-//! checks each item against those rules' conditions. Flat comparisons are
-//! evaluated in memory; a condition nested under a many-to-one relation is
+//! Following the update model, a rule **participates** when its validations
+//! accept the payload, and the payload is allowed when **every** key is
+//! authorized by some participating rule — so keys may be covered by different
+//! rules. (Contrast update, where a rule must additionally cover the row via its
+//! `filter`.)
+//!
+//! Enforcement is fully pre-insert: [`check_create`] evaluates the validations
+//! against the payload itself (never a resulting row). Flat comparisons are
+//! checked in memory; a condition nested under a many-to-one relation is
 //! re-rooted at the related collection and checked with a batched `pk IN (...)`
-//! query. Nothing is written until both checks pass.
+//! query. Nothing is written if it fails.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -27,9 +28,7 @@ use crate::services::context::AppContext;
 use crate::services::errors::AlcedoError;
 use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter};
 use crate::services::items::relational::{collection_fields, target_ctx};
-use crate::services::permissions::read::{
-    ReadAccess, ReadRule, matching_pks, pk_key, resolve_access,
-};
+use crate::services::permissions::read::{ReadAccess, matching_pks, pk_key, resolve_access};
 
 /// Resolves the record-level `create` access for `collection`. Thin wrapper
 /// over [`resolve_access`] so the `create` action (whose conditions live in the
@@ -43,91 +42,25 @@ pub async fn resolve_create_access(
     resolve_access(state, context, collection, identity, "create").await
 }
 
-/// Pre-insert shape check.
+/// Enforces the caller's `create` policy for one payload, before any insert.
 ///
-/// Returns, per item, the indices (into `ReadAccess::Restricted.rules`) of the
-/// rules whose field whitelist accepts every top-level key of the item. An item
-/// that fits no rule is rejected, naming a key no rule allows when one exists.
-pub fn check_create_fields(
-    access: &ReadAccess,
-    collection: &str,
-    items: &[Map<String, Value>],
-) -> Result<Vec<Vec<usize>>, AlcedoError> {
-    match access {
-        ReadAccess::Unrestricted => Ok(Vec::new()),
-        ReadAccess::Deny => Err(AlcedoError::Forbidden(
-            format!("Not allowed to create in '{}'", collection),
-            0,
-        )),
-        ReadAccess::Restricted { rules } => {
-            let mut eligible = Vec::with_capacity(items.len());
-            for item in items {
-                let accepted: Vec<usize> = rules
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, rule)| match &rule.fields {
-                        None => true,
-                        Some(allowed) => item
-                            .keys()
-                            .all(|key| allowed.iter().any(|field| field == key)),
-                    })
-                    .map(|(index, _)| index)
-                    .collect();
-
-                if accepted.is_empty() {
-                    return Err(AlcedoError::Forbidden(
-                        create_rejection_message(rules, collection, item),
-                        0,
-                    ));
-                }
-                eligible.push(accepted);
-            }
-            Ok(eligible)
-        }
-    }
-}
-
-/// Builds a `Forbidden` message for an item no rule accepts, naming a key that
-/// no rule allows when one can be found.
-fn create_rejection_message(
-    rules: &[ReadRule],
-    collection: &str,
-    item: &Map<String, Value>,
-) -> String {
-    let disallowed = item.keys().find(|key| {
-        !rules.iter().any(|rule| match &rule.fields {
-            None => true,
-            Some(allowed) => allowed.iter().any(|field| field == *key),
-        })
-    });
-
-    match disallowed {
-        Some(key) => format!(
-            "Not allowed to create in '{}': field '{}' is not permitted",
-            collection, key
-        ),
-        None => format!("Not allowed to create in '{}'", collection),
-    }
-}
-
-/// Pre-insert value check.
+/// A create rule has no row to scope, so only two parts apply: its `fields`
+/// whitelist and its `validations` (the stored `field_validation`). Following
+/// the update model, a rule **participates** when its validations accept the
+/// payload, and the payload is allowed when **every** key is authorized by some
+/// participating rule — so keys may be covered by different rules. The stored
+/// `filter` is not used for create.
 ///
-/// Every item must satisfy the conditions of at least one rule whose field
-/// whitelist accepted its shape (`eligible`, from [`check_create_fields`]).
-/// Flat comparisons are evaluated in memory against the payload; a condition
-/// nested under a many-to-one relation is re-rooted at the related collection
-/// and checked with one batched `pk IN (...)` query per condition. Nothing is
-/// inserted.
-///
-/// An absent scalar field is left to the database default and skipped (v1
-/// parity); a missing or null relation key cannot satisfy a related condition.
-pub async fn check_create_values(
+/// Validations are evaluated against the payload itself (never a resulting row).
+/// Flat comparisons are checked in memory; a condition nested under a
+/// many-to-one relation is re-rooted at the related collection and checked with
+/// one batched `pk IN (...)` query per condition. Nothing is inserted.
+pub async fn check_create(
     state: &AppState,
     context: &AppContext,
     collection: &str,
     access: &ReadAccess,
     items: &[Map<String, Value>],
-    eligible: &[Vec<usize>],
 ) -> Result<(), AlcedoError> {
     let rules = match access {
         ReadAccess::Unrestricted => return Ok(()),
@@ -140,11 +73,11 @@ pub async fn check_create_values(
         ReadAccess::Restricted { rules } => rules,
     };
 
-    // The collection's field metadata is only needed to tell a flat comparison
-    // from one nested under a relation.
+    // Field metadata is only needed to tell a flat comparison from one nested
+    // under a relation.
     let needs_fields = rules
         .iter()
-        .flat_map(|rule| rule.conditions.iter())
+        .flat_map(|rule| rule.validations.iter())
         .any(condition_is_nested);
     let fields = if needs_fields {
         collection_fields(state, context, collection).await?
@@ -154,8 +87,8 @@ pub async fn check_create_values(
 
     let mut parsed: Vec<Vec<CheckedCondition>> = Vec::with_capacity(rules.len());
     for rule in rules {
-        let mut conditions = Vec::with_capacity(rule.conditions.len());
-        for condition in &rule.conditions {
+        let mut conditions = Vec::with_capacity(rule.validations.len());
+        for condition in &rule.validations {
             conditions.push(parse_condition(condition, &fields)?);
         }
         parsed.push(conditions);
@@ -199,21 +132,32 @@ pub async fn check_create_values(
         }
     }
 
-    for (index, item) in items.iter().enumerate() {
-        let allowed = eligible
-            .get(index)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+    for item in items {
+        // Rules whose validations accept this payload.
+        let participating: Vec<usize> = parsed
             .iter()
-            .any(|&rule_index| rule_satisfied(&parsed[rule_index], &satisfied[rule_index], item));
-        if !allowed {
-            return Err(AlcedoError::Forbidden(
-                format!(
-                    "Not allowed to create in '{}': field validation failed",
-                    collection
-                ),
-                0,
-            ));
+            .enumerate()
+            .filter(|(index, conditions)| rule_satisfied(conditions, &satisfied[*index], item))
+            .map(|(index, _)| index)
+            .collect();
+
+        // Every key must be authorized by some participating rule.
+        for key in item.keys() {
+            let authorized = participating
+                .iter()
+                .any(|&index| match &rules[index].fields {
+                    None => true,
+                    Some(allowed) => allowed.iter().any(|field| field == key),
+                });
+            if !authorized {
+                return Err(AlcedoError::Forbidden(
+                    format!(
+                        "Not allowed to create in '{}': field '{}' is not permitted",
+                        collection, key
+                    ),
+                    0,
+                ));
+            }
         }
     }
 
@@ -359,7 +303,6 @@ fn relation_pks(value: &Value) -> Vec<Value> {
 fn scalar_pk(value: &Value) -> Option<Value> {
     matches!(value, Value::String(_) | Value::Number(_) | Value::Bool(_)).then(|| value.clone())
 }
-
 
 /// Runs the rest of a relation condition against `target`, restricted to `pks`,
 /// and returns the pks that match.
@@ -533,7 +476,6 @@ pub async fn create_permission_detail(
 ) -> Result<Value, AlcedoError> {
     let access =
         resolve_create_access(state, context, collection, context.identity.as_ref()).await?;
-    let items = std::slice::from_ref(item);
 
     let rules = match &access {
         ReadAccess::Unrestricted => {
@@ -559,65 +501,89 @@ pub async fn create_permission_detail(
 
     let fields = collection_fields(state, context, collection).await?;
 
-    // An item that fits no rule can never be created: report the offending keys
-    // so the form can guide the caller.
-    let Ok(eligible) = check_create_fields(&access, collection, items) else {
-        let disallowed: Vec<Value> = item
-            .keys()
-            .filter(|key| {
-                !rules.iter().any(|rule| match &rule.fields {
-                    None => true,
-                    Some(allowed) => allowed.iter().any(|field| field == *key),
-                })
-            })
-            .map(|field| json!({ "field": field, "reason": "not_permitted" }))
-            .collect();
-        return Ok(json!({
-            "action": "create",
-            "allowed": false,
-            "rules": [],
-            "violations": disallowed,
-            "unresolved": [],
-        }));
-    };
-
-    // Rules are OR-ed. Evaluate every eligible rule independently (its own
-    // whitelist and its own conditions — never a flattened mix) and report each
-    // verdict; `allowed` is whether any accepted. Merged violations are only
-    // meaningful when none accepted.
-    let mut per_rule = Vec::with_capacity(eligible[0].len());
+    // Rules are OR-ed and evaluated independently (own whitelist, own
+    // validations). A rule participates when its validations accept the payload;
+    // the payload is allowed when every key is authorized by some participating
+    // rule. Merged violations are only meaningful when no single rule accepted.
+    let mut per_rule = Vec::with_capacity(rules.len());
     let mut violations = Vec::new();
     let mut unresolved = Vec::new();
-    let mut accepted = false;
-    for &index in &eligible[0] {
-        let rule = &rules[index];
-        let (rule_violations, rule_unresolved) = if rule.conditions.is_empty() {
+    let mut authorized_keys: Vec<String> = Vec::new();
+    let mut any_participant = false;
+
+    for rule in rules {
+        let (rule_violations, rule_unresolved) = if rule.validations.is_empty() {
             (Vec::new(), Vec::new())
         } else {
-            let checked = parse_conditions(&rule.conditions, &fields)?;
+            let checked = parse_conditions(&rule.validations, &fields)?;
             evaluate_conditions(state, context, item, &checked).await?
         };
-        let rule_accepted = rule_violations.is_empty() && rule_unresolved.is_empty();
-        accepted |= rule_accepted;
-        if !accepted {
+        // A rule cannot prove a payload createable while it carries an
+        // undecidable condition.
+        let participates = rule_violations.is_empty() && rule_unresolved.is_empty();
+        if participates {
+            any_participant = true;
+            for key in item.keys() {
+                let allows = match &rule.fields {
+                    None => true,
+                    Some(allowed) => allowed.iter().any(|field| field == key),
+                };
+                if allows && !authorized_keys.iter().any(|k| k == key) {
+                    authorized_keys.push(key.clone());
+                }
+            }
+        } else {
             violations.extend(rule_violations.iter().cloned());
             unresolved.extend(rule_unresolved.iter().cloned());
         }
         per_rule.push(json!({
             "fields": rule.fields.clone().unwrap_or_default(),
-            "allowed": rule_accepted,
+            "allowed": participates,
             "violations": rule_violations,
             "unresolved": rule_unresolved,
         }));
     }
 
+    // Keys no participating rule authorizes block the create.
+    let unauthorized: Vec<Value> = item
+        .keys()
+        .filter(|key| !authorized_keys.iter().any(|k| k == *key))
+        .map(|field| json!({ "field": field, "reason": "not_permitted" }))
+        .collect();
+
+    let allowed = any_participant && unauthorized.is_empty();
+
+    // A denied payload must carry every blocking reason. Rule validations that
+    // failed are already in `violations`; add a `not_permitted` entry for each
+    // key *no* rule's whitelist could ever cover (`fields: None` covers all). A
+    // key that a rule whitelists but did not authorize because that rule failed
+    // its validation is explained by the rule's own violation instead, so it is
+    // not double-reported here.
+    let not_permitted: Vec<Value> = item
+        .keys()
+        .filter(|key| {
+            !rules.iter().any(|rule| match &rule.fields {
+                None => true,
+                Some(allowed) => allowed.iter().any(|field| field == *key),
+            })
+        })
+        .map(|field| json!({ "field": field, "reason": "not_permitted" }))
+        .collect();
+
+    let violations = if allowed {
+        Vec::new()
+    } else {
+        let mut merged: Vec<Value> = violations;
+        merged.extend(not_permitted);
+        merged
+    };
+
     Ok(json!({
         "action": "create",
-        "allowed": accepted,
+        "allowed": allowed,
         "rules": per_rule,
-        // Merged across the rules that did not accept; empty when one did.
-        "violations": if accepted { Vec::new() } else { violations },
-        "unresolved": if accepted { Vec::new() } else { unresolved },
+        "violations": violations,
+        "unresolved": if allowed { Vec::new() } else { unresolved },
     }))
 }
 
@@ -657,7 +623,9 @@ async fn evaluate_conditions(
         match condition {
             CheckedCondition::Flat { field, comparison } => {
                 // An absent scalar is left to the database default.
-                let Some(actual) = item.get(field) else { continue };
+                let Some(actual) = item.get(field) else {
+                    continue;
+                };
                 if !comparison_matches(comparison, actual) {
                     violations.push(json!({
                         "field": field,
@@ -816,13 +784,13 @@ pub fn create_permission_summary(
                     .collect()
             };
 
-            // The stored conditions are returned raw (the flat
+            // The stored validations are returned raw (the flat
             // `[{field, operator, value}]` shape), not the parsed `Filter` form,
             // so a client can consume them directly (e.g. prefill a form).
             let field_validation: Vec<Value> = rules
                 .iter()
                 .flat_map(|rule| {
-                    rule.raw
+                    rule.raw_validations
                         .as_array()
                         .cloned()
                         .unwrap_or_default()
@@ -843,12 +811,8 @@ pub fn create_permission_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp};
+    use crate::services::items::query::Comparison;
     use serde_json::json;
-
-    fn item(keys: &[&str]) -> Map<String, Value> {
-        keys.iter().map(|key| (key.to_string(), json!(1))).collect()
-    }
 
     fn field(name: &str) -> FieldDefinition {
         FieldDefinition {
@@ -861,60 +825,42 @@ mod tests {
         ReadRule {
             fields: fields.map(|list| list.iter().map(|s| s.to_string()).collect()),
             conditions: vec![],
-            raw: json!([{ "field": "a", "operator": "eq", "value": 1 }]),
+            validations: vec![],
+            raw_validations: Value::Null,
         }
     }
 
     #[test]
-    fn deny_rejects_all() {
-        let access = ReadAccess::Deny;
-        let err = check_create_fields(&access, "orders", &[item(&["a"])]).unwrap_err();
-        assert!(matches!(err, AlcedoError::Forbidden(_, _)));
+    fn deny_summary_is_empty() {
+        let summary = create_permission_summary(&ReadAccess::Deny, &[field("a")], "orders");
+        assert_eq!(summary["allowed_fields"], json!([]));
+        assert_eq!(summary["$permissions"]["create"], json!(false));
     }
 
     #[test]
-    fn single_rule_accepts_subset_and_rejects_unknown_field() {
+    fn summary_unions_rule_fields() {
         let access = ReadAccess::Restricted {
-            rules: vec![rule(Some(&["a", "b", "c"]))],
+            rules: vec![rule(Some(&["a", "b"])), rule(Some(&["c"]))],
         };
-
-        // Item {a,b} fits rule 0.
-        assert_eq!(
-            check_create_fields(&access, "orders", &[item(&["a", "b"])]).unwrap(),
-            vec![vec![0]]
-        );
-
-        // Item {a,d}: `d` is not in the whitelist.
-        assert!(check_create_fields(&access, "orders", &[item(&["a", "d"])]).is_err());
+        let fields = vec![field("a"), field("b"), field("c"), field("d")];
+        let summary = create_permission_summary(&access, &fields, "orders");
+        let names: Vec<&str> = summary["allowed_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|value| value["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
     }
 
     #[test]
-    fn two_rules_or_together_without_unioning_fields() {
-        let access = ReadAccess::Restricted {
-            rules: vec![rule(Some(&["a", "b", "c"])), rule(Some(&["d", "e", "f"]))],
-        };
-
-        assert_eq!(
-            check_create_fields(&access, "orders", &[item(&["a", "b"])]).unwrap(),
-            vec![vec![0]]
-        );
-        assert_eq!(
-            check_create_fields(&access, "orders", &[item(&["d"])]).unwrap(),
-            vec![vec![1]]
-        );
-        // `{a,d}` fits no single rule: fields must not be unioned.
-        assert!(check_create_fields(&access, "orders", &[item(&["a", "d"])]).is_err());
-    }
-
-    #[test]
-    fn unlimited_rule_accepts_any_shape() {
+    fn summary_unrestricted_rule_lists_all_fields() {
         let access = ReadAccess::Restricted {
             rules: vec![rule(None)],
         };
-        assert_eq!(
-            check_create_fields(&access, "orders", &[item(&["a", "b", "z"])]).unwrap(),
-            vec![vec![0]]
-        );
+        let fields = vec![field("a"), field("b")];
+        let summary = create_permission_summary(&access, &fields, "orders");
+        assert_eq!(summary["allowed_fields"].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -941,9 +887,9 @@ mod tests {
     fn summary_restricted_unions_fields_and_flattens_validation() {
         let fields = vec![field("a"), field("b"), field("c"), field("d")];
         let mut first = rule(Some(&["a", "b"]));
-        first.conditions = vec![Filter::Logic(Default::default())];
+        first.raw_validations = json!([{ "field": "a", "operator": "eq", "value": 1 }]);
         let mut second = rule(Some(&["b", "c"]));
-        second.conditions = vec![Filter::Logic(Default::default())];
+        second.raw_validations = json!([{ "field": "b", "operator": "eq", "value": 2 }]);
 
         let summary = create_permission_summary(
             &ReadAccess::Restricted {
@@ -1091,7 +1037,6 @@ mod tests {
             vec![json!("a"), json!(3)]
         );
     }
-
 }
 
 #[cfg(test)]
@@ -1345,7 +1290,7 @@ mod integration_tests {
     }
 
     /// (a) A caller with no `create` rule at all resolves to `Deny`,
-    /// `check_create_fields` rejects, and the error maps to HTTP 403.
+    /// `check_create` rejects, and the error maps to HTTP 403.
     #[tokio::test]
     async fn no_create_rule_denies_and_maps_to_403() {
         let state = crate::utils::test_utils::get_app_state().await;
@@ -1359,8 +1304,15 @@ mod integration_tests {
             .unwrap();
         assert!(matches!(access, ReadAccess::Deny), "got {access:?}");
 
-        let err = check_create_fields(&access, "products", &[item(json!({ "name": "x" }))])
-            .unwrap_err();
+        let err = check_create(
+            &state,
+            &ctx,
+            "products",
+            &access,
+            &[item(json!({ "name": "x" }))],
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(&err, AlcedoError::Forbidden(_, _)), "got {err:?}");
         assert_eq!(
             err.into_response().status(),
@@ -1409,25 +1361,31 @@ mod integration_tests {
         let access = resolve_create_access(&state, &ctx, "products", Some(&identity))
             .await
             .unwrap();
-        assert!(matches!(access, ReadAccess::Restricted { .. }), "got {access:?}");
-
-        // In-whitelist shape is accepted (single rule => index 0).
-        assert_eq!(
-            check_create_fields(
-                &access,
-                "products",
-                &[item(json!({ "name": "widget", "price": 1.5 }))]
-            )
-            .unwrap(),
-            vec![vec![0]]
+        assert!(
+            matches!(access, ReadAccess::Restricted { .. }),
+            "got {access:?}"
         );
 
-        // A key no rule allows is rejected.
-        let err = check_create_fields(
-            &access,
+        // In-whitelist shape is accepted.
+        check_create(
+            &state,
+            &ctx,
             "products",
+            &access,
+            &[item(json!({ "name": "widget", "price": 1.5 }))],
+        )
+        .await
+        .expect("payload within the whitelist must be accepted");
+
+        // A key no rule allows is rejected.
+        let err = check_create(
+            &state,
+            &ctx,
+            "products",
+            &access,
             &[item(json!({ "name": "widget", "bogus": 1 }))],
         )
+        .await
         .unwrap_err();
         assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
 
@@ -1457,11 +1415,12 @@ mod integration_tests {
         cleanup_marker(&state, "fields").await;
     }
 
-    /// (c) Rules are OR-ed and their field lists are never unioned: a payload
-    /// mixing two rules' fields is rejected, while each rule's own fields map
-    /// to exactly that rule's index.
+    /// (c) Rules are OR-ed at the *rule* level but their field lists union
+    /// **per key**: a payload whose keys span two rules' whitelists is allowed,
+    /// because each key is authorized by *some* participating rule. The stale
+    /// "must fit exactly one rule" model is gone.
     #[tokio::test]
-    async fn two_rules_or_without_unioning_fields() {
+    async fn two_rules_union_fields_per_key() {
         let state = crate::utils::test_utils::get_app_state().await;
         inject_schema_meta(&state, HELPDESK_SCHEMA).await;
         let seed = seed_role(&state, "two").await;
@@ -1490,38 +1449,257 @@ mod integration_tests {
             .await
             .unwrap();
 
-        let first = check_create_fields(
-            &access,
+        let first = check_create(
+            &state,
+            &ctx,
             "products",
+            &access,
             &[item(json!({ "name": "widget", "price": 1 }))],
         )
-        .unwrap();
-        let second = check_create_fields(
-            &access,
+        .await;
+        let second = check_create(
+            &state,
+            &ctx,
             "products",
+            &access,
             &[item(json!({ "type": "plan", "billed_per": "month" }))],
         )
-        .unwrap();
+        .await;
 
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].len(), 1, "payload fits exactly one rule: {first:?}");
-        assert_eq!(second.len(), 1);
-        assert_eq!(second[0].len(), 1, "payload fits exactly one rule: {second:?}");
-        assert_ne!(
-            first[0][0], second[0][0],
-            "each payload must map to its own rule index"
-        );
+        first.expect("each payload fits one rule and must be accepted");
+        second.expect("each payload fits one rule and must be accepted");
 
-        // Fields must not be unioned across rules.
-        let err = check_create_fields(
-            &access,
+        // Fields ARE unioned per key across participating rules: `name` is
+        // authorized by rule A and `type` by rule B, so the combined payload is
+        // now ALLOWED (this was the deliberate loosening).
+        check_create(
+            &state,
+            &ctx,
             "products",
+            &access,
             &[item(json!({ "name": "widget", "type": "plan" }))],
         )
+        .await
+        .expect("keys may be authorized by different rules");
+
+        // But a key authorized by NO rule still rejects.
+        let err = check_create(
+            &state,
+            &ctx,
+            "products",
+            &access,
+            &[item(json!({ "name": "widget", "bogus": 1 }))],
+        )
+        .await
         .unwrap_err();
         assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
 
         cleanup_marker(&state, "two").await;
+    }
+
+    /// HEADLINE behavior: two create rules with disjoint `fields` whitelists
+    /// (`[name, price, type]` + `[billed_per, one_off_price,
+    /// price_per_period]`), both with empty validations (so both always
+    /// participate). A payload carrying keys from *both* rules is allowed,
+    /// because every key is authorized by SOME participating rule. This is the
+    /// deliberate loosening of create enforcement.
+    #[tokio::test]
+    async fn disjoint_rule_fields_union_to_allow_a_spanning_payload() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        inject_schema_meta(&state, HELPDESK_SCHEMA).await;
+        let seed = seed_role(&state, "union").await;
+        add_create_grant(
+            &state,
+            "union",
+            &seed,
+            "products",
+            json!(["name", "price", "type"]),
+            json!([]),
+        )
+        .await;
+        add_create_grant(
+            &state,
+            "union",
+            &seed,
+            "products",
+            json!(["billed_per", "one_off_price", "price_per_period"]),
+            json!([]),
+        )
+        .await;
+
+        let identity = AuthLevel::User(seed.user_id);
+        let ctx = helpdesk_ctx(Some(identity.clone()));
+        let access = resolve_create_access(&state, &ctx, "products", Some(&identity))
+            .await
+            .unwrap();
+        assert!(
+            matches!(access, ReadAccess::Restricted { .. }),
+            "got {access:?}"
+        );
+
+        // All six keys, spanning both rules: allowed.
+        check_create(
+            &state,
+            &ctx,
+            "products",
+            &access,
+            &[item(json!({
+                "name": "ct-union",
+                "price": 1,
+                "type": "plan",
+                "billed_per": "month",
+                "one_off_price": 2,
+                "price_per_period": 3,
+            }))],
+        )
+        .await
+        .expect("keys covered by different rules must be allowed together");
+
+        // The real write path agrees.
+        let products = "products".to_string();
+        let service = ItemsService::new(&state, &ctx, &products);
+        service
+            .create_many(
+                vec![item(json!({
+                    "name": "ct-union-ok",
+                    "price": 1.0,
+                    "type": "plan",
+                    "billed_per": "month",
+                }))],
+                &mut None,
+            )
+            .await
+            .expect("a spanning payload must persist");
+        assert_eq!(count_products_named(&state, "ct-union-ok").await, 1);
+
+        cleanup_marker(&state, "union").await;
+    }
+
+    /// Companion to the union behavior: a single key authorized by NO rule is
+    /// still rejected, even though the rest of the payload is covered.
+    #[tokio::test]
+    async fn key_covered_by_no_rule_still_rejects() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        inject_schema_meta(&state, HELPDESK_SCHEMA).await;
+        let seed = seed_role(&state, "uncovered").await;
+        add_create_grant(
+            &state,
+            "uncovered",
+            &seed,
+            "products",
+            json!(["name", "price", "type"]),
+            json!([]),
+        )
+        .await;
+        add_create_grant(
+            &state,
+            "uncovered",
+            &seed,
+            "products",
+            json!(["billed_per", "one_off_price", "price_per_period"]),
+            json!([]),
+        )
+        .await;
+
+        let identity = AuthLevel::User(seed.user_id);
+        let ctx = helpdesk_ctx(Some(identity.clone()));
+        let access = resolve_create_access(&state, &ctx, "products", Some(&identity))
+            .await
+            .unwrap();
+
+        // `name`/`billed_per` are covered by the two rules; `bogus` is not.
+        let err = check_create(
+            &state,
+            &ctx,
+            "products",
+            &access,
+            &[item(
+                json!({ "name": "ct-uncovered", "billed_per": "month", "bogus": 1 }),
+            )],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
+
+        let products = "products".to_string();
+        let service = ItemsService::new(&state, &ctx, &products);
+        let err = service
+            .create_many(
+                vec![item(json!({ "name": "ct-uncovered-bad", "bogus": 1 }))],
+                &mut None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
+        assert_eq!(count_products_named(&state, "ct-uncovered-bad").await, 0);
+
+        cleanup_marker(&state, "uncovered").await;
+    }
+
+    /// `field_validation` is evaluated against the **payload only**: a
+    /// validation constraining a key the payload does not send is skipped, so
+    /// the rule still participates and its whitelist still authorizes the
+    /// payload's keys.
+    #[tokio::test]
+    async fn validation_on_absent_key_is_skipped() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        inject_schema_meta(&state, HELPDESK_SCHEMA).await;
+        let seed = seed_role(&state, "skipval").await;
+        add_create_grant(
+            &state,
+            "skipval",
+            &seed,
+            "products",
+            json!(["name", "type"]),
+            json!([{ "field": "type", "operator": "eq", "value": "approved" }]),
+        )
+        .await;
+
+        let identity = AuthLevel::User(seed.user_id);
+        let ctx = helpdesk_ctx(Some(identity.clone()));
+        let access = resolve_create_access(&state, &ctx, "products", Some(&identity))
+            .await
+            .unwrap();
+
+        // The payload never sends `type`, so the validation on it is skipped and
+        // the rule participates; `name` is whitelisted.
+        check_create(
+            &state,
+            &ctx,
+            "products",
+            &access,
+            &[item(json!({ "name": "ct-skipval-ok" }))],
+        )
+        .await
+        .expect("a validation on an absent key must be skipped");
+
+        let products = "products".to_string();
+        let service = ItemsService::new(&state, &ctx, &products);
+        service
+            .create_many(
+                vec![item(json!({ "name": "ct-skipval-persist" }))],
+                &mut None,
+            )
+            .await
+            .expect("the absent-key payload must persist");
+        assert_eq!(count_products_named(&state, "ct-skipval-persist").await, 1);
+
+        // Sanity: when `type` IS sent with a wrong value the rule stops
+        // participating and the payload is rejected.
+        let err = check_create(
+            &state,
+            &ctx,
+            "products",
+            &access,
+            &[item(
+                json!({ "name": "ct-skipval-bad", "type": "rejected" }),
+            )],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
+
+        cleanup_marker(&state, "skipval").await;
     }
 
     /// (d) The pre-insert `field_validation` check runs through
@@ -1549,26 +1727,27 @@ mod integration_tests {
             .await
             .unwrap();
 
-        // Both payloads fit the whitelist, so the shape check accepts both; the
-        // value check is what separates them.
-        assert_eq!(
-            check_create_fields(
-                &access,
-                "products",
-                &[item(json!({ "name": "a", "price": 1, "type": "approved" }))]
-            )
-            .unwrap(),
-            vec![vec![0]]
-        );
-        assert_eq!(
-            check_create_fields(
-                &access,
-                "products",
-                &[item(json!({ "name": "b", "price": 1, "type": "rejected" }))]
-            )
-            .unwrap(),
-            vec![vec![0]]
-        );
+        // Both payloads fit the whitelist; the validation is what separates
+        // them: a satisfying value is accepted, a violating one is rejected.
+        check_create(
+            &state,
+            &ctx,
+            "products",
+            &access,
+            &[item(json!({ "name": "a", "price": 1, "type": "approved" }))],
+        )
+        .await
+        .expect("a payload satisfying the validation must be accepted");
+        let err = check_create(
+            &state,
+            &ctx,
+            "products",
+            &access,
+            &[item(json!({ "name": "b", "price": 1, "type": "rejected" }))],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
 
         let products = "products".to_string();
         let service = ItemsService::new(&state, &ctx, &products);
@@ -1577,7 +1756,9 @@ mod integration_tests {
         let ok_name = "ct-validation-ok";
         let created = service
             .create_many(
-                vec![item(json!({ "name": ok_name, "price": 3.0, "type": "approved" }))],
+                vec![item(
+                    json!({ "name": ok_name, "price": 3.0, "type": "approved" }),
+                )],
                 &mut None,
             )
             .await
@@ -1698,7 +1879,10 @@ mod integration_tests {
         let access = resolve_create_access(&state, &ctx, "tickets", Some(&identity))
             .await
             .unwrap();
-        assert!(matches!(access, ReadAccess::Restricted { .. }), "got {access:?}");
+        assert!(
+            matches!(access, ReadAccess::Restricted { .. }),
+            "got {access:?}"
+        );
 
         let tickets = "tickets".to_string();
         let service = ItemsService::new(&state, &ctx, &tickets);
@@ -1912,27 +2096,20 @@ mod integration_tests {
         cleanup_marker(&state, "absent").await;
     }
 
-    /// `check_create_values` short-circuits the same way `check_create_fields`
-    /// does: `Unrestricted` accepts, `Deny` is `Forbidden`. Neither path touches
-    /// the database, so this needs no fixture.
+    /// `check_create` short-circuits at the top: `Unrestricted` accepts, `Deny`
+    /// is `Forbidden`. Neither path touches the database, so this needs no
+    /// fixture.
     #[tokio::test]
-    async fn value_check_unrestricted_and_deny() {
+    async fn check_create_unrestricted_and_deny() {
         let state = crate::utils::test_utils::get_app_state().await;
         let ctx = helpdesk_ctx(None);
         let items = vec![item(json!({ "name": "x" }))];
 
-        check_create_values(
-            &state,
-            &ctx,
-            "products",
-            &ReadAccess::Unrestricted,
-            &items,
-            &[],
-        )
-        .await
-        .expect("Unrestricted must accept without querying");
+        check_create(&state, &ctx, "products", &ReadAccess::Unrestricted, &items)
+            .await
+            .expect("Unrestricted must accept without querying");
 
-        let err = check_create_values(&state, &ctx, "products", &ReadAccess::Deny, &items, &[])
+        let err = check_create(&state, &ctx, "products", &ReadAccess::Deny, &items)
             .await
             .unwrap_err();
         assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
@@ -1940,8 +2117,9 @@ mod integration_tests {
 
     /// A logical-group condition cannot be pre-checked and fails loudly with
     /// `InvalidInput` (rather than silently passing). Logical groups are only
-    /// reachable by building a `ReadRule` directly; the stored
-    /// `field_validation` JSON drops entries without a `field` key.
+    /// reachable by building a `ReadRule` directly; a stored `field_validation`
+    /// entry without a `field` key is dropped, and `filter` is ignored for
+    /// create — so this exercises the `validations` path directly.
     #[tokio::test]
     async fn logical_group_condition_is_rejected() {
         let state = crate::utils::test_utils::get_app_state().await;
@@ -1950,16 +2128,17 @@ mod integration_tests {
         let access = ReadAccess::Restricted {
             rules: vec![ReadRule {
                 fields: Some(vec!["name".to_string()]),
-                conditions: vec![Filter::Logic(LogicOp {
+                conditions: vec![],
+                validations: vec![Filter::Logic(LogicOp {
                     _or: Some(vec![]),
                     _and: None,
                 })],
-                raw: serde_json::Value::Null,
+                raw_validations: Value::Null,
             }],
         };
         let items = vec![item(json!({ "name": "ct-logic-x" }))];
 
-        let err = check_create_values(&state, &ctx, "products", &access, &items, &[vec![0]])
+        let err = check_create(&state, &ctx, "products", &access, &items)
             .await
             .unwrap_err();
         assert!(
@@ -2060,12 +2239,13 @@ mod integration_tests {
         cleanup_marker(&state, "nested").await;
     }
 
-    /// Bulk create: each item's eligible rule set is computed independently, so
-    /// two items can satisfy two different rules in one call, and one item's
-    /// value violation does not borrow another item's rule. The whole call is
-    /// rejected pre-insert, so no item is written on failure.
+    /// Bulk create: each item's **participating** rule set is computed
+    /// independently, so two items can be authorized by two different rules in
+    /// one call. An item whose key set no participating rule can cover is
+    /// rejected, and the whole call is rejected pre-insert, so no item is
+    /// written on failure.
     #[tokio::test]
-    async fn bulk_create_keeps_eligible_rules_per_item() {
+    async fn bulk_create_participation_is_per_item() {
         let state = crate::utils::test_utils::get_app_state().await;
         inject_schema_meta(&state, HELPDESK_SCHEMA).await;
         let seed = seed_role(&state, "bulk").await;
@@ -2108,9 +2288,10 @@ mod integration_tests {
         assert_eq!(count_products_named(&state, "ct-bulk-a").await, 1);
         assert_eq!(count_products_named(&state, "ct-bulk-b").await, 1);
 
-        // An item matching only rule A fails A's validation; rule B must not be
-        // borrowed to let it through, and the whole bulk call is rejected before
-        // any insert.
+        // An item whose keys are only partly covered fails: `type: "rejected"`
+        // makes rule A's validation fail (so it does not participate), leaving
+        // only rule B, whose whitelist covers `name`/`billed_per` but not
+        // `price`/`type`. The whole bulk call is rejected before any insert.
         let err = service
             .create_many(
                 vec![
@@ -2296,8 +2477,8 @@ mod integration_tests {
     }
 
     /// The union of the `fields` arrays of the *accepted* rules in a probe
-    /// response, sorted. The new detail shape reports one entry per eligible
-    /// rule under `rules`; a rule's empty `fields` means "any field".
+    /// response, sorted. The detail shape reports one entry per rule under
+    /// `rules`; a rule's empty `fields` means "any field".
     fn reported_fields(value: &Value) -> Vec<String> {
         let mut names: Vec<String> = value["rules"]
             .as_array()
@@ -2404,8 +2585,8 @@ mod integration_tests {
         cleanup_marker(&state, "probe-deny").await;
     }
 
-    /// (probe-c) A payload key no eligible rule whitelists is reported as
-    /// `not_permitted`, with no fields offered.
+    /// (probe-c) A payload key no participating rule whitelists is reported as
+    /// `not_permitted`; the participating rule stays visible under `rules`.
     #[tokio::test]
     async fn probe_disallowed_key_is_not_permitted() {
         let state = crate::utils::test_utils::get_app_state().await;
@@ -2432,7 +2613,16 @@ mod integration_tests {
         .unwrap();
 
         assert_eq!(detail["allowed"], json!(false));
-        assert_eq!(detail["rules"], json!([]));
+        // The sole rule participates (empty validations) and its whitelist is
+        // reported, even though the payload is denied for a key it does not
+        // cover. The denial surfaces through `violations`, not by hiding rules.
+        let rules = detail["rules"].as_array().expect("rules array");
+        assert_eq!(rules.len(), 1, "{detail}");
+        assert_eq!(rules[0]["allowed"], json!(true), "{detail}");
+        assert_eq!(
+            reported_fields(&detail),
+            vec!["name".to_string(), "price".to_string()]
+        );
         let violations = detail["violations"].as_array().expect("violations array");
         assert_eq!(
             violations.len(),
@@ -2685,25 +2875,21 @@ mod integration_tests {
 
         assert_eq!(detail["allowed"], json!(true));
         let rules = detail["rules"].as_array().expect("rules array");
-        assert_eq!(rules.len(), 1, "one eligible rule: {detail}");
+        assert_eq!(rules.len(), 1, "one participating rule: {detail}");
         assert_eq!(rules[0]["allowed"], json!(true));
-        assert_eq!(
-            rules[0]["fields"],
-            json!([]),
-            "empty list means any field"
-        );
+        assert_eq!(rules[0]["fields"], json!([]), "empty list means any field");
         assert_eq!(detail["violations"], json!([]));
         assert_eq!(count_products_named(&state, "ct-probe-any").await, 0);
 
         cleanup_marker(&state, "probe-any").await;
     }
 
-    /// The probe evaluates every eligible rule independently and ORs them, just
-    /// like enforcement. Two rules whose whitelists overlap on `name` but whose
-    /// conditions are mutually exclusive: a payload satisfying the second rule is
-    /// reported `allowed: true`.
+    /// The probe evaluates every rule independently and ORs the ones that
+    /// participate, just like enforcement. Two rules whose whitelists overlap on
+    /// `name` but whose validations are mutually exclusive: a payload satisfying
+    /// the second rule's validation is reported `allowed: true`.
     #[tokio::test]
-    async fn probe_ors_across_eligible_rules() {
+    async fn probe_ors_across_participating_rules() {
         let state = crate::utils::test_utils::get_app_state().await;
         inject_schema_meta(&state, HELPDESK_SCHEMA).await;
         let seed = seed_role(&state, "probe-multi").await;
@@ -2735,38 +2921,36 @@ mod integration_tests {
         let access = resolve_create_access(&state, &ctx, "products", Some(&identity))
             .await
             .unwrap();
-        let eligible =
-            check_create_fields(&access, "products", std::slice::from_ref(&payload)).unwrap();
-        assert_eq!(
-            eligible[0].len(),
-            2,
-            "the payload fits both rules: {eligible:?}"
-        );
 
-        // Enforcement ORs the eligible rules, so the second rule accepts it.
-        check_create_values(
+        // Enforcement ORs the participating rules: rule 0 requires
+        // `type == approved` (rejects this payload) and rule 1 requires
+        // `type == rejected` (accepts it), so the payload is allowed.
+        check_create(
             &state,
             &ctx,
             "products",
             &access,
             std::slice::from_ref(&payload),
-            &eligible,
         )
         .await
-        .expect("enforcement must accept via the second eligible rule");
+        .expect("enforcement must accept via the second participating rule");
 
-        // The probe must agree: it evaluates every eligible rule and accepts as
-        // soon as one satisfies.
+        // The probe must agree: it evaluates every rule and accepts as soon as
+        // one's validations participate.
         let detail = create_permission_detail(&state, &ctx, "products", &payload)
             .await
             .unwrap();
         assert_eq!(
             detail["allowed"],
             json!(true),
-            "probe ORs the eligible rules: {detail}"
+            "probe ORs the participating rules: {detail}"
         );
         let rules = detail["rules"].as_array().expect("rules array");
-        assert_eq!(rules.len(), 2, "both rules are eligible: {detail}");
+        assert_eq!(
+            rules.len(),
+            2,
+            "both rules are reported, one accepting and one rejecting: {detail}"
+        );
         assert!(
             rules.iter().any(|rule| rule["allowed"] == json!(true)),
             "an accepted payload must have an accepted rule: {detail}"
@@ -2878,8 +3062,15 @@ mod integration_tests {
         assert_eq!(detail["violations"][0]["field"], json!("type"));
 
         // Add a permissive, unconditional rule on the same collection.
-        add_create_grant(&state, "probe-shadow", &seed, "products", json!(["name", "type"]), json!([]))
-            .await;
+        add_create_grant(
+            &state,
+            "probe-shadow",
+            &seed,
+            "products",
+            json!(["name", "type"]),
+            json!([]),
+        )
+        .await;
 
         let detail = create_permission_detail(&state, &ctx, "products", &payload)
             .await
