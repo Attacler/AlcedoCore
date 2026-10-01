@@ -247,7 +247,7 @@ const displayFields = computed(() => {
                         <Button
                             v-if="
                                 enableEdit &&
-                                slotProps.data.$permissions?.update !== false
+                                slotProps.data.$update_permission !== false
                             "
                             icon="pi pi-pencil"
                             text

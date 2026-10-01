@@ -7,10 +7,11 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::middelware::auth::AuthLevel;
 use crate::services::collections::ddl::GLOBAL_USERS_COLLECTION;
+use crate::services::collections::schema::get_pk_key;
 use crate::services::context::AppContext;
 use crate::services::context::RequestSource;
 use crate::services::errors::AlcedoError;
-use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter};
+use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query};
 use crate::services::postgres::pool::{execute_query, pgrow_to_json};
 
 #[derive(Debug, Clone, Default)]
@@ -263,6 +264,71 @@ fn normalize_fields(value: &Value) -> Option<Vec<String>> {
         .unwrap_or_default();
 
     if names.is_empty() { None } else { Some(names) }
+}
+
+/// A primary-key JSON value as a plain map key (strings unquoted, everything
+/// else rendered as-is). Shared by the create/update checks, which key rows by
+/// pk string.
+pub(crate) fn pk_key(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// Restricts `pks` to the rows of `(context, collection)` that also satisfy
+/// `conditions`, returning the matching pk keys.
+///
+/// `conditions` are AND-ed onto a `pk IN (…)` filter and run through the shared
+/// `Query` builder, so relation paths and the full operator vocabulary behave
+/// exactly as they do for reads. An empty `conditions` list matches every pk.
+/// Shared by the create (relation re-rooting) and update (row filter) checks.
+pub(crate) async fn matching_pks(
+    state: &AppState,
+    context: &AppContext,
+    collection: &str,
+    conditions: &[Filter],
+    pks: &[Value],
+) -> Result<HashSet<String>, AlcedoError> {
+    if conditions.is_empty() {
+        return Ok(pks.iter().map(pk_key).collect());
+    }
+
+    let pk_name = get_pk_key(&state.database_schema, &context.schema_name(), collection)
+        .await?
+        .name;
+
+    let mut pk_filter = FieldFilter {
+        fields: HashMap::new(),
+    };
+    pk_filter.fields.insert(
+        pk_name.clone(),
+        FieldValue::Comparison(Comparison {
+            _in: Some(Value::Array(pks.to_vec())),
+            ..Default::default()
+        }),
+    );
+
+    let mut and: Vec<Filter> = vec![Filter::Field(pk_filter)];
+    and.extend(conditions.iter().cloned());
+
+    let mut query = Query {
+        fields: vec![pk_name.clone()],
+        filter: LogicOp {
+            _and: Some(and),
+            _or: None,
+        },
+        limit: 0,
+        ..Default::default()
+    };
+
+    let table = collection.to_string();
+    let rows = query.execute_query(context, state, &table).await?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| row.get(&pk_name))
+        .map(pk_key)
+        .collect())
 }
 
 /// True when `name` is a safe unqualified SQL identifier (used to whitelist the

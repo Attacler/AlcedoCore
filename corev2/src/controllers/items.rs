@@ -24,6 +24,7 @@ use crate::AppState;
 pub fn items_controller() -> Router<AppState> {
     return Router::new()
         .route("/{collection}/$delete", post(check_delete_permissions))
+        .route("/{collection}/$update", post(check_update_permissions))
         .route("/{collection}/$permissions", post(item_permissions))
         .route(
             "/{collection}",
@@ -334,6 +335,42 @@ async fn check_delete_permissions(
     Ok(Json(success(Value::Object(permissions))))
 }
 
+#[utoipa::path(post, path = "/api/app/items/{collection}/$update",
+    params(
+        ("collection" = String, Path, description = "Collection name."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    request_body(content = Value, content_type = "application/json", description="{\"pk_values\": [...]} — at most 100 primary keys."),
+    responses(
+        (status = OK)
+    )
+)]
+async fn check_update_permissions(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+    ExtractContext(context): ExtractContext,
+    Json(body): Json<Value>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    let Some(pk_values) = body.get("pk_values").and_then(Value::as_array) else {
+        return Err(AlcedoError::InvalidInput(
+            "Request body must contain a 'pk_values' array".to_string(),
+            1,
+        ));
+    };
+
+    // Row-filter only: whether a particular set of new values is allowed is
+    // answered per payload by `POST …/$permissions` with `action: "update"`.
+    let permissions = crate::services::permissions::update::editable_pks(
+        &state,
+        &context,
+        &collection,
+        pk_values,
+    )
+    .await?;
+    Ok(Json(success(Value::Object(permissions))))
+}
+
 #[utoipa::path(post, path = "/api/app/items/{collection}/$permissions",
     params(
         ("collection" = String, Path, description = "Collection name."),
@@ -355,15 +392,6 @@ async fn item_permissions(
         .get("action")
         .and_then(Value::as_str)
         .unwrap_or("create");
-    if action != "create" {
-        return Err(AlcedoError::InvalidInput(
-            format!(
-                "Unsupported action '{}'; only 'create' is implemented",
-                action
-            ),
-            1,
-        ));
-    }
     let item = body
         .get("item")
         .and_then(Value::as_object)
@@ -372,7 +400,28 @@ async fn item_permissions(
             AlcedoError::InvalidInput("Request body must contain an 'item' object".to_string(), 1)
         })?;
 
-    let result = create_permission_detail(&state, &context, &collection, &item).await?;
+    let result = match action {
+        "create" => create_permission_detail(&state, &context, &collection, &item).await?,
+        "update" => {
+            let pk = body.get("pk").cloned().ok_or_else(|| {
+                AlcedoError::InvalidInput("Updating permissions requires a 'pk'".to_string(), 1)
+            })?;
+            crate::services::permissions::update::update_permission_detail(
+                &state,
+                &context,
+                &collection,
+                &pk,
+                &item,
+            )
+            .await?
+        }
+        other => {
+            return Err(AlcedoError::InvalidInput(
+                format!("Unsupported action '{}'", other),
+                1,
+            ));
+        }
+    };
     Ok(Json(success(result)))
 }
 

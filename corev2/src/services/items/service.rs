@@ -331,6 +331,31 @@ impl ItemsService<'_> {
                 .await;
         }
 
+        // Record-level update policy, checked before any write. Three
+        // questions, in order: may the caller touch these rows (row filter),
+        // may they change these keys (delta whitelist), and is the result
+        // allowed (value check). All three share the `update` action's rules,
+        // and the row filter is resolved once for both checks.
+        let target_pks: Vec<Value> = get_pks
+            .iter()
+            .filter_map(|item| item.get(&pk_name).cloned())
+            .collect();
+        let update_access = crate::services::permissions::update::resolve_update(
+            self.app_state,
+            self.app_context,
+            self.collection,
+            &target_pks,
+        )
+        .await?;
+        crate::services::permissions::update::check_update(
+            self.app_state,
+            self.app_context,
+            self.collection,
+            &update_access,
+            &before.payload,
+        )
+        .await?;
+
         let queries: Vec<Result<String, AlcedoError>> = join_all(get_pks.iter().map(|item| {
             self.generate_update_item_query(&before.payload, item.get(&pk_name).unwrap().clone())
         }))

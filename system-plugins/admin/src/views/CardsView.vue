@@ -146,7 +146,7 @@ function onCardClick(item: any) {
                         <Button
                             v-if="
                                 (!embedded || actions) &&
-                                item.$permissions?.update !== false
+                                item.$update_permission !== false
                             "
                             icon="pi pi-pencil"
                             severity="secondary"

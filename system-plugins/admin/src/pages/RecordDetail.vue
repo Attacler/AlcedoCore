@@ -31,13 +31,16 @@ const currentVersion = computed(() => appContext.version ?? undefined),
     itemId = computed(() => route.params.id as string);
 
 const allowedFields = computed(() => {
-    return item.value?.$permissions?.fields ?? null;
+    return item.value?.$update_fields ?? null;
 });
 
 function canEditField(fieldName: string): boolean {
     if (!allowedFields.value) return true;
     return allowedFields.value.includes(fieldName);
 }
+
+/** Whether the whole record may be edited at all (the row filter allows it). */
+const canEditRecord = computed(() => item.value?.$update_permission !== false);
 
 const showSidebar = ref(false),
     isLargeScreen = ref(window.innerWidth >= 1024),
@@ -270,6 +273,7 @@ async function fetchRecord() {
         if (!item.value) {
             throw new Error(`Record with id "${itemId.value}" not found`);
         }
+        await fetchUpdatePermission();
         await fetchDeletePermission();
         await loadInlineParents();
     } catch (e) {
@@ -281,9 +285,51 @@ async function fetchRecord() {
 }
 
 /**
- * Delete permission is not carried on the item payload; ask the dedicated
- * `$delete` endpoint for this record's pk and stash the flag.
+ * Update and delete permissions are not carried on the item payload; ask the
+ * dedicated `$update` / `$delete` endpoints for this record's pk and stash the
+ * flags. `$update` is row-filter only; the per-field whitelist comes from the
+ * per-payload probe, so ask `$permissions` with `action: "update"` too.
  */
+async function fetchUpdatePermission() {
+    if (!item.value || !collectionName.value) return;
+    const pk = item.value.id;
+    try {
+        const permissions = (await client.items.updatePermissions(
+            collectionName.value,
+            [pk],
+        )) as Record<string, boolean>;
+        item.value.$update_permission = permissions[String(pk)] !== false;
+    } catch {
+        item.value.$update_permission = false;
+    }
+
+    // Field-level whitelist: probe this row with an empty delta so the covering
+    // rules' whitelists are reported. Under the per-key update model a field is
+    // settable when *some* covering rule authorizes it, so the union is the
+    // right gate. An empty whitelist means "all fields" (no restriction).
+    if (!item.value.$update_permission) return;
+    try {
+        const detail = await client.items.permissions(
+            collectionName.value,
+            {},
+            "update",
+            pk,
+        );
+        const rules = detail.rules ?? [];
+        const anyRuleAllowsAll = rules.some(
+            (rule) => (rule.fields ?? []).length === 0,
+        );
+        item.value.$update_fields =
+            anyRuleAllowsAll || rules.length === 0
+                ? null
+                : [...new Set(rules.flatMap((rule) => rule.fields ?? []))];
+    } catch {
+        // Fail open: the server still enforces, and a broken probe must not
+        // lock the user out of editing.
+        item.value.$update_fields = null;
+    }
+}
+
 async function fetchDeletePermission() {
     if (!item.value || !collectionName.value) return;
     try {
@@ -1116,7 +1162,7 @@ onUnmounted(() => {
                     icon="pi pi-pencil"
                     severity="info"
                     @click="enterEditMode"
-                    v-if="item.$permissions?.update !== false"
+                    v-if="canEditRecord"
                 />
                 <Button
                     label="Delete"

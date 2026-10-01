@@ -19,6 +19,7 @@ use crate::controllers::{
         items::update_item,
         items::delete_items,
         items::check_delete_permissions,
+        items::check_update_permissions,
         items::item_permissions,
         items::get_references,
         // Collections

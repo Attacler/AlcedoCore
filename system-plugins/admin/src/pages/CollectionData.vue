@@ -339,7 +339,7 @@ async function fetchItems() {
         const rawItems = data.data || data.items || data;
         items.value = Array.isArray(rawItems) ? rawItems : [];
         total.value = data.total || items.value.length;
-        await fetchDeletePermissions();
+        await fetchRowPermissions();
     } catch (e) {
         error.value = e instanceof Error ? e.message : "Failed to load data";
         items.value = [];
@@ -350,13 +350,15 @@ async function fetchItems() {
 }
 
 /**
- * Delete permission is not carried on the item payload; ask the dedicated
- * `$delete` endpoint for this page's pks and stash the flag per row.
+ * Row-level edit/delete permissions are not carried on the item payload; ask
+ * the dedicated `$update` / `$delete` endpoints for this page's pks and stash
+ * the flags per row.
  */
-async function fetchDeletePermissions() {
+async function fetchRowPermissions() {
     if (!items.value.length) return;
+    const pks = items.value.map((item: any) => item.id).filter(Boolean);
+
     try {
-        const pks = items.value.map((item: any) => item.id).filter(Boolean);
         const permissions = (await client.items.deletePermissions(
             collectionName.value,
             pks,
@@ -367,6 +369,19 @@ async function fetchDeletePermissions() {
     } catch {
         // Fail closed: without an answer, hide delete.
         for (const item of items.value) item.$delete_permission = false;
+    }
+
+    try {
+        const permissions = (await client.items.updatePermissions(
+            collectionName.value,
+            pks,
+        )) as Record<string, boolean>;
+        for (const item of items.value) {
+            item.$update_permission = permissions[String(item.id)] !== false;
+        }
+    } catch {
+        // Fail closed: without an answer, hide edit.
+        for (const item of items.value) item.$update_permission = false;
     }
 }
 

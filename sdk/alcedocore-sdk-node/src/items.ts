@@ -121,15 +121,38 @@ export function createItemsResource(ky: any) {
                 })
                 .json() as Promise<Record<string, boolean>>,
 
+        /**
+         * Per-pk "may I edit this row" flags, from the `update` rules' row
+         * filters. Whether specific new values are allowed is answered by
+         * {@link permissions} with `action: "update"`.
+         */
+        updatePermissions: (
+            name: string,
+            pkValues: any[],
+            options?: Record<string, any>,
+        ) =>
+            ky
+                .post(`app/items/${encodeURIComponent(name)}/$update`, {
+                    json: { pk_values: pkValues },
+                    ...options,
+                })
+                .json() as Promise<Record<string, boolean>>,
+
+        /**
+         * Resolves what the caller may do with a candidate item, so a form can
+         * reflect permissions before submitting. `update` judges a delta against
+         * an existing row, so it also requires `pk`.
+         */
         permissions: (
             name: string,
             item: Record<string, any>,
             action: "create" | "update" = "create",
+            pk?: string,
             options?: Record<string, any>,
         ) =>
             ky
                 .post(`app/items/${encodeURIComponent(name)}/$permissions`, {
-                    json: { action, item },
+                    json: { action, item, ...(pk ? { pk } : {}) },
                     ...options,
                 })
                 .json() as Promise<

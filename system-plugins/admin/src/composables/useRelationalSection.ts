@@ -158,7 +158,11 @@ export async function loadSectionData(opts: {
     return { items, total };
 }
 
-/** Attaches `$delete_permission` to each row via `POST /items/:collection/$delete`. */
+/**
+ * Attaches `$delete_permission` and `$update_permission` to each row via the
+ * dedicated `$delete` / `$update` probes. Both fail closed: without an answer
+ * the corresponding action is hidden.
+ */
 export async function annotateDeletePermissions(
     items: any[],
     collectionName: string,
@@ -169,18 +173,22 @@ export async function annotateDeletePermissions(
         app: target?.app ?? undefined,
         version: target?.version ?? undefined,
     };
-    try {
-        const pks = items.map((item) => item.id).filter(Boolean);
-        const permissions = (await useAlcedoClient().client.items.deletePermissions(
-            collectionName,
-            pks,
-            options,
-        )) as Record<string, boolean>;
-        for (const item of items) {
-            item.$delete_permission = permissions[String(item.id)] !== false;
+    const pks = items.map((item) => item.id).filter(Boolean);
+    const client = useAlcedoClient().client;
+
+    const probes: Array<[string, (pks: any[]) => Promise<Record<string, boolean>>]> = [
+        ["$delete_permission", (pks) => client.items.deletePermissions(collectionName, pks, options)],
+        ["$update_permission", (pks) => client.items.updatePermissions(collectionName, pks, options)],
+    ];
+
+    for (const [flag, probe] of probes) {
+        try {
+            const permissions = await probe(pks);
+            for (const item of items) {
+                item[flag] = permissions[String(item.id)] !== false;
+            }
+        } catch {
+            for (const item of items) item[flag] = false;
         }
-    } catch {
-        // Fail closed: without an answer, hide delete.
-        for (const item of items) item.$delete_permission = false;
     }
 }

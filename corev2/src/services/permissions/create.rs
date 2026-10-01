@@ -16,19 +16,20 @@
 //! query. Nothing is written until both checks pass.
 
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use serde_json::{Map, Value, json};
 
 use crate::AppState;
 use crate::middelware::auth::AuthLevel;
 use crate::services::collections::FieldDefinition;
-use crate::services::collections::schema::get_pk_key;
 use crate::services::context::AppContext;
 use crate::services::errors::AlcedoError;
-use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query};
+use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter};
 use crate::services::items::relational::{collection_fields, target_ctx};
-use crate::services::permissions::read::{ReadAccess, ReadRule, resolve_access};
+use crate::services::permissions::read::{
+    ReadAccess, ReadRule, matching_pks, pk_key, resolve_access,
+};
 
 /// Resolves the record-level `create` access for `collection`. Thin wrapper
 /// over [`resolve_access`] so the `create` action (whose conditions live in the
@@ -359,13 +360,6 @@ fn scalar_pk(value: &Value) -> Option<Value> {
     matches!(value, Value::String(_) | Value::Number(_) | Value::Bool(_)).then(|| value.clone())
 }
 
-/// A pk as a plain map key (strings unquoted, everything else rendered as-is).
-fn pk_key(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        other => other.to_string(),
-    }
-}
 
 /// Runs the rest of a relation condition against `target`, restricted to `pks`,
 /// and returns the pks that match.
@@ -378,43 +372,13 @@ async fn query_related_pks(
     pks: Vec<Value>,
 ) -> Result<HashSet<String>, AlcedoError> {
     let related_ctx = target_ctx(context, target_app);
-    let pk_name = get_pk_key(&state.database_schema, &related_ctx.schema_name(), target)
-        .await?
-        .name;
-
-    let mut pk_filter = FieldFilter {
-        fields: HashMap::new(),
-    };
-    pk_filter.fields.insert(
-        pk_name.clone(),
-        FieldValue::Comparison(Comparison {
-            _in: Some(Value::Array(pks)),
-            ..Default::default()
-        }),
-    );
-
-    let mut query = Query {
-        fields: vec![pk_name.clone()],
-        filter: LogicOp {
-            _and: Some(vec![Filter::Field(rest.clone()), Filter::Field(pk_filter)]),
-            _or: None,
-        },
-        limit: 0,
-        ..Default::default()
-    };
-
-    let target_table = target.to_string();
-    let rows = query.execute_query(&related_ctx, state, &target_table).await?;
-    Ok(rows
-        .iter()
-        .filter_map(|row| row.get(&pk_name))
-        .map(pk_key)
-        .collect())
+    let conditions = vec![Filter::Field(rest.clone())];
+    matching_pks(state, &related_ctx, target, &conditions, &pks).await
 }
 
 /// Evaluates a parsed comparison against a payload value, mirroring the
 /// operator vocabulary of `conditions_from_json`.
-fn comparison_matches(comparison: &Comparison, actual: &Value) -> bool {
+pub(crate) fn comparison_matches(comparison: &Comparison, actual: &Value) -> bool {
     if let Some(expected) = &comparison._eq {
         return json_eq(actual, expected);
     }
@@ -879,7 +843,7 @@ pub fn create_permission_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::services::items::query::Filter;
+    use crate::services::items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp};
     use serde_json::json;
 
     fn item(keys: &[&str]) -> Map<String, Value> {
@@ -1145,6 +1109,7 @@ mod integration_tests {
     use uuid::Uuid;
 
     use crate::services::context::RequestSource;
+    use crate::services::items::query::LogicOp;
     use crate::services::items::service::ItemsService;
     use crate::services::postgres::inspector::TableMeta;
 
