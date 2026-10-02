@@ -149,14 +149,9 @@ async fn create_items(
     let mut guard = TxGuard::new(state.database_pool.begin().await?);
     let mut ids: Vec<Value> = Vec::new();
     for item in items {
-        let id = relational::create_recursive(
-            &state,
-            &context,
-            &mut guard,
-            collection.clone(),
-            item,
-        )
-        .await?;
+        let id =
+            relational::create_recursive(&state, &context, &mut guard, collection.clone(), item)
+                .await?;
         ids.push(Value::String(id));
     }
     // Commits, then fires the deferred `after` hooks now the rows are durable.

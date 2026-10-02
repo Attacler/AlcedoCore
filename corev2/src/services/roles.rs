@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// A query filtering on a single `field IN (values)`.
-fn in_filter(field: &str, values: Vec<Value>) -> Query {
+pub(crate) fn in_filter(field: &str, values: Vec<Value>) -> Query {
     let mut fields = HashMap::new();
     fields.insert(
         field.to_string(),
@@ -262,7 +262,9 @@ impl RolesService<'_> {
                     "role_id" => role_id.to_string(),
                     "scope" => scope,
                 };
-                service.create_many(vec![item], &mut Some(guard.tx())).await?;
+                service
+                    .create_many(vec![item], &mut Some(guard.tx()))
+                    .await?;
             }
         }
         // Commit, then flush the `after` hooks the transaction deferred.
@@ -611,7 +613,9 @@ impl RolesService<'_> {
                     "user_id" => user_id.to_string(),
                     "role_id" => role_id.to_string(),
                 };
-                service.create_many(vec![item], &mut Some(guard.tx())).await?;
+                service
+                    .create_many(vec![item], &mut Some(guard.tx()))
+                    .await?;
             }
         }
         // Commit, then flush the `after` hooks the transaction deferred.

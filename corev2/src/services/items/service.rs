@@ -63,19 +63,19 @@ pub enum PendingAfter {
 /// committed rows. Used by the recursive relational writers, whose individual
 /// `ItemsService` instances are transient.
 #[derive(Default)]
-pub struct AfterCommitQueue {
+struct AfterCommitQueue {
     pending: Vec<PendingAfter>,
 }
 
 impl AfterCommitQueue {
     /// Merges the deferred events of a transient service into this queue.
-    pub fn append(&mut self, mut other: Vec<PendingAfter>) {
+    fn append(&mut self, mut other: Vec<PendingAfter>) {
         self.pending.append(&mut other);
     }
 
     /// Triggers every deferred `after` hook. Takes the queue, so a second call
     /// is a no-op.
-    pub async fn run(&mut self, state: &AppState) {
+    async fn run(&mut self, state: &AppState) {
         let pending = std::mem::take(&mut self.pending);
         for deferred in pending {
             match deferred {
@@ -89,7 +89,10 @@ impl AfterCommitQueue {
                         state: state.clone(),
                         tx: None,
                     };
-                    state.event_bus.trigger(&key, &mut event, hook_context).await;
+                    state
+                        .event_bus
+                        .trigger(&key, &mut event, hook_context)
+                        .await;
                 }
                 PendingAfter::Update {
                     key,
@@ -101,7 +104,10 @@ impl AfterCommitQueue {
                         state: state.clone(),
                         tx: None,
                     };
-                    state.event_bus.trigger(&key, &mut event, hook_context).await;
+                    state
+                        .event_bus
+                        .trigger(&key, &mut event, hook_context)
+                        .await;
                 }
                 PendingAfter::Delete {
                     key,
@@ -113,10 +119,58 @@ impl AfterCommitQueue {
                         state: state.clone(),
                         tx: None,
                     };
-                    state.event_bus.trigger(&key, &mut event, hook_context).await;
+                    state
+                        .event_bus
+                        .trigger(&key, &mut event, hook_context)
+                        .await;
                 }
             }
         }
+    }
+}
+
+/// Owns a caller-controlled transaction together with the `after`-write hooks
+/// deferred inside it.
+///
+/// Writers register their deferred events with the guard (via
+/// [`append`](Self::append)) instead of threading a separate queue. On
+/// [`commit`](Self::commit) the transaction commits and the events dispatch; if
+/// the guard is dropped **without** committing (error, `?`, or panic) sqlx rolls
+/// the transaction back and the pending events are discarded. So the events can
+/// never fire for a rolled-back write, and nothing leaks.
+///
+/// Not an `Iterator`/`Deref`: the tx is reached through [`tx`](Self::tx) so the
+/// guard stays the single owner.
+pub struct TxGuard<'c> {
+    tx: Transaction<'c, Postgres>,
+    after: AfterCommitQueue,
+}
+
+impl<'c> TxGuard<'c> {
+    pub fn new(tx: Transaction<'c, Postgres>) -> Self {
+        Self {
+            tx,
+            after: AfterCommitQueue::default(),
+        }
+    }
+
+    /// The underlying transaction, for the query builders that expect it.
+    pub fn tx(&mut self) -> &mut Transaction<'c, Postgres> {
+        &mut self.tx
+    }
+
+    /// Merges a transient service's deferred events into this transaction.
+    pub fn append(&mut self, pending: Vec<PendingAfter>) {
+        self.after.append(pending);
+    }
+
+    /// Commits, then dispatches the deferred `after` hooks. Consumes the guard,
+    /// so the events fire at most once.
+    pub async fn commit(self, state: &AppState) -> Result<(), AlcedoError> {
+        let TxGuard { tx, mut after } = self;
+        tx.commit().await?;
+        after.run(state).await;
+        Ok(())
     }
 }
 
@@ -1153,10 +1207,85 @@ mod after_commit_tests {
         );
         drop(captured);
 
-        sqlx::query(&format!("DELETE FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1"))
-            .bind(role_id)
-            .execute(&*state.database_pool)
-            .await
-            .unwrap();
+        sqlx::query(&format!(
+            "DELETE FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1"
+        ))
+        .bind(role_id)
+        .execute(&*state.database_pool)
+        .await
+        .unwrap();
+    }
+
+    /// Dropping a `TxGuard` without committing rolls the transaction back and
+    /// discards the events it held — nothing fires and nothing is written.
+    #[tokio::test]
+    async fn dropped_guard_discards_events_and_rolls_back() {
+        let state = crate::utils::test_utils::get_app_state().await;
+
+        let seeded: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = $1 AND table_name = 'alcedo_roles')",
+        )
+        .bind(SCHEMA)
+        .fetch_one(&*state.database_pool)
+        .await
+        .unwrap_or(false);
+        if !seeded {
+            eprintln!("skipping: {SCHEMA} not seeded");
+            return;
+        }
+
+        type Captured = Vec<(Vec<Map<String, Value>>, String)>;
+        let captured: Arc<Mutex<Captured>> = Arc::default();
+        let sink = captured.clone();
+        state
+            .event_bus
+            .on::<ItemsAfterCreate, _>(
+                "after.items.create.alcedo_roles",
+                move |event, _context, _state, _tx| {
+                    let sink = sink.clone();
+                    Box::pin(async move {
+                        sink.lock()
+                            .unwrap()
+                            .push((event.items.clone(), event.collection.clone()));
+                    })
+                },
+            )
+            .await;
+
+        let role_id = Uuid::new_v4();
+        let collection = "alcedo_roles".to_string();
+        let ctx = ctx();
+        let mut service = ItemsService::new(&state, &ctx, &collection);
+
+        {
+            let mut guard = TxGuard::new(state.database_pool.begin().await.unwrap());
+            let item = item_map! {
+                "id" => role_id.to_string(),
+                "name" => format!("dropped-{role_id}"),
+                "description" => "",
+                "is_system" => false,
+            };
+            service
+                .create_many(vec![item], &mut Some(guard.tx()))
+                .await
+                .unwrap();
+            guard.append(service.take_pending_after());
+            // `guard` is dropped here without `commit`.
+        }
+
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "a dropped guard must not dispatch its deferred events"
+        );
+
+        let exists: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1)"
+        ))
+        .bind(role_id)
+        .fetch_one(&*state.database_pool)
+        .await
+        .unwrap();
+        assert!(!exists, "a dropped guard must roll the write back");
     }
 }

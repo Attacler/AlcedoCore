@@ -359,14 +359,9 @@ pub fn create_recursive<'a, 'c>(
                     if let Some(obj) = value.as_object() {
                         if !obj.contains_key("id") {
                             let tctx = target_ctx(ctx, &target_app);
-                            let child_id = create_recursive(
-                                state,
-                                &tctx,
-                                &mut *guard,
-                                target,
-                                obj.clone(),
-                            )
-                            .await?;
+                            let child_id =
+                                create_recursive(state, &tctx, &mut *guard, target, obj.clone())
+                                    .await?;
                             scalar.insert(key, Value::String(child_id));
                         }
                     }
@@ -528,14 +523,9 @@ pub fn update_recursive<'a, 'c>(
                             .await?;
                             // FK is unchanged.
                         } else {
-                            let new_id = create_recursive(
-                                state,
-                                &tctx,
-                                &mut *guard,
-                                target,
-                                obj.clone(),
-                            )
-                            .await?;
+                            let new_id =
+                                create_recursive(state, &tctx, &mut *guard, target, obj.clone())
+                                    .await?;
                             scalar.insert(key, Value::String(new_id));
                         }
                     } else if let Some(s) = value.as_str() {

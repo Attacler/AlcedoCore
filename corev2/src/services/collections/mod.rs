@@ -20,7 +20,10 @@ use crate::{
     services::{
         context::AppContext,
         errors::AlcedoError,
-        items::{query::Query, service::ItemsService},
+        items::{
+            query::Query,
+            service::{ItemsService, TxGuard},
+        },
         permissions::{
             self,
             create::{create_permission_summary, resolve_create_access},
@@ -357,8 +360,8 @@ pub async fn create_collection(
 
     let create_sql = build_create_table_sql(ctx, &req.name, &req.fields)?;
 
-    let mut tx = state.database_pool.begin().await?;
-    execute_query_transaction(state, &mut tx, &create_sql).await?;
+    let mut guard = TxGuard::new(state.database_pool.begin().await?);
+    execute_query_transaction(state, guard.tx(), &create_sql).await?;
 
     let collections_table = "alcedo_collections".to_string();
     let mut collections_service = ItemsService::new(state, ctx, &collections_table);
@@ -371,7 +374,7 @@ pub async fn create_collection(
         "hidden" => false,
     };
     let ids = collections_service
-        .create_many(vec![payload], &mut Some(&mut tx))
+        .create_many(vec![payload], &mut Some(guard.tx()))
         .await?;
     let collection_id: i64 = ids
         .get(0)
@@ -388,7 +391,7 @@ pub async fn create_collection(
         .collect();
     if !field_payloads.is_empty() {
         fields_service
-            .create_many(field_payloads, &mut Some(&mut tx))
+            .create_many(field_payloads, &mut Some(guard.tx()))
             .await?;
     }
 
@@ -403,7 +406,7 @@ pub async fn create_collection(
         "ordinal_position" => 1,
     };
     let layout_ids = layouts_service
-        .create_many(vec![layout_payload], &mut Some(&mut tx))
+        .create_many(vec![layout_payload], &mut Some(guard.tx()))
         .await?;
     let layout_id = layout_ids.get(0).map(|s| s.to_string()).unwrap_or_default();
 
@@ -426,7 +429,7 @@ pub async fn create_collection(
         "default_filter" => Value::Null,
     };
     sections_service
-        .create_many(vec![section_payload], &mut Some(&mut tx))
+        .create_many(vec![section_payload], &mut Some(guard.tx()))
         .await?;
 
     let unique_sqls: Vec<String> = req
@@ -435,14 +438,14 @@ pub async fn create_collection(
         .filter(|f| f.unique && !f.is_virtual())
         .map(|f| build_add_unique_sql(ctx, &req.name, &f.name))
         .collect();
-    exec_all(state, &mut tx, unique_sqls).await?;
+    exec_all(state, guard.tx(), unique_sqls).await?;
 
     // M:1 FKs for relationship fields; user fields FK to the global users table.
     let non_virtual_rel: Vec<&FieldDefinition> =
         req.fields.iter().filter(|f| f.is_fk_field()).collect();
     exec_all(
         state,
-        &mut tx,
+        guard.tx(),
         build_add_fk_sqls(ctx, &req.name, &non_virtual_rel)?,
     )
     .await?;
@@ -450,13 +453,12 @@ pub async fn create_collection(
     // `one_to_many` fields are virtual: the link is the child's M:1 field, so
     // they need no column/FK of their own.
 
-    tx.commit().await?;
-    // The external transaction deferred these services' `after` hooks; flush
-    // them now that the rows are committed.
-    collections_service.run_after_commit().await;
-    fields_service.run_after_commit().await;
-    layouts_service.run_after_commit().await;
-    sections_service.run_after_commit().await;
+    // Commit, then flush the `after` hooks the transaction deferred.
+    guard.append(collections_service.take_pending_after());
+    guard.append(fields_service.take_pending_after());
+    guard.append(layouts_service.take_pending_after());
+    guard.append(sections_service.take_pending_after());
+    guard.commit(state).await?;
     SchemaService::new(state, ctx).refresh_schema().await;
 
     get_collection(state, ctx, &req.name).await
@@ -524,17 +526,17 @@ pub async fn update_collection(
         .copied()
         .collect();
 
-    let mut tx = state.database_pool.begin().await?;
+    let mut guard = TxGuard::new(state.database_pool.begin().await?);
 
     // 1. Drop M:1 FK constraints (removed + renamed relationship fields).
     let mut fk_drop: Vec<&str> = removed_rel.clone();
     fk_drop.extend(renamed_rel_old.iter().copied());
-    exec_all(state, &mut tx, build_drop_fk_sqls(ctx, name, &fk_drop)).await?;
+    exec_all(state, guard.tx(), build_drop_fk_sqls(ctx, name, &fk_drop)).await?;
 
     // 2. Rename columns.
     exec_all(
         state,
-        &mut tx,
+        guard.tx(),
         build_rename_columns_sqls(ctx, name, &renamed_columns),
     )
     .await?;
@@ -551,11 +553,16 @@ pub async fn update_collection(
         .collect();
     exec_all(
         state,
-        &mut tx,
+        guard.tx(),
         build_drop_columns_sqls(ctx, name, &removed_no_rel),
     )
     .await?;
-    exec_all(state, &mut tx, build_add_columns_sqls(ctx, name, &added)?).await?;
+    exec_all(
+        state,
+        guard.tx(),
+        build_add_columns_sqls(ctx, name, &added)?,
+    )
+    .await?;
 
     // Unique indexes for newly added fields.
     let added_unique: Vec<String> = added
@@ -564,7 +571,7 @@ pub async fn update_collection(
         .filter(|f| f.unique && !f.is_virtual())
         .map(|f| build_add_unique_sql(ctx, name, &f.name))
         .collect();
-    exec_all(state, &mut tx, added_unique).await?;
+    exec_all(state, guard.tx(), added_unique).await?;
 
     // 4. Constraint sync (unique / required / default).
     for (old, new) in &constraint_changes {
@@ -575,14 +582,14 @@ pub async fn update_collection(
             if new.unique {
                 exec_all(
                     state,
-                    &mut tx,
+                    guard.tx(),
                     vec![build_add_unique_sql(ctx, name, &new.name)],
                 )
                 .await?;
             } else {
                 exec_all(
                     state,
-                    &mut tx,
+                    guard.tx(),
                     vec![build_drop_unique_sql(ctx, name, &new.name)],
                 )
                 .await?;
@@ -591,7 +598,7 @@ pub async fn update_collection(
         if old.required != new.required {
             exec_all(
                 state,
-                &mut tx,
+                guard.tx(),
                 vec![build_not_null_sql(ctx, name, &new.name, new.required)],
             )
             .await?;
@@ -601,14 +608,14 @@ pub async fn update_collection(
                 Some(v) if !v.is_null() => build_set_default_sql(ctx, name, new, v)?,
                 _ => build_drop_default_sql(ctx, name, &new.name),
             };
-            exec_all(state, &mut tx, vec![sql]).await?;
+            exec_all(state, guard.tx(), vec![sql]).await?;
         }
     }
 
     // 5. Add M:1 FKs for newly added relationship fields.
     let added_rel: Vec<&FieldDefinition> =
         added.iter().copied().filter(|f| f.is_fk_field()).collect();
-    exec_all(state, &mut tx, build_add_fk_sqls(ctx, name, &added_rel)?).await?;
+    exec_all(state, guard.tx(), build_add_fk_sqls(ctx, name, &added_rel)?).await?;
 
     // 6. Update display_name.
     if let Some(display) = &req.display_name {
@@ -618,7 +625,7 @@ pub async fn update_collection(
             escape_sql_string(display),
             collection_id
         );
-        execute_query_transaction(state, &mut tx, &sql).await?;
+        execute_query_transaction(state, guard.tx(), &sql).await?;
     }
 
     // 7. Replace field metadata rows.
@@ -631,7 +638,7 @@ pub async fn update_collection(
     let mut fields_service = ItemsService::new(state, ctx, &fields_table);
     if !ids.is_empty() {
         fields_service
-            .delete_items_by_pks(ids, Some(&mut tx))
+            .delete_items_by_pks(ids, Some(guard.tx()))
             .await?;
     }
     let payloads: Vec<Map<String, Value>> = desired
@@ -641,14 +648,13 @@ pub async fn update_collection(
         .collect();
     if !payloads.is_empty() {
         fields_service
-            .create_many(payloads, &mut Some(&mut tx))
+            .create_many(payloads, &mut Some(guard.tx()))
             .await?;
     }
 
-    tx.commit().await?;
-    // The external transaction deferred the field writes' `after` hooks; flush
-    // them now that the rows are committed.
-    fields_service.run_after_commit().await;
+    // Commit, then flush the `after` hooks the transaction deferred.
+    guard.append(fields_service.take_pending_after());
+    guard.commit(state).await?;
     SchemaService::new(state, ctx).refresh_schema().await;
 
     get_collection(state, ctx, name).await
@@ -661,9 +667,9 @@ pub async fn delete_collection(
 ) -> Result<(), AlcedoError> {
     let collection_id = collection_id_for(state, ctx, name).await?;
 
-    let mut tx = state.database_pool.begin().await?;
+    let mut guard = TxGuard::new(state.database_pool.begin().await?);
     let drop_sql = drop_table_sql(ctx, name, true);
-    execute_query_transaction(state, &mut tx, &drop_sql).await?;
+    execute_query_transaction(state, guard.tx(), &drop_sql).await?;
     let cleanup = [
         format!(
             "DELETE FROM {} WHERE collection_id = {}",
@@ -682,9 +688,9 @@ pub async fn delete_collection(
         ),
     ];
     for sql in cleanup {
-        execute_query_transaction(state, &mut tx, &sql).await?;
+        execute_query_transaction(state, guard.tx(), &sql).await?;
     }
-    tx.commit().await?;
+    guard.commit(state).await?;
     SchemaService::new(state, ctx).refresh_schema().await;
     Ok(())
 }
@@ -1123,13 +1129,13 @@ pub async fn set_layout_roles(
     body: &Value,
 ) -> Result<Value, AlcedoError> {
     collection_id_for(state, ctx, name).await?;
-    let mut tx = state.database_pool.begin().await?;
+    let mut guard = TxGuard::new(state.database_pool.begin().await?);
     let delete_sql = format!(
         "DELETE FROM {} WHERE layout_id = '{}'::uuid",
         qtable(ctx, "alcedo_collection_layout_roles"),
         escape_sql_string(layout_id)
     );
-    execute_query_transaction(state, &mut tx, &delete_sql).await?;
+    execute_query_transaction(state, guard.tx(), &delete_sql).await?;
 
     if let Some(ids) = body.get("role_ids").and_then(|v| v.as_array()) {
         for role in ids {
@@ -1143,10 +1149,10 @@ pub async fn set_layout_roles(
                     escape_sql_string(layout_id),
                     escape_sql_string(role_id)
                 );
-                execute_query_transaction(state, &mut tx, &insert).await?;
+                execute_query_transaction(state, guard.tx(), &insert).await?;
             }
         }
     }
-    tx.commit().await?;
+    guard.commit(state).await?;
     Ok(json!({ "updated": true }))
 }
