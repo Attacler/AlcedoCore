@@ -34,7 +34,7 @@ pub async fn create(
 ) -> Result<Uuid, AlcedoError> {
     let context = AppContext::system(RequestSource::API);
     let collection = SESSION_COLLECTION.to_string();
-    let service = ItemsService::new(state, &context, &collection);
+    let mut service = ItemsService::new(state, &context, &collection);
 
     let id = Uuid::new_v4();
     let expires_at = (Utc::now() + ChronoDuration::seconds(ttl.as_secs() as i64))
@@ -80,7 +80,7 @@ pub async fn resolve(cache: &SystemCache, id: &str) -> Option<Uuid> {
 pub async fn delete(state: &AppState, id: &str) -> Result<(), AlcedoError> {
     let context = AppContext::system(RequestSource::API);
     let collection = SESSION_COLLECTION.to_string();
-    let service = ItemsService::new(state, &context, &collection);
+    let mut service = ItemsService::new(state, &context, &collection);
 
     service
         .delete_items_by_pks(vec![Value::String(id.to_string())], None)
@@ -100,7 +100,7 @@ pub async fn delete_all(state: &AppState, user_id: Uuid) -> Result<(), AlcedoErr
     if !ids.is_empty() {
         let context = AppContext::system(RequestSource::API);
         let collection = SESSION_COLLECTION.to_string();
-        let service = ItemsService::new(state, &context, &collection);
+        let mut service = ItemsService::new(state, &context, &collection);
         service.delete_items_by_pks(ids, None).await?;
     }
 

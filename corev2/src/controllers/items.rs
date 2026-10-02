@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::services::items::service::ItemsService;
+use crate::services::items::service::{ItemsService, TxGuard};
 use crate::services::items::{query::Query, relational};
 use crate::services::permissions::create::create_permission_detail;
 use crate::services::respond::JSendResponse;
@@ -146,20 +146,21 @@ async fn create_items(
         }
     };
 
-    let mut transaction = state.database_pool.begin().await?;
+    let mut guard = TxGuard::new(state.database_pool.begin().await?);
     let mut ids: Vec<Value> = Vec::new();
     for item in items {
         let id = relational::create_recursive(
             &state,
             &context,
-            &mut transaction,
+            &mut guard,
             collection.clone(),
             item,
         )
         .await?;
         ids.push(Value::String(id));
     }
-    transaction.commit().await?;
+    // Commits, then fires the deferred `after` hooks now the rows are durable.
+    guard.commit(&state).await?;
 
     let service = ItemsService::new(&state, &context, &collection);
     let created = service.get_items_by_pks(ids).await?;
@@ -184,17 +185,18 @@ async fn update_item(
     ExtractContext(context): ExtractContext,
     Json(body): Json<Map<String, Value>>,
 ) -> Result<Json<JSendResponse<Map<String, Value>>>, AlcedoError> {
-    let mut transaction = state.database_pool.begin().await?;
+    let mut guard = TxGuard::new(state.database_pool.begin().await?);
     relational::update_recursive(
         &state,
         &context,
-        &mut transaction,
+        &mut guard,
         collection.clone(),
         id.clone(),
         body,
     )
     .await?;
-    transaction.commit().await?;
+    // Commits, then fires the deferred `after` hooks now the rows are durable.
+    guard.commit(&state).await?;
 
     let service = ItemsService::new(&state, &context, &collection);
     let item = service
@@ -229,7 +231,7 @@ async fn update_items(
             1,
         ));
     }
-    let service = ItemsService::new(&state, &context, &collection);
+    let mut service = ItemsService::new(&state, &context, &collection);
     let result = service
         .update_items_by_query(&mut query.clone(), item, &mut None)
         .await?;
@@ -275,7 +277,7 @@ async fn delete_items(
     ExtractContext(context): ExtractContext,
     body: Option<Json<Value>>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    let service = ItemsService::new(&state, &context, &collection);
+    let mut service = ItemsService::new(&state, &context, &collection);
 
     let deleted = match body {
         Some(Json(value)) => {

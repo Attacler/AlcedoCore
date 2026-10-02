@@ -82,7 +82,7 @@ impl UsersService<'_> {
         }
 
         let (context, collection) = system_context(USERS_COLLECTION);
-        let service = ItemsService::new(self.app_state, &context, &collection);
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
 
         let password_hash = AuthService::hash_password(password).await?;
         let id = Uuid::new_v4();
@@ -136,7 +136,7 @@ impl UsersService<'_> {
         }
 
         let (context, collection) = system_context(USERS_COLLECTION);
-        let service = ItemsService::new(self.app_state, &context, &collection);
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
 
         if !update.is_empty() {
             let mut query = Query::eq("id", json!(id.to_string()));
@@ -158,7 +158,7 @@ impl UsersService<'_> {
 
     pub async fn delete(&self, id: Uuid) -> Result<bool, AlcedoError> {
         let (context, collection) = system_context(USERS_COLLECTION);
-        let service = ItemsService::new(self.app_state, &context, &collection);
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
         let deleted = service
             .delete_items_by_pks(vec![json!(id.to_string())], None)
             .await?;
@@ -194,7 +194,7 @@ impl UsersService<'_> {
 
         let password_hash = AuthService::hash_password(new_password).await?;
         let (context, collection) = system_context(USERS_COLLECTION);
-        let service = ItemsService::new(self.app_state, &context, &collection);
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
         let mut update = Map::new();
         update.insert("password_hash".to_string(), json!(password_hash));
         let mut query = Query::eq("id", json!(id.to_string()));

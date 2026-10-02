@@ -45,7 +45,7 @@ impl Operation<Postgres> for M0003Operation {
                         )
                         .await?;
 
-                    let items_service = ItemsService::new(&state, &app_context, &table_name);
+                    let mut items_service = ItemsService::new(&state, &app_context, &table_name);
 
                     items_service
                         .create_many(

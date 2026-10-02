@@ -14,7 +14,7 @@ pub mod types;
 pub struct HookContext<'tx, 'c> {
     pub context: AppContext,
     pub state: AppState,
-    pub tx: &'tx mut Transaction<'c, Postgres>,
+    pub tx: Option<&'tx mut Transaction<'c, Postgres>>,
 }
 
 type AsyncHook<T> = Box<
@@ -22,7 +22,7 @@ type AsyncHook<T> = Box<
             &'a mut T,
             AppContext,
             AppState,
-            &'a mut Transaction<'_, Postgres>,
+            Option<&'a mut Transaction<'_, Postgres>>,
         ) -> BoxFuture<'a, ()>
         + Send
         + Sync,
@@ -49,7 +49,7 @@ impl MultiEventBus {
                 &'a mut T,
                 AppContext,
                 AppState,
-                &'a mut Transaction<'_, Postgres>,
+                Option<&'a mut Transaction<'_, Postgres>>,
             ) -> BoxFuture<'a, ()>
             + Send
             + Sync
@@ -75,7 +75,7 @@ impl MultiEventBus {
         &self,
         key: &str,
         event: &mut T,
-        context: HookContext<'tx, 'c>,
+        mut context: HookContext<'tx, 'c>,
     ) {
         let lookup_key = (key.to_string(), TypeId::of::<T>());
 
@@ -92,7 +92,7 @@ impl MultiEventBus {
                         event,
                         app_context.clone(),
                         app_state.clone(),
-                        &mut *context.tx,
+                        context.tx.as_deref_mut(),
                     )
                     .await;
                 }

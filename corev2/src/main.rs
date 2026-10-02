@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
         let hook_context = HookContext {
             context: app_context,
             state: state.clone(),
-            tx: &mut transaction,
+            tx: Some(&mut transaction),
         };
         state
             .event_bus

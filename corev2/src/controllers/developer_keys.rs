@@ -128,7 +128,7 @@ async fn create_key(
 
     let context = AppContext::system(RequestSource::API);
     let collection = "alcedo_developer_api_keys".to_string();
-    let service = ItemsService::new(&state, &context, &collection);
+    let mut service = ItemsService::new(&state, &context, &collection);
     service.create_many(vec![map], &mut None).await?;
 
     let rows = service
@@ -161,7 +161,7 @@ async fn delete_key(
 
     let context = AppContext::system(RequestSource::API);
     let collection = "alcedo_developer_api_keys".to_string();
-    let service = ItemsService::new(&state, &context, &collection);
+    let mut service = ItemsService::new(&state, &context, &collection);
 
     let deleted = service
         .delete_items_by_pks(vec![Value::String(id.to_string())], None)

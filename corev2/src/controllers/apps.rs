@@ -212,7 +212,7 @@ async fn create_app(
 
     let context = AppContext::system(RequestSource::API);
     let collection = "alcedo_apps".to_string();
-    let service = ItemsService::new(&state, &context, &collection);
+    let mut service = ItemsService::new(&state, &context, &collection);
     let mut app_map = item_map! {
         "name" => name,
         "api_name" => api_name.clone(),
@@ -279,7 +279,7 @@ async fn update_app(
     if !app_map.is_empty() {
         let context = AppContext::system(RequestSource::API);
         let collection = "alcedo_apps".to_string();
-        let service = ItemsService::new(&state, &context, &collection);
+        let mut service = ItemsService::new(&state, &context, &collection);
         service
             .update_items_by_query(&mut Query::eq("id", Value::from(id)), app_map, &mut None)
             .await?;
@@ -325,7 +325,7 @@ async fn delete_app(
 
     let context = AppContext::system(RequestSource::API);
     let collection = "alcedo_apps".to_string();
-    let service = ItemsService::new(&state, &context, &collection);
+    let mut service = ItemsService::new(&state, &context, &collection);
     let deleted = service
         .delete_items_by_pks(vec![Value::String(id.to_string())], None)
         .await?;

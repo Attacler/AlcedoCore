@@ -52,7 +52,7 @@ async fn seed_roles(state: &AppState, app_context: &AppContext) -> Result<(), Al
     // System roles are created directly: `RolesService::create_role` marks a
     // role as non-system.
     let roles_table = "alcedo_roles".to_string();
-    let roles_items = ItemsService::new(state, app_context, &roles_table);
+    let mut roles_items = ItemsService::new(state, app_context, &roles_table);
     for (name, description) in SYSTEM_ROLES {
         if roles.find_role_by_name(name).await?.is_some() {
             continue;

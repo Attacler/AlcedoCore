@@ -177,7 +177,7 @@ impl AuthService<'_> {
 
     async fn touch_developer_key(&self, id: Uuid) -> Result<(), AlcedoError> {
         let collection = "alcedo_developer_api_keys".to_string();
-        let service = ItemsService::new(&self.app_state, &self.app_context, &collection);
+        let mut service = ItemsService::new(&self.app_state, &self.app_context, &collection);
 
         let mut query = Query::eq("id", Value::String(id.to_string()));
 

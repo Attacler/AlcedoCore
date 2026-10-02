@@ -361,7 +361,7 @@ pub async fn create_collection(
     execute_query_transaction(state, &mut tx, &create_sql).await?;
 
     let collections_table = "alcedo_collections".to_string();
-    let collections_service = ItemsService::new(state, ctx, &collections_table);
+    let mut collections_service = ItemsService::new(state, ctx, &collections_table);
     let payload = item_map! {
         "app_name" => ctx.app_api_name(),
         "app_version" => ctx.version_api_name(),
@@ -379,7 +379,7 @@ pub async fn create_collection(
         .ok_or_else(|| AlcedoError::SystemError("Could not create collection".to_string(), 1))?;
 
     let fields_table = "alcedo_fields".to_string();
-    let fields_service = ItemsService::new(state, ctx, &fields_table);
+    let mut fields_service = ItemsService::new(state, ctx, &fields_table);
     let field_payloads: Vec<Map<String, Value>> = req
         .fields
         .iter()
@@ -395,7 +395,7 @@ pub async fn create_collection(
     // Seed a "Default" layout and a "Default" field-group section so a freshly
     // created collection opens directly in the builder with its fields shown.
     let layouts_table = "alcedo_collection_layouts".to_string();
-    let layouts_service = ItemsService::new(state, ctx, &layouts_table);
+    let mut layouts_service = ItemsService::new(state, ctx, &layouts_table);
     let layout_payload = item_map! {
         "collection_id" => collection_id,
         "name" => "Default",
@@ -408,7 +408,7 @@ pub async fn create_collection(
     let layout_id = layout_ids.get(0).map(|s| s.to_string()).unwrap_or_default();
 
     let sections_table = "alcedo_collection_sections".to_string();
-    let sections_service = ItemsService::new(state, ctx, &sections_table);
+    let mut sections_service = ItemsService::new(state, ctx, &sections_table);
     let section_payload = item_map! {
         "collection_id" => collection_id,
         "layout_id" => layout_id,
@@ -451,6 +451,12 @@ pub async fn create_collection(
     // they need no column/FK of their own.
 
     tx.commit().await?;
+    // The external transaction deferred these services' `after` hooks; flush
+    // them now that the rows are committed.
+    collections_service.run_after_commit().await;
+    fields_service.run_after_commit().await;
+    layouts_service.run_after_commit().await;
+    sections_service.run_after_commit().await;
     SchemaService::new(state, ctx).refresh_schema().await;
 
     get_collection(state, ctx, &req.name).await
@@ -622,7 +628,7 @@ pub async fn update_collection(
         .filter_map(|r| r.get("id").cloned())
         .collect();
     let fields_table = "alcedo_fields".to_string();
-    let fields_service = ItemsService::new(state, ctx, &fields_table);
+    let mut fields_service = ItemsService::new(state, ctx, &fields_table);
     if !ids.is_empty() {
         fields_service
             .delete_items_by_pks(ids, Some(&mut tx))
@@ -640,6 +646,9 @@ pub async fn update_collection(
     }
 
     tx.commit().await?;
+    // The external transaction deferred the field writes' `after` hooks; flush
+    // them now that the rows are committed.
+    fields_service.run_after_commit().await;
     SchemaService::new(state, ctx).refresh_schema().await;
 
     get_collection(state, ctx, name).await
@@ -760,7 +769,7 @@ pub async fn create_layout(
         + 1;
 
     let table = "alcedo_collection_layouts".to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
     let payload = item_map! {
         "collection_id" => collection_id,
         "name" => layout_name,
@@ -781,7 +790,7 @@ pub async fn update_layout(
 ) -> Result<Value, AlcedoError> {
     let collection_id = collection_id_for(state, ctx, name).await?;
     let table = "alcedo_collection_layouts".to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
 
     let mut payload = Map::new();
     if let Some(v) = body.get("name").and_then(|v| v.as_str()) {
@@ -832,7 +841,7 @@ pub async fn delete_layout(
         ));
     }
     let table = "alcedo_collection_layouts".to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
     service
         .delete_items_by_pks(vec![json!(layout_id)], None)
         .await?;
@@ -891,7 +900,7 @@ pub async fn list_sections(
             .map(|r| json!(jstr(r.get("api_name")).unwrap_or_default()))
             .collect();
         let table = "alcedo_collection_sections".to_string();
-        let service = ItemsService::new(state, ctx, &table);
+        let mut service = ItemsService::new(state, ctx, &table);
         let payload = item_map! {
             "collection_id" => collection_id,
             "layout_id" => layout_id,
@@ -927,7 +936,7 @@ pub async fn create_section(
         + 1;
 
     let table = "alcedo_collection_sections".to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
     let payload = item_map! {
         "collection_id" => collection_id,
         "layout_id" => layout_id,
@@ -956,7 +965,7 @@ pub async fn update_section(
 ) -> Result<Value, AlcedoError> {
     collection_id_for(state, ctx, name).await?;
     let table = "alcedo_collection_sections".to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
 
     let mut payload = Map::new();
     payload.insert("name".to_string(), json!(req.name));
@@ -1010,7 +1019,7 @@ pub async fn delete_section(
 ) -> Result<Value, AlcedoError> {
     collection_id_for(state, ctx, name).await?;
     let table = "alcedo_collection_sections".to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
     service
         .delete_items_by_pks(vec![json!(section_id)], None)
         .await?;
@@ -1027,7 +1036,7 @@ pub async fn reorder_sections(
 ) -> Result<Value, AlcedoError> {
     collection_id_for(state, ctx, name).await?;
     let table = "alcedo_collection_sections".to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
     if let Some(sections) = body.get("sections").and_then(|v| v.as_array()) {
         for section in sections {
             let id = match section.get("id").and_then(|v| v.as_str()) {

@@ -13,7 +13,7 @@ pub async fn setup_user_hooks(bus: &Arc<MultiEventBus>) {
     bus.on::<CoreLoaded, _>("core.loaded", |_event, context, state, tx| {
         Box::pin(async move {
             let collection = "alcedo_users".to_string();
-            let service = ItemsService::new(&state, &context, &collection);
+            let mut service = ItemsService::new(&state, &context, &collection);
 
             // Only fetch the uuid of the first user.
             let mut query = Query::default();
@@ -59,6 +59,10 @@ pub async fn setup_user_hooks(bus: &Arc<MultiEventBus>) {
                 "is_admin" => true,
             }];
 
+            let Some(tx) = tx else {
+                tracing::error!("[USER_BOOTSTRAP] core.loaded ran without a transaction");
+                return;
+            };
             let mut transaction = Some(tx);
             match service.create_many(items, &mut transaction).await {
                 Ok(ids) => tracing::info!(

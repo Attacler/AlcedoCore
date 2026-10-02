@@ -12,7 +12,7 @@ use crate::{
         errors::AlcedoError,
         items::{
             query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query},
-            service::ItemsService,
+            service::{ItemsService, TxGuard},
         },
     },
 };
@@ -152,7 +152,7 @@ impl RolesService<'_> {
             "is_system" => false,
         };
 
-        let service = self.roles();
+        let mut service = self.roles();
         let pk = service
             .create_many(vec![item], &mut None)
             .await?
@@ -172,7 +172,7 @@ impl RolesService<'_> {
         name: Option<&str>,
         description: Option<&str>,
     ) -> Result<Option<Value>, AlcedoError> {
-        let service = self.roles();
+        let mut service = self.roles();
 
         let mut payload = Map::new();
         if let Some(name) = name {
@@ -240,7 +240,7 @@ impl RolesService<'_> {
         role_id: Uuid,
         scopes: &[String],
     ) -> Result<Vec<Value>, AlcedoError> {
-        let service = self.role_scopes();
+        let mut service = self.role_scopes();
 
         let mut seen: Vec<String> = Vec::new();
         for scope in scopes {
@@ -250,11 +250,11 @@ impl RolesService<'_> {
             }
         }
 
-        let mut tx = self.app_state.database_pool.begin().await?;
+        let mut guard = TxGuard::new(self.app_state.database_pool.begin().await?);
         {
             let delete = Query::eq("role_id", json!(role_id.to_string()));
             service
-                .delete_items_by_query(delete, &mut Some(&mut tx))
+                .delete_items_by_query(delete, &mut Some(guard.tx()))
                 .await?;
             for scope in &seen {
                 let item = item_map! {
@@ -262,10 +262,12 @@ impl RolesService<'_> {
                     "role_id" => role_id.to_string(),
                     "scope" => scope,
                 };
-                service.create_many(vec![item], &mut Some(&mut tx)).await?;
+                service.create_many(vec![item], &mut Some(guard.tx())).await?;
             }
         }
-        tx.commit().await?;
+        // Commit, then flush the `after` hooks the transaction deferred.
+        guard.append(service.take_pending_after());
+        guard.commit(self.app_state).await?;
 
         self.list_role_scopes(role_id).await
     }
@@ -326,7 +328,7 @@ impl RolesService<'_> {
         role_id: Uuid,
         policy_id: Uuid,
     ) -> Result<(), AlcedoError> {
-        let service = self.role_policies();
+        let mut service = self.role_policies();
 
         let mut existing = Query::eq_all(&[
             ("role_id", json!(role_id.to_string())),
@@ -397,7 +399,7 @@ impl RolesService<'_> {
     }
 
     pub async fn assign_user_role(&self, user_id: Uuid, role_id: Uuid) -> Result<(), AlcedoError> {
-        let service = self.user_roles();
+        let mut service = self.user_roles();
 
         let mut existing = Query::eq_all(&[
             ("user_id", json!(user_id.to_string())),
@@ -588,7 +590,7 @@ impl RolesService<'_> {
             identity: None,
         };
         let user_roles_table = "alcedo_user_roles".to_string();
-        let service = ItemsService::new(self.app_state, &ctx, &user_roles_table);
+        let mut service = ItemsService::new(self.app_state, &ctx, &user_roles_table);
 
         let mut deduped: Vec<Uuid> = Vec::new();
         for role_id in role_ids {
@@ -597,11 +599,11 @@ impl RolesService<'_> {
             }
         }
 
-        let mut tx = self.app_state.database_pool.begin().await?;
+        let mut guard = TxGuard::new(self.app_state.database_pool.begin().await?);
         {
             let delete = Query::eq("user_id", json!(user_id.to_string()));
             service
-                .delete_items_by_query(delete, &mut Some(&mut tx))
+                .delete_items_by_query(delete, &mut Some(guard.tx()))
                 .await?;
             for role_id in &deduped {
                 let item = item_map! {
@@ -609,10 +611,12 @@ impl RolesService<'_> {
                     "user_id" => user_id.to_string(),
                     "role_id" => role_id.to_string(),
                 };
-                service.create_many(vec![item], &mut Some(&mut tx)).await?;
+                service.create_many(vec![item], &mut Some(guard.tx())).await?;
             }
         }
-        tx.commit().await?;
+        // Commit, then flush the `after` hooks the transaction deferred.
+        guard.append(service.take_pending_after());
+        guard.commit(self.app_state).await?;
         Ok(())
     }
 }

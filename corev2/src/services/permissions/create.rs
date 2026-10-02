@@ -1268,6 +1268,11 @@ mod integration_tests {
         .execute(&*state.database_pool)
         .await
         .expect("insert policy permission");
+
+        // Seeding is raw SQL (no `ItemsService` hook), so drop the permission
+        // cache to mirror the production write→invalidate path. Without this a
+        // rule added mid-test after an earlier resolve stays invisible.
+        crate::services::permissions::cache::invalidate_schema(state, s).await;
     }
 
     async fn count_products_named(state: &AppState, name: &str) -> i64 {
@@ -1323,7 +1328,7 @@ mod integration_tests {
 
         // The real write path is rejected too (no insert happens).
         let products = "products".to_string();
-        let service = ItemsService::new(&state, &ctx, &products);
+        let mut service = ItemsService::new(&state, &ctx, &products);
         let err = service
             .create_many(
                 vec![item(json!({ "name": "ct-deny-should-not-exist" }))],
@@ -1392,7 +1397,7 @@ mod integration_tests {
 
         // Real path: allowed create succeeds, disallowed is rejected/rolled back.
         let products = "products".to_string();
-        let service = ItemsService::new(&state, &ctx, &products);
+        let mut service = ItemsService::new(&state, &ctx, &products);
         let allowed_name = "ct-fields-ok";
         service
             .create_many(
@@ -1558,7 +1563,7 @@ mod integration_tests {
 
         // The real write path agrees.
         let products = "products".to_string();
-        let service = ItemsService::new(&state, &ctx, &products);
+        let mut service = ItemsService::new(&state, &ctx, &products);
         service
             .create_many(
                 vec![item(json!({
@@ -1623,7 +1628,7 @@ mod integration_tests {
         assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
 
         let products = "products".to_string();
-        let service = ItemsService::new(&state, &ctx, &products);
+        let mut service = ItemsService::new(&state, &ctx, &products);
         let err = service
             .create_many(
                 vec![item(json!({ "name": "ct-uncovered-bad", "bogus": 1 }))],
@@ -1675,7 +1680,7 @@ mod integration_tests {
         .expect("a validation on an absent key must be skipped");
 
         let products = "products".to_string();
-        let service = ItemsService::new(&state, &ctx, &products);
+        let mut service = ItemsService::new(&state, &ctx, &products);
         service
             .create_many(
                 vec![item(json!({ "name": "ct-skipval-persist" }))],
@@ -1751,7 +1756,7 @@ mod integration_tests {
         assert!(matches!(err, AlcedoError::Forbidden(_, _)), "got {err:?}");
 
         let products = "products".to_string();
-        let service = ItemsService::new(&state, &ctx, &products);
+        let mut service = ItemsService::new(&state, &ctx, &products);
 
         // Satisfying row persists.
         let ok_name = "ct-validation-ok";
@@ -1809,7 +1814,7 @@ mod integration_tests {
         let identity = AuthLevel::User(seed.user_id);
         let ctx = helpdesk_ctx(Some(identity));
         let products = "products".to_string();
-        let service = ItemsService::new(&state, &ctx, &products);
+        let mut service = ItemsService::new(&state, &ctx, &products);
 
         // First item satisfies the rule, second violates it: the whole call is
         // rejected and neither row exists.
@@ -1886,7 +1891,7 @@ mod integration_tests {
         );
 
         let tickets = "tickets".to_string();
-        let service = ItemsService::new(&state, &ctx, &tickets);
+        let mut service = ItemsService::new(&state, &ctx, &tickets);
 
         let ok_subject = "ct-relation-ok";
         service
@@ -1964,7 +1969,7 @@ mod integration_tests {
         let identity = AuthLevel::User(seed.user_id);
         let ctx = helpdesk_ctx(Some(identity));
         let tickets = "tickets".to_string();
-        let service = ItemsService::new(&state, &ctx, &tickets);
+        let mut service = ItemsService::new(&state, &ctx, &tickets);
 
         // A call that mixes one matching and one non-matching fk is rejected and
         // writes neither ticket.
@@ -2024,7 +2029,7 @@ mod integration_tests {
         let identity = AuthLevel::User(seed.user_id);
         let ctx = helpdesk_ctx(Some(identity));
         let tickets = "tickets".to_string();
-        let service = ItemsService::new(&state, &ctx, &tickets);
+        let mut service = ItemsService::new(&state, &ctx, &tickets);
 
         // Absent relation key.
         let err = service
@@ -2074,7 +2079,7 @@ mod integration_tests {
         let identity = AuthLevel::User(seed.user_id);
         let ctx = helpdesk_ctx(Some(identity));
         let products = "products".to_string();
-        let service = ItemsService::new(&state, &ctx, &products);
+        let mut service = ItemsService::new(&state, &ctx, &products);
 
         // `type` absent -> left to the DB default -> accepted.
         service
@@ -2168,7 +2173,7 @@ mod integration_tests {
         let identity = AuthLevel::User(seed.user_id);
         let ctx = helpdesk_ctx(Some(identity));
         let tickets = "tickets".to_string();
-        let service = ItemsService::new(&state, &ctx, &tickets);
+        let mut service = ItemsService::new(&state, &ctx, &tickets);
 
         let err = service
             .create_many(vec![item(json!({ "subject": "ct-virtual-x" }))], &mut None)
@@ -2221,7 +2226,7 @@ mod integration_tests {
         let identity = AuthLevel::User(seed.user_id);
         let ctx = helpdesk_ctx(Some(identity));
         let tickets = "tickets".to_string();
-        let service = ItemsService::new(&state, &ctx, &tickets);
+        let mut service = ItemsService::new(&state, &ctx, &tickets);
 
         // Nested object carrying the (matching) id: still rejected, because the
         // pre-insert check cannot see a resolved fk yet.
@@ -2272,7 +2277,7 @@ mod integration_tests {
         let identity = AuthLevel::User(seed.user_id);
         let ctx = helpdesk_ctx(Some(identity.clone()));
         let products = "products".to_string();
-        let service = ItemsService::new(&state, &ctx, &products);
+        let mut service = ItemsService::new(&state, &ctx, &products);
 
         // One bulk call with an item per rule: both persist.
         let created = service
@@ -2334,7 +2339,7 @@ mod integration_tests {
         let identity = AuthLevel::User(seed.user_id);
         let ctx = helpdesk_ctx(Some(identity.clone()));
         let tickets = "tickets".to_string();
-        let service = ItemsService::new(&state, &ctx, &tickets);
+        let mut service = ItemsService::new(&state, &ctx, &tickets);
 
         // assignee == the caller -> validation passes.
         service

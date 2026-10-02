@@ -83,7 +83,7 @@ impl Operation<Postgres> for M0001Operation {
             .map_err(|e| Error::Box(Box::new(e)))?;
 
         let collection = "alcedo_collections".to_string();
-        let collections_service = ItemsService::new(&state, &app_context, &collection);
+        let mut collections_service = ItemsService::new(&state, &app_context, &collection);
 
         let collection_data = collections_service
             .create_many(
@@ -126,7 +126,7 @@ impl Operation<Postgres> for M0001Operation {
             ))))?;
 
         let collection = "alcedo_fields".to_string();
-        let fields_service = ItemsService::new(&state, &app_context, &collection);
+        let mut fields_service = ItemsService::new(&state, &app_context, &collection);
 
         let fields_in_collection_table =
             "app_name,app_version,name,icon_name,icon_color,singleton,hidden,sort_field"
@@ -145,7 +145,7 @@ impl Operation<Postgres> for M0001Operation {
             .await
             .map_err(|e| Error::Box(Box::new(e)))?;
 
-        let fields_service = ItemsService::new(&state, &app_context, &collection);
+        let mut fields_service = ItemsService::new(&state, &app_context, &collection);
         let fields_in_fields_table = "id,collection_id,name"
             .split(",")
             .map(|name| {

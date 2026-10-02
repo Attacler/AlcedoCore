@@ -30,6 +30,94 @@ pub struct ItemsService<'a> {
     /// Lazily resolved, per-service cache of the caller's record-level `delete`
     /// access for `collection`.
     resolved_delete_access: OnceCell<ReadAccess>,
+    /// `after`-write events deferred until the caller-owned transaction commits
+    /// (see [`ItemsService::run_after_commit`]).
+    pending_after: Vec<PendingAfter>,
+}
+
+/// A deferred `after`-write hook: the event, its trigger key, and the app
+/// context it belongs to. A nested (cross-app) write can target a different
+/// schema, so every deferred event carries its own context rather than relying
+/// on the context of whichever service drains the queue.
+pub enum PendingAfter {
+    Create {
+        key: String,
+        context: AppContext,
+        event: ItemsAfterCreate,
+    },
+    Update {
+        key: String,
+        context: AppContext,
+        event: ItemsAfterUpdate,
+    },
+    Delete {
+        key: String,
+        context: AppContext,
+        event: ItemsAfterDelete,
+    },
+}
+
+/// Collects the `after`-write hooks deferred by writes made inside a
+/// caller-owned transaction. The transaction's owner must call
+/// [`AfterCommitQueue::run`] **after committing**, so the hooks observe the
+/// committed rows. Used by the recursive relational writers, whose individual
+/// `ItemsService` instances are transient.
+#[derive(Default)]
+pub struct AfterCommitQueue {
+    pending: Vec<PendingAfter>,
+}
+
+impl AfterCommitQueue {
+    /// Merges the deferred events of a transient service into this queue.
+    pub fn append(&mut self, mut other: Vec<PendingAfter>) {
+        self.pending.append(&mut other);
+    }
+
+    /// Triggers every deferred `after` hook. Takes the queue, so a second call
+    /// is a no-op.
+    pub async fn run(&mut self, state: &AppState) {
+        let pending = std::mem::take(&mut self.pending);
+        for deferred in pending {
+            match deferred {
+                PendingAfter::Create {
+                    key,
+                    context,
+                    mut event,
+                } => {
+                    let hook_context = HookContext {
+                        context,
+                        state: state.clone(),
+                        tx: None,
+                    };
+                    state.event_bus.trigger(&key, &mut event, hook_context).await;
+                }
+                PendingAfter::Update {
+                    key,
+                    context,
+                    mut event,
+                } => {
+                    let hook_context = HookContext {
+                        context,
+                        state: state.clone(),
+                        tx: None,
+                    };
+                    state.event_bus.trigger(&key, &mut event, hook_context).await;
+                }
+                PendingAfter::Delete {
+                    key,
+                    context,
+                    mut event,
+                } => {
+                    let hook_context = HookContext {
+                        context,
+                        state: state.clone(),
+                        tx: None,
+                    };
+                    state.event_bus.trigger(&key, &mut event, hook_context).await;
+                }
+            }
+        }
+    }
 }
 
 /// A pk as a plain map key (strings unquoted, everything else rendered as-is).
@@ -68,7 +156,61 @@ impl ItemsService<'_> {
             app_context: context,
             resolved_access: OnceCell::new(),
             resolved_delete_access: OnceCell::new(),
+            pending_after: Vec::new(),
         };
+    }
+
+    /// Triggers every `after`-write hook deferred by an external-transaction
+    /// write. The caller must call this **after committing its transaction**,
+    /// so the hooks observe the committed rows.
+    pub async fn run_after_commit(&mut self) {
+        let mut queue = AfterCommitQueue {
+            pending: std::mem::take(&mut self.pending_after),
+        };
+        queue.run(self.app_state).await;
+    }
+
+    /// Moves this service's deferred `after` hooks into a caller-owned queue.
+    /// Used by the transient services the recursive relational writers build.
+    pub fn take_pending_after(&mut self) -> Vec<PendingAfter> {
+        std::mem::take(&mut self.pending_after)
+    }
+
+    /// Defers an `after.items.create.<collection>` hook to the commit boundary.
+    fn defer_after_create(&mut self, items: Vec<Map<String, Value>>) {
+        self.pending_after.push(PendingAfter::Create {
+            key: format!("after.items.create.{}", self.collection),
+            context: self.app_context.clone(),
+            event: ItemsAfterCreate {
+                items,
+                collection: self.collection.clone(),
+            },
+        });
+    }
+
+    /// Defers an `after.items.update.<collection>` hook to the commit boundary.
+    fn defer_after_update(&mut self, keys: Vec<String>, payload: Map<String, Value>) {
+        self.pending_after.push(PendingAfter::Update {
+            key: format!("after.items.update.{}", self.collection),
+            context: self.app_context.clone(),
+            event: ItemsAfterUpdate {
+                keys,
+                payload,
+                collection: self.collection.clone(),
+            },
+        });
+    }
+
+    /// Defers an `after.items.delete.<collection>` hook to the commit boundary.
+    fn defer_after_delete(&mut self, keys: Vec<Value>) {
+        self.pending_after.push(PendingAfter::Delete {
+            key: format!("after.items.delete.{}", self.collection),
+            context: self.app_context.clone(),
+            event: ItemsAfterDelete {
+                keys,
+                collection: self.collection.clone(),
+            },
+        });
     }
 
     /// Resolves (and caches) the caller's record-level read access for this
@@ -269,18 +411,30 @@ impl ItemsService<'_> {
     }
 
     pub async fn update_items_by_query<'a>(
-        &self,
+        &mut self,
         query: &mut Query,
         payload: Map<String, Value>,
         database_transaction: &'a mut Option<&'a mut Transaction<'_, Postgres>>,
     ) -> Result<Vec<String>, AlcedoError> {
         match database_transaction {
-            Some(existing_tx) => self.update_items_with_tx(existing_tx, query, payload).await,
+            Some(existing_tx) => {
+                let (keys, payload) = self
+                    .update_items_with_tx(existing_tx, query, payload)
+                    .await?;
+                // The caller owns the commit, so defer the `after` hook until
+                // `run_after_commit` (called by that caller post-commit).
+                self.defer_after_update(keys.clone(), payload);
+                Ok(keys)
+            }
             None => {
                 let mut tx = self.app_state.database_pool.begin().await?;
-                let result = self.update_items_with_tx(&mut tx, query, payload).await?;
+                let (keys, payload) = self.update_items_with_tx(&mut tx, query, payload).await?;
                 tx.commit().await?;
-                Ok(result)
+                // `after` hooks fire post-commit: a hook reading through the
+                // pool (schema refresh, cache invalidation) must see the write.
+                self.defer_after_update(keys.clone(), payload);
+                self.run_after_commit().await;
+                Ok(keys)
             }
         }
     }
@@ -289,7 +443,7 @@ impl ItemsService<'_> {
         tx: &'a mut Transaction<'_, Postgres>,
         query: &mut Query,
         payload: Map<String, Value>,
-    ) -> Result<Vec<String>, AlcedoError> {
+    ) -> Result<(Vec<String>, Map<String, Value>), AlcedoError> {
         let pk_name = get_pk_key(
             &self.app_state.database_schema,
             &self.app_context.schema_name(),
@@ -318,7 +472,7 @@ impl ItemsService<'_> {
             let hook_context = HookContext {
                 context: self.app_context.clone(),
                 state: self.app_state.clone(),
-                tx,
+                tx: Some(tx),
             };
 
             self.app_state
@@ -381,42 +535,28 @@ impl ItemsService<'_> {
             update_items.push(pk);
         }
 
-        let mut after = ItemsAfterUpdate {
-            keys: update_items.clone(),
-            payload: before.payload.clone(),
-            collection: self.collection.clone(),
-        };
-
-        let hook_context = HookContext {
-            context: self.app_context.clone(),
-            state: self.app_state.clone(),
-            tx,
-        };
-
-        self.app_state
-            .event_bus
-            .trigger(
-                &format!("after.items.update.{}", self.collection),
-                &mut after,
-                hook_context,
-            )
-            .await;
-
-        Ok(update_items)
+        Ok((update_items, before.payload))
     }
 
     pub async fn create_many<'a>(
-        &self,
+        &mut self,
         items: Vec<Map<String, Value>>,
         database_transaction: &'a mut Option<&'a mut Transaction<'_, Postgres>>,
     ) -> Result<Vec<String>, AlcedoError> {
         match database_transaction {
-            Some(existing_tx) => self.create_items_with_tx(existing_tx, items).await,
+            Some(existing_tx) => {
+                let (keys, items) = self.create_items_with_tx(existing_tx, items).await?;
+                self.defer_after_create(items);
+                Ok(keys)
+            }
             None => {
                 let mut tx = self.app_state.database_pool.begin().await?;
-                let result = self.create_items_with_tx(&mut tx, items).await?;
+                let (keys, items) = self.create_items_with_tx(&mut tx, items).await?;
                 tx.commit().await?;
-                Ok(result)
+                // `after` hooks fire post-commit (see `update_items_by_query`).
+                self.defer_after_create(items);
+                self.run_after_commit().await;
+                Ok(keys)
             }
         }
     }
@@ -425,7 +565,7 @@ impl ItemsService<'_> {
         &self,
         tx: &'a mut Transaction<'_, Postgres>,
         items: Vec<Map<String, Value>>,
-    ) -> Result<Vec<String>, AlcedoError> {
+    ) -> Result<(Vec<String>, Vec<Map<String, Value>>), AlcedoError> {
         let mut before = ItemsBeforeCreate {
             items,
             collection: self.collection.clone(),
@@ -434,7 +574,7 @@ impl ItemsService<'_> {
         let hook_context = HookContext {
             context: self.app_context.clone(),
             state: self.app_state.clone(),
-            tx,
+            tx: Some(tx),
         };
 
         self.app_state
@@ -508,33 +648,13 @@ impl ItemsService<'_> {
                 item.insert(pk_name_cloned.clone(), pk.into());
             });
 
-        let mut after = ItemsAfterCreate {
-            items: before.items,
-            collection: self.collection.clone(),
-        };
-
-        let hook_context = HookContext {
-            context: self.app_context.clone(),
-            state: self.app_state.clone(),
-            tx,
-        };
-
-        self.app_state
-            .event_bus
-            .trigger(
-                &format!("after.items.create.{}", self.collection),
-                &mut after,
-                hook_context,
-            )
-            .await;
-
-        Ok(created_items)
+        Ok((created_items, before.items))
     }
 
     pub async fn delete_items_by_pks<'a>(
-        &self,
+        &mut self,
         pks: Vec<Value>,
-        mut database_transaction: Option<&mut Transaction<'_, Postgres>>,
+        mut database_transaction: Option<&'a mut Transaction<'_, Postgres>>,
     ) -> Result<u64, AlcedoError> {
         let pk = get_pk_key(
             &self.app_state.database_schema,
@@ -566,17 +686,26 @@ impl ItemsService<'_> {
     }
 
     pub async fn delete_items_by_query<'a>(
-        &self,
+        &mut self,
         query: Query,
         database_transaction: &'a mut Option<&'a mut Transaction<'_, Postgres>>,
     ) -> Result<u64, AlcedoError> {
         match database_transaction {
-            Some(existing_tx) => self.delete_items_by_query_with_tx(existing_tx, query).await,
+            Some(existing_tx) => {
+                let (deleted, keys) = self
+                    .delete_items_by_query_with_tx(existing_tx, query)
+                    .await?;
+                self.defer_after_delete(keys);
+                Ok(deleted)
+            }
             None => {
                 let mut tx = self.app_state.database_pool.begin().await?;
-                let result = self.delete_items_by_query_with_tx(&mut tx, query).await?;
+                let (deleted, keys) = self.delete_items_by_query_with_tx(&mut tx, query).await?;
                 tx.commit().await?;
-                Ok(result)
+                // `after` hooks fire post-commit (see `update_items_by_query`).
+                self.defer_after_delete(keys);
+                self.run_after_commit().await;
+                Ok(deleted)
             }
         }
     }
@@ -585,7 +714,7 @@ impl ItemsService<'_> {
         &self,
         tx: &'a mut Transaction<'_, Postgres>,
         mut query: Query,
-    ) -> Result<u64, AlcedoError> {
+    ) -> Result<(u64, Vec<Value>), AlcedoError> {
         // Record-level delete policy: a caller with no matching `delete` rule is
         // rejected outright; otherwise the rules are AND-ed into the
         // pk-selection query below, so out-of-policy rows are never deleted.
@@ -605,7 +734,7 @@ impl ItemsService<'_> {
         let hook_context = HookContext {
             context: self.app_context.clone(),
             state: self.app_state.clone(),
-            tx,
+            tx: Some(tx),
         };
 
         let pk_name = get_pk_key(
@@ -675,26 +804,8 @@ impl ItemsService<'_> {
             };
             total_deleted += result.rows_affected();
         }
-        let mut after = ItemsAfterDelete {
-            keys: before.keys,
-            collection: self.collection.clone(),
-        };
 
-        let hook_context = HookContext {
-            context: self.app_context.clone(),
-            state: self.app_state.clone(),
-            tx,
-        };
-        self.app_state
-            .event_bus
-            .trigger(
-                &format!("after.items.delete.{}", self.collection),
-                &mut after,
-                hook_context,
-            )
-            .await;
-
-        Ok(total_deleted)
+        Ok((total_deleted, before.keys))
     }
 
     async fn generate_insert_item_query(
@@ -939,5 +1050,113 @@ mod tests {
         // };
         // println!("{}", query.to_string());
         ()
+    }
+}
+
+#[cfg(test)]
+mod after_commit_tests {
+    use std::sync::{Arc, Mutex};
+
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::item_map;
+    use crate::services::context::{AppContext, RequestSource};
+    use crate::services::hooks::types::items_create::ItemsAfterCreate;
+
+    const SCHEMA: &str = "crm010production";
+
+    fn ctx() -> AppContext {
+        AppContext {
+            app_name: "crm".to_string(),
+            version: "production".to_string(),
+            request_source: RequestSource::API,
+            identity: None,
+        }
+    }
+
+    /// A write inside a caller-owned transaction must defer its `after` hook
+    /// (with the created rows preserved) until the caller commits and drains.
+    #[tokio::test]
+    async fn deferred_create_preserves_payload_and_fires_after_commit() {
+        let state = crate::utils::test_utils::get_app_state().await;
+
+        let seeded: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = $1 AND table_name = 'alcedo_roles')",
+        )
+        .bind(SCHEMA)
+        .fetch_one(&*state.database_pool)
+        .await
+        .unwrap_or(false);
+        if !seeded {
+            eprintln!("skipping: {SCHEMA} not seeded");
+            return;
+        }
+
+        type Captured = Vec<(Vec<Map<String, Value>>, String)>;
+        let captured: Arc<Mutex<Captured>> = Arc::default();
+        let sink = captured.clone();
+        state
+            .event_bus
+            .on::<ItemsAfterCreate, _>(
+                "after.items.create.alcedo_roles",
+                move |event, _context, _state, _tx| {
+                    let sink = sink.clone();
+                    Box::pin(async move {
+                        sink.lock()
+                            .unwrap()
+                            .push((event.items.clone(), event.collection.clone()));
+                    })
+                },
+            )
+            .await;
+
+        let role_id = Uuid::new_v4();
+        let collection = "alcedo_roles".to_string();
+        let ctx = ctx();
+        let mut service = ItemsService::new(&state, &ctx, &collection);
+
+        let mut tx = state.database_pool.begin().await.unwrap();
+        let item = item_map! {
+            "id" => role_id.to_string(),
+            "name" => format!("after-commit-{role_id}"),
+            "description" => "",
+            "is_system" => false,
+        };
+        service
+            .create_many(vec![item], &mut Some(&mut tx))
+            .await
+            .unwrap();
+
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "the deferred hook must not fire before the caller commits"
+        );
+
+        tx.commit().await.unwrap();
+        service.run_after_commit().await;
+
+        let captured = captured.lock().unwrap();
+        assert_eq!(captured.len(), 1, "the deferred hook fires exactly once");
+        let (items, collection) = &captured[0];
+        assert_eq!(collection, "alcedo_roles");
+        assert_eq!(items.len(), 1, "the created row is preserved in the event");
+        assert_eq!(
+            items[0].get("id").and_then(Value::as_str),
+            Some(role_id.to_string().as_str()),
+            "the event carries the created row (with its generated pk)"
+        );
+        assert_eq!(
+            items[0].get("name").and_then(Value::as_str),
+            Some(format!("after-commit-{role_id}").as_str())
+        );
+        drop(captured);
+
+        sqlx::query(&format!("DELETE FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1"))
+            .bind(role_id)
+            .execute(&*state.database_pool)
+            .await
+            .unwrap();
     }
 }

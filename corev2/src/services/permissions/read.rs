@@ -502,35 +502,45 @@ async fn is_admin_user(state: &AppState, user_id: Uuid) -> Result<bool, AlcedoEr
         .unwrap_or(false))
 }
 
-/// True when the caller holds an app-admin capability in `context`'s app schema:
-/// the seeded `admin` role, or the `rootaccess.all`/`users.all` scope.
-///
-/// Built with `sea-query` rather than `RolesService`: the latter routes through
-/// `ItemsService`, which re-enters this resolver. Because this check runs before
-/// the framework-collection gate, a `RolesService` call here would recurse
-/// forever on the role tables themselves.
+/// True when the caller holds an app-admin capability in `context`'s app schema.
+/// Thin wrapper over [`is_app_admin_in_schema`] so callers with a context need
+/// not thread the schema name through.
 async fn is_app_admin(
     state: &AppState,
     context: &AppContext,
     user_id: Uuid,
 ) -> Result<bool, AlcedoError> {
-    let schema = context.schema_name();
+    is_app_admin_in_schema(state, &context.schema_name(), user_id).await
+}
+
+/// True when `user_id` holds an app-admin capability in `schema`: the seeded
+/// `admin` role, or the `rootaccess.all`/`users.all` scope.
+///
+/// Built with `sea-query` rather than `RolesService`: the latter routes through
+/// `ItemsService`, which re-enters this resolver. Because this check runs before
+/// the framework-collection gate, a `RolesService` call here would recurse
+/// forever on the role tables themselves.
+pub(crate) async fn is_app_admin_in_schema(
+    state: &AppState,
+    schema: &str,
+    user_id: Uuid,
+) -> Result<bool, AlcedoError> {
     let sql = sea_query::Query::select()
         .expr(Expr::value(1))
         .from_as(
-            (Alias::new(&schema), Alias::new("alcedo_user_roles")),
+            (Alias::new(schema), Alias::new("alcedo_user_roles")),
             Alias::new("ur"),
         )
         .join_as(
             JoinType::InnerJoin,
-            (Alias::new(&schema), Alias::new("alcedo_roles")),
+            (Alias::new(schema), Alias::new("alcedo_roles")),
             Alias::new("r"),
             Expr::col((Alias::new("r"), Alias::new("id")))
                 .equals((Alias::new("ur"), Alias::new("role_id"))),
         )
         .join_as(
             JoinType::LeftJoin,
-            (Alias::new(&schema), Alias::new("alcedo_role_scopes")),
+            (Alias::new(schema), Alias::new("alcedo_role_scopes")),
             Alias::new("rs"),
             Expr::col((Alias::new("rs"), Alias::new("role_id")))
                 .equals((Alias::new("ur"), Alias::new("role_id"))),
@@ -846,57 +856,75 @@ pub async fn resolve_access(
         return Ok(ReadAccess::Unrestricted);
     }
 
-    if let AuthLevel::User(user_id) = identity {
-        if is_admin_user(state, *user_id).await? || is_app_admin(state, context, *user_id).await? {
-            return Ok(ReadAccess::Unrestricted);
+    // The runtime `search_path` does not include the per-app-version schema, so
+    // all app-bound tables are qualified explicitly. `alcedo_users` is global.
+    let schema = context.schema_name();
+
+    // Layer 1 for a user must resolve before collection metadata: a global or
+    // app admin bypasses even a collection the schema cache does not know.
+    let user_role_ids = match identity {
+        AuthLevel::User(user_id) => {
+            let cached =
+                crate::services::permissions::cache::cached_identity(state, &schema, *user_id)
+                    .await?;
+            if is_admin_user(state, *user_id).await? || cached.is_app_admin {
+                return Ok(ReadAccess::Unrestricted);
+            }
+            Some(cached.role_ids)
         }
-    }
+        _ => None,
+    };
 
     // No collection metadata (e.g. a table created outside the collections API,
     // or a stale schema cache) means access cannot be evaluated: fail closed.
+    // This also keeps the global `alcedo` schema — which has no role tables —
+    // from reaching the anonymous role cache below.
     let Some(collection_id) = state
         .database_schema
         .read()
         .await
-        .collection_id(&context.schema_name(), collection)
+        .collection_id(&schema, collection)
     else {
         return Ok(ReadAccess::Deny);
     };
     let collection_id = collection_id as i32;
 
-    // The runtime `search_path` does not include the per-app-version schema, so
-    // all app-bound tables are qualified explicitly. `alcedo_users` is global.
-    let schema = context.schema_name();
+    // Layer 1 for the anonymous caller, and the final role set for a user.
+    let role_ids: Vec<String> = match identity {
+        AuthLevel::User(_) => user_role_ids.unwrap_or_default(),
+        AuthLevel::Public => {
+            crate::services::permissions::cache::cached_public_identity(state, &schema)
+                .await?
+                .role_ids
+        }
+        AuthLevel::DeveloperKey { .. } => return Ok(ReadAccess::Unrestricted),
+    };
 
-    // Both condition sources are read for every action: `filter` is the rule's
-    // row scope, `field_validation` its value constraint on the payload.
-    let mut select = policy_permissions_select(&schema);
-    select
-        .column((Alias::new("pp"), Alias::new("fields")))
-        .column((Alias::new("pp"), Alias::new("filter")))
-        .column((Alias::new("pp"), Alias::new("field_validation")))
-        .and_where(
-            Expr::col((Alias::new("pp"), Alias::new("collection"))).eq(Expr::value(collection_id)),
-        )
-        .and_where(Expr::col((Alias::new("pp"), Alias::new("action"))).eq(Expr::value(action)));
-    scope_to_identity(&mut select, &schema, identity);
-    let sql = select.to_string(PostgresQueryBuilder);
-    let rows = execute_query(state, sql).await?;
+    // Layer 2 (cached): the permissions attached to those roles, filtered in
+    // memory by collection + action. `filter` is the rule's row scope,
+    // `field_validation` its value constraint on the payload.
+    let mut permissions = Vec::new();
+    for role_id in &role_ids {
+        for permission in
+            crate::services::permissions::cache::cached_role_permissions(state, &schema, role_id)
+                .await?
+        {
+            if permission.collection == collection_id && permission.action == action {
+                permissions.push(permission);
+            }
+        }
+    }
 
-    if rows.is_empty() {
+    if permissions.is_empty() {
         return Ok(ReadAccess::Deny);
     }
 
     // Collect every `{user.<path>}` placeholder referenced across the matched
     // rules, then resolve them once for the caller.
     let mut paths = BTreeSet::new();
-    for row in &rows {
-        let map = pgrow_to_json(row)?;
-        for column in ["filter", "field_validation"] {
-            if let Some(value) = map.get(column) {
-                collect_user_paths(value, &mut paths);
-            }
-        }
+    for permission in &permissions {
+        collect_user_paths(&permission.filter, &mut paths);
+        collect_user_paths(&permission.field_validation, &mut paths);
     }
 
     let user = match identity {
@@ -919,13 +947,12 @@ pub async fn resolve_access(
         _ => None,
     };
 
-    let mut rules = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let map = pgrow_to_json(row)?;
-        let fields = normalize_fields(map.get("fields").unwrap_or(&Value::Null));
+    let mut rules = Vec::with_capacity(permissions.len());
+    for permission in &permissions {
+        let fields = normalize_fields(&permission.fields);
 
-        let mut scope = map.get("filter").cloned().unwrap_or(Value::Null);
-        let mut validation = map.get("field_validation").cloned().unwrap_or(Value::Null);
+        let mut scope = permission.filter.clone();
+        let mut validation = permission.field_validation.clone();
         if let (AuthLevel::User(_), Some(user)) = (identity, &user) {
             substitute_user_placeholders(&mut scope, user);
             substitute_user_placeholders(&mut validation, user);
@@ -2304,7 +2331,7 @@ mod integration_tests {
         // The read payload no longer carries delete permission; the dedicated
         // `$delete` endpoint reports it, and here it must be false for every pk.
         let collection = "customers".to_string();
-        let service = ItemsService::new(&state, &ctx, &collection);
+        let mut service = ItemsService::new(&state, &ctx, &collection);
         let rows = service.read_items_by_query(Query::default()).await.unwrap();
         assert!(!rows.is_empty(), "customer should still read customers");
         assert!(
@@ -2419,7 +2446,7 @@ mod integration_tests {
             identity: Some(AuthLevel::User(user_id)),
         };
         let collection = "tickets".to_string();
-        let service = ItemsService::new(&state, &ctx, &collection);
+        let mut service = ItemsService::new(&state, &ctx, &collection);
 
         // `$delete` answers per pk.
         let mut pks: Vec<Value> = in_policy

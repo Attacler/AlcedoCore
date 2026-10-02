@@ -28,7 +28,7 @@ async fn seed_users_collection(
     app_context: &AppContext,
 ) -> Result<(), AlcedoError> {
     let table = "alcedo_collections".to_string();
-    let service = ItemsService::new(state, app_context, &table);
+    let mut service = ItemsService::new(state, app_context, &table);
 
     let mut existing = Query::eq("table", json!(USERS_COLLECTION));
     existing.fields = vec!["id".to_string()];

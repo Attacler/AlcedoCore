@@ -142,7 +142,7 @@ impl PoliciesService<'_> {
             "description" => description.unwrap_or(""),
         };
 
-        let service = self.policies();
+        let mut service = self.policies();
         let pks = service.create_many(vec![item], &mut None).await?;
         let pk = pks.into_iter().next().ok_or_else(|| {
             AlcedoError::SystemError("Policy insert returned no id".to_string(), 0)
@@ -160,7 +160,7 @@ impl PoliciesService<'_> {
         name: Option<&str>,
         description: Option<&str>,
     ) -> Result<Option<Value>, AlcedoError> {
-        let service = self.policies();
+        let mut service = self.policies();
 
         let mut payload = Map::new();
         if let Some(name) = name {
@@ -258,7 +258,7 @@ impl PoliciesService<'_> {
             "field_validation" => normalize_json_array(field_validation),
         };
 
-        let service = self.permissions();
+        let mut service = self.permissions();
         let pks = service.create_many(vec![item], &mut None).await?;
         let pk = pks.into_iter().next().ok_or_else(|| {
             AlcedoError::SystemError("Permission insert returned no id".to_string(), 0)
@@ -281,7 +281,7 @@ impl PoliciesService<'_> {
         filter: Option<Value>,
         field_validation: Option<Value>,
     ) -> Result<Option<Value>, AlcedoError> {
-        let service = self.permissions();
+        let mut service = self.permissions();
 
         let mut existing_query = Query::eq_all(&[
             ("id", json!(permission_id.to_string())),

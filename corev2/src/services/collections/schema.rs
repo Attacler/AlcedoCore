@@ -271,7 +271,7 @@ impl SchemaService<'_> {
         };
         if let Some(meta) = meta {
             let collection = "alcedo_collections".to_string();
-            let collections_service =
+            let mut collections_service =
                 ItemsService::new(self.app_state, self.app_context, &collection);
 
             let meta: Map<String, Value> = match serde_json::to_value(&meta) {
@@ -342,7 +342,7 @@ impl SchemaService<'_> {
         if let Some(meta) = &find_table.meta {
             if let Some(meta_id) = meta.id {
                 let collection = "alcedo_fields".to_string();
-                let column_meta_service =
+                let mut column_meta_service =
                     ItemsService::new(&self.app_state, &self.app_context, &collection);
 
                 let mut query = Query {
@@ -369,7 +369,7 @@ impl SchemaService<'_> {
                     .await?;
 
                 let collection = "alcedo_collections".to_string();
-                let table_meta_service =
+                let mut table_meta_service =
                     ItemsService::new(&self.app_state, &self.app_context, &collection);
 
                 table_meta_service
@@ -431,7 +431,7 @@ impl SchemaService<'_> {
             };
 
             let collection = "alcedo_fields".to_string();
-            let collections_service =
+            let mut collections_service =
                 ItemsService::new(self.app_state, self.app_context, &collection);
 
             let mut meta: Map<String, Value> = match serde_json::to_value(&meta) {
@@ -528,7 +528,7 @@ impl SchemaService<'_> {
             if let Some(field) = &find_field {
                 if let Some(meta) = &field.meta {
                     let collection = "alcedo_fields".to_string();
-                    let collections_service =
+                    let mut collections_service =
                         ItemsService::new(self.app_state, self.app_context, &collection);
                     collections_service
                         .delete_items_by_pks(vec![meta.id.into()], Some(tx_ref))

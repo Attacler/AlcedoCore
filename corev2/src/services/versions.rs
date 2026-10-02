@@ -84,7 +84,7 @@ impl VersionsService<'_> {
 
     pub async fn delete(&self, version_id: i32) -> Result<bool, AlcedoError> {
         let (context, collection) = system_context("alcedo_versions");
-        let service = ItemsService::new(self.app_state, &context, &collection);
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
         let deleted = service
             .delete_items_by_pks(vec![Value::String(version_id.to_string())], None)
             .await?;
@@ -114,7 +114,7 @@ impl VersionsService<'_> {
         }
 
         let (context, collection) = system_context("alcedo_versions");
-        let service = ItemsService::new(self.app_state, &context, &collection);
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
 
         let map = item_map! { "version_name" => version_name };
         let created = service.create_many(vec![map], &mut None).await?;
@@ -147,7 +147,7 @@ impl VersionsService<'_> {
         }
 
         let (context, collection) = system_context("alcedo_versions");
-        let service = ItemsService::new(self.app_state, &context, &collection);
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
 
         let map = item_map! { "version_name" => PRODUCTION_VERSION };
         service.create_many(vec![map], &mut None).await?;
@@ -180,7 +180,7 @@ impl VersionsService<'_> {
 
     pub async fn delete_version_links(&self, version_id: i32) -> Result<(), AlcedoError> {
         let (context, collection) = system_context("alcedo_apps_versions");
-        let service = ItemsService::new(self.app_state, &context, &collection);
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
         service
             .delete_items_by_query(Query::eq("version_id", Value::from(version_id)), &mut None)
             .await?;

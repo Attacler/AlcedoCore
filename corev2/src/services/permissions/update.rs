@@ -921,7 +921,7 @@ mod integration_tests {
         payload: Map<String, Value>,
     ) -> Result<Vec<String>, AlcedoError> {
         let collection = collection.to_string();
-        let service = ItemsService::new(state, ctx, &collection);
+        let mut service = ItemsService::new(state, ctx, &collection);
         let mut query = Query::eq("id", json!(pk.to_string()));
         service
             .update_items_by_query(&mut query, payload, &mut None)
@@ -1275,7 +1275,7 @@ mod integration_tests {
         // A query selecting both rows: the service resolves both pks, the
         // second is outside the rule's filter, so the whole update is rejected.
         let collection = "tickets".to_string();
-        let service = ItemsService::new(&state, &ctx, &collection);
+        let mut service = ItemsService::new(&state, &ctx, &collection);
         let mut query = Query::default();
         let mut filter = FieldFilter {
             fields: std::collections::HashMap::new(),

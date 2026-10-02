@@ -128,7 +128,7 @@ async fn delete_version(
 
     let context = AppContext::system(RequestSource::API);
     let collection = "alcedo_developer_api_keys".to_string();
-    let dev_keys = ItemsService::new(&state, &context, &collection);
+    let mut dev_keys = ItemsService::new(&state, &context, &collection);
     dev_keys
         .delete_items_by_query(Query::eq("version_id", Value::from(id)), &mut None)
         .await?;

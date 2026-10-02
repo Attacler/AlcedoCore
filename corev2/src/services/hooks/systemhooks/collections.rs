@@ -19,7 +19,7 @@ pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
         },
     )
     .await;
-    bus.on::<ItemsAfterUpdate, _>(
+    bus.on::<ItemsAfterCreate, _>(
         "after.items.create.alcedo_fields",
         |_, context, state, _| {
             Box::pin(async move {

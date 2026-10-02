@@ -13,7 +13,6 @@ use std::collections::HashMap;
 
 use futures::future::BoxFuture;
 use serde_json::{Map, Value};
-use sqlx::{Postgres, Transaction};
 
 use crate::{
     AppState,
@@ -24,7 +23,7 @@ use crate::{
         errors::AlcedoError,
         items::{
             query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp, Query},
-            service::ItemsService,
+            service::{ItemsService, TxGuard},
         },
     },
 };
@@ -208,20 +207,25 @@ fn query_and(fields: Vec<(&str, FieldValue)>) -> Query {
 async fn insert_one(
     state: &AppState,
     ctx: &AppContext,
-    tx: &mut Transaction<'_, Postgres>,
+    guard: &mut TxGuard<'_>,
     collection: &str,
     item: Map<String, Value>,
 ) -> Result<String, AlcedoError> {
     let table = collection.to_string();
-    let service = ItemsService::new(state, ctx, &table);
-    let ids = service.create_many(vec![item], &mut Some(tx)).await?;
+    let mut service = ItemsService::new(state, ctx, &table);
+    let ids = service
+        .create_many(vec![item], &mut Some(guard.tx()))
+        .await?;
+    // The guard owns the commit; hand the deferred `after` hook up so it fires
+    // once the write is durable.
+    guard.append(service.take_pending_after());
     Ok(ids.get(0).map(|s| s.to_string()).unwrap_or_default())
 }
 
 async fn update_one(
     state: &AppState,
     ctx: &AppContext,
-    tx: &mut Transaction<'_, Postgres>,
+    guard: &mut TxGuard<'_>,
     collection: &str,
     pk: &str,
     scalars: Map<String, Value>,
@@ -230,18 +234,19 @@ async fn update_one(
         .await?
         .name;
     let table = collection.to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
     let mut query = Query::eq(&pk_name, Value::String(pk.to_string()));
     service
-        .update_items_by_query(&mut query, scalars, &mut Some(tx))
+        .update_items_by_query(&mut query, scalars, &mut Some(guard.tx()))
         .await?;
+    guard.append(service.take_pending_after());
     Ok(())
 }
 
 async fn assign_children(
     state: &AppState,
     ctx: &AppContext,
-    tx: &mut Transaction<'_, Postgres>,
+    guard: &mut TxGuard<'_>,
     child: &str,
     fk: &str,
     parent_id: &str,
@@ -254,39 +259,41 @@ async fn assign_children(
         .await?
         .name;
     let table = child.to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
     let mut query = query_and(vec![(pk_name.as_str(), cmp_in(ids.to_vec()))]);
     let mut payload = Map::new();
     payload.insert(fk.to_string(), Value::String(parent_id.to_string()));
     service
-        .update_items_by_query(&mut query, payload, &mut Some(tx))
+        .update_items_by_query(&mut query, payload, &mut Some(guard.tx()))
         .await?;
+    guard.append(service.take_pending_after());
     Ok(())
 }
 
 async fn unlink_children(
     state: &AppState,
     ctx: &AppContext,
-    tx: &mut Transaction<'_, Postgres>,
+    guard: &mut TxGuard<'_>,
     child: &str,
     fk: &str,
     parent_id: &str,
 ) -> Result<(), AlcedoError> {
     let table = child.to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
     let mut query = query_and(vec![(fk, cmp_eq(Value::String(parent_id.to_string())))]);
     let mut payload = Map::new();
     payload.insert(fk.to_string(), Value::Null);
     service
-        .update_items_by_query(&mut query, payload, &mut Some(tx))
+        .update_items_by_query(&mut query, payload, &mut Some(guard.tx()))
         .await?;
+    guard.append(service.take_pending_after());
     Ok(())
 }
 
 async fn delete_children(
     state: &AppState,
     ctx: &AppContext,
-    tx: &mut Transaction<'_, Postgres>,
+    guard: &mut TxGuard<'_>,
     child: &str,
     fk: &str,
     parent_id: &str,
@@ -299,12 +306,15 @@ async fn delete_children(
         .await?
         .name;
     let table = child.to_string();
-    let service = ItemsService::new(state, ctx, &table);
+    let mut service = ItemsService::new(state, ctx, &table);
     let query = query_and(vec![
         (pk_name.as_str(), cmp_in(ids.to_vec())),
         (fk, cmp_eq(Value::String(parent_id.to_string()))),
     ]);
-    service.delete_items_by_query(query, &mut Some(tx)).await?;
+    service
+        .delete_items_by_query(query, &mut Some(guard.tx()))
+        .await?;
+    guard.append(service.take_pending_after());
     Ok(())
 }
 
@@ -327,10 +337,10 @@ fn collect_create_objects(value: &Value) -> Vec<Map<String, Value>> {
 
 /// Creates `item` (and any nested relations) in `collection`, returning the
 /// created row's primary key. Recurses to unlimited depth.
-pub fn create_recursive<'a>(
+pub fn create_recursive<'a, 'c>(
     state: &'a AppState,
     ctx: &'a AppContext,
-    tx: &'a mut Transaction<'_, Postgres>,
+    guard: &'a mut TxGuard<'c>,
     collection: String,
     item: Map<String, Value>,
 ) -> BoxFuture<'a, Result<String, AlcedoError>> {
@@ -349,9 +359,14 @@ pub fn create_recursive<'a>(
                     if let Some(obj) = value.as_object() {
                         if !obj.contains_key("id") {
                             let tctx = target_ctx(ctx, &target_app);
-                            let child_id =
-                                create_recursive(state, &tctx, &mut *tx, target, obj.clone())
-                                    .await?;
+                            let child_id = create_recursive(
+                                state,
+                                &tctx,
+                                &mut *guard,
+                                target,
+                                obj.clone(),
+                            )
+                            .await?;
                             scalar.insert(key, Value::String(child_id));
                         }
                     }
@@ -368,13 +383,13 @@ pub fn create_recursive<'a>(
             }
         }
 
-        let id = insert_one(state, ctx, &mut *tx, &collection, scalar).await?;
+        let id = insert_one(state, ctx, guard, &collection, scalar).await?;
 
         for (target, fk, value, target_app) in o2m {
             let tctx = target_ctx(ctx, &target_app);
             for mut child in collect_create_objects(&value) {
                 child.insert(fk.clone(), Value::String(id.clone()));
-                create_recursive(state, &tctx, &mut *tx, target.clone(), child).await?;
+                create_recursive(state, &tctx, &mut *guard, target.clone(), child).await?;
             }
         }
         Ok(id)
@@ -384,7 +399,7 @@ pub fn create_recursive<'a>(
 async fn process_o2m_update(
     state: &AppState,
     ctx: &AppContext,
-    tx: &mut Transaction<'_, Postgres>,
+    guard: &mut TxGuard<'_>,
     target: &str,
     target_app: &Option<String>,
     fk: &str,
@@ -394,7 +409,7 @@ async fn process_o2m_update(
     let tctx = target_ctx(ctx, target_app);
 
     if value.is_null() {
-        return unlink_children(state, &tctx, tx, target, fk, parent_id).await;
+        return unlink_children(state, &tctx, guard, target, fk, parent_id).await;
     }
 
     if let Some(array) = value.as_array() {
@@ -403,7 +418,7 @@ async fn process_o2m_update(
             if let Some(obj) = element.as_object() {
                 let mut child = obj.clone();
                 child.insert(fk.to_string(), Value::String(parent_id.to_string()));
-                create_recursive(state, &tctx, &mut *tx, target.to_string(), child).await?;
+                create_recursive(state, &tctx, &mut *guard, target.to_string(), child).await?;
             } else if let Some(id) = element.as_str() {
                 assign_ids.push(Value::String(id.to_string()));
             } else {
@@ -413,7 +428,7 @@ async fn process_o2m_update(
                 ));
             }
         }
-        return assign_children(state, &tctx, tx, target, fk, parent_id, &assign_ids).await;
+        return assign_children(state, &tctx, guard, target, fk, parent_id, &assign_ids).await;
     }
 
     if let Some(obj) = value.as_object() {
@@ -429,7 +444,7 @@ async fn process_o2m_update(
                 if let Some(child_obj) = create.as_object() {
                     let mut child = child_obj.clone();
                     child.insert(fk.to_string(), Value::String(parent_id.to_string()));
-                    create_recursive(state, &tctx, &mut *tx, target.to_string(), child).await?;
+                    create_recursive(state, &tctx, &mut *guard, target.to_string(), child).await?;
                 }
             }
         }
@@ -442,7 +457,7 @@ async fn process_o2m_update(
                         update_recursive(
                             state,
                             &tctx,
-                            &mut *tx,
+                            &mut *guard,
                             target.to_string(),
                             id.to_string(),
                             body,
@@ -457,7 +472,7 @@ async fn process_o2m_update(
                 .iter()
                 .filter_map(|v| v.as_str().map(|s| Value::String(s.to_string())))
                 .collect();
-            delete_children(state, &tctx, tx, target, fk, parent_id, &ids).await?;
+            delete_children(state, &tctx, guard, target, fk, parent_id, &ids).await?;
         }
         return Ok(());
     }
@@ -473,10 +488,10 @@ async fn process_o2m_update(
 
 /// Updates the row `id` in `collection` plus any nested relations, to unlimited
 /// depth. `body` keys that are not nested relationships are written to the row.
-pub fn update_recursive<'a>(
+pub fn update_recursive<'a, 'c>(
     state: &'a AppState,
     ctx: &'a AppContext,
-    tx: &'a mut Transaction<'_, Postgres>,
+    guard: &'a mut TxGuard<'c>,
     collection: String,
     id: String,
     body: Map<String, Value>,
@@ -505,7 +520,7 @@ pub fn update_recursive<'a>(
                             update_recursive(
                                 state,
                                 &tctx,
-                                &mut *tx,
+                                &mut *guard,
                                 target,
                                 related_id.to_string(),
                                 child_body,
@@ -513,9 +528,14 @@ pub fn update_recursive<'a>(
                             .await?;
                             // FK is unchanged.
                         } else {
-                            let new_id =
-                                create_recursive(state, &tctx, &mut *tx, target, obj.clone())
-                                    .await?;
+                            let new_id = create_recursive(
+                                state,
+                                &tctx,
+                                &mut *guard,
+                                target,
+                                obj.clone(),
+                            )
+                            .await?;
                             scalar.insert(key, Value::String(new_id));
                         }
                     } else if let Some(s) = value.as_str() {
@@ -536,12 +556,21 @@ pub fn update_recursive<'a>(
         }
 
         for (target, fk, value, target_app) in o2m {
-            process_o2m_update(state, ctx, &mut *tx, &target, &target_app, &fk, &id, &value)
-                .await?;
+            process_o2m_update(
+                state,
+                ctx,
+                &mut *guard,
+                &target,
+                &target_app,
+                &fk,
+                &id,
+                &value,
+            )
+            .await?;
         }
 
         if !scalar.is_empty() {
-            update_one(state, ctx, &mut *tx, &collection, &id, scalar).await?;
+            update_one(state, ctx, guard, &collection, &id, scalar).await?;
         }
         Ok(())
     })
@@ -574,6 +603,7 @@ mod integration_tests {
     use super::*;
     use crate::AppState;
     use crate::middelware::auth::AuthLevel;
+    use crate::services::permissions;
     use crate::services::{
         context::RequestSource,
         errors::AlcedoError,
@@ -704,7 +734,9 @@ mod integration_tests {
                 "DELETE FROM \"{CRM_SCHEMA}\".alcedocore_policy_permissions WHERE policy_id IN \
                  (SELECT id FROM \"{CRM_SCHEMA}\".alcedocore_policies WHERE name LIKE '{policy_like}')"
             ),
-            format!("DELETE FROM \"{CRM_SCHEMA}\".alcedocore_policies WHERE name LIKE '{policy_like}'"),
+            format!(
+                "DELETE FROM \"{CRM_SCHEMA}\".alcedocore_policies WHERE name LIKE '{policy_like}'"
+            ),
             format!(
                 "DELETE FROM \"{CRM_SCHEMA}\".alcedo_user_roles WHERE role_id IN \
                  (SELECT id FROM \"{CRM_SCHEMA}\".alcedo_roles WHERE name = '{role_name}')"
@@ -817,6 +849,8 @@ mod integration_tests {
         .execute(&*state.database_pool)
         .await
         .expect("insert policy permission");
+
+        permissions::cache::invalidate_schema(state, schema).await;
     }
 
     async fn count_tickets_subject(state: &AppState, subject: &str) -> i64 {
@@ -850,17 +884,16 @@ mod integration_tests {
         collection: &str,
         payload: Map<String, Value>,
     ) -> Result<String, AlcedoError> {
-        let mut tx = state.database_pool.begin().await.unwrap();
-        let result = create_recursive(state, ctx, &mut tx, collection.to_string(), payload).await;
+        let mut guard = TxGuard::new(state.database_pool.begin().await.unwrap());
+        let result =
+            create_recursive(state, ctx, &mut guard, collection.to_string(), payload).await;
         match result {
             Ok(id) => {
-                tx.commit().await.unwrap();
+                guard.commit(state).await.unwrap();
                 Ok(id)
             }
-            Err(err) => {
-                tx.rollback().await.ok();
-                Err(err)
-            }
+            // Dropping `guard` rolls the transaction back.
+            Err(err) => Err(err),
         }
     }
 
@@ -871,18 +904,16 @@ mod integration_tests {
         id: String,
         body: Map<String, Value>,
     ) -> Result<(), AlcedoError> {
-        let mut tx = state.database_pool.begin().await.unwrap();
+        let mut guard = TxGuard::new(state.database_pool.begin().await.unwrap());
         let result =
-            update_recursive(state, ctx, &mut tx, collection.to_string(), id, body).await;
+            update_recursive(state, ctx, &mut guard, collection.to_string(), id, body).await;
         match result {
             Ok(()) => {
-                tx.commit().await.unwrap();
+                guard.commit(state).await.unwrap();
                 Ok(())
             }
-            Err(err) => {
-                tx.rollback().await.ok();
-                Err(err)
-            }
+            // Dropping `guard` rolls the transaction back.
+            Err(err) => Err(err),
         }
     }
 
@@ -1144,7 +1175,10 @@ mod integration_tests {
         .fetch_one(&*state.database_pool)
         .await
         .unwrap();
-        assert_eq!(body_after, "orig", "a rejected nested update must not write");
+        assert_eq!(
+            body_after, "orig",
+            "a rejected nested update must not write"
+        );
 
         // Grant child update; the nested edit persists.
         add_grant(
@@ -1350,12 +1384,18 @@ mod integration_tests {
         );
 
         let child_access = crate::services::permissions::create::resolve_create_access(
-            &state, &child_ctx, "ticket_comments", child_ctx.identity.as_ref(),
+            &state,
+            &child_ctx,
+            "ticket_comments",
+            child_ctx.identity.as_ref(),
         )
         .await
         .unwrap();
         assert!(
-            matches!(child_access, crate::services::permissions::read::ReadAccess::Deny),
+            matches!(
+                child_access,
+                crate::services::permissions::read::ReadAccess::Deny
+            ),
             "a restricted caller must resolve Deny on the child collection: {child_access:?}"
         );
 
@@ -1413,7 +1453,10 @@ mod integration_tests {
         let state = crate::utils::test_utils::get_app_state().await;
         inject_schema_meta(&state, HELPDESK_SCHEMA).await;
         inject_schema_meta(&state, CRM_SCHEMA).await;
-        if collection_id(&state, CRM_SCHEMA, "customers").await.is_none() {
+        if collection_id(&state, CRM_SCHEMA, "customers")
+            .await
+            .is_none()
+        {
             eprintln!("skipping: {CRM_SCHEMA} not seeded");
             return;
         }
@@ -1717,6 +1760,8 @@ mod integration_tests {
         .execute(&*state.database_pool)
         .await
         .expect("insert policy permission");
+
+        permissions::cache::invalidate_schema(state, schema).await;
     }
 
     /// Keeps the `ReadRule` import meaningful for future nested-rule tests

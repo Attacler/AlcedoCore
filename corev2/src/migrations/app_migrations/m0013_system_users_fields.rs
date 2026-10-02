@@ -54,7 +54,7 @@ async fn seed_users_fields(state: &AppState, app_context: &AppContext) -> Result
     };
 
     let fields_table = "alcedo_fields".to_string();
-    let fields = ItemsService::new(state, app_context, &fields_table);
+    let mut fields = ItemsService::new(state, app_context, &fields_table);
 
     let mut existing_query = Query::eq("collection_id", json!(collection_id));
     existing_query.fields = vec!["api_name".to_string()];
