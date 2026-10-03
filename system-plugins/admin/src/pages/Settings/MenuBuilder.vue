@@ -848,7 +848,7 @@ function openMenu(id: string) {
                         <div class="flex-1 min-w-0">
                             <div
                                 v-if="currentItem"
-                                class="bg-white rounded-lg shadow-sm border border-gray-200 p-5 sticky top-0"
+                                class="bg-white rounded-lg shadow-sm border border-gray-200 p-5 sticky top-5"
                             >
                                 <h3
                                     class="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2"
@@ -1069,7 +1069,7 @@ function openMenu(id: string) {
 
                             <div
                                 v-else
-                                class="bg-white rounded-lg shadow-sm border border-gray-200 p-10 text-center"
+                                class="bg-white rounded-lg shadow-sm border border-gray-200 p-10 text-center sticky top-5"
                             >
                                 <i
                                     class="pi pi-bars text-4xl text-gray-300 mb-3"
