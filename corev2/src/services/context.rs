@@ -61,20 +61,32 @@ impl FromRequestParts<AppState> for ExtractContext {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let app: Option<&axum::http::HeaderValue> = parts.headers.get("x-app");
-        let version = parts.headers.get("x-version");
+        let mut app = parts
+            .headers
+            .get("x-app")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let mut version = parts
+            .headers
+            .get("x-version")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
 
-        if let None = app {
-            return Err(AlcedoError::InvalidInput("No app provided".to_string(), 0));
-        }
-        if let None = version {
-            return Err(AlcedoError::InvalidInput("No app provided".to_string(), 0));
+        // Asset URLs (e.g. `<img src>`) cannot send the app/version headers, so
+        // `?ac_app=` / `?ac_version=` override them when present.
+        if let Some(query) = parts.uri.query() {
+            for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+                match key.as_ref() {
+                    "ac_app" if !value.is_empty() => app = Some(value.into_owned()),
+                    "ac_version" if !value.is_empty() => version = Some(value.into_owned()),
+                    _ => {}
+                }
+            }
         }
 
-        // Take owned copies so the immutable borrow of `parts` ends before the
-        // identity extractor mutably borrows it.
-        let app_name = app.unwrap().to_str().unwrap().to_string();
-        let version = version.unwrap().to_str().unwrap().to_string();
+        let (Some(app_name), Some(version)) = (app, version) else {
+            return Err(AlcedoError::InvalidInput("No app provided".to_string(), 0));
+        };
 
         let identity = AuthLevel::from_request_parts(parts, state).await?;
 

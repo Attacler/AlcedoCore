@@ -16,6 +16,7 @@ pub async fn generate_app_state_for_migrations() -> AppState {
     let config = get_config();
     let database_pool = services::postgres::pool::setup_pool(&config).await.unwrap();
     let event_bus = Arc::new(MultiEventBus::new());
+    let file_storage = services::files::build_file_storage(&config).await;
 
     AppState {
         database_pool,
@@ -29,5 +30,6 @@ pub async fn generate_app_state_for_migrations() -> AppState {
         cache: services::cache::SystemCache::InMemory(
             services::cache::in_memory::InMemoryCache::new(),
         ),
+        file_storage,
     }
 }

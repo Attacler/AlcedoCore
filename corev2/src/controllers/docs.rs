@@ -4,8 +4,8 @@ use utoipa::OpenApi;
 use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
 use crate::controllers::{
-    apps, auth, collections, developer_keys, items, menus, policies, roles, sessions, settings,
-    users, versions,
+    apps, auth, collections, developer_keys, files, items, menus, policies, roles, sessions,
+    settings, users, versions,
 };
 use crate::services::menus::{MenuItemInput, MenuSectionInput};
 
@@ -122,6 +122,19 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         // App access
         apps::get_user_app_access,
         apps::set_user_app_access,
+        // Files
+        files::list_files,
+        files::upload_file,
+        files::get_file,
+        files::update_file,
+        files::delete_file,
+        files::batch_delete_files,
+        files::download_file,
+        files::list_folders,
+        files::create_folder,
+        files::get_folder,
+        files::update_folder,
+        files::delete_folder,
     ),
     info(
         title = "Alcedo Core API",

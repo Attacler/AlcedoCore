@@ -72,36 +72,16 @@ fn item_json(row: &Map<String, Value>, all: &[Map<String, Value>]) -> Value {
         .map(|child| item_json(child, all))
         .collect();
 
-    let mut out = Map::new();
-    out.insert("id".to_string(), id);
-    out.insert(
-        "label".to_string(),
-        row.get("label").cloned().unwrap_or(Value::Null),
-    );
-    out.insert(
-        "icon".to_string(),
-        row.get("icon").cloned().unwrap_or(Value::Null),
-    );
-    out.insert(
-        "visible".to_string(),
-        row.get("visible").cloned().unwrap_or(json!(true)),
-    );
-    out.insert(
-        "route".to_string(),
-        row.get("route").cloned().unwrap_or(Value::Null),
-    );
-    out.insert(
-        "url".to_string(),
-        row.get("url").cloned().unwrap_or(Value::Null),
-    );
-    out.insert(
-        "external".to_string(),
-        row.get("external").cloned().unwrap_or(json!(false)),
-    );
-    out.insert(
-        "linkType".to_string(),
-        row.get("link_type").cloned().unwrap_or(Value::Null),
-    );
+    let mut out = item_map! {
+        "id" => id,
+        "label" => row.get("label").cloned().unwrap_or(Value::Null),
+        "icon" => row.get("icon").cloned().unwrap_or(Value::Null),
+        "visible" => row.get("visible").cloned().unwrap_or(json!(true)),
+        "route" => row.get("route").cloned().unwrap_or(Value::Null),
+        "url" => row.get("url").cloned().unwrap_or(Value::Null),
+        "external" => row.get("external").cloned().unwrap_or(json!(false)),
+        "linkType" => row.get("link_type").cloned().unwrap_or(Value::Null),
+    };
     if !children.is_empty() {
         out.insert("children".to_string(), Value::Array(children));
     }

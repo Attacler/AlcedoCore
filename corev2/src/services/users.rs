@@ -195,8 +195,7 @@ impl UsersService<'_> {
         let password_hash = AuthService::hash_password(new_password).await?;
         let (context, collection) = system_context(USERS_COLLECTION);
         let mut service = ItemsService::new(self.app_state, &context, &collection);
-        let mut update = Map::new();
-        update.insert("password_hash".to_string(), json!(password_hash));
+        let update = item_map! { "password_hash" => password_hash };
         let mut query = Query::eq("id", json!(id.to_string()));
         let updated = service
             .update_items_by_query(&mut query, update, &mut None)

@@ -1,14 +1,18 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { formatFileSize } from "@/utils/formatters";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
 
 defineOptions({ inheritAttrs: false });
+
+const { client } = useAlcedoClient();
 
 interface FileMeta {
     id: string;
     filename: string;
     size_bytes: number;
     mime_type: string;
+    download_url?: string | null;
 }
 
 const props = defineProps<{
@@ -21,7 +25,7 @@ function isImage(file: FileMeta) {
 
 function download(file: FileMeta) {
     if (!props.value) return;
-    window.open(`/api/files/${file.id}/download`, "_blank");
+    window.open(client.files.downloadUrl(file), "_blank");
 }
 
 const fileCount = computed(() => props.value?.length ?? 0);
@@ -36,7 +40,7 @@ const fileCount = computed(() => props.value?.length ?? 0);
         >
             <img
                 v-if="isImage(file)"
-                :src="`/api/files/${file.id}/download`"
+                :src="client.files.downloadUrl(file)"
                 class="w-10 h-10 object-cover rounded"
             />
             <i v-else class="pi pi-file text-xl text-gray-400"></i>

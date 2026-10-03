@@ -529,7 +529,7 @@ function closeDetailSidebar() {
                     >
                         <img
                             v-if="isImage(file.mime_type)"
-                            :src="`/api/files/${file.id}/download`"
+                            :src="client.files.downloadUrl(file)"
                             :alt="file.alt_text || file.filename"
                             class="w-full h-full object-cover"
                         />
@@ -586,7 +586,7 @@ function closeDetailSidebar() {
             >
                 <img
                     v-if="isImage(selectedFile.mime_type)"
-                    :src="`/api/files/${selectedFile.id}/download`"
+                    :src="client.files.downloadUrl(selectedFile)"
                     :alt="selectedFile.alt_text || selectedFile.filename"
                     class="w-full h-48 object-contain"
                 />

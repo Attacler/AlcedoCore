@@ -260,7 +260,7 @@ const options = computed(() => {
                     >
                         <img
                             v-if="file.mime_type.startsWith('image/')"
-                            :src="`/api/files/${file.id}/download`"
+                            :src="client.files.downloadUrl(file)"
                             class="w-full h-full object-cover"
                         />
                         <i v-else class="pi pi-file text-2xl text-gray-400"></i>

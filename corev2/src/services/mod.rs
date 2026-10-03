@@ -7,6 +7,7 @@ pub mod collections;
 pub mod config;
 pub mod context;
 pub mod errors;
+pub mod files;
 pub mod hooks;
 pub mod items;
 pub mod menus;

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use file_storage::FileStorage;
 use futures::future::BoxFuture;
 use sqlx::{Pool, Postgres, Transaction};
 use tokio::sync::RwLock;
@@ -16,6 +17,7 @@ pub struct AppState {
     pub event_bus: Arc<MultiEventBus>,
     pub config: config::Config,
     pub cache: SystemCache,
+    pub file_storage: Arc<dyn FileStorage>,
 }
 impl AppState {
     pub async fn refresh_schema(&self) {

@@ -31,6 +31,7 @@ interface FileItem {
     filename: string;
     size_bytes: number;
     mime_type: string;
+    download_url?: string | null;
 }
 
 const { client } = useAlcedoClient();
@@ -223,6 +224,7 @@ async function loadFileInfos() {
                 filename: meta.filename || meta.id,
                 size_bytes: meta.size_bytes || 0,
                 mime_type: meta.mime_type || "application/octet-stream",
+                download_url: meta.download_url,
             });
             continue;
         }
@@ -234,6 +236,7 @@ async function loadFileInfos() {
                 filename: info.filename,
                 size_bytes: info.size_bytes,
                 mime_type: info.mime_type,
+                download_url: info.download_url,
             });
         } catch {
             items.value.push({
@@ -303,7 +306,7 @@ onMounted(() => {
                 ></i>
                 <img
                     v-if="isImage(item.mime_type)"
-                    :src="`/api/files/${item.id}/download`"
+                    :src="client.files.downloadUrl(item)"
                     class="w-10 h-10 object-cover rounded"
                 />
                 <i v-else class="pi pi-file text-xl text-gray-400"></i>

@@ -53,12 +53,15 @@ async fn main() -> Result<()> {
         SystemCache::InMemory(InMemoryCache::new())
     };
 
+    let file_storage = services::files::build_file_storage(&config).await;
+
     let state = AppState {
         database_pool,
         database_schema: Arc::new(RwLock::new(DatabaseSchema::new())),
         event_bus,
         config,
         cache,
+        file_storage,
     };
 
     let mut write_schema_lock = state.database_schema.write().await;

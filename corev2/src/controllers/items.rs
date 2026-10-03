@@ -9,6 +9,7 @@ use crate::services::{
     collections::schema::get_pk_key,
     context::ExtractContext,
     errors::AlcedoError,
+    files::FilesService,
     items::query::{Comparison, FieldFilter, FieldValue, Filter, LogicOp},
     query_parse::CustomQuery,
 };
@@ -73,6 +74,9 @@ async fn get_items(
     let limit = query.limit;
     let offset = query.offset;
     let items = service.read_items_by_query(query).await?;
+    let items = FilesService::new(&state, &context)
+        .augment_file_fields(&collection, items)
+        .await;
 
     Ok(Json(success(json!({
         "data": items,
@@ -110,6 +114,12 @@ async fn get_item(
         .await?
         .into_iter()
         .next()
+        .ok_or_else(|| AlcedoError::NotFound(format!("Item '{}' not found", id), 1))?;
+    let mut augmented = FilesService::new(&state, &context)
+        .augment_file_fields(&collection, vec![item])
+        .await;
+    let item = augmented
+        .pop()
         .ok_or_else(|| AlcedoError::NotFound(format!("Item '{}' not found", id), 1))?;
 
     Ok(Json(success(item)))
@@ -159,6 +169,9 @@ async fn create_items(
 
     let service = ItemsService::new(&state, &context, &collection);
     let created = service.get_items_by_pks(ids).await?;
+    let created = FilesService::new(&state, &context)
+        .augment_file_fields(&collection, created)
+        .await;
     Ok(Json(success(json!({ "created": created }))))
 }
 
@@ -197,6 +210,12 @@ async fn update_item(
     let item = service
         .get_single_item_by_pk(Value::String(id.clone()))
         .await?
+        .ok_or_else(|| AlcedoError::NotFound(format!("Item '{}' not found", id), 1))?;
+    let mut augmented = FilesService::new(&state, &context)
+        .augment_file_fields(&collection, vec![item])
+        .await;
+    let item = augmented
+        .pop()
         .ok_or_else(|| AlcedoError::NotFound(format!("Item '{}' not found", id), 1))?;
     Ok(Json(success(item)))
 }

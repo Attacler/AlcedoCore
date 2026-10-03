@@ -171,7 +171,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
         collections: createCollectionsResource(kyInstance),
         items: createItemsResource(kyInstance),
         lookup: createLookupResource(kyInstance),
-        files: createFilesResource(kyInstance),
+        files: createFilesResource(kyInstance, baseUrl, options),
         request: createRequest(kyInstance),
     };
 }

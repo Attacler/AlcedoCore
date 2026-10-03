@@ -23,6 +23,10 @@ pub struct Config {
     pub session_cookie_secure: bool,
     pub session_cookie_same_site: String,
     pub session_cookie_domain: Option<String>,
+    pub file_storage_provider: String,
+    pub files_dir: String,
+    pub s3_bucket: Option<String>,
+    pub s3_prefix: String,
 }
 
 pub fn get_config() -> Config {
@@ -34,19 +38,28 @@ pub fn get_config() -> Config {
     let session_ttl_seconds = env_or_msg("SESSION_TTL_SECONDS", 604800i64, "must be a number");
     let database_log_queries = env_or_msg("DATABASE_LOG_QUERIES", false, "must be a boolean");
     let cache_strategy = env_str("CACHE_STRATEGY", "in_memory");
-    let max_login_attempts =
-        env_or_msg("MAX_LOGIN_ATTEMPTS", 5u8, "must be a number (under 255)");
-    let login_fatal_ttl = env_or_msg("LOGIN_FAIL_TTL", 60 * 30u16, "must be a number (under 26553555)");
+    let max_login_attempts = env_or_msg("MAX_LOGIN_ATTEMPTS", 5u8, "must be a number (under 255)");
+    let login_fatal_ttl = env_or_msg(
+        "LOGIN_FAIL_TTL",
+        60 * 30u16,
+        "must be a number (under 26553555)",
+    );
 
     let admin_email = env_opt("ADMIN_EMAIL");
     let admin_password = env_opt("ADMIN_PASSWORD");
 
     let session_cookie_name = env_str("SECURITY_COOKIE_NAME", "alcedo_session");
     let session_cookie_path = env_str("SECURITY_COOKIE_PATH", "/");
-    let session_cookie_http_only = env_or_msg("SECURITY_COOKIE_HTTP_ONLY", true, "must be a boolean");
+    let session_cookie_http_only =
+        env_or_msg("SECURITY_COOKIE_HTTP_ONLY", true, "must be a boolean");
     let session_cookie_secure = env_or_msg("SECURITY_COOKIE_SECURE", false, "must be a boolean");
     let session_cookie_same_site = env_str("SECURITY_COOKIE_SAMESITE", "lax");
     let session_cookie_domain = env_opt("SECURITY_COOKIE_DOMAIN");
+
+    let file_storage_provider = env_str("FILE_STORAGE_PROVIDER", "local");
+    let files_dir = env_str("FILES_DIR", "./files");
+    let s3_bucket = env_opt("S3_BUCKET");
+    let s3_prefix = env_str("S3_PREFIX", "");
 
     if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
         eprintln!(
@@ -73,6 +86,10 @@ pub fn get_config() -> Config {
         session_cookie_secure,
         session_cookie_same_site,
         session_cookie_domain,
+        file_storage_provider,
+        files_dir,
+        s3_bucket,
+        s3_prefix,
     }
 }
 

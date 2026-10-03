@@ -120,6 +120,7 @@ WHERE (table_schema like '%010%' or table_schema = 'alcedo')
             let table = column.try_get("table_name").unwrap();
             let schema_name = column.try_get("table_schema").unwrap();
             let data_type = column.try_get("data_type").unwrap();
+            let udt_name: String = column.try_get("udt_name").unwrap();
             let default_value: Option<String> =
                 extract_default(column.try_get("column_default").unwrap());
             let numeric_precision = column.try_get("numeric_precision").unwrap();
@@ -139,6 +140,7 @@ WHERE (table_schema like '%010%' or table_schema = 'alcedo')
                 name,
                 table,
                 data_type,
+                udt_name,
                 default_value,
                 max_length,
                 numeric_precision,
@@ -356,6 +358,9 @@ pub struct Column {
 
     pub name: String,
     pub data_type: String,
+    /// Postgres `udt_name` (e.g. `_uuid` for `uuid[]`); used to type array columns.
+    #[serde(default)]
+    pub udt_name: String,
     pub default_value: Option<String>,
 
     pub max_length: Option<i32>,

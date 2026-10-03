@@ -91,6 +91,32 @@ pub fn parse_value(
             sea_query::Value::String(Some(Box::new(s)))
         }
 
+        // Array types (e.g. `uuid[]` for file fields). `data_type` is just
+        // "ARRAY"; the element type comes from `udt_name`. Only `uuid[]` is
+        // supported (the type produced by the `file` field), and each element
+        // is validated so the inlined literal can't be abused.
+        "ARRAY" => {
+            let element = column.udt_name.trim_start_matches('_');
+            if element != "uuid" {
+                return None;
+            }
+            let items = value.as_array()?;
+            if items.is_empty() {
+                return Some(Expr::cust("ARRAY[]::uuid[]"));
+            }
+            let mut parsed: Vec<uuid::Uuid> = Vec::with_capacity(items.len());
+            for item in items {
+                let raw = item.as_str()?;
+                parsed.push(uuid::Uuid::parse_str(raw).ok()?);
+            }
+            let list = parsed
+                .iter()
+                .map(|id| format!("'{}'::uuid", id))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Some(Expr::cust(format!("ARRAY[{}]", list)));
+        }
+
         // Unknown types - return None to make errors visible
         _ => return None,
     };
@@ -167,3 +193,94 @@ fn parse_decimal(v: &Value) -> Option<sea_query::Value> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_value;
+    use crate::services::postgres::inspector::{Column, DatabaseSchema};
+    use sea_query::SimpleExpr;
+    use serde_json::json;
+
+    fn schema_with_uuid_array() -> DatabaseSchema {
+        DatabaseSchema {
+            columns: vec![Column {
+                schema: "shop010production".to_string(),
+                table: "products".to_string(),
+                name: "photo".to_string(),
+                data_type: "ARRAY".to_string(),
+                udt_name: "_uuid".to_string(),
+                default_value: None,
+                max_length: None,
+                numeric_precision: None,
+                numeric_scale: None,
+                is_nullable: true,
+                is_unique: false,
+                is_indexed: false,
+                is_primary_key: false,
+                generated: false,
+                generation_expression: None,
+                has_auto_increment: false,
+                foreign_key: None,
+                meta: None,
+            }],
+            tables: vec![],
+            app_versions: vec![],
+        }
+    }
+
+    fn render(expr: SimpleExpr) -> String {
+        match expr {
+            SimpleExpr::Custom(sql) => sql,
+            _ => panic!("expected a custom expression"),
+        }
+    }
+
+    #[test]
+    fn uuid_array_parses_to_validated_literal() {
+        let schema = schema_with_uuid_array();
+        let id = "0fe48201-e63e-44fa-a272-ac007572a8c1";
+        let expr = parse_value(
+            &schema,
+            "shop010production",
+            &vec![],
+            "products",
+            "photo",
+            json!([id]),
+        )
+        .expect("array should parse");
+        let sql = render(expr);
+        assert!(sql.contains("ARRAY["), "{sql}");
+        assert!(sql.contains("::uuid"), "{sql}");
+        assert!(sql.contains(id), "{sql}");
+    }
+
+    #[test]
+    fn empty_uuid_array_is_valid() {
+        let schema = schema_with_uuid_array();
+        let expr = parse_value(
+            &schema,
+            "shop010production",
+            &vec![],
+            "products",
+            "photo",
+            json!([]),
+        )
+        .expect("empty array should parse");
+        assert_eq!(render(expr), "ARRAY[]::uuid[]");
+    }
+
+    #[test]
+    fn non_uuid_elements_are_rejected() {
+        let schema = schema_with_uuid_array();
+        let expr = parse_value(
+            &schema,
+            "shop010production",
+            &vec![],
+            "products",
+            "photo",
+            json!(["not-a-uuid"]),
+        );
+        assert!(expr.is_none());
+    }
+}
+

@@ -300,6 +300,19 @@ pub fn pgrow_to_json(row: &PgRow) -> Result<Map<String, serde_json::Value>, sqlx
                     json!(val)
                 }
 
+                // Array types (e.g. `uuid[]` file fields). sqlx names them
+                // `_uuid`/`UUID[]` depending on the source.
+                "_UUID" | "UUID[]" => {
+                    let val: Vec<Uuid> =
+                        Decode::<'_, Postgres>::decode(raw_value).map_err(sqlx::Error::Decode)?;
+                    json!(val.iter().map(|id| id.to_string()).collect::<Vec<_>>())
+                }
+                "_TEXT" | "TEXT[]" | "_VARCHAR" | "VARCHAR[]" => {
+                    let val: Vec<String> =
+                        Decode::<'_, Postgres>::decode(raw_value).map_err(sqlx::Error::Decode)?;
+                    json!(val)
+                }
+
                 // Fallback for complex types (UUIDs, Decimals, Arrays, etc.)
                 // Decodes them as a string to avoid precision loss (e.g., NUMERIC)
                 // or complex type dependencies (e.g., chrono, uuid).

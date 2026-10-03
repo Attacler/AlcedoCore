@@ -8,7 +8,7 @@ use serde_json::{Map, Value, json};
 use utoipa::ToSchema;
 
 use crate::{
-    AppState,
+    AppState, item_map,
     middelware::auth::AuthLevel,
     services::{
         app_settings::AppSettingsService,
@@ -111,8 +111,7 @@ async fn update_settings(
         .ok_or_else(|| AlcedoError::SystemError("Setting row has no id".to_string(), 0))?;
 
     let mut query = Query::eq("id", id);
-    let mut payload_map = Map::new();
-    payload_map.insert("platform_name".to_string(), json!(name));
+    let payload_map = item_map! { "platform_name" => name };
     service
         .update_items_by_query(&mut query, payload_map, &mut None)
         .await?;

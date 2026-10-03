@@ -15,8 +15,9 @@ use futures::future::BoxFuture;
 use serde_json::{Map, Value};
 
 use crate::{
-    AppState,
+    AppState, item_map,
     services::{
+        collections::ddl::quote,
         collections::schema::get_pk_key,
         collections::{self, FieldDefinition},
         context::AppContext,
@@ -261,8 +262,7 @@ async fn assign_children(
     let table = child.to_string();
     let mut service = ItemsService::new(state, ctx, &table);
     let mut query = query_and(vec![(pk_name.as_str(), cmp_in(ids.to_vec()))]);
-    let mut payload = Map::new();
-    payload.insert(fk.to_string(), Value::String(parent_id.to_string()));
+    let payload = item_map! { fk => Value::String(parent_id.to_string()) };
     service
         .update_items_by_query(&mut query, payload, &mut Some(guard.tx()))
         .await?;
@@ -281,8 +281,7 @@ async fn unlink_children(
     let table = child.to_string();
     let mut service = ItemsService::new(state, ctx, &table);
     let mut query = query_and(vec![(fk, cmp_eq(Value::String(parent_id.to_string())))]);
-    let mut payload = Map::new();
-    payload.insert(fk.to_string(), Value::Null);
+    let payload = item_map! { fk => Value::Null };
     service
         .update_items_by_query(&mut query, payload, &mut Some(guard.tx()))
         .await?;
@@ -378,7 +377,9 @@ pub fn create_recursive<'a, 'c>(
             }
         }
 
+        let file_values = file_field_values(&fields, &scalar);
         let id = insert_one(state, ctx, guard, &collection, scalar).await?;
+        sync_item_files(ctx, guard, &collection, &id, &file_values).await?;
 
         for (target, fk, value, target_app) in o2m {
             let tctx = target_ctx(ctx, &target_app);
@@ -559,11 +560,85 @@ pub fn update_recursive<'a, 'c>(
             .await?;
         }
 
+        let file_values = file_field_values(&fields, &scalar);
         if !scalar.is_empty() {
             update_one(state, ctx, guard, &collection, &id, scalar).await?;
         }
+        sync_item_files(ctx, guard, &collection, &id, &file_values).await?;
         Ok(())
     })
+}
+
+/// File UUIDs referenced by a `file` field value (a single id or an array).
+fn file_ids_from_value(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(s) if !s.is_empty() => vec![s.clone()],
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The `file`-type fields present in a payload, mapped to the ids they
+/// reference. A present-but-empty (or null) field maps to an empty list so the
+/// sync clears its links.
+fn file_field_values(
+    fields: &[FieldDefinition],
+    payload: &Map<String, Value>,
+) -> Vec<(String, Vec<String>)> {
+    fields
+        .iter()
+        .filter(|f| f.field_type == "file")
+        .filter_map(|f| {
+            payload
+                .get(&f.name)
+                .map(|v| (f.name.clone(), file_ids_from_value(v)))
+        })
+        .collect()
+}
+
+/// Replaces the `alcedocore_item_files` links for each provided
+/// (field → file ids) pair, inside the caller's transaction.
+async fn sync_item_files(
+    ctx: &AppContext,
+    guard: &mut TxGuard<'_>,
+    collection: &str,
+    item_id: &str,
+    files: &[(String, Vec<String>)],
+) -> Result<(), AlcedoError> {
+    if files.is_empty() {
+        return Ok(());
+    }
+    let schema = quote(&ctx.schema_name());
+    for (field_name, ids) in files {
+        sqlx::query(&format!(
+            r#"DELETE FROM {schema}.alcedocore_item_files
+               WHERE item_id = $1::uuid AND field_name = $2"#
+        ))
+        .bind(item_id)
+        .bind(field_name)
+        .execute(&mut **guard.tx())
+        .await?;
+
+        for (position, file_id) in ids.iter().enumerate() {
+            sqlx::query(&format!(
+                r#"INSERT INTO {schema}.alcedocore_item_files
+                   (item_id, collection_name, field_name, file_id, ordinal_position)
+                   VALUES ($1::uuid, $2, $3, $4::uuid, $5)
+                   ON CONFLICT DO NOTHING"#
+            ))
+            .bind(item_id)
+            .bind(collection)
+            .bind(field_name)
+            .bind(file_id)
+            .bind(position as i32)
+            .execute(&mut **guard.tx())
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

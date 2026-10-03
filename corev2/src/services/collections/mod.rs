@@ -973,37 +973,18 @@ pub async fn update_section(
     let table = "alcedo_collection_sections".to_string();
     let mut service = ItemsService::new(state, ctx, &table);
 
-    let mut payload = Map::new();
-    payload.insert("name".to_string(), json!(req.name));
+    let mut payload = item_map! {
+        "name" => req.name,
+        "relation_field" => req.relation_field.clone().map_or(Value::Null, Value::String),
+        "related_app" => req.related_app.clone().map_or(Value::Null, Value::String),
+        "view_type" => req.view_type.clone().map_or(Value::Null, Value::String),
+        "default_filter" => req.default_filter.clone().unwrap_or(Value::Null),
+        "display_fields" => req.display_fields.clone().unwrap_or(Value::Null),
+        "item_limit" => req.item_limit.unwrap_or(25),
+    };
     if let Some(st) = req.section_type {
         payload.insert("section_type".to_string(), json!(st));
     }
-    payload.insert(
-        "relation_field".to_string(),
-        req.relation_field
-            .clone()
-            .map_or(Value::Null, Value::String),
-    );
-    payload.insert(
-        "related_app".to_string(),
-        req.related_app.clone().map_or(Value::Null, Value::String),
-    );
-    payload.insert(
-        "view_type".to_string(),
-        req.view_type.clone().map_or(Value::Null, Value::String),
-    );
-    payload.insert(
-        "default_filter".to_string(),
-        req.default_filter.clone().unwrap_or(Value::Null),
-    );
-    payload.insert(
-        "display_fields".to_string(),
-        req.display_fields.clone().unwrap_or(Value::Null),
-    );
-    payload.insert(
-        "item_limit".to_string(),
-        json!(req.item_limit.unwrap_or(25)),
-    );
     if let Some(pos) = req.ordinal_position {
         payload.insert("ordinal_position".to_string(), json!(pos));
     }
