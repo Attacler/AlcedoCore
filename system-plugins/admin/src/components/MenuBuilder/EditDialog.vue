@@ -4,6 +4,7 @@ import { ref, watch } from "vue";
 import { useRolesStore } from "@/stores/rolesStore";
 import { useMenuStore } from "@/stores/menuStore";
 import { useToast } from "@/composables/useToast";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { watchEffect } from "vue";
 
 const props = defineProps<{
@@ -15,7 +16,8 @@ const showDialog = ref(false);
 
 const store = useMenuStore(),
     rolesStore = useRolesStore(),
-    toast = useToast();
+    toast = useToast(),
+    { client } = useAlcedoClient();
 
 const selectedMenuId = ref<string>(""),
     assignedRoles = ref<string[]>([]),
@@ -24,12 +26,10 @@ const selectedMenuId = ref<string>(""),
 async function fetchMenuRoles() {
     if (!selectedMenuId.value) return;
     try {
-        const res = await fetch(`/api/menus/${selectedMenuId.value}/roles`, {
-            credentials: "include",
-        });
-        if (res.ok) {
-            assignedRoles.value = (await res.json()).role_ids || [];
-        }
+        const res = (await client.menus.getRoles(selectedMenuId.value)) as {
+            role_ids: string[];
+        };
+        assignedRoles.value = res.role_ids || [];
     } catch {}
 }
 
@@ -39,12 +39,7 @@ watchEffect(() => loadMenuForEditing(props.selectedMenuId));
 async function saveRoles() {
     if (!selectedMenuId.value) return;
     try {
-        await fetch(`/api/menus/${selectedMenuId.value}/roles`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ role_ids: assignedRoles.value }),
-        });
+        await client.menus.setRoles(selectedMenuId.value, assignedRoles.value);
     } catch {}
 }
 
@@ -70,18 +65,16 @@ async function loadMenuForEditing(id: string) {
 
 async function createNewMenu() {
     try {
-        const res = await fetch("/api/menus", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({
-                name: store.editMenuName,
-                icon: store.editMenuIcon,
-                role_ids: assignedRoles.value,
-            }),
-        }).then((e) => e.json());
+        const menu = await client.menus.create({
+            name: store.editMenuName,
+            icon: store.editMenuIcon,
+            role_ids: assignedRoles.value,
+        });
 
-        return res.data.id;
+        // Point the store at the freshly created menu so any follow-up save
+        // does not write to the previously selected menu.
+        store.activeEditMenuId = menu.id;
+        return menu.id;
     } catch {}
 }
 
@@ -118,10 +111,7 @@ watch(
 
 async function handleDeleteMenu() {
     try {
-        await fetch(`/api/menus/${props.selectedMenuId}`, {
-            method: "DELETE",
-            credentials: "include",
-        });
+        await client.menus.delete(props.selectedMenuId);
         emit("refreshMenus");
         showDialog.value = false;
     } catch {}
@@ -162,9 +152,7 @@ async function handleDeleteMenu() {
                     :key="roleId"
                     class="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 text-blue-700 rounded-full text-sm border border-blue-200"
                 >
-                    {{
-                        rolesStore.getRoleName(roleId) || roleId.slice(0, 8)
-                    }}
+                    {{ rolesStore.getRoleName(roleId) || roleId.slice(0, 8) }}
                     <button
                         @click="removeRole(roleId)"
                         class="text-blue-500 hover:text-blue-700 text-lg leading-none"
@@ -175,8 +163,7 @@ async function handleDeleteMenu() {
                 <span
                     v-if="assignedRoles.length === 0"
                     class="text-sm text-gray-400 italic"
-                    >No roles assigned — menu won't be visible to
-                    anyone</span
+                    >No roles assigned — menu won't be visible to anyone</span
                 >
             </div>
             <div class="flex gap-2">
@@ -199,8 +186,8 @@ async function handleDeleteMenu() {
                     text
                     @click="addRole"
                     :disabled="!newRoleId"
-                /></div
-        >
+                />
+            </div>
         </div>
 
         <template #footer>

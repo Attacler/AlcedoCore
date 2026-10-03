@@ -79,7 +79,7 @@ pub fn parse_value(
         // JSON types
         "json" | "jsonb" => {
             let json_value = match value {
-                Value::String(s) => s.parse::<serde_json::Value>().ok()?,
+                Value::String(s) => s.parse::<serde_json::Value>().unwrap_or(Value::String(s)),
                 v => v,
             };
             sea_query::Value::Json(Some(Box::new(json_value)))

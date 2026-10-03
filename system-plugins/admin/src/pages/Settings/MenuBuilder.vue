@@ -7,6 +7,7 @@ import { useRolesStore } from "@/stores/rolesStore";
 import draggable from "vuedraggable";
 import { useMenuStore } from "@/stores/menuStore";
 import { useToast } from "@/composables/useToast";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { MenuSection } from "@/types/menu";
 import { TabList, Tabs, Tab, TabPanels, Select } from "primevue";
 import EditDialog from "@/components/MenuBuilder/EditDialog.vue";
@@ -17,7 +18,8 @@ const store = useMenuStore(),
     collectionsStore = useCollectionsStore(),
     rolesStore = useRolesStore(),
     route = useRoute(),
-    toast = useToast();
+    toast = useToast(),
+    { client } = useAlcedoClient();
 
 const selectedMenuId = ref<string>(""),
     allMenus = ref<any[]>([]),
@@ -26,10 +28,7 @@ const selectedMenuId = ref<string>(""),
 async function fetchAllMenus() {
     loadingMenus.value = true;
     try {
-        const res = await fetch("/api/menus", { credentials: "include" });
-        if (res.ok) {
-            allMenus.value = (await res.json()).data || [];
-        }
+        allMenus.value = await client.menus.list();
     } finally {
         loadingMenus.value = false;
     }
@@ -48,21 +47,16 @@ async function loadMenuForEditing(id: string) {
     selectedMenuId.value = id;
 
     try {
-        const res = await fetch(`/api/menus/${id}`, { credentials: "include" });
-        if (res.ok) {
-            const menu = (await res.json()).data;
+        const menu = (await client.menus.get(id)) as any;
 
-            store.activeEditMenuId = id;
-            store.editSections = JSON.parse(
-                JSON.stringify(menu.sections || []),
-            );
-            store.editMenuName = menu.name;
-            store.editMenuIcon = menu.icon;
-            store.originalEditSections = JSON.parse(
-                JSON.stringify(menu.sections || []),
-            );
-            store.selectedItemId = null;
-        }
+        store.activeEditMenuId = id;
+        store.editSections = JSON.parse(JSON.stringify(menu.sections || []));
+        store.editMenuName = menu.name;
+        store.editMenuIcon = menu.icon;
+        store.originalEditSections = JSON.parse(
+            JSON.stringify(menu.sections || []),
+        );
+        store.selectedItemId = null;
     } catch {}
 }
 
@@ -274,6 +268,13 @@ function handleAddItem(sectionId?: string, parentItemId?: string) {
         newSet.add(parentItemId);
         expandedSubmenus.value = newSet;
     }
+}
+
+function toggleSubmenu(id: string) {
+    const next = new Set(expandedSubmenus.value);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    expandedSubmenus.value = next;
 }
 
 function getSectionForItem(itemId: string): MenuSection | undefined {
@@ -676,6 +677,50 @@ function openMenu(id: string) {
                                                                 title="External link"
                                                             ></span>
                                                             <Button
+                                                                v-if="
+                                                                    item.children &&
+                                                                    item
+                                                                        .children
+                                                                        .length >
+                                                                        0
+                                                                "
+                                                                :icon="
+                                                                    expandedSubmenus.has(
+                                                                        item.id,
+                                                                    )
+                                                                        ? 'pi pi-chevron-down'
+                                                                        : 'pi pi-chevron-right'
+                                                                "
+                                                                text
+                                                                severity="secondary"
+                                                                rounded
+                                                                :title="
+                                                                    expandedSubmenus.has(
+                                                                        item.id,
+                                                                    )
+                                                                        ? 'Collapse sub-items'
+                                                                        : 'Expand sub-items'
+                                                                "
+                                                                @click.stop="
+                                                                    toggleSubmenu(
+                                                                        item.id,
+                                                                    )
+                                                                "
+                                                            />
+                                                            <Button
+                                                                icon="pi pi-plus"
+                                                                text
+                                                                severity="secondary"
+                                                                rounded
+                                                                title="Add sub-item"
+                                                                @click.stop="
+                                                                    handleAddItem(
+                                                                        section.id,
+                                                                        item.id,
+                                                                    )
+                                                                "
+                                                            />
+                                                            <Button
                                                                 :icon="
                                                                     item.visible
                                                                         ? 'pi pi-eye'
@@ -703,6 +748,86 @@ function openMenu(id: string) {
                                                                     )
                                                                 "
                                                             />
+                                                        </div>
+
+                                                        <div
+                                                            v-if="
+                                                                item.children &&
+                                                                item.children
+                                                                    .length >
+                                                                    0 &&
+                                                                expandedSubmenus.has(
+                                                                    item.id,
+                                                                )
+                                                            "
+                                                            class="ml-6 border-l border-gray-200 pl-2 py-1 space-y-1"
+                                                        >
+                                                            <div
+                                                                v-for="child in item.children"
+                                                                :key="child.id"
+                                                                class="flex items-center gap-2 px-3 py-2 mx-1 rounded-md cursor-pointer transition-colors"
+                                                                :class="{
+                                                                    'bg-blue-50 border border-blue-200':
+                                                                        store.selectedItemId ===
+                                                                        child.id,
+                                                                    'hover:bg-gray-50':
+                                                                        store.selectedItemId !==
+                                                                        child.id,
+                                                                }"
+                                                                @click="
+                                                                    store.selectItem(
+                                                                        child.id,
+                                                                    )
+                                                                "
+                                                            >
+                                                                <span
+                                                                    class="material-symbols-outlined text-lg text-gray-500"
+                                                                    >{{
+                                                                        child.icon
+                                                                    }}</span
+                                                                >
+                                                                <span
+                                                                    class="flex-1 text-sm text-gray-800 truncate"
+                                                                    >{{
+                                                                        child.label
+                                                                    }}</span
+                                                                >
+                                                                <span
+                                                                    v-if="
+                                                                        child.external
+                                                                    "
+                                                                    class="pi pi-external-link text-xs text-gray-400"
+                                                                    title="External link"
+                                                                ></span>
+                                                                <Button
+                                                                    :icon="
+                                                                        child.visible
+                                                                            ? 'pi pi-eye'
+                                                                            : 'pi pi-eye-slash'
+                                                                    "
+                                                                    text
+                                                                    severity="secondary"
+                                                                    rounded
+                                                                    @click.stop="
+                                                                        store.toggleVisibility(
+                                                                            child.id,
+                                                                        )
+                                                                    "
+                                                                />
+                                                                <Button
+                                                                    icon="pi pi-trash"
+                                                                    text
+                                                                    severity="danger"
+                                                                    rounded
+                                                                    @click.stop="
+                                                                        confirmDelete(
+                                                                            'item',
+                                                                            child.id,
+                                                                            child.label,
+                                                                        )
+                                                                    "
+                                                                />
+                                                            </div>
                                                         </div>
                                                     </div>
                                                 </template>

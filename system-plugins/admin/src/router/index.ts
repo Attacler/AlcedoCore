@@ -32,6 +32,7 @@ import ApiDocs from "@/pages/ApiDocs.vue";
 import Development from "@/pages/Development.vue";
 import CollectionBuilder from "@/pages/CollectionBuilder.vue";
 import SettingsSession from "@/pages/Settings/SettingsSession.vue";
+import GlobalSettings from "@/pages/GlobalSettings.vue";
 
 const APP_DASHBOARD_ROUTE = "AppDashboard";
 
@@ -58,6 +59,11 @@ const routes: RouteRecordRaw[] = [
         path: "/sessions",
         name: "GlobalSessions",
         component: SettingsSession,
+    },
+    {
+        path: "/settings",
+        name: "GlobalSettings",
+        component: GlobalSettings,
     },
     {
         path: "/development",
@@ -299,7 +305,11 @@ router.beforeEach(async (to, _from) => {
     const scopeContext = `${appSlug ?? ""}::${version ?? ""}`;
     if (scopeContext !== lastScopeContext) {
         lastScopeContext = scopeContext;
-        await authStore.refreshScopes();
+        const { useMenuStore } = await import("@/stores/menuStore");
+        await Promise.all([
+            authStore.refreshScopes(),
+            useMenuStore().loadMyMenus(),
+        ]);
     }
 
     return true;

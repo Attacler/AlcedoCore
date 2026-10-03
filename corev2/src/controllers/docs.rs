@@ -4,9 +4,10 @@ use utoipa::OpenApi;
 use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
 use crate::controllers::{
-    apps, auth, collections, developer_keys, items, policies, roles, sessions, settings, users,
-    versions,
+    apps, auth, collections, developer_keys, items, menus, policies, roles, sessions, settings,
+    users, versions,
 };
+use crate::services::menus::{MenuItemInput, MenuSectionInput};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -45,6 +46,20 @@ use crate::controllers::{
         collections::reorder_sections,
         // Settings
         settings::get_settings,
+        settings::update_settings,
+        settings::get_app_settings,
+        settings::update_app_setting,
+        settings::batch_update_app_settings,
+        // Menus
+        menus::list_menus,
+        menus::create_menu,
+        menus::my_menus,
+        menus::get_menu,
+        menus::update_menu,
+        menus::delete_menu,
+        menus::get_menu_roles,
+        menus::set_menu_roles,
+        menus::copy_menu,
         // Auth
         auth::get_me,
         auth::login_handler,
@@ -130,6 +145,7 @@ use crate::controllers::{
         (name = "Users", description = "User administration"),
         (name = "Sessions", description = "Session management"),
         (name = "Settings", description = "Platform settings"),
+        (name = "Menus", description = "App-scoped menu trees and role grants"),
         (name = "Roles", description = "App-scoped roles, scopes and user assignments"),
         (name = "Policies", description = "Record access policies and permission rules"),
     ),
@@ -145,7 +161,16 @@ use crate::controllers::{
             developer_keys::DeveloperKeyResponse,
             developer_keys::CreateDeveloperKeyRequest,
             settings::SettingsResponse,
+            settings::UpdatePlatformSettingsRequest,
+            settings::UpdateAppSettingRequest,
+            settings::BatchUpdateAppSettingsRequest,
             auth::LoginRequest,
+            menus::CreateMenuRequest,
+            menus::UpdateMenuRequest,
+            menus::SetMenuRolesRequest,
+            menus::CopyMenuRequest,
+            MenuSectionInput,
+            MenuItemInput,
         )
     )
 )]

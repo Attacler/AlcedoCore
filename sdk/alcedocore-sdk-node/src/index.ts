@@ -38,6 +38,8 @@ export { createRegistriesResource } from "./registries";
 export { createActivityLogsResource } from "./activityLogs";
 export { createAppSettingsResource } from "./appSettings";
 export { createDeveloperApiKeysResource } from "./developerApiKeys";
+export { createMenusResource } from "./menus";
+export type { Menu, MenuItem, MenuSection, MenuListEntry } from "./menus";
 
 export { createClient, resolveAppHeaders } from "./client";
 

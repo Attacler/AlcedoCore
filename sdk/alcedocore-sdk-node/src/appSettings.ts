@@ -27,18 +27,25 @@ export function createAppSettingsResource(ky: KyInstance) {
     return {
         getPlatformSettings: (options?: any) =>
             ky.get("/platform/settings", options).json<PlatformSettings>(),
+        updatePlatformSettings: (platformName: string, options?: any) =>
+            ky
+                .put("/platform/settings", {
+                    json: { platform_name: platformName },
+                    ...options,
+                })
+                .json<PlatformSettings>(),
         list: (options?: any) =>
-            ky.get("settings", options).json<PlatformSettings>(),
+            ky.get("app/settings", options).json<Record<string, any>>(),
         update: (key: string, value: any, options?: any) =>
             ky
-                .put(`settings/${encodeURIComponent(key)}`, {
+                .put(`app/settings/${encodeURIComponent(key)}`, {
                     json: { value },
                     ...options,
                 })
                 .json<SettingsUpdateResponse>(),
         batch: (settings: Record<string, any>, options?: any) =>
             ky
-                .post("settings/batch", { json: { settings }, ...options })
+                .post("app/settings/batch", { json: { settings }, ...options })
                 .json<SettingsBatchUpdateResponse>(),
     };
 }

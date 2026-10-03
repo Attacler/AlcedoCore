@@ -23,6 +23,7 @@ import { createRegistriesResource } from "./registries.js";
 import { createActivityLogsResource } from "./activityLogs.js";
 import { createAppSettingsResource } from "./appSettings.js";
 import { createDeveloperApiKeysResource } from "./developerApiKeys.js";
+import { createMenusResource } from "./menus.js";
 import { AlcedoApiError, type JSendResponse } from "./types/jsend.js";
 
 const DEFAULT_TIMEOUT = 30_000;
@@ -151,6 +152,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
         activityLogs: createActivityLogsResource(kyInstance),
         appSettings: createAppSettingsResource(kyInstance),
         developerApiKeys: createDeveloperApiKeysResource(kyInstance),
+        menus: createMenusResource(kyInstance),
         registries: createRegistriesResource(kyInstance),
         migrations: createMigrationsResource(kyInstance),
         settings: createSettingsResource(kyInstance),

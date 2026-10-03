@@ -9,7 +9,11 @@ pub fn app_controller() -> Router<AppState> {
             "/collections",
             controllers::collections::tables_controller(),
         )
-        .nest("/settings", controllers::settings::settings_controller())
+        .nest(
+            "/settings",
+            controllers::settings::app_settings_controller(),
+        )
+        .nest("/menus", controllers::menus::menus_controller())
         .nest("/roles", controllers::roles::roles_controller())
         .nest("/policies", controllers::policies::policies_controller())
         .nest("/users", controllers::roles::user_roles_controller())

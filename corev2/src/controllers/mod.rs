@@ -4,6 +4,7 @@ pub mod collections;
 pub mod developer_keys;
 pub mod docs;
 pub mod items;
+pub mod menus;
 pub mod policies;
 pub mod roles;
 pub mod sessions;

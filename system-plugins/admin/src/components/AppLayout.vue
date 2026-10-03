@@ -487,38 +487,89 @@ onUnmounted(() => {
                     </div>
 
                     <!-- Section Items -->
-                    <component
+                    <template
                         v-for="item in visibleSectionItems(section)"
-                        :is="item.external ? 'a' : 'router-link'"
                         :key="item.id"
-                        :to="resolveItemRoute(item)"
-                        :href="resolveItemRoute(item)"
-                        :target="item.external ? '_blank' : undefined"
-                        class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-700 transition-colors border-l-2 border-transparent"
-                        :class="{
-                            'flex-col': !isMobile && !collapsed,
-                            'text-sm': isMobile,
-                            'text-slate-400': !item.visible,
-                        }"
-                        active-class="bg-slate-700 border-l-2 border-blue-400"
-                        @click="closeSidebarOnMobile"
                     >
-                        <span
-                            class="material-symbols-outlined text-xl"
-                            :class="{ 'mx-auto': collapsed && !isMobile }"
-                            >{{ item.icon }}</span
+                        <component
+                            :is="item.external ? 'a' : 'router-link'"
+                            :to="resolveItemRoute(item)"
+                            :href="resolveItemRoute(item)"
+                            :target="item.external ? '_blank' : undefined"
+                            class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-700 transition-colors border-l-2 border-transparent"
+                            :class="{
+                                'text-sm': isMobile,
+                                'text-slate-300': !item.visible,
+                            }"
+                            active-class="bg-slate-700 border-l-2 border-blue-400 text-white"
+                            @click="closeSidebarOnMobile"
                         >
-                        <span
-                            v-if="!collapsed || isMobile"
-                            class="text-xs flex items-center"
-                            >{{ item.label }}
                             <span
-                                v-if="item.external"
-                                class="material-symbols-outlined text-xs text-slate-400 ml-1"
-                                >open_in_new</span
-                            ></span
+                                class="material-symbols-outlined text-xl shrink-0"
+                                :class="{ 'mx-auto': collapsed && !isMobile }"
+                                >{{ item.icon }}</span
+                            >
+                            <span
+                                v-if="!collapsed || isMobile"
+                                class="text-sm flex items-center truncate"
+                                >{{ item.label }}
+                                <span
+                                    v-if="item.external"
+                                    class="material-symbols-outlined text-xs text-slate-400 ml-1"
+                                    >open_in_new</span
+                                ></span
+                            >
+                        </component>
+
+                        <!-- Nested sub-items -->
+                        <div
+                            v-if="
+                                item.children &&
+                                item.children.some(
+                                    (c) => c.visible !== false,
+                                )
+                            "
+                            class="ml-4 flex flex-col gap-1 border-l border-slate-700 pl-2 mb-1"
                         >
-                    </component>
+                            <component
+                                v-for="child in item.children.filter(
+                                    (c) => c.visible !== false,
+                                )"
+                                :key="child.id"
+                                :is="child.external ? 'a' : 'router-link'"
+                                :to="resolveItemRoute(child)"
+                                :href="resolveItemRoute(child)"
+                                :target="
+                                    child.external ? '_blank' : undefined
+                                "
+                                class="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors border-l-2 border-transparent"
+                                :class="{
+                                    'text-sm': isMobile,
+                                    'text-slate-300': !child.visible,
+                                }"
+                                active-class="bg-slate-700 border-l-2 border-blue-400 text-white"
+                                @click="closeSidebarOnMobile"
+                            >
+                                <span
+                                    class="material-symbols-outlined text-lg shrink-0"
+                                    :class="{
+                                        'mx-auto': collapsed && !isMobile,
+                                    }"
+                                    >{{ child.icon }}</span
+                                >
+                                <span
+                                    v-if="!collapsed || isMobile"
+                                    class="text-sm flex items-center truncate"
+                                    >{{ child.label }}
+                                    <span
+                                        v-if="child.external"
+                                        class="material-symbols-outlined text-xs text-slate-400 ml-1"
+                                        >open_in_new</span
+                                    ></span
+                                >
+                            </component>
+                        </div>
+                    </template>
 
                     <!-- Empty section placeholder -->
                     <div

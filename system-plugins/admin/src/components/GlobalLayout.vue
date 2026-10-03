@@ -26,6 +26,7 @@ const navItems: GlobalNavItem[] = [
     { label: "Registries", icon: "cloud", route: "/registries" },
     { label: "Plugins", icon: "extension", route: "/plugins" },
     { label: "Sessions", icon: "devices", route: "/sessions" },
+    { label: "Settings", icon: "settings", route: "/settings" },
     { label: "Development", icon: "code", route: "/development" },
 ];
 
@@ -39,7 +40,10 @@ const visibleNavItems = computed(() =>
 );
 
 const branding = computed(() => ({
-    siteName: settingsStore.getSettingValue("site_name") || "AlcedoCore",
+    siteName:
+        settingsStore.getSettingValue("site_name") ||
+        settingsStore.platformSettings.platform_name ||
+        "AlcedoCore",
     logoUrl: settingsStore.getSettingValue("logo_url"),
 }));
 

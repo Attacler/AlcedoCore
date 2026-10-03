@@ -1,4 +1,5 @@
 pub mod app_state;
+pub mod app_settings;
 pub mod apps;
 pub mod auth;
 pub mod cache;
@@ -8,6 +9,7 @@ pub mod context;
 pub mod errors;
 pub mod hooks;
 pub mod items;
+pub mod menus;
 pub mod permissions;
 pub mod policies;
 pub mod postgres;

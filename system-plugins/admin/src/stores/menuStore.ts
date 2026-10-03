@@ -4,6 +4,7 @@ import type { Menu, MenuSection, MenuItem } from "../types/menu";
 import { createEmptySection, createEmptyItem } from "../types/menu";
 import { useExtensionRegistryStore } from "./extensionRegistry";
 import { useAlcedoClient } from "../composables/useAlcedoClient";
+import { getAppHeaders } from "../utils/appHeaders";
 
 function deepClone<T>(data: T): T {
     return JSON.parse(JSON.stringify(data));
@@ -75,15 +76,17 @@ export const useMenuStore = defineStore("menu", () => {
     // ── Actions ──
 
     async function loadMyMenus() {
+        const { app, version } = getAppHeaders();
+        if (!app || !version) {
+            menus.value = [];
+            activeMenuId.value = null;
+            return;
+        }
+
         loading.value = true;
         error.value = null;
         try {
-            const res = await fetch("/api/menus/my", {
-                credentials: "include",
-            });
-            if (!res.ok) throw new Error("Failed to load menus");
-            const json = await res.json();
-            menus.value = json.data || [];
+            menus.value = (await client.menus.my()) || [];
 
             const lastId = localStorage.getItem("activeMenuId");
             if (lastId && menus.value.some((m) => m.id === lastId)) {
@@ -125,16 +128,14 @@ export const useMenuStore = defineStore("menu", () => {
         if (!id) return false;
         saving.value = true;
         try {
-            const json = await client.request("put", `menus/${id}`, {
-                json: {
-                    name: editMenuName.value,
-                    icon: editMenuIcon.value,
-                    sections: editSections.value,
-                },
+            const menu = await client.menus.update(id, {
+                name: editMenuName.value,
+                icon: editMenuIcon.value,
+                sections: editSections.value,
             });
             const idx = menus.value.findIndex((m) => m.id === id);
-            if (idx !== -1 && json.data) {
-                menus.value[idx] = json.data;
+            if (idx !== -1 && menu) {
+                menus.value[idx] = menu as Menu;
             }
             originalEditSections.value = deepClone(editSections.value);
             return true;

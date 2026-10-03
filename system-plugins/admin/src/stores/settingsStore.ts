@@ -230,6 +230,11 @@ export const useSettingsStore = defineStore("settings", () => {
         loading.value = false;
     }
 
+    async function updatePlatformName(name: string) {
+        platformSettings.value =
+            await client.appSettings.updatePlatformSettings(name);
+    }
+
     async function fetchSettings() {
         loading.value = true;
         error.value = null;
@@ -323,6 +328,7 @@ export const useSettingsStore = defineStore("settings", () => {
         // Actions
         fetchSettings,
         fetchPlatformSettings,
+        updatePlatformName,
         updateLocalValue,
         getLocalValue,
         saveSetting,
