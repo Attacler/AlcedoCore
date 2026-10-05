@@ -78,6 +78,7 @@ join alcedo.alcedo_versions on alcedo.alcedo_versions.id = alcedo.alcedo_apps_ve
                         version: version.get("version_name"),
                         request_source: RequestSource::Inspector,
                         identity: None,
+                        request_id: None,
                     }
                     .schema_name(),
                 })

@@ -19,5 +19,6 @@ pub fn platform_controller() -> Router<AppState> {
             get(controllers::apps::get_user_app_access)
                 .put(controllers::apps::set_user_app_access),
         )
-        .nest("/settings", controllers::settings::settings_controller());
+        .nest("/settings", controllers::settings::settings_controller())
+        .nest("/logs", controllers::logs::logs_platform_controller());
 }

@@ -1,5 +1,6 @@
 pub mod app_state;
 pub mod app_settings;
+pub mod activity_logs;
 pub mod apps;
 pub mod auth;
 pub mod cache;

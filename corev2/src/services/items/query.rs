@@ -495,6 +495,7 @@ impl Query {
                         version,
                         request_source: context.request_source.clone(),
                         identity: None,
+                        request_id: context.request_id.clone(),
                     }
                 };
                 let mut app_context = app_context;

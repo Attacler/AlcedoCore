@@ -31,8 +31,10 @@ pub async fn create(
     user_id: Uuid,
     user_agent: Option<String>,
     ttl: Duration,
+    request_id: Option<String>,
 ) -> Result<Uuid, AlcedoError> {
-    let context = AppContext::system(RequestSource::API);
+    let mut context = AppContext::system(RequestSource::API);
+    context.request_id = request_id;
     let collection = SESSION_COLLECTION.to_string();
     let mut service = ItemsService::new(state, &context, &collection);
 
@@ -77,8 +79,13 @@ pub async fn resolve(cache: &SystemCache, id: &str) -> Option<Uuid> {
 }
 
 /// Deletes a single session from both the cache and the database.
-pub async fn delete(state: &AppState, id: &str) -> Result<(), AlcedoError> {
-    let context = AppContext::system(RequestSource::API);
+pub async fn delete(
+    state: &AppState,
+    id: &str,
+    request_id: Option<String>,
+) -> Result<(), AlcedoError> {
+    let mut context = AppContext::system(RequestSource::API);
+    context.request_id = request_id;
     let collection = SESSION_COLLECTION.to_string();
     let mut service = ItemsService::new(state, &context, &collection);
 

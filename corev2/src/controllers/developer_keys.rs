@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, Query as AxumQuery, State},
+    http::HeaderMap,
     routing::get,
 };
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,7 @@ async fn list_keys(
 async fn create_key(
     State(state): State<AppState>,
     auth_level: AuthLevel,
+    headers: HeaderMap,
     Json(payload): Json<CreateDeveloperKeyRequest>,
 ) -> Result<Json<JSendResponse<DeveloperKeyResponse>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
@@ -126,7 +128,7 @@ async fn create_key(
         "is_active" => true,
     };
 
-    let context = AppContext::system(RequestSource::API);
+    let context = AppContext::system_request(RequestSource::API, &headers);
     let collection = "alcedo_developer_api_keys".to_string();
     let mut service = ItemsService::new(&state, &context, &collection);
     service.create_many(vec![map], &mut None).await?;
@@ -155,11 +157,12 @@ async fn create_key(
 async fn delete_key(
     State(state): State<AppState>,
     auth_level: AuthLevel,
+    headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<JSendResponse<serde_json::Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
 
-    let context = AppContext::system(RequestSource::API);
+    let context = AppContext::system_request(RequestSource::API, &headers);
     let collection = "alcedo_developer_api_keys".to_string();
     let mut service = ItemsService::new(&state, &context, &collection);
 

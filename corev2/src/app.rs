@@ -13,6 +13,7 @@ pub fn app_controller() -> Router<AppState> {
             "/settings",
             controllers::settings::app_settings_controller(),
         )
+        .nest("/logs", controllers::logs::logs_controller())
         .nest("/menus", controllers::menus::menus_controller())
         .nest("/files", controllers::files::files_controller())
         .nest("/roles", controllers::roles::roles_controller())

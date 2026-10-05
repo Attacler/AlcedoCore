@@ -17,7 +17,7 @@ use crate::services::postgres::jsonvalue_simpleexpr::parse_value;
 use crate::services::postgres::pool::{
     execute_query, execute_query_transaction, pgrow_to_json, process_query_error_response,
 };
-use crate::{AppState, services::errors::AlcedoError};
+use crate::{AppState, services::activity_logs, services::errors::AlcedoError};
 use tokio::sync::OnceCell;
 
 pub struct ItemsService<'a> {
@@ -55,6 +55,23 @@ pub enum PendingAfter {
         context: AppContext,
         event: ItemsAfterDelete,
     },
+    /// A deferred activity-log row, written at the same post-commit boundary as
+    /// the `after` hooks so it observes (and never precedes) the committed
+    /// write. Carries its own context like the hook variants.
+    Log { entry: ActivityLogEntry },
+}
+
+/// One pending activity-log insert. Built while the write data is still in
+/// hand, then flushed by [`AfterCommitQueue::run`].
+pub struct ActivityLogEntry {
+    pub context: AppContext,
+    pub action: String,
+    pub target: String,
+    pub description: Option<String>,
+    pub metadata: Value,
+    pub diff: Option<Value>,
+    pub collection_name: Option<String>,
+    pub item_id: Option<Value>,
 }
 
 /// Collects the `after`-write hooks deferred by writes made inside a
@@ -123,6 +140,26 @@ impl AfterCommitQueue {
                         .event_bus
                         .trigger(&key, &mut event, hook_context)
                         .await;
+                }
+                PendingAfter::Log { entry } => {
+                    if let Err(err) = activity_logs::record(
+                        state,
+                        &entry.context,
+                        &entry.action,
+                        &entry.target,
+                        entry.description.clone(),
+                        entry.metadata.clone(),
+                        entry.diff.clone(),
+                        entry.collection_name.as_deref(),
+                        entry.item_id.clone(),
+                        None,
+                    )
+                    .await
+                    {
+                        // Verification/audit failures must never fail the write
+                        // they describe; surface the problem and move on.
+                        eprintln!("activity log write failed: {}", err);
+                    }
                 }
             }
         }
@@ -198,6 +235,39 @@ fn pk_value_to_string(v: &Value) -> Result<String, AlcedoError> {
     }
 }
 
+/// Builds a field-level diff between an old row and the update payload:
+/// `{ "<field>": { "old": <old>, "new": <payload> } }` for every payload field
+/// whose value actually changed. An empty object means nothing changed.
+fn build_diff(old_item: &Map<String, Value>, payload: &Map<String, Value>) -> Value {
+    let mut diff = Map::new();
+    for (field, new) in payload {
+        let changed = old_item.get(field) != Some(new);
+        if changed {
+            let mut change = Map::new();
+            change.insert(
+                "old".to_string(),
+                old_item.get(field).cloned().unwrap_or(Value::Null),
+            );
+            change.insert("new".to_string(), new.clone());
+            diff.insert(field.clone(), Value::Object(change));
+        }
+    }
+    Value::Object(diff)
+}
+
+/// Builds the diff for a deleted item: every field's prior value, with `new`
+/// set to `null` since the row no longer exists.
+fn build_delete_diff(old_item: &Map<String, Value>) -> Value {
+    let mut diff = Map::new();
+    for (field, old) in old_item {
+        let mut change = Map::new();
+        change.insert("old".to_string(), old.clone());
+        change.insert("new".to_string(), Value::Null);
+        diff.insert(field.clone(), Value::Object(change));
+    }
+    Value::Object(diff)
+}
+
 impl ItemsService<'_> {
     pub fn new<'a>(
         app_state: &'a AppState,
@@ -230,8 +300,29 @@ impl ItemsService<'_> {
         std::mem::take(&mut self.pending_after)
     }
 
-    /// Defers an `after.items.create.<collection>` hook to the commit boundary.
-    fn defer_after_create(&mut self, items: Vec<Map<String, Value>>) {
+    /// Defers an `after.items.create.<collection>` hook to the commit boundary,
+    /// plus one activity-log row per created item.
+    ///
+    /// `pk_name` is the primary-key column: `create_items_with_tx` injects it
+    /// into each item, so the log can carry the item id.
+    fn defer_after_create(&mut self, items: Vec<Map<String, Value>>, pk_name: String) {
+        let action = activity_logs::action_for(self.collection, "created");
+        let collection_name = self.log_collection_name();
+        for item in &items {
+            let item_id = item.get(&pk_name).cloned();
+            self.pending_after.push(PendingAfter::Log {
+                entry: ActivityLogEntry {
+                    context: self.app_context.clone(),
+                    action: action.clone(),
+                    target: self.collection.clone(),
+                    description: None,
+                    metadata: Value::Object(item.clone()),
+                    diff: None,
+                    collection_name: collection_name.clone(),
+                    item_id,
+                },
+            });
+        }
         self.pending_after.push(PendingAfter::Create {
             key: format!("after.items.create.{}", self.collection),
             context: self.app_context.clone(),
@@ -242,8 +333,33 @@ impl ItemsService<'_> {
         });
     }
 
-    /// Defers an `after.items.update.<collection>` hook to the commit boundary.
-    fn defer_after_update(&mut self, keys: Vec<String>, payload: Map<String, Value>) {
+    /// Defers an `after.items.update.<collection>` hook to the commit boundary,
+    /// plus one activity-log row per updated item carrying a field-level diff.
+    fn defer_after_update(
+        &mut self,
+        keys: Vec<String>,
+        payload: Map<String, Value>,
+        old_items: Vec<Map<String, Value>>,
+        pk_name: String,
+    ) {
+        let action = activity_logs::action_for(self.collection, "updated");
+        let collection_name = self.log_collection_name();
+        for item in &old_items {
+            let item_id = item.get(&pk_name).cloned();
+            let diff = build_diff(item, &payload);
+            self.pending_after.push(PendingAfter::Log {
+                entry: ActivityLogEntry {
+                    context: self.app_context.clone(),
+                    action: action.clone(),
+                    target: self.collection.clone(),
+                    description: None,
+                    metadata: Value::Object(item.clone()),
+                    diff: Some(diff),
+                    collection_name: collection_name.clone(),
+                    item_id,
+                },
+            });
+        }
         self.pending_after.push(PendingAfter::Update {
             key: format!("after.items.update.{}", self.collection),
             context: self.app_context.clone(),
@@ -255,8 +371,37 @@ impl ItemsService<'_> {
         });
     }
 
-    /// Defers an `after.items.delete.<collection>` hook to the commit boundary.
-    fn defer_after_delete(&mut self, keys: Vec<Value>) {
+    /// Defers an `after.items.delete.<collection>` hook to the commit boundary,
+    /// plus one activity-log row per deleted item carrying the item's values as
+    /// a `{ field: { old: <value>, new: null } }` diff.
+    fn defer_after_delete(&mut self, keys: Vec<Value>, old_rows: Vec<Map<String, Value>>) {
+        let action = activity_logs::action_for(self.collection, "deleted");
+        let collection_name = self.log_collection_name();
+        for key in &keys {
+            // Match the old row by primary key when available; fall back to
+            // whatever was read.
+            let old_row = old_rows
+                .iter()
+                .find(|row| row.values().any(|v| v == key))
+                .or_else(|| old_rows.first());
+            let item_id = key.clone();
+            let metadata = old_row
+                .map(|row| Value::Object(row.clone()))
+                .unwrap_or(Value::Null);
+            let diff = old_row.map(build_delete_diff);
+            self.pending_after.push(PendingAfter::Log {
+                entry: ActivityLogEntry {
+                    context: self.app_context.clone(),
+                    action: action.clone(),
+                    target: self.collection.clone(),
+                    description: None,
+                    metadata,
+                    diff,
+                    collection_name: collection_name.clone(),
+                    item_id: Some(item_id),
+                },
+            });
+        }
         self.pending_after.push(PendingAfter::Delete {
             key: format!("after.items.delete.{}", self.collection),
             context: self.app_context.clone(),
@@ -265,6 +410,16 @@ impl ItemsService<'_> {
                 collection: self.collection.clone(),
             },
         });
+    }
+
+    /// `Some(collection)` for a normal user collection (logged as a collection
+    /// log), `None` for a system collection (logged as an app system log).
+    fn log_collection_name(&self) -> Option<String> {
+        if activity_logs::is_system_collection_name(self.collection) {
+            None
+        } else {
+            Some(self.collection.clone())
+        }
     }
 
     /// Resolves (and caches) the caller's record-level read access for this
@@ -472,21 +627,22 @@ impl ItemsService<'_> {
     ) -> Result<Vec<String>, AlcedoError> {
         match database_transaction {
             Some(existing_tx) => {
-                let (keys, payload) = self
+                let (keys, payload, old_items, pk_name) = self
                     .update_items_with_tx(existing_tx, query, payload)
                     .await?;
                 // The caller owns the commit, so defer the `after` hook until
                 // `run_after_commit` (called by that caller post-commit).
-                self.defer_after_update(keys.clone(), payload);
+                self.defer_after_update(keys.clone(), payload, old_items, pk_name);
                 Ok(keys)
             }
             None => {
                 let mut tx = self.app_state.database_pool.begin().await?;
-                let (keys, payload) = self.update_items_with_tx(&mut tx, query, payload).await?;
+                let (keys, payload, old_items, pk_name) =
+                    self.update_items_with_tx(&mut tx, query, payload).await?;
                 tx.commit().await?;
                 // `after` hooks fire post-commit: a hook reading through the
                 // pool (schema refresh, cache invalidation) must see the write.
-                self.defer_after_update(keys.clone(), payload);
+                self.defer_after_update(keys.clone(), payload, old_items, pk_name);
                 self.run_after_commit().await;
                 Ok(keys)
             }
@@ -497,7 +653,15 @@ impl ItemsService<'_> {
         tx: &'a mut Transaction<'_, Postgres>,
         query: &mut Query,
         payload: Map<String, Value>,
-    ) -> Result<(Vec<String>, Map<String, Value>), AlcedoError> {
+    ) -> Result<
+        (
+            Vec<String>,
+            Map<String, Value>,
+            Vec<Map<String, Value>>,
+            String,
+        ),
+        AlcedoError,
+    > {
         let pk_name = get_pk_key(
             &self.app_state.database_schema,
             &self.app_context.schema_name(),
@@ -506,11 +670,13 @@ impl ItemsService<'_> {
         .await?
         .name;
 
-        query.fields = vec![pk_name.clone()];
-
+        // Read the affected rows in full (not just their pk) so the activity log
+        // can diff old vs new. `ItemsBeforeUpdate.keys` filters on `pk_name`
+        // below, so the extra columns are harmless to the hook.
         let get_pks = query
             .execute_query(self.app_context, self.app_state, self.collection)
             .await?;
+        let old_items = get_pks.clone();
 
         let mut before = ItemsBeforeUpdate {
             keys: get_pks
@@ -589,7 +755,7 @@ impl ItemsService<'_> {
             update_items.push(pk);
         }
 
-        Ok((update_items, before.payload))
+        Ok((update_items, before.payload, old_items, pk_name))
     }
 
     pub async fn create_many<'a>(
@@ -599,16 +765,16 @@ impl ItemsService<'_> {
     ) -> Result<Vec<String>, AlcedoError> {
         match database_transaction {
             Some(existing_tx) => {
-                let (keys, items) = self.create_items_with_tx(existing_tx, items).await?;
-                self.defer_after_create(items);
+                let (keys, items, pk_name) = self.create_items_with_tx(existing_tx, items).await?;
+                self.defer_after_create(items, pk_name);
                 Ok(keys)
             }
             None => {
                 let mut tx = self.app_state.database_pool.begin().await?;
-                let (keys, items) = self.create_items_with_tx(&mut tx, items).await?;
+                let (keys, items, pk_name) = self.create_items_with_tx(&mut tx, items).await?;
                 tx.commit().await?;
                 // `after` hooks fire post-commit (see `update_items_by_query`).
-                self.defer_after_create(items);
+                self.defer_after_create(items, pk_name);
                 self.run_after_commit().await;
                 Ok(keys)
             }
@@ -619,7 +785,7 @@ impl ItemsService<'_> {
         &self,
         tx: &'a mut Transaction<'_, Postgres>,
         items: Vec<Map<String, Value>>,
-    ) -> Result<(Vec<String>, Vec<Map<String, Value>>), AlcedoError> {
+    ) -> Result<(Vec<String>, Vec<Map<String, Value>>, String), AlcedoError> {
         let mut before = ItemsBeforeCreate {
             items,
             collection: self.collection.clone(),
@@ -702,7 +868,7 @@ impl ItemsService<'_> {
                 item.insert(pk_name_cloned.clone(), pk.into());
             });
 
-        Ok((created_items, before.items))
+        Ok((created_items, before.items, pk_name_cloned))
     }
 
     pub async fn delete_items_by_pks<'a>(
@@ -746,18 +912,19 @@ impl ItemsService<'_> {
     ) -> Result<u64, AlcedoError> {
         match database_transaction {
             Some(existing_tx) => {
-                let (deleted, keys) = self
+                let (deleted, keys, old_rows) = self
                     .delete_items_by_query_with_tx(existing_tx, query)
                     .await?;
-                self.defer_after_delete(keys);
+                self.defer_after_delete(keys, old_rows);
                 Ok(deleted)
             }
             None => {
                 let mut tx = self.app_state.database_pool.begin().await?;
-                let (deleted, keys) = self.delete_items_by_query_with_tx(&mut tx, query).await?;
+                let (deleted, keys, old_rows) =
+                    self.delete_items_by_query_with_tx(&mut tx, query).await?;
                 tx.commit().await?;
                 // `after` hooks fire post-commit (see `update_items_by_query`).
-                self.defer_after_delete(keys);
+                self.defer_after_delete(keys, old_rows);
                 self.run_after_commit().await;
                 Ok(deleted)
             }
@@ -768,7 +935,7 @@ impl ItemsService<'_> {
         &self,
         tx: &'a mut Transaction<'_, Postgres>,
         mut query: Query,
-    ) -> Result<(u64, Vec<Value>), AlcedoError> {
+    ) -> Result<(u64, Vec<Value>, Vec<Map<String, Value>>), AlcedoError> {
         // Record-level delete policy: a caller with no matching `delete` rule is
         // rejected outright; otherwise the rules are AND-ed into the
         // pk-selection query below, so out-of-policy rows are never deleted.
@@ -799,13 +966,13 @@ impl ItemsService<'_> {
         .await?
         .name;
 
-        query.fields = vec![pk_name.clone()];
-
-        let get_pks = query
+        // Keep the full old rows (not just the pk) so the activity log can
+        // record a field-level diff for each deleted item.
+        let old_rows = query
             .execute_query(self.app_context, self.app_state, self.collection)
             .await?;
 
-        let get_pks = get_pks
+        let get_pks = old_rows
             .clone()
             .iter()
             .map(|item| item.get(&pk_name).unwrap().clone())
@@ -859,7 +1026,7 @@ impl ItemsService<'_> {
             total_deleted += result.rows_affected();
         }
 
-        Ok((total_deleted, before.keys))
+        Ok((total_deleted, before.keys, old_rows))
     }
 
     async fn generate_insert_item_query(

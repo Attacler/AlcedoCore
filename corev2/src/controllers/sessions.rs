@@ -57,7 +57,7 @@ async fn revoke_own_session(
     if !sessions::owns(&state, &session_id, caller).await? {
         return Err(AlcedoError::NotFound("Session not found".to_string(), 0));
     }
-    sessions::delete(&state, &session_id).await?;
+    sessions::delete(&state, &session_id, None).await?;
 
     Ok(Json(success(true)))
 }

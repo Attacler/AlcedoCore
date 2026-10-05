@@ -1,28 +1,42 @@
 use axum::{
     extract::Request,
-    http::{HeaderMap, HeaderName, HeaderValue},
+    http::{HeaderName, HeaderValue},
     middleware::Next,
     response::Response,
 };
-use std::task::{Context, Poll};
 use uuid::Uuid;
 
 static X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
-pub async fn log_request(req: Request, next: Next) -> Response {
-    let mut headers = req.headers().clone();
-    let request_id = Uuid::new_v4();
+tokio::task_local! {
+    static REQUEST_ID: String;
+}
 
-    // Insert into headers
-    headers.insert(
-        X_REQUEST_ID.clone(),
-        HeaderValue::from_str(&request_id.to_string()).unwrap(),
-    );
-    let (mut parts, body) = req.into_parts();
-    parts.headers = headers;
-    parts.extensions.insert(request_id);
+pub fn current_request_id() -> Option<String> {
+    REQUEST_ID.try_with(|id| id.clone()).ok()
+}
 
-    let response = next.run(Request::from_parts(parts, body)).await;
+/// Ensures every request carries an `X-Request-ID` before it reaches a handler.
+///
+/// The inbound value is kept when present (so callers/SDKs can correlate their
+/// own id with the log rows they produced); otherwise a fresh UUID is
+/// generated. The id is stored in a task-local (see [`current_request_id`]) and
+/// echoed on the response, so a client can trace everything one request did.
+pub async fn add_request_id(mut req: Request, next: Next) -> Response {
+    let id = req
+        .headers()
+        .get(&X_REQUEST_ID)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
+    let header = HeaderValue::from_str(&id).unwrap();
+
+    req.headers_mut()
+        .insert(X_REQUEST_ID.clone(), header.clone());
+
+    let mut response = REQUEST_ID.scope(id, next.run(req)).await;
+    response.headers_mut().insert(X_REQUEST_ID.clone(), header);
     response
 }

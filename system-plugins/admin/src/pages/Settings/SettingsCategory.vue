@@ -12,6 +12,7 @@ import Select from "primevue/select";
 import ToggleSwitch from "primevue/toggleswitch";
 import MenuBuilder from "./MenuBuilder.vue";
 import SettingsSession from "./SettingsSession.vue";
+import SettingsActivity from "./SettingsActivity.vue";
 import FileUpload from "@/components/inputs/FileUpload.vue";
 import { MediaFile } from "@alcedocore/sdk";
 import EnableDevelopmentMode from "./development/enableDevelopmentMode.vue";
@@ -101,6 +102,7 @@ function fileUploaded(key: string, uploadResponse: MediaFile) {
 <template>
     <MenuBuilder v-if="category === 'menu'" />
     <SettingsSession v-else-if="category === 'session'" />
+    <SettingsActivity v-else-if="category === 'activity'" />
     <div v-else class="space-y-6">
         <div class="flex items-center justify-between mb-6">
             <div class="flex items-center gap-3">

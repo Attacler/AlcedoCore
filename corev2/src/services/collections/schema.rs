@@ -239,6 +239,7 @@ impl SchemaService<'_> {
                 version: version.version_name,
                 request_source: RequestSource::Inspector,
                 identity: None,
+                request_id: None,
             };
             SchemaService::new(state, &ctx).refresh_meta().await;
         }
@@ -472,6 +473,7 @@ impl SchemaService<'_> {
                 request_source: self.app_context.request_source.clone(),
                 version: self.app_context.version.clone(),
                 identity: None,
+                request_id: self.app_context.request_id.clone(),
             };
             let fk_sql = fk_constraint(
                 &format!("{}_{}_{}_{}", table, field.name, fk.table, fk.column),

@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
+    http::HeaderMap,
     routing::get,
 };
 use serde::{Deserialize, Serialize};
@@ -316,6 +317,7 @@ async fn delete_app(
             version: version_name.clone(),
             request_source: RequestSource::API,
             identity: None,
+            request_id: None,
         }
         .schema_name();
         drop_schema(&state, &schema_name).await?;
@@ -434,10 +436,11 @@ pub async fn get_user_app_access(
     State(state): State<AppState>,
     auth_level: AuthLevel,
     Path(id): Path<String>,
+    headers: HeaderMap,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
     let user_id = parse_uuid_named(&id, "user id")?;
-    let context = AppContext::system(RequestSource::API);
+    let context = AppContext::system_request(RequestSource::API, &headers);
     let service = RolesService::new(&state, &context);
     let access = service.collect_user_app_access(user_id, true).await?;
     Ok(Json(success(Value::Array(access))))
@@ -452,11 +455,12 @@ pub async fn set_user_app_access(
     State(state): State<AppState>,
     auth_level: AuthLevel,
     Path(id): Path<String>,
+    headers: HeaderMap,
     Json(payload): Json<SetUserAppAccessRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
     let user_id = parse_uuid_named(&id, "user id")?;
-    let context = AppContext::system(RequestSource::API);
+    let context = AppContext::system_request(RequestSource::API, &headers);
     let service = RolesService::new(&state, &context);
     service
         .set_user_app_access(user_id, &payload.app, &payload.version, &payload.role_ids)
@@ -475,6 +479,7 @@ async fn roles_for_user(
         version: version_name.to_string(),
         request_source: RequestSource::API,
         identity: None,
+        request_id: None,
     };
     let collection = "alcedo_user_roles".to_string();
     let service = ItemsService::new(state, &context, &collection);

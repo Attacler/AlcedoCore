@@ -24,6 +24,7 @@ use crate::{
         sessions,
     },
     utils::session_cookie::{build_session_cookie, clear_session_cookie, read_session_cookie},
+    utils::extract_request_uuid::extract_request_id_from_headers,
 };
 
 pub fn auth_controller() -> Router<AppState> {
@@ -82,6 +83,7 @@ async fn get_me(
                 version: version.to_string(),
                 request_source: RequestSource::API,
                 identity: None,
+                request_id: None,
             };
             RolesService::new(&state, &ctx)
                 .scopes_for_user(uuid)
@@ -159,7 +161,12 @@ pub async fn login_handler(
 
     // Rotate any session referenced by the incoming cookie.
     if let Some(old_session_id) = read_session_cookie(&headers, &state.config.session_cookie_name) {
-        let _ = sessions::delete(&state, &old_session_id).await;
+        let _ = sessions::delete(
+            &state,
+            &old_session_id,
+            extract_request_id_from_headers(&headers).into(),
+        )
+        .await;
     }
 
     let ttl = Duration::from_secs(state.config.session_ttl_seconds.max(1) as u64);
@@ -167,7 +174,14 @@ pub async fn login_handler(
         .get(header::USER_AGENT)
         .and_then(|value| value.to_str().ok())
         .map(|value| value.to_string());
-    let session_id = sessions::create(&state, user.id, user_agent, ttl).await?;
+    let session_id = sessions::create(
+        &state,
+        user.id,
+        user_agent,
+        ttl,
+        extract_request_id_from_headers(&headers).into(),
+    )
+    .await?;
 
     auth_service.update_last_login(user.id).await?;
     // TODO send event of login success + log
@@ -191,7 +205,12 @@ pub async fn logout_handler(
     headers: HeaderMap,
 ) -> Result<Response, AlcedoError> {
     if let Some(session_id) = read_session_cookie(&headers, &state.config.session_cookie_name) {
-        let _ = sessions::delete(&state, &session_id).await;
+        let _ = sessions::delete(
+            &state,
+            &session_id,
+            extract_request_id_from_headers(&headers).into(),
+        )
+        .await;
     }
 
     Ok(response_with_cookie(

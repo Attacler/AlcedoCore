@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
+    http::HeaderMap,
     routing::{get, post, put},
 };
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,7 @@ pub struct UpdatePlatformSettingsRequest {
 async fn update_settings(
     State(state): State<AppState>,
     auth_level: AuthLevel,
+    headers: HeaderMap,
     Json(payload): Json<UpdatePlatformSettingsRequest>,
 ) -> Result<Json<JSendResponse<SettingsResponse>>, AlcedoError> {
     // Platform settings are global, so this is admin-only (no app context).
@@ -93,7 +95,7 @@ async fn update_settings(
         ));
     }
 
-    let app_context = AppContext::system(RequestSource::API);
+    let app_context = AppContext::system_request(RequestSource::API, &headers);
     let collection = "alcedo_settings".to_string();
     let mut service = ItemsService::new(&state, &app_context, &collection);
 

@@ -25,6 +25,8 @@ pub(crate) mod m0013_system_users_fields;
 pub(crate) mod m0014_menus;
 pub(crate) mod m0015_app_settings;
 pub(crate) mod m0016_files;
+pub(crate) mod m0017_activity_logs;
+pub(crate) mod m0018_collection_logs_actor_id;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -74,6 +76,12 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
             app_context: app_context.clone()
         },
         m0016_files::M0016Migration {
+            app_context: app_context.clone()
+        },
+        m0017_activity_logs::M0017Migration {
+            app_context: app_context.clone()
+        },
+        m0018_collection_logs_actor_id::M0018Migration {
             app_context: app_context.clone()
         }
     ]
@@ -125,6 +133,7 @@ pub async fn run_app_migrations(database_pool: &Pool<Postgres>) {
                 .to_string(),
             request_source: RequestSource::Migration,
             identity: None,
+            request_id: None,
         };
 
         sqlx::query(&format!(

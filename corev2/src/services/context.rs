@@ -22,6 +22,11 @@ pub struct AppContext {
     pub request_source: RequestSource,
     #[serde(default)]
     pub identity: Option<AuthLevel>,
+    /// The `x-request-id` header for the current request, used to correlate
+    /// activity-log rows with the request that produced them. `None` outside a
+    /// request (system/migration contexts).
+    #[serde(default)]
+    pub request_id: Option<String>,
 }
 
 impl AppContext {
@@ -33,7 +38,20 @@ impl AppContext {
             version: String::new(),
             request_source,
             identity: None,
+            request_id: None,
         }
+    }
+
+    /// Like [`AppContext::system`], but carries the request id from the
+    /// incoming `x-request-id` header so platform-scope writes can be
+    /// correlated in the global activity log.
+    pub fn system_request(request_source: RequestSource, headers: &axum::http::HeaderMap) -> Self {
+        let mut context = AppContext::system(request_source);
+        context.request_id = headers
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        context
     }
 
     pub fn schema_name(&self) -> String {
@@ -90,11 +108,18 @@ impl FromRequestParts<AppState> for ExtractContext {
 
         let identity = AuthLevel::from_request_parts(parts, state).await?;
 
+        let request_id = parts
+            .headers
+            .get("x-request-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+
         Ok(ExtractContext(AppContext {
             app_name,
             version,
             request_source: RequestSource::API,
             identity: Some(identity),
+            request_id,
         }))
     }
 }

@@ -147,6 +147,7 @@ async fn delete_version(
             version: version_name.clone(),
             request_source: RequestSource::API,
             identity: None,
+            request_id: None,
         }
         .schema_name();
         drop_schema(&state, &schema_name).await?;

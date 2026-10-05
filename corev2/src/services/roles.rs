@@ -480,6 +480,7 @@ impl RolesService<'_> {
             version: version_name.to_string(),
             request_source: RequestSource::API,
             identity: None,
+            request_id: self.app_context.request_id.clone(),
         };
 
         let user_roles_table = "alcedo_user_roles".to_string();
@@ -590,6 +591,7 @@ impl RolesService<'_> {
             version,
             request_source: RequestSource::API,
             identity: None,
+            request_id: self.app_context.request_id.clone(),
         };
         let user_roles_table = "alcedo_user_roles".to_string();
         let mut service = ItemsService::new(self.app_state, &ctx, &user_roles_table);

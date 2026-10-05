@@ -21,13 +21,13 @@ use crate::{
     services::{
         app_state::AppState,
         cache::{SystemCache, in_memory::InMemoryCache, redis::RedisCache},
+        collections::schema::SchemaService,
         config::get_config,
         context::AppContext,
         hooks::{
             HookContext, MultiEventBus, systemhooks::setup_system_hooks,
             types::lifecycle::CoreLoaded,
         },
-        collections::schema::SchemaService,
         postgres::inspector::DatabaseSchema,
         versions::VersionsService,
     },
@@ -102,6 +102,7 @@ async fn main() -> Result<()> {
         // .fallback_service(controllers::ui::ui_controller())
         .fallback(handler_404)
         .layer(middleware::from_fn(middelware::log::log_request))
+        .layer(middleware::from_fn(middelware::request_id::add_request_id))
         .with_state(state);
 
     println!("🚀 Listening on {listen_address}");
