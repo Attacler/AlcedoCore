@@ -4,7 +4,7 @@ use utoipa::OpenApi;
 use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
 use crate::controllers::{
-    apps, auth, collections, developer_keys, files, items, kv, logs, menus, policies, roles,
+    apps, auth, collections, dev, developer_keys, files, items, kv, logs, menus, policies, roles,
     sessions, settings, users, versions,
 };
 use crate::services::menus::{MenuItemInput, MenuSectionInput};
@@ -93,6 +93,8 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         developer_keys::list_keys,
         developer_keys::create_key,
         developer_keys::delete_key,
+        // Dev
+        dev::request_id,
         // Roles
         roles::list_roles,
         roles::create_role,
@@ -179,6 +181,7 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         (name = "Policies", description = "Record access policies and permission rules"),
         (name = "Logs", description = "Activity logs (platform-global and app-scoped)"),
         (name = "KV", description = "App-scoped key/value store with optional TTL"),
+        (name = "Dev", description = "Dev proxy helpers for locally-run plugins"),
     ),
     components(
         schemas (
@@ -191,6 +194,8 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
             versions::CreateVersionRequest,
             developer_keys::DeveloperKeyResponse,
             developer_keys::CreateDeveloperKeyRequest,
+            dev::RequestIdPayload,
+            dev::RequestIdResponse,
             settings::SettingsResponse,
             settings::UpdatePlatformSettingsRequest,
             settings::UpdateAppSettingRequest,

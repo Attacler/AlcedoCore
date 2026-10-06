@@ -36,9 +36,18 @@ export const proxyCommand = new Command("proxy")
             opts.apiKey || config.apiKey || process.env.ALCEDO_API_KEY || "";
         const proxyPort = parseInt(opts.port || "3099", 10);
         const target = opts.target || "localhost:3000";
+        const app = config.app;
+        const version = config.version;
 
         if (isNaN(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
             logError(`Invalid proxy port: ${opts.port}`);
+            process.exit(1);
+        }
+
+        if (!app || !version) {
+            logError(
+                "App and version are required. Run `alcedocore connect` first (the API key is version-scoped).",
+            );
             process.exit(1);
         }
 
@@ -49,6 +58,8 @@ export const proxyCommand = new Command("proxy")
             coreUrl,
             apiKey || undefined,
             slug,
+            app,
+            version,
         );
         if (!testId) {
             validateSpinner.fail();
@@ -78,6 +89,8 @@ export const proxyCommand = new Command("proxy")
                     coreUrl,
                     apiKey || undefined,
                     slug,
+                    app,
+                    version,
                 );
                 if (!requestId) {
                     logError("Failed to register request ID with core");
@@ -166,10 +179,14 @@ async function coreFetch(
     apiKey: string | undefined,
     endpoint: string,
     body: Record<string, unknown>,
+    app: string,
+    version: string,
 ): Promise<Response | null> {
     try {
         const headers: Record<string, string> = {
             "Content-Type": "application/json",
+            "X-App": app,
+            "X-Version": version,
         };
         if (apiKey) {
             headers["Authorization"] = `Bearer ${apiKey}`;
@@ -188,10 +205,19 @@ async function registerRequest(
     coreUrl: string,
     apiKey: string | undefined,
     slug: string,
+    app: string,
+    version: string,
 ): Promise<string | null> {
-    const res = await coreFetch(coreUrl, apiKey, "/api/dev/request-id", {
-        slug,
-    });
+    const res = await coreFetch(
+        coreUrl,
+        apiKey,
+        "/api/dev/request-id",
+        {
+            slug,
+        },
+        app,
+        version,
+    );
     if (!res || !res.ok) return null;
     try {
         const data = (await res.json()) as { request_id: string };

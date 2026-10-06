@@ -100,6 +100,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .nest("/api/app", app_controller())
         .nest("/api/platform", platform_controller())
+        .nest("/api/dev", controllers::dev::dev_controller())
         .nest("/api/docs", controllers::docs::docs_controller())
         // .fallback_service(controllers::ui::ui_controller())
         .fallback(handler_404)

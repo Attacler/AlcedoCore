@@ -1,6 +1,7 @@
 pub mod apps;
 pub mod auth;
 pub mod collections;
+pub mod dev;
 pub mod developer_keys;
 pub mod docs;
 pub mod files;
