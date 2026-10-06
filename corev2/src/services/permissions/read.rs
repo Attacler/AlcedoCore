@@ -1486,6 +1486,7 @@ mod tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity: None,
+            request_id: None,
         };
         assert!(matches!(
             resolve_read_access(&state, &app_ctx, "orders", None)
@@ -1594,6 +1595,7 @@ mod tests {
             version: app_version,
             request_source: RequestSource::API,
             identity: None,
+            request_id: None,
         };
 
         // Public has no seeded read policies, so a real collection must not be
@@ -1764,6 +1766,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity,
+            request_id: None,
         }
     }
 
@@ -1775,6 +1778,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::Migration,
             identity: None,
+            request_id: None,
         }
     }
 
@@ -2083,6 +2087,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity,
+            request_id: None,
         }
     }
 
@@ -2093,6 +2098,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::Migration,
             identity: None,
+            request_id: None,
         }
     }
 
@@ -2444,6 +2450,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity: Some(AuthLevel::User(user_id)),
+            request_id: None,
         };
         let collection = "tickets".to_string();
         let mut service = ItemsService::new(&state, &ctx, &collection);

@@ -15,8 +15,11 @@ pub struct RedisCache {
 
 impl RedisCache {
     pub async fn new() -> Self {
-        let cfg =
-            Config::from_url(env::var("REDIS_URL").expect("REDIS_URL missing from env variables"));
+        Self::from_url(env::var("REDIS_URL").expect("REDIS_URL missing from env variables")).await
+    }
+
+    pub async fn from_url(url: String) -> Self {
+        let cfg = Config::from_url(url);
         let pool = cfg.create_pool(Some(Runtime::Tokio1)).unwrap();
 
         RedisCache { pool }
@@ -96,6 +99,41 @@ impl Cache for RedisCache {
             Ok(keys) => Ok(keys),
             Err(_) => Err(AlcedoError::SystemError(
                 "Could not del cache key".to_string(),
+                0,
+            )),
+        }
+    }
+
+    async fn ttl(&self, key: &str) -> Result<i64, AlcedoError> {
+        match self.pool.get().await.unwrap().ttl(key).await {
+            Ok(reply) => Ok(reply.raw() as i64),
+            Err(_) => Err(AlcedoError::SystemError(
+                "Could not get cache key ttl".to_string(),
+                0,
+            )),
+        }
+    }
+
+    async fn incr_by(&self, key: &str, amount: i64) -> Result<i64, AlcedoError> {
+        let mut con = self.pool.get().await.unwrap();
+        match con.incr(key, amount).await {
+            Ok(result) => Ok(result as i64),
+            Err(e) => Err(AlcedoError::SystemError(e.to_string(), 0)),
+        }
+    }
+
+    async fn expire(&self, key: &str, ttl: Duration) -> Result<(), AlcedoError> {
+        match self
+            .pool
+            .get()
+            .await
+            .unwrap()
+            .expire(key, ttl.as_secs().cast_signed())
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(_) => Err(AlcedoError::SystemError(
+                "Could not expire cache key".to_string(),
                 0,
             )),
         }

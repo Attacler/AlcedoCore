@@ -49,6 +49,10 @@ tower-http, Redis or in-memory cache, argon2 sessions.
     - `/api/app/{items/{collection}, collections, settings}` — app-scoped.
     - `/api/platform/{auth, users, sessions, apps, versions, developer-keys, settings}`
       plus `/api/platform/me/apps`.
+- **KV** (`/api/app/kv`, app-scoped) is a string key/value store namespaced by
+  schema (`kv:{schema}:{key}`) and backed by `AppState.kv_cache`. That cache is a
+  dedicated Redis when `REDIS_URL_KV` is set, otherwise the shared cache
+  (`CACHE_STRATEGY` + `REDIS_URL`). Values support optional TTL (seconds).
 - **Multi-tenant schemas.** Each app×version gets its own Postgres schema named
   `{app}010{version}` (`AppContext::schema_name()` + `utils::slugify`), e.g.
   `default010v1`. Global tables live in the `alcedo` schema. The literal `010`

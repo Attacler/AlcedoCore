@@ -1068,6 +1068,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity,
+            request_id: None,
         }
     }
 
@@ -2439,6 +2440,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::Migration,
             identity: None,
+            request_id: None,
         };
         assert!(matches!(
             resolve_create_access(&state, &migration_ctx, "products", None)
@@ -2453,6 +2455,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity: None,
+            request_id: None,
         };
         assert!(matches!(
             resolve_create_access(&state, &anonymous_ctx, "products", None)

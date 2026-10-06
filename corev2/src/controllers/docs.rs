@@ -4,8 +4,8 @@ use utoipa::OpenApi;
 use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
 use crate::controllers::{
-    apps, auth, collections, developer_keys, files, items, logs, menus, policies, roles, sessions,
-    settings, users, versions,
+    apps, auth, collections, developer_keys, files, items, kv, logs, menus, policies, roles,
+    sessions, settings, users, versions,
 };
 use crate::services::menus::{MenuItemInput, MenuSectionInput};
 
@@ -139,6 +139,18 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         logs::get_platform_logs,
         logs::get_app_system_logs,
         logs::get_app_collection_logs,
+        // KV
+        kv::list_keys,
+        kv::get_key,
+        kv::put_key,
+        kv::delete_key,
+        kv::key_exists,
+        kv::key_ttl,
+        kv::increment_key,
+        kv::decrement_key,
+        kv::batch_get_keys,
+        kv::batch_set_keys,
+        kv::batch_delete_keys,
     ),
     info(
         title = "Alcedo Core API",
@@ -166,6 +178,7 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         (name = "Roles", description = "App-scoped roles, scopes and user assignments"),
         (name = "Policies", description = "Record access policies and permission rules"),
         (name = "Logs", description = "Activity logs (platform-global and app-scoped)"),
+        (name = "KV", description = "App-scoped key/value store with optional TTL"),
     ),
     components(
         schemas (
@@ -182,6 +195,11 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
             settings::UpdatePlatformSettingsRequest,
             settings::UpdateAppSettingRequest,
             settings::BatchUpdateAppSettingsRequest,
+            kv::KvPutBody,
+            kv::KvBatchGetBody,
+            kv::KvBatchDeleteBody,
+            kv::KvBatchSetItem,
+            kv::KvIncDecBody,
             auth::LoginRequest,
             menus::CreateMenuRequest,
             menus::UpdateMenuRequest,

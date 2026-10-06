@@ -113,6 +113,7 @@ mod tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity: None,
+            request_id: None,
         }
     }
 

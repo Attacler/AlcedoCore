@@ -1417,6 +1417,7 @@ mod tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity,
+            request_id: None,
         }
     }
 
@@ -1428,6 +1429,7 @@ mod tests {
             version: "production".to_string(),
             request_source: RequestSource::Migration,
             identity: None,
+            request_id: None,
         }
     }
 

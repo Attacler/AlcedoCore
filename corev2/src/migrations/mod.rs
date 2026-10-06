@@ -30,6 +30,9 @@ pub async fn generate_app_state_for_migrations() -> AppState {
         cache: services::cache::SystemCache::InMemory(
             services::cache::in_memory::InMemoryCache::new(),
         ),
+        kv_cache: services::cache::SystemCache::InMemory(
+            services::cache::in_memory::InMemoryCache::new(),
+        ),
         file_storage,
     }
 }

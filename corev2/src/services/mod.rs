@@ -11,6 +11,7 @@ pub mod errors;
 pub mod files;
 pub mod hooks;
 pub mod items;
+pub mod kv;
 pub mod menus;
 pub mod permissions;
 pub mod policies;

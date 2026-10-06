@@ -646,6 +646,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity,
+            request_id: None,
         }
     }
 

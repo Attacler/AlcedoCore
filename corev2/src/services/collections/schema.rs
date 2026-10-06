@@ -590,6 +590,7 @@ mod tests {
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
             identity: None,
+            request_id: None,
         };
         let table_manager = SchemaService::new(&state, &context);
 
@@ -621,6 +622,7 @@ mod tests {
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
             identity: None,
+            request_id: None,
         };
         let table_manager = SchemaService::new(&state, &context);
 
@@ -653,6 +655,7 @@ mod tests {
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
             identity: None,
+            request_id: None,
         };
         let table_manager = SchemaService::new(&state, &context);
 
@@ -778,6 +781,7 @@ mod tests {
             version: "".to_string(),
             request_source: RequestSource::SystemTest,
             identity: None,
+            request_id: None,
         };
         let table_manager = SchemaService::new(&state, &context);
 

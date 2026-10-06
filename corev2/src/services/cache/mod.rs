@@ -17,6 +17,9 @@ pub trait Cache: Send + Sync {
     async fn del(&self, key: &str) -> Result<(), AlcedoError>;
     async fn get_keys(&self, pattern: &str) -> Result<Vec<String>, AlcedoError>;
     async fn incr_with_ttl(&self, key: &str, ttl: Duration) -> Result<i64, AlcedoError>;
+    async fn ttl(&self, key: &str) -> Result<i64, AlcedoError>;
+    async fn incr_by(&self, key: &str, amount: i64) -> Result<i64, AlcedoError>;
+    async fn expire(&self, key: &str, ttl: Duration) -> Result<(), AlcedoError>;
 }
 
 #[derive(Clone)]
@@ -32,6 +35,16 @@ impl SystemCache {
 
     fn in_memory() -> Self {
         SystemCache::InMemory(InMemoryCache::new())
+    }
+
+    pub async fn kv_from_env(fallback: SystemCache) -> SystemCache {
+        match std::env::var("REDIS_URL_KV")
+            .ok()
+            .filter(|url| !url.is_empty())
+        {
+            Some(url) => SystemCache::Redis(RedisCache::from_url(url).await),
+            None => fallback,
+        }
     }
 
     pub async fn get(&self, key: &str) -> Result<Option<String>, AlcedoError> {
@@ -78,6 +91,27 @@ impl SystemCache {
         match self {
             SystemCache::Redis(cache) => cache.get_keys(pattern).await,
             SystemCache::InMemory(cache) => cache.get_keys(pattern).await,
+        }
+    }
+
+    pub async fn ttl(&self, key: &str) -> Result<i64, AlcedoError> {
+        match self {
+            SystemCache::Redis(cache) => cache.ttl(key).await,
+            SystemCache::InMemory(cache) => cache.ttl(key).await,
+        }
+    }
+
+    pub async fn incr_by(&self, key: &str, amount: i64) -> Result<i64, AlcedoError> {
+        match self {
+            SystemCache::Redis(cache) => cache.incr_by(key, amount).await,
+            SystemCache::InMemory(cache) => cache.incr_by(key, amount).await,
+        }
+    }
+
+    pub async fn expire(&self, key: &str, ttl: Duration) -> Result<(), AlcedoError> {
+        match self {
+            SystemCache::Redis(cache) => cache.expire(key, ttl).await,
+            SystemCache::InMemory(cache) => cache.expire(key, ttl).await,
         }
     }
 }

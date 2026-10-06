@@ -687,6 +687,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity,
+            request_id: None,
         }
     }
 
@@ -1599,6 +1600,7 @@ mod integration_tests {
             version: "production".to_string(),
             request_source: RequestSource::API,
             identity: Some(AuthLevel::User(seed.user_id)),
+            request_id: None,
         };
         let crm_access = crate::services::permissions::create::resolve_create_access(
             &state,

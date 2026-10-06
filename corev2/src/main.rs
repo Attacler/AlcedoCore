@@ -52,6 +52,7 @@ async fn main() -> Result<()> {
     } else {
         SystemCache::InMemory(InMemoryCache::new())
     };
+    let kv_cache = SystemCache::kv_from_env(cache.clone()).await;
 
     let file_storage = services::files::build_file_storage(&config).await;
 
@@ -61,6 +62,7 @@ async fn main() -> Result<()> {
         event_bus,
         config,
         cache,
+        kv_cache,
         file_storage,
     };
 

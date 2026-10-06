@@ -24,6 +24,7 @@ pub async fn get_app_state() -> AppState {
         event_bus,
         config,
         cache: crate::services::cache::SystemCache::InMemory(InMemoryCache::new()),
+        kv_cache: crate::services::cache::SystemCache::InMemory(InMemoryCache::new()),
         file_storage: std::sync::Arc::new(
             file_storage_local::LocalFileStorage::new(
                 &std::env::temp_dir().join("alcedo-corev2-test-files").to_string_lossy(),

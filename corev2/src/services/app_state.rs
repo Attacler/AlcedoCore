@@ -17,6 +17,7 @@ pub struct AppState {
     pub event_bus: Arc<MultiEventBus>,
     pub config: config::Config,
     pub cache: SystemCache,
+    pub kv_cache: SystemCache,
     pub file_storage: Arc<dyn FileStorage>,
 }
 impl AppState {
