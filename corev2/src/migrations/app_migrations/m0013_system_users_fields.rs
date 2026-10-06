@@ -18,7 +18,7 @@ use crate::services::{
 
 /// Seeds the field metadata for the global users collection registered by
 /// `m0012`. Storing the fields (rather than synthesizing them from the
-/// introspected `alcedo.alcedo_users` columns) means the Users collection goes
+/// introspected `alcedocore.alcedocore_users` columns) means the Users collection goes
 /// through the same `build_collection_response` path as every other collection.
 ///
 /// (name, display_name, type, required, is_system)
@@ -37,10 +37,10 @@ pub(crate) struct M0013Operation {
 }
 
 async fn seed_users_fields(state: &AppState, app_context: &AppContext) -> Result<(), AlcedoError> {
-    let collections_table = "alcedo_collections".to_string();
+    let collections_table = "alcedocore_collections".to_string();
     let collections = ItemsService::new(state, app_context, &collections_table);
 
-    let mut find = Query::eq("table", json!("alcedo_users"));
+    let mut find = Query::eq("table", json!("alcedocore_users"));
     find.fields = vec!["id".to_string()];
     find.limit = 0;
     let Some(collection_id) = collections
@@ -53,7 +53,7 @@ async fn seed_users_fields(state: &AppState, app_context: &AppContext) -> Result
         return Ok(());
     };
 
-    let fields_table = "alcedo_fields".to_string();
+    let fields_table = "alcedocore_fields".to_string();
     let mut fields = ItemsService::new(state, app_context, &fields_table);
 
     let mut existing_query = Query::eq("collection_id", json!(collection_id));

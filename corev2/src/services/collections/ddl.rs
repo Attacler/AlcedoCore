@@ -180,10 +180,10 @@ pub(crate) fn related_app_schema(ctx: &AppContext, related_app: &Option<String>)
     )
 }
 
-/// The global users collection is named `alcedo_users` but lives in the `alcedo`
+/// The global users collection is named `alcedocore_users` but lives in the `alcedocore`
 /// schema, not an app-version schema, so it is special-cased as a relationship
 /// target (e.g. a `customers_users` join collection referencing a user).
-pub(crate) const GLOBAL_USERS_COLLECTION: &str = "alcedo_users";
+pub(crate) const GLOBAL_USERS_COLLECTION: &str = "alcedocore_users";
 
 /// Resolves the `(schema, table)` a relationship field points at.
 pub(crate) fn relation_target<'a>(
@@ -192,7 +192,7 @@ pub(crate) fn relation_target<'a>(
     related: &'a str,
 ) -> (String, &'a str) {
     if related == GLOBAL_USERS_COLLECTION {
-        ("alcedo".to_string(), related)
+        ("alcedocore".to_string(), related)
     } else {
         (related_app_schema(ctx, related_app), related)
     }

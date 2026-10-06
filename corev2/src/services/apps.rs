@@ -20,7 +20,7 @@ impl AppsService<'_> {
 
     pub async fn api_name_exists(&self, api_name: &str) -> Result<bool, AlcedoError> {
         let context = AppContext::system(RequestSource::API);
-        let collection = "alcedo_apps".to_string();
+        let collection = "alcedocore_apps".to_string();
         let service = ItemsService::new(self.app_state, &context, &collection);
         let rows = service
             .read_items_by_query(Query {
@@ -34,7 +34,7 @@ impl AppsService<'_> {
 
     pub async fn list_app_version_rows(&self) -> Result<Vec<Map<String, Value>>, AlcedoError> {
         let context = AppContext::system(RequestSource::API);
-        let collection = "alcedo_apps_versions".to_string();
+        let collection = "alcedocore_apps_versions".to_string();
         let service = ItemsService::new(self.app_state, &context, &collection);
         service
             .read_items_by_query(Query {
@@ -65,7 +65,7 @@ impl AppsService<'_> {
             .collect();
 
         let context = AppContext::system(RequestSource::API);
-        let collection = "alcedo_apps_versions".to_string();
+        let collection = "alcedocore_apps_versions".to_string();
         let mut service = ItemsService::new(self.app_state, &context, &collection);
         service.create_many(maps, &mut None).await?;
         Ok(())
@@ -73,7 +73,7 @@ impl AppsService<'_> {
 
     pub async fn delete_app_links(&self, app_id: i32) -> Result<(), AlcedoError> {
         let context = AppContext::system(RequestSource::API);
-        let collection = "alcedo_apps_versions".to_string();
+        let collection = "alcedocore_apps_versions".to_string();
         let mut service = ItemsService::new(self.app_state, &context, &collection);
         service
             .delete_items_by_query(Query::eq("app_id", Value::from(app_id)), &mut None)

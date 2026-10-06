@@ -30,11 +30,11 @@ pub struct AppContext {
 }
 
 impl AppContext {
-    /// Builds the global ("alcedo") context used for tables that are not bound
+    /// Builds the global ("alcedocore") context used for tables that are not bound
     /// to an app/version (users, sessions, the apps registry, system settings).
     pub fn system(request_source: RequestSource) -> Self {
         AppContext {
-            app_name: "alcedo".to_string(),
+            app_name: "alcedocore".to_string(),
             version: String::new(),
             request_source,
             identity: None,

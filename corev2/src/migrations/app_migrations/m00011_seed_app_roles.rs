@@ -51,7 +51,7 @@ async fn seed_roles(state: &AppState, app_context: &AppContext) -> Result<(), Al
 
     // System roles are created directly: `RolesService::create_role` marks a
     // role as non-system.
-    let roles_table = "alcedo_roles".to_string();
+    let roles_table = "alcedocore_roles".to_string();
     let mut roles_items = ItemsService::new(state, app_context, &roles_table);
     for (name, description) in SYSTEM_ROLES {
         if roles.find_role_by_name(name).await?.is_some() {
@@ -101,7 +101,7 @@ async fn seed_roles(state: &AppState, app_context: &AppContext) -> Result<(), Al
 
     // Make every global admin an app admin.
     let system_ctx = AppContext::system(RequestSource::Migration);
-    let users_table = "alcedo_users".to_string();
+    let users_table = "alcedocore_users".to_string();
     let users = ItemsService::new(state, &system_ctx, &users_table);
     let mut admin_users_query = Query::eq("is_admin", json!(true));
     admin_users_query.fields = vec!["id".to_string()];

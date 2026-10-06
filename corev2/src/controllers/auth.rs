@@ -62,7 +62,7 @@ async fn get_me(
 
     let app_context = AppContext::system(RequestSource::API);
 
-    let collection = "alcedo_users".to_string();
+    let collection = "alcedocore_users".to_string();
     let service = ItemsService::new(&state, &app_context, &collection);
 
     let user = service

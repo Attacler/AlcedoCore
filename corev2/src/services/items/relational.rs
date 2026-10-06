@@ -704,13 +704,13 @@ mod integration_tests {
             .unwrap_or_else(|| "ticket".to_string())
     }
 
-    /// Injects `alcedo_collections` metadata for every collection in
+    /// Injects `alcedocore_collections` metadata for every collection in
     /// `schema_name` (the resolver and relation walker read it from the
     /// in-memory schema, which `get_app_state` does not populate). Mirrors the
     /// helpers in `permissions/create.rs` / `update.rs`.
     async fn inject_schema_meta(state: &AppState, schema_name: &str) {
         let rows = sqlx::query(&format!(
-            "SELECT id, app_name, app_version, \"table\", name FROM \"{schema_name}\".alcedo_collections"
+            "SELECT id, app_name, app_version, \"table\", name FROM \"{schema_name}\".alcedocore_collections"
         ))
         .fetch_all(&*state.database_pool)
         .await
@@ -756,7 +756,7 @@ mod integration_tests {
 
     async fn collection_id(state: &AppState, schema: &str, table: &str) -> Option<i32> {
         sqlx::query_scalar(&format!(
-            "SELECT id FROM \"{schema}\".alcedo_collections WHERE \"table\" = $1 ORDER BY id LIMIT 1"
+            "SELECT id FROM \"{schema}\".alcedocore_collections WHERE \"table\" = $1 ORDER BY id LIMIT 1"
         ))
         .bind(table)
         .fetch_optional(&*state.database_pool)
@@ -789,10 +789,10 @@ mod integration_tests {
             ),
             format!("DELETE FROM \"{s}\".alcedocore_policies WHERE name LIKE '{policy_like}'"),
             format!(
-                "DELETE FROM \"{s}\".alcedo_user_roles WHERE role_id IN \
-                 (SELECT id FROM \"{s}\".alcedo_roles WHERE name = '{role_name}')"
+                "DELETE FROM \"{s}\".alcedocore_user_roles WHERE role_id IN \
+                 (SELECT id FROM \"{s}\".alcedocore_roles WHERE name = '{role_name}')"
             ),
-            format!("DELETE FROM \"{s}\".alcedo_roles WHERE name = '{role_name}'"),
+            format!("DELETE FROM \"{s}\".alcedocore_roles WHERE name = '{role_name}'"),
             // A cross-app grant seeds a policy in the target app's schema too.
             format!(
                 "DELETE FROM \"{CRM_SCHEMA}\".alcedocore_role_policies WHERE policy_id IN \
@@ -806,11 +806,11 @@ mod integration_tests {
                 "DELETE FROM \"{CRM_SCHEMA}\".alcedocore_policies WHERE name LIKE '{policy_like}'"
             ),
             format!(
-                "DELETE FROM \"{CRM_SCHEMA}\".alcedo_user_roles WHERE role_id IN \
-                 (SELECT id FROM \"{CRM_SCHEMA}\".alcedo_roles WHERE name = '{role_name}')"
+                "DELETE FROM \"{CRM_SCHEMA}\".alcedocore_user_roles WHERE role_id IN \
+                 (SELECT id FROM \"{CRM_SCHEMA}\".alcedocore_roles WHERE name = '{role_name}')"
             ),
-            format!("DELETE FROM \"{CRM_SCHEMA}\".alcedo_roles WHERE name = '{role_name}'"),
-            format!("DELETE FROM alcedo.alcedo_users WHERE email = '{email}'"),
+            format!("DELETE FROM \"{CRM_SCHEMA}\".alcedocore_roles WHERE name = '{role_name}'"),
+            format!("DELETE FROM alcedocore.alcedocore_users WHERE email = '{email}'"),
             // Children first (FK), then parents, all marker-scoped by ticket subject.
             format!(
                 "DELETE FROM \"{s}\".ticket_comments WHERE ticket IN \
@@ -832,7 +832,7 @@ mod integration_tests {
         let role_name = format!("nested-perm-{marker}");
 
         sqlx::query(
-            "INSERT INTO alcedo.alcedo_users (id, email, password_hash, is_admin) \
+            "INSERT INTO alcedocore.alcedocore_users (id, email, password_hash, is_admin) \
              VALUES ($1, $2, 'x', false)",
         )
         .bind(user_id)
@@ -842,7 +842,7 @@ mod integration_tests {
         .expect("insert test user");
 
         sqlx::query(&format!(
-            "INSERT INTO \"{s}\".alcedo_roles (id, name, description, is_system) \
+            "INSERT INTO \"{s}\".alcedocore_roles (id, name, description, is_system) \
              VALUES ($1, $2, '', false)"
         ))
         .bind(role_id)
@@ -852,7 +852,7 @@ mod integration_tests {
         .expect("insert test role");
 
         sqlx::query(&format!(
-            "INSERT INTO \"{s}\".alcedo_user_roles (id, user_id, role_id) VALUES ($1, $2, $3)"
+            "INSERT INTO \"{s}\".alcedocore_user_roles (id, user_id, role_id) VALUES ($1, $2, $3)"
         ))
         .bind(Uuid::new_v4())
         .bind(user_id)
@@ -1748,12 +1748,12 @@ mod integration_tests {
     /// Adds a second, app-local role for `seed`'s user in `schema`, so grants can
     /// be written in that app. Roles live per app schema, so a cross-app policy
     /// needs a role in the target app too (its `alcedocore_role_policies` FK
-    /// points at that schema's `alcedo_roles`).
+    /// points at that schema's `alcedocore_roles`).
     async fn seed_role_in(state: &AppState, schema: &str, marker: &str, user_id: Uuid) -> Uuid {
         let role_id = Uuid::new_v4();
         let role_name = format!("nested-perm-{marker}");
         sqlx::query(&format!(
-            "INSERT INTO \"{schema}\".alcedo_roles (id, name, description, is_system) \
+            "INSERT INTO \"{schema}\".alcedocore_roles (id, name, description, is_system) \
              VALUES ($1, $2, '', false)"
         ))
         .bind(role_id)
@@ -1763,7 +1763,7 @@ mod integration_tests {
         .expect("insert test role in target schema");
 
         sqlx::query(&format!(
-            "INSERT INTO \"{schema}\".alcedo_user_roles (id, user_id, role_id) VALUES ($1, $2, $3)"
+            "INSERT INTO \"{schema}\".alcedocore_user_roles (id, user_id, role_id) VALUES ($1, $2, $3)"
         ))
         .bind(Uuid::new_v4())
         .bind(user_id)

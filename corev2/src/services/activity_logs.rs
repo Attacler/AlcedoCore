@@ -3,16 +3,16 @@
 //! Every write records one row in the activity log that matches its scope:
 //!
 //! - **Global** actions (users, sessions, apps registry, system settings) go to
-//!   `alcedo.alcedo_system_logs`.
-//! - **App system** actions (system collections such as `alcedo_roles`,
-//!   `alcedo_settings`) go to `{app}010{version}.alcedocore_system_logs`.
+//!   `alcedocore.alcedocore_system_logs`.
+//! - **App system** actions (system collections such as `alcedocore_roles`,
+//!   `alcedocore_settings`) go to `{app}010{version}.alcedocore_system_logs`.
 //! - **Collection** actions (normal user collections) go to
 //!   `{app}010{version}.alcedocore_collection_logs`, carrying the item id and an
 //!   optional field-level diff.
 //!
 //! Routing is driven purely by three inputs: the context's schema, whether the
 //! caller passed a `collection_name`, and the collection's classification. A
-//! collection whose name starts with `alcedo_`/`alcedocore_` is a *system*
+//! collection whose name starts with `alcedocore_` is a *system*
 //! collection and is logged as an app system row, never a collection row.
 
 use sea_query::{Alias, Expr, PostgresQueryBuilder, Query, SimpleExpr, Value as SeaValue};
@@ -59,7 +59,7 @@ pub async fn record(
     let schema = context.schema_name();
 
     let is_system_collection = collection_name.map_or(true, |name| is_system_collection_name(name));
-    let use_collection_log = schema != "alcedo" && !is_system_collection;
+    let use_collection_log = schema != "alcedocore" && !is_system_collection;
 
     // System tables share one column shape; collection logs add the item
     // columns. Values are rendered as escaped literals by `PostgresQueryBuilder`
@@ -90,8 +90,8 @@ pub async fn record(
             ])
             .to_string(PostgresQueryBuilder)
     } else {
-        let table = if schema == "alcedo" {
-            "alcedo_system_logs"
+        let table = if schema == "alcedocore" {
+            "alcedocore_system_logs"
         } else {
             "alcedocore_system_logs"
         };
@@ -126,9 +126,9 @@ pub async fn record(
 }
 
 /// A collection is a *system* collection when its name is prefixed with
-/// `alcedo_` or `alcedocore_`; those are framework tables, not user data.
+/// `alcedocore_`; those are framework tables, not user data.
 pub fn is_system_collection_name(name: &str) -> bool {
-    name.starts_with("alcedo_") || name.starts_with("alcedocore_")
+    name.starts_with("alcedocore_")
 }
 
 /// Maps a collection + CRUD verb to the activity action string the admin UI
@@ -137,38 +137,38 @@ pub fn is_system_collection_name(name: &str) -> bool {
 /// `verb` is one of `"created"`, `"updated"`, `"deleted"`.
 pub fn action_for(collection: &str, verb: &str) -> String {
     match collection {
-        "alcedo_users" => match verb {
+        "alcedocore_users" => match verb {
             "created" => "user_created",
             "deleted" => "user_deleted",
             _ => "user_updated",
         },
-        "alcedo_developer_api_keys" => match verb {
+        "alcedocore_developer_api_keys" => match verb {
             "created" => "developer_key_created",
             "deleted" => "developer_key_deleted",
             _ => "developer_key_updated",
         },
-        "alcedo_sessions" => match verb {
+        "alcedocore_sessions" => match verb {
             "created" => "login_success",
             "deleted" => "logout",
             _ => "login_success",
         },
-        "alcedo_settings" | "alcedo_app_settings" | "alcedocore_settings" => "setting_changed",
-        "alcedo_collections" | "alcedocore_collections" => match verb {
+        "alcedocore_settings" | "alcedocore_app_settings" => "setting_changed",
+        "alcedocore_collections" => match verb {
             "created" => "collection_created",
             "deleted" => "collection_deleted",
             _ => "collection_updated",
         },
-        "alcedo_policies" | "alcedocore_policies" => match verb {
+        "alcedocore_policies" => match verb {
             "created" => "policy_created",
             "deleted" => "policy_deleted",
             _ => "policy_updated",
         },
-        "alcedo_roles" | "alcedocore_roles" => match verb {
+        "alcedocore_roles" => match verb {
             "created" => "role_created",
             "deleted" => "role_deleted",
             _ => "role_updated",
         },
-        "alcedo_user_roles" => match verb {
+        "alcedocore_user_roles" => match verb {
             "created" => "user_role_assigned",
             "deleted" => "user_role_removed",
             _ => "user_role_assigned",
@@ -210,8 +210,8 @@ pub fn actor_id(context: &AppContext) -> Option<uuid::Uuid> {
 /// audit metadata. `target` is the collection name.
 fn redact_metadata(target: &str, metadata: &mut Value) {
     let secret = match target {
-        "alcedo_users" => Some("password_hash"),
-        "alcedo_developer_api_keys" => Some("key_hash"),
+        "alcedocore_users" => Some("password_hash"),
+        "alcedocore_developer_api_keys" => Some("key_hash"),
         _ => None,
     };
     if let (Some(field), Value::Object(map)) = (secret, metadata) {

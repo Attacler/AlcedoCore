@@ -106,7 +106,7 @@ impl Operation<Postgres> for M0016Operation {
             format!(
                 r#"ALTER TABLE {schema}.alcedocore_file_folders
                    ADD CONSTRAINT fk_file_folders_created_by
-                   FOREIGN KEY (created_by) REFERENCES {}.alcedo_users(id) ON DELETE SET NULL"#,
+                   FOREIGN KEY (created_by) REFERENCES {}.alcedocore_users(id) ON DELETE SET NULL"#,
                 quote(&users.schema_name())
             ),
             format!(
@@ -117,7 +117,7 @@ impl Operation<Postgres> for M0016Operation {
             format!(
                 r#"ALTER TABLE {schema}.alcedocore_file_metadata
                    ADD CONSTRAINT fk_file_metadata_uploaded_by
-                   FOREIGN KEY (uploaded_by) REFERENCES {}.alcedo_users(id) ON DELETE SET NULL"#,
+                   FOREIGN KEY (uploaded_by) REFERENCES {}.alcedocore_users(id) ON DELETE SET NULL"#,
                 quote(&users.schema_name())
             ),
             format!(

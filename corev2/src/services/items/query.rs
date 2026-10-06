@@ -482,7 +482,7 @@ impl Query {
                     }
                 }
             } else {
-                let app_context = if fk_info.schema == "alcedo" {
+                let app_context = if fk_info.schema == "alcedocore" {
                     AppContext::system(context.request_source.clone())
                 } else {
                     let (app_name, version) = fk_info
@@ -1435,7 +1435,7 @@ mod tests {
 
     async fn inject_customers_meta(state: &AppState) -> Option<i64> {
         let rows = sqlx::query(&format!(
-            "SELECT id, app_name, app_version, \"table\", name FROM \"{CRM_SCHEMA}\".alcedo_collections"
+            "SELECT id, app_name, app_version, \"table\", name FROM \"{CRM_SCHEMA}\".alcedocore_collections"
         ))
         .fetch_all(&*state.database_pool)
         .await
@@ -1583,7 +1583,7 @@ mod tests {
         }
 
         let user_id = sqlx::query_scalar::<_, uuid::Uuid>(
-            "SELECT id FROM alcedo.alcedo_users WHERE email = 'customer@acme.example'",
+            "SELECT id FROM alcedocore.alcedocore_users WHERE email = 'customer@acme.example'",
         )
         .fetch_optional(&*state.database_pool)
         .await

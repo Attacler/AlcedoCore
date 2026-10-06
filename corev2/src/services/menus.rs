@@ -550,7 +550,7 @@ impl MenusService<'_> {
                 .filter_map(|row| row.get("id").and_then(Value::as_str).map(str::to_string))
                 .collect()
         } else {
-            let user_roles_table = "alcedo_user_roles".to_string();
+            let user_roles_table = "alcedocore_user_roles".to_string();
             let mut user_roles_query = Query::eq("user_id", json!(user_id.to_string()));
             user_roles_query.fields = vec!["role_id".to_string()];
             user_roles_query.limit = 0;

@@ -42,7 +42,7 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
 }
 
 pub async fn run_system_migrations(database_pool: &Pool<Postgres>) {
-    let mut migrator = Migrator::default().set_schema("alcedo").unwrap();
+    let mut migrator = Migrator::default().set_schema("alcedocore").unwrap();
     let app_context = AppContext::system(RequestSource::Migration);
 
     sqlx::query(&format!(

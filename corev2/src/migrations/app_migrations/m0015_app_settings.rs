@@ -10,7 +10,7 @@ use crate::services::collections::schema::{SchemaService, TableBuilderExt};
 use crate::services::context::AppContext;
 
 /// App-scoped key/value settings (branding, catch-all plugin, …) in the app
-/// schema. Platform settings stay global in `alcedo.alcedo_settings`.
+/// schema. Platform settings stay global in `alcedocore.alcedocore_settings`.
 pub(crate) struct M0015Operation {
     app_context: AppContext,
 }
@@ -23,7 +23,7 @@ impl Operation<Postgres> for M0015Operation {
 
         table_service
             .create_table(
-                "alcedo_app_settings",
+                "alcedocore_app_settings",
                 |builder| {
                     builder.add_col("key", |mut c| {
                         c.not_null().string().primary_key().clone()
@@ -45,7 +45,7 @@ impl Operation<Postgres> for M0015Operation {
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
         let schema = quote(&self.app_context.schema_name());
         sqlx::query(&format!(
-            r#"DROP TABLE IF EXISTS {schema}."alcedo_app_settings" CASCADE;"#
+            r#"DROP TABLE IF EXISTS {schema}."alcedocore_app_settings" CASCADE;"#
         ))
         .execute(&mut *connection)
         .await?;

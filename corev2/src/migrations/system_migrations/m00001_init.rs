@@ -25,7 +25,7 @@ impl Operation<Postgres> for M0001Operation {
 
                     table_service
                         .create_table(
-                            "alcedo_apps",
+                            "alcedocore_apps",
                             |builder| {
                                 builder.add_col("id", |mut c| {
                                     c.not_null()
@@ -46,7 +46,7 @@ impl Operation<Postgres> for M0001Operation {
 
                     table_service
                         .create_table(
-                            "alcedo_versions",
+                            "alcedocore_versions",
                             |builder| {
                                 builder.add_col("id", |mut c| {
                                     c.not_null()
@@ -65,7 +65,7 @@ impl Operation<Postgres> for M0001Operation {
 
                     table_service
                         .create_table(
-                            "alcedo_apps_versions",
+                            "alcedocore_apps_versions",
                             |builder| {
                                 builder.add_col("id", |mut c| {
                                     c.not_null()
@@ -77,20 +77,20 @@ impl Operation<Postgres> for M0001Operation {
                                 builder.add_col("app_id", |mut c| c.not_null().integer().clone());
                                 builder.add_fk(
                                     &app_context,
-                                    "alcedo_apps_versions",
+                                    "alcedocore_apps_versions",
                                     "app_id",
                                     &app_context,
-                                    "alcedo_apps",
+                                    "alcedocore_apps",
                                     "id",
                                 );
                                 builder
                                     .add_col("version_id", |mut c| c.not_null().integer().clone());
                                 builder.add_fk(
                                     &app_context,
-                                    "alcedo_apps_versions",
+                                    "alcedocore_apps_versions",
                                     "version_id",
                                     &app_context,
-                                    "alcedo_versions",
+                                    "alcedocore_versions",
                                     "id",
                                 );
                             },
@@ -109,7 +109,7 @@ impl Operation<Postgres> for M0001Operation {
     }
 
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
-        sqlx::query("DROP SCHEMA IF EXISTS alcedo CASCADE;")
+        sqlx::query("DROP SCHEMA IF EXISTS alcedocore CASCADE;")
             .execute(connection)
             .await
             .unwrap();

@@ -111,7 +111,7 @@ async fn list_apps_responses(state: &AppState) -> Result<Vec<AppWithVersions>, A
 
 async fn fetch_app_row(state: &AppState, id: i32) -> Result<Option<AppRow>, AlcedoError> {
     let context = AppContext::system(RequestSource::API);
-    let collection = "alcedo_apps".to_string();
+    let collection = "alcedocore_apps".to_string();
     let service = ItemsService::new(state, &context, &collection);
     let row = service
         .get_single_item_by_pk(Value::String(id.to_string()))
@@ -212,7 +212,7 @@ async fn create_app(
     };
 
     let context = AppContext::system(RequestSource::API);
-    let collection = "alcedo_apps".to_string();
+    let collection = "alcedocore_apps".to_string();
     let mut service = ItemsService::new(&state, &context, &collection);
     let mut app_map = item_map! {
         "name" => name,
@@ -279,7 +279,7 @@ async fn update_app(
 
     if !app_map.is_empty() {
         let context = AppContext::system(RequestSource::API);
-        let collection = "alcedo_apps".to_string();
+        let collection = "alcedocore_apps".to_string();
         let mut service = ItemsService::new(&state, &context, &collection);
         service
             .update_items_by_query(&mut Query::eq("id", Value::from(id)), app_map, &mut None)
@@ -326,7 +326,7 @@ async fn delete_app(
     AppsService::new(&state).delete_app_links(id).await?;
 
     let context = AppContext::system(RequestSource::API);
-    let collection = "alcedo_apps".to_string();
+    let collection = "alcedocore_apps".to_string();
     let mut service = ItemsService::new(&state, &context, &collection);
     let deleted = service
         .delete_items_by_pks(vec![Value::String(id.to_string())], None)
@@ -481,7 +481,7 @@ async fn roles_for_user(
         identity: None,
         request_id: None,
     };
-    let collection = "alcedo_user_roles".to_string();
+    let collection = "alcedocore_user_roles".to_string();
     let service = ItemsService::new(state, &context, &collection);
     let rows = service
         .read_items_by_query(Query {

@@ -17,7 +17,7 @@ use crate::services::{
     },
 };
 
-const SESSION_COLLECTION: &str = "alcedo_sessions";
+const SESSION_COLLECTION: &str = "alcedocore_sessions";
 const TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.f";
 
 fn session_key(id: &str) -> String {

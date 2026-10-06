@@ -43,7 +43,7 @@ async fn list_users(
         return Ok(Json(success(json!({ "data": [] }))));
     }
 
-    // The physical table lives in the `alcedo` schema; the policy was resolved
+    // The physical table lives in the `alcedocore` schema; the policy was resolved
     // from the app schema (synthetic collection id -1).
     let mut system = AppContext::system(RequestSource::API);
     system.identity = context.identity.clone();

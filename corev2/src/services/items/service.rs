@@ -490,7 +490,7 @@ impl ItemsService<'_> {
             stmt.to_string(PostgresQueryBuilder)
         };
         let count_sql = format!(
-            "SELECT COUNT(*)::bigint AS count FROM ({}) AS _alcedo_count",
+            "SELECT COUNT(*)::bigint AS count FROM ({}) AS _alcedocore_count",
             inner
         );
         let rows = execute_query(self.app_state, count_sql).await?;
@@ -1305,7 +1305,7 @@ mod after_commit_tests {
 
         let seeded: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
-             WHERE table_schema = $1 AND table_name = 'alcedo_roles')",
+             WHERE table_schema = $1 AND table_name = 'alcedocore_roles')",
         )
         .bind(SCHEMA)
         .fetch_one(&*state.database_pool)
@@ -1322,7 +1322,7 @@ mod after_commit_tests {
         state
             .event_bus
             .on::<ItemsAfterCreate, _>(
-                "after.items.create.alcedo_roles",
+                "after.items.create.alcedocore_roles",
                 move |event, _context, _state, _tx| {
                     let sink = sink.clone();
                     Box::pin(async move {
@@ -1335,7 +1335,7 @@ mod after_commit_tests {
             .await;
 
         let role_id = Uuid::new_v4();
-        let collection = "alcedo_roles".to_string();
+        let collection = "alcedocore_roles".to_string();
         let ctx = ctx();
         let mut service = ItemsService::new(&state, &ctx, &collection);
 
@@ -1362,7 +1362,7 @@ mod after_commit_tests {
         let captured = captured.lock().unwrap();
         assert_eq!(captured.len(), 1, "the deferred hook fires exactly once");
         let (items, collection) = &captured[0];
-        assert_eq!(collection, "alcedo_roles");
+        assert_eq!(collection, "alcedocore_roles");
         assert_eq!(items.len(), 1, "the created row is preserved in the event");
         assert_eq!(
             items[0].get("id").and_then(Value::as_str),
@@ -1376,7 +1376,7 @@ mod after_commit_tests {
         drop(captured);
 
         sqlx::query(&format!(
-            "DELETE FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1"
+            "DELETE FROM \"{SCHEMA}\".alcedocore_roles WHERE id = $1"
         ))
         .bind(role_id)
         .execute(&*state.database_pool)
@@ -1392,7 +1392,7 @@ mod after_commit_tests {
 
         let seeded: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
-             WHERE table_schema = $1 AND table_name = 'alcedo_roles')",
+             WHERE table_schema = $1 AND table_name = 'alcedocore_roles')",
         )
         .bind(SCHEMA)
         .fetch_one(&*state.database_pool)
@@ -1409,7 +1409,7 @@ mod after_commit_tests {
         state
             .event_bus
             .on::<ItemsAfterCreate, _>(
-                "after.items.create.alcedo_roles",
+                "after.items.create.alcedocore_roles",
                 move |event, _context, _state, _tx| {
                     let sink = sink.clone();
                     Box::pin(async move {
@@ -1422,7 +1422,7 @@ mod after_commit_tests {
             .await;
 
         let role_id = Uuid::new_v4();
-        let collection = "alcedo_roles".to_string();
+        let collection = "alcedocore_roles".to_string();
         let ctx = ctx();
         let mut service = ItemsService::new(&state, &ctx, &collection);
 
@@ -1448,7 +1448,7 @@ mod after_commit_tests {
         );
 
         let exists: bool = sqlx::query_scalar(&format!(
-            "SELECT EXISTS(SELECT 1 FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1)"
+            "SELECT EXISTS(SELECT 1 FROM \"{SCHEMA}\".alcedocore_roles WHERE id = $1)"
         ))
         .bind(role_id)
         .fetch_one(&*state.database_pool)

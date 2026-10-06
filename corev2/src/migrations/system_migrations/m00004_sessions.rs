@@ -27,7 +27,7 @@ impl Operation<Postgres> for M0004Operation {
 
                     table_service
                         .create_table(
-                            "alcedo_sessions",
+                            "alcedocore_sessions",
                             |builder| {
                                 builder.add_col("id", |mut c| {
                                     c.not_null().uuid().primary_key().clone()
@@ -35,10 +35,10 @@ impl Operation<Postgres> for M0004Operation {
                                 builder.add_col("user_id", |mut c| c.not_null().uuid().clone());
                                 builder.add_fk(
                                     &app_context,
-                                    "alcedo_sessions",
+                                    "alcedocore_sessions",
                                     "user_id",
                                     &app_context,
-                                    "alcedo_users",
+                                    "alcedocore_users",
                                     "id",
                                 );
                                 builder.add_col("user_agent", |mut c| c.string().clone());
@@ -64,7 +64,7 @@ impl Operation<Postgres> for M0004Operation {
     }
 
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
-        sqlx::query("DROP TABLE IF EXISTS alcedo_sessions CASCADE;")
+        sqlx::query("DROP TABLE IF EXISTS alcedocore_sessions CASCADE;")
             .execute(connection)
             .await
             .unwrap();

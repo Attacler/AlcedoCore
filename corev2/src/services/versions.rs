@@ -31,7 +31,7 @@ impl VersionsService<'_> {
     }
 
     pub async fn ensure_exists(&self, version_id: i32) -> Result<(), AlcedoError> {
-        let (context, collection) = system_context("alcedo_versions");
+        let (context, collection) = system_context("alcedocore_versions");
         let service = ItemsService::new(self.app_state, &context, &collection);
         let rows = service
             .read_items_by_query(Query {
@@ -53,7 +53,7 @@ impl VersionsService<'_> {
         &self,
         version_name: &str,
     ) -> Result<Option<i32>, AlcedoError> {
-        let (context, collection) = system_context("alcedo_versions");
+        let (context, collection) = system_context("alcedocore_versions");
         let service = ItemsService::new(self.app_state, &context, &collection);
         let rows: Vec<Map<String, Value>> = service
             .read_items_by_query(Query {
@@ -70,7 +70,7 @@ impl VersionsService<'_> {
     }
 
     pub async fn get(&self, version_id: i32) -> Result<Option<Map<String, Value>>, AlcedoError> {
-        let (context, collection) = system_context("alcedo_versions");
+        let (context, collection) = system_context("alcedocore_versions");
         let service = ItemsService::new(self.app_state, &context, &collection);
         let rows = service
             .read_items_by_query(Query {
@@ -83,7 +83,7 @@ impl VersionsService<'_> {
     }
 
     pub async fn delete(&self, version_id: i32) -> Result<bool, AlcedoError> {
-        let (context, collection) = system_context("alcedo_versions");
+        let (context, collection) = system_context("alcedocore_versions");
         let mut service = ItemsService::new(self.app_state, &context, &collection);
         let deleted = service
             .delete_items_by_pks(vec![Value::String(version_id.to_string())], None)
@@ -92,7 +92,7 @@ impl VersionsService<'_> {
     }
 
     pub async fn list(&self) -> Result<Vec<Map<String, Value>>, AlcedoError> {
-        let (context, collection) = system_context("alcedo_versions");
+        let (context, collection) = system_context("alcedocore_versions");
         let service = ItemsService::new(self.app_state, &context, &collection);
 
         service
@@ -113,7 +113,7 @@ impl VersionsService<'_> {
             ));
         }
 
-        let (context, collection) = system_context("alcedo_versions");
+        let (context, collection) = system_context("alcedocore_versions");
         let mut service = ItemsService::new(self.app_state, &context, &collection);
 
         let map = item_map! { "version_name" => version_name };
@@ -146,7 +146,7 @@ impl VersionsService<'_> {
             return Ok(());
         }
 
-        let (context, collection) = system_context("alcedo_versions");
+        let (context, collection) = system_context("alcedocore_versions");
         let mut service = ItemsService::new(self.app_state, &context, &collection);
 
         let map = item_map! { "version_name" => PRODUCTION_VERSION };
@@ -158,7 +158,7 @@ impl VersionsService<'_> {
         &self,
         version_id: i32,
     ) -> Result<Vec<String>, AlcedoError> {
-        let (context, collection) = system_context("alcedo_apps_versions");
+        let (context, collection) = system_context("alcedocore_apps_versions");
         let service = ItemsService::new(self.app_state, &context, &collection);
         let rows = service
             .read_items_by_query(Query {
@@ -179,7 +179,7 @@ impl VersionsService<'_> {
     }
 
     pub async fn delete_version_links(&self, version_id: i32) -> Result<(), AlcedoError> {
-        let (context, collection) = system_context("alcedo_apps_versions");
+        let (context, collection) = system_context("alcedocore_apps_versions");
         let mut service = ItemsService::new(self.app_state, &context, &collection);
         service
             .delete_items_by_query(Query::eq("version_id", Value::from(version_id)), &mut None)
@@ -188,7 +188,7 @@ impl VersionsService<'_> {
     }
 
     async fn app_ids_for_version(&self, version_id: i32) -> Result<Vec<i32>, AlcedoError> {
-        let (context, collection) = system_context("alcedo_apps_versions");
+        let (context, collection) = system_context("alcedocore_apps_versions");
         let service = ItemsService::new(self.app_state, &context, &collection);
         let rows = service
             .read_items_by_query(Query {

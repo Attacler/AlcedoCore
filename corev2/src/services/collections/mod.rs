@@ -158,7 +158,7 @@ async fn read_collection_rows(
     state: &AppState,
     ctx: &AppContext,
 ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
-    let table = "alcedo_collections".to_string();
+    let table = "alcedocore_collections".to_string();
     ItemsService::new(state, ctx, &table)
         .read_items_by_query(Query::default())
         .await
@@ -170,7 +170,7 @@ async fn read_collection_row(
     ctx: &AppContext,
     name: &str,
 ) -> Result<Map<String, Value>, AlcedoError> {
-    let table = "alcedo_collections".to_string();
+    let table = "alcedocore_collections".to_string();
     let mut rows = ItemsService::new(state, ctx, &table)
         .read_items_by_query(Query::eq("table", json!(name)))
         .await?;
@@ -204,7 +204,7 @@ async fn read_field_rows(
     read_sorted(
         state,
         ctx,
-        "alcedo_fields",
+        "alcedocore_fields",
         Query::eq("collection_id", json!(collection_id)),
         "ordinal_position",
     )
@@ -261,11 +261,11 @@ async fn build_collection_response(
         .map(field_from_row)
         .collect();
     let namespaced = jstr(row.get("table")).unwrap_or_default();
-    // Framework (`alcedo_*`) collections are not user-managed: the admin
+    // Framework (`alcedocore_*`) collections are not user-managed: the admin
     // dashboard filters them out and the collection list hides Delete. This
-    // includes `alcedo_users`, which is policy-able but still a system
+    // includes `alcedocore_users`, which is policy-able but still a system
     // collection (it must not collide with the built-in Users page).
-    let is_system = namespaced.starts_with("alcedo");
+    let is_system = namespaced.starts_with("alcedocore");
     Ok(CollectionResponse {
         name: namespaced,
         display_name: jstr(row.get("name")),
@@ -363,7 +363,7 @@ pub async fn create_collection(
     let mut guard = TxGuard::new(state.database_pool.begin().await?);
     execute_query_transaction(state, guard.tx(), &create_sql).await?;
 
-    let collections_table = "alcedo_collections".to_string();
+    let collections_table = "alcedocore_collections".to_string();
     let mut collections_service = ItemsService::new(state, ctx, &collections_table);
     let payload = item_map! {
         "app_name" => ctx.app_api_name(),
@@ -381,7 +381,7 @@ pub async fn create_collection(
         .and_then(|s| s.parse().ok())
         .ok_or_else(|| AlcedoError::SystemError("Could not create collection".to_string(), 1))?;
 
-    let fields_table = "alcedo_fields".to_string();
+    let fields_table = "alcedocore_fields".to_string();
     let mut fields_service = ItemsService::new(state, ctx, &fields_table);
     let field_payloads: Vec<Map<String, Value>> = req
         .fields
@@ -397,7 +397,7 @@ pub async fn create_collection(
 
     // Seed a "Default" layout and a "Default" field-group section so a freshly
     // created collection opens directly in the builder with its fields shown.
-    let layouts_table = "alcedo_collection_layouts".to_string();
+    let layouts_table = "alcedocore_collection_layouts".to_string();
     let mut layouts_service = ItemsService::new(state, ctx, &layouts_table);
     let layout_payload = item_map! {
         "collection_id" => collection_id,
@@ -410,7 +410,7 @@ pub async fn create_collection(
         .await?;
     let layout_id = layout_ids.get(0).map(|s| s.to_string()).unwrap_or_default();
 
-    let sections_table = "alcedo_collection_sections".to_string();
+    let sections_table = "alcedocore_collection_sections".to_string();
     let mut sections_service = ItemsService::new(state, ctx, &sections_table);
     let section_payload = item_map! {
         "collection_id" => collection_id,
@@ -621,7 +621,7 @@ pub async fn update_collection(
     if let Some(display) = &req.display_name {
         let sql = format!(
             "UPDATE {} SET name = '{}', updated_at = NOW() WHERE id = {}",
-            qtable(ctx, "alcedo_collections"),
+            qtable(ctx, "alcedocore_collections"),
             escape_sql_string(display),
             collection_id
         );
@@ -634,7 +634,7 @@ pub async fn update_collection(
         .iter()
         .filter_map(|r| r.get("id").cloned())
         .collect();
-    let fields_table = "alcedo_fields".to_string();
+    let fields_table = "alcedocore_fields".to_string();
     let mut fields_service = ItemsService::new(state, ctx, &fields_table);
     if !ids.is_empty() {
         fields_service
@@ -673,17 +673,17 @@ pub async fn delete_collection(
     let cleanup = [
         format!(
             "DELETE FROM {} WHERE collection_id = {}",
-            qtable(ctx, "alcedo_fields"),
+            qtable(ctx, "alcedocore_fields"),
             collection_id
         ),
         format!(
             "DELETE FROM {} WHERE collection_id = {}",
-            qtable(ctx, "alcedo_collection_layouts"),
+            qtable(ctx, "alcedocore_collection_layouts"),
             collection_id
         ),
         format!(
             "DELETE FROM {} WHERE id = {}",
-            qtable(ctx, "alcedo_collections"),
+            qtable(ctx, "alcedocore_collections"),
             collection_id
         ),
     ];
@@ -731,7 +731,7 @@ pub async fn list_layouts(
     let rows = read_sorted(
         state,
         ctx,
-        "alcedo_collection_layouts",
+        "alcedocore_collection_layouts",
         Query::eq("collection_id", json!(collection_id)),
         "ordinal_position",
     )
@@ -762,7 +762,7 @@ pub async fn create_layout(
     let rows = read_sorted(
         state,
         ctx,
-        "alcedo_collection_layouts",
+        "alcedocore_collection_layouts",
         Query::eq("collection_id", json!(collection_id)),
         "ordinal_position",
     )
@@ -774,7 +774,7 @@ pub async fn create_layout(
         .unwrap_or(0)
         + 1;
 
-    let table = "alcedo_collection_layouts".to_string();
+    let table = "alcedocore_collection_layouts".to_string();
     let mut service = ItemsService::new(state, ctx, &table);
     let payload = item_map! {
         "collection_id" => collection_id,
@@ -795,7 +795,7 @@ pub async fn update_layout(
     body: &Value,
 ) -> Result<Value, AlcedoError> {
     let collection_id = collection_id_for(state, ctx, name).await?;
-    let table = "alcedo_collection_layouts".to_string();
+    let table = "alcedocore_collection_layouts".to_string();
     let mut service = ItemsService::new(state, ctx, &table);
 
     let mut payload = Map::new();
@@ -835,7 +835,7 @@ pub async fn delete_layout(
     let rows = read_sorted(
         state,
         ctx,
-        "alcedo_collection_layouts",
+        "alcedocore_collection_layouts",
         Query::eq("collection_id", json!(collection_id)),
         "ordinal_position",
     )
@@ -846,7 +846,7 @@ pub async fn delete_layout(
             1,
         ));
     }
-    let table = "alcedo_collection_layouts".to_string();
+    let table = "alcedocore_collection_layouts".to_string();
     let mut service = ItemsService::new(state, ctx, &table);
     service
         .delete_items_by_pks(vec![json!(layout_id)], None)
@@ -862,7 +862,7 @@ async fn sections_for_layout(
     read_sorted(
         state,
         ctx,
-        "alcedo_collection_sections",
+        "alcedocore_collection_sections",
         Query::eq("layout_id", json!(layout_id)),
         "ordinal_position",
     )
@@ -905,7 +905,7 @@ pub async fn list_sections(
             .filter(|r| jstr(r.get("api_name")).is_some())
             .map(|r| json!(jstr(r.get("api_name")).unwrap_or_default()))
             .collect();
-        let table = "alcedo_collection_sections".to_string();
+        let table = "alcedocore_collection_sections".to_string();
         let mut service = ItemsService::new(state, ctx, &table);
         let payload = item_map! {
             "collection_id" => collection_id,
@@ -941,7 +941,7 @@ pub async fn create_section(
         .unwrap_or(0)
         + 1;
 
-    let table = "alcedo_collection_sections".to_string();
+    let table = "alcedocore_collection_sections".to_string();
     let mut service = ItemsService::new(state, ctx, &table);
     let payload = item_map! {
         "collection_id" => collection_id,
@@ -970,7 +970,7 @@ pub async fn update_section(
     req: SectionRequest,
 ) -> Result<Value, AlcedoError> {
     collection_id_for(state, ctx, name).await?;
-    let table = "alcedo_collection_sections".to_string();
+    let table = "alcedocore_collection_sections".to_string();
     let mut service = ItemsService::new(state, ctx, &table);
 
     let mut payload = item_map! {
@@ -1005,7 +1005,7 @@ pub async fn delete_section(
     section_id: &str,
 ) -> Result<Value, AlcedoError> {
     collection_id_for(state, ctx, name).await?;
-    let table = "alcedo_collection_sections".to_string();
+    let table = "alcedocore_collection_sections".to_string();
     let mut service = ItemsService::new(state, ctx, &table);
     service
         .delete_items_by_pks(vec![json!(section_id)], None)
@@ -1022,7 +1022,7 @@ pub async fn reorder_sections(
     body: &Value,
 ) -> Result<Value, AlcedoError> {
     collection_id_for(state, ctx, name).await?;
-    let table = "alcedo_collection_sections".to_string();
+    let table = "alcedocore_collection_sections".to_string();
     let mut service = ItemsService::new(state, ctx, &table);
     if let Some(sections) = body.get("sections").and_then(|v| v.as_array()) {
         for section in sections {
@@ -1089,8 +1089,8 @@ pub async fn get_layout_roles(
     collection_id_for(state, ctx, name).await?;
     let sql = format!(
         "SELECT lr.role_id::text AS role_id, r.name AS role_name FROM {} lr JOIN {} r ON r.id = lr.role_id WHERE lr.layout_id = '{}'::uuid",
-        qtable(ctx, "alcedo_collection_layout_roles"),
-        qtable(ctx, "alcedo_roles"),
+        qtable(ctx, "alcedocore_collection_layout_roles"),
+        qtable(ctx, "alcedocore_roles"),
         escape_sql_string(layout_id)
     );
     let rows = crate::services::postgres::pool::execute_query(state, sql).await?;
@@ -1113,7 +1113,7 @@ pub async fn set_layout_roles(
     let mut guard = TxGuard::new(state.database_pool.begin().await?);
     let delete_sql = format!(
         "DELETE FROM {} WHERE layout_id = '{}'::uuid",
-        qtable(ctx, "alcedo_collection_layout_roles"),
+        qtable(ctx, "alcedocore_collection_layout_roles"),
         escape_sql_string(layout_id)
     );
     execute_query_transaction(state, guard.tx(), &delete_sql).await?;
@@ -1126,7 +1126,7 @@ pub async fn set_layout_roles(
                 }
                 let insert = format!(
                     "INSERT INTO {} (layout_id, role_id) VALUES ('{}'::uuid, '{}'::uuid)",
-                    qtable(ctx, "alcedo_collection_layout_roles"),
+                    qtable(ctx, "alcedocore_collection_layout_roles"),
                     escape_sql_string(layout_id),
                     escape_sql_string(role_id)
                 );

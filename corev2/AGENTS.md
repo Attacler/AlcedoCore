@@ -55,16 +55,16 @@ tower-http, Redis or in-memory cache, argon2 sessions.
   (`CACHE_STRATEGY` + `REDIS_URL`). Values support optional TTL (seconds).
 - **Multi-tenant schemas.** Each app×version gets its own Postgres schema named
   `{app}010{version}` (`AppContext::schema_name()` + `utils::slugify`), e.g.
-  `default010v1`. Global tables live in the `alcedo` schema. The literal `010`
+  `default010v1`. Global tables live in the `alcedocore` schema. The literal `010`
   separator matters: `inspector.rs` discovers schemas via
-  `table_schema like '%010%' or table_schema = 'alcedo'`.
+  `table_schema like '%010%' or table_schema = 'alcedocore'`.
 - `AppContext` selects the schema for every query. App-scoped handlers take
   `ExtractContext`, which **requires `X-App` and `X-Version` headers**; platform
   code uses `AppContext::system()`.
 - Migrations are two sqlx_migrator tracks, both auto-run at startup:
-    - `migrations/system_migrations/` → `alcedo` schema.
+    - `migrations/system_migrations/` → `alcedocore` schema.
     - `migrations/app_migrations/` → per app-version schema; loops over
-      `alcedo_apps_versions` and is re-run when a version is linked/cloned.
+      `alcedocore_apps_versions` and is re-run when a version is linked/cloned.
       Add one by creating `m000NN_*.rs` and registering it in that dir's `mod.rs`
       (`vec_box!`). Never edit an applied migration.
 - DDL is declared in Rust via the custom `TableBuilderExt` DSL

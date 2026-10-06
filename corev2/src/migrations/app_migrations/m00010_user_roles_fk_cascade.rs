@@ -6,7 +6,7 @@ use sqlx_migrator::operation::Operation;
 use crate::services::collections::ddl::quote;
 use crate::services::context::AppContext;
 
-/// Makes `alcedo_user_roles.user_id` cascade on user delete. Roles live in the
+/// Makes `alcedocore_user_roles.user_id` cascade on user delete. Roles live in the
 /// per-app-version schema while users are global, so without this deleting a
 /// user fails for anyone who was ever granted access in any app.
 pub(crate) struct M0010Operation {
@@ -19,12 +19,12 @@ impl Operation<Postgres> for M0010Operation {
         let schema = quote(&self.app_context.schema_name());
 
         sqlx::query(&format!(
-            r#"ALTER TABLE {schema}."alcedo_user_roles" DROP CONSTRAINT IF EXISTS "alcedo_user_roles_user_id_alcedo_users_id";"#
+            r#"ALTER TABLE {schema}."alcedocore_user_roles" DROP CONSTRAINT IF EXISTS "alcedocore_user_roles_user_id_alcedocore_users_id";"#
         ))
         .execute(&mut *connection)
         .await?;
         sqlx::query(&format!(
-            r#"ALTER TABLE {schema}."alcedo_user_roles" ADD CONSTRAINT "alcedo_user_roles_user_id_alcedo_users_id" FOREIGN KEY ("user_id") REFERENCES "alcedo"."alcedo_users" ("id") ON DELETE CASCADE;"#
+            r#"ALTER TABLE {schema}."alcedocore_user_roles" ADD CONSTRAINT "alcedocore_user_roles_user_id_alcedocore_users_id" FOREIGN KEY ("user_id") REFERENCES "alcedocore"."alcedocore_users" ("id") ON DELETE CASCADE;"#
         ))
         .execute(&mut *connection)
         .await?;
@@ -35,7 +35,7 @@ impl Operation<Postgres> for M0010Operation {
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
         let schema = quote(&self.app_context.schema_name());
         sqlx::query(&format!(
-            r#"ALTER TABLE {schema}."alcedo_user_roles" DROP CONSTRAINT IF EXISTS "alcedo_user_roles_user_id_alcedo_users_id";"#
+            r#"ALTER TABLE {schema}."alcedocore_user_roles" DROP CONSTRAINT IF EXISTS "alcedocore_user_roles_user_id_alcedocore_users_id";"#
         ))
         .execute(&mut *connection)
         .await?;

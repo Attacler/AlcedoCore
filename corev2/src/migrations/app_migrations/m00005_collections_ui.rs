@@ -29,17 +29,17 @@ impl Operation<Postgres> for M0005Operation {
                 async move {
                     let statements = vec![
                         format!(
-                            "ALTER TABLE {schema}.\"alcedo_collections\" ADD COLUMN \"created_at\" timestamp NOT NULL DEFAULT NOW()",
+                            "ALTER TABLE {schema}.\"alcedocore_collections\" ADD COLUMN \"created_at\" timestamp NOT NULL DEFAULT NOW()",
                             
                         ),
                         format!(
-                            "ALTER TABLE {schema}.\"alcedo_collections\" ADD COLUMN \"updated_at\" timestamp NOT NULL DEFAULT NOW()",
+                            "ALTER TABLE {schema}.\"alcedocore_collections\" ADD COLUMN \"updated_at\" timestamp NOT NULL DEFAULT NOW()",
                         ),
                         format!(
-                            "ALTER TABLE {schema}.\"alcedo_fields\" ADD COLUMN \"ordinal_position\" integer NOT NULL DEFAULT 0",
+                            "ALTER TABLE {schema}.\"alcedocore_fields\" ADD COLUMN \"ordinal_position\" integer NOT NULL DEFAULT 0",
                         ),
                         format!(
-                            "CREATE TABLE {schema}.\"alcedo_collection_layouts\" (
+                            "CREATE TABLE {schema}.\"alcedocore_collection_layouts\" (
                                 \"id\" uuid NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
                                 \"collection_id\" integer NOT NULL,
                                 \"name\" text NOT NULL,
@@ -47,20 +47,20 @@ impl Operation<Postgres> for M0005Operation {
                                 \"ordinal_position\" integer NOT NULL DEFAULT 0,
                                 \"created_at\" timestamp NOT NULL DEFAULT NOW(),
                                 \"updated_at\" timestamp NOT NULL DEFAULT NOW(),
-                                CONSTRAINT \"fk_alcedo_collection_layouts_collection_id\" FOREIGN KEY (\"collection_id\") REFERENCES {schema}.\"alcedo_collections\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE
+                                CONSTRAINT \"fk_alcedocore_collection_layouts_collection_id\" FOREIGN KEY (\"collection_id\") REFERENCES {schema}.\"alcedocore_collections\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE
                             )",
                         ),
                         format!(
-                            "CREATE TABLE {schema}.\"alcedo_collection_layout_roles\" (
+                            "CREATE TABLE {schema}.\"alcedocore_collection_layout_roles\" (
                                 \"id\" uuid NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
                                 \"layout_id\" uuid NOT NULL,
                                 \"role_id\" uuid NOT NULL,
-                                CONSTRAINT \"fk_alcedo_collection_layout_roles_layout_id\" FOREIGN KEY (\"layout_id\") REFERENCES {schema}.\"alcedo_collection_layouts\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE,
-                                CONSTRAINT \"fk_alcedo_collection_layout_roles_role_id\" FOREIGN KEY (\"role_id\") REFERENCES {schema}.\"alcedo_roles\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE
+                                CONSTRAINT \"fk_alcedocore_collection_layout_roles_layout_id\" FOREIGN KEY (\"layout_id\") REFERENCES {schema}.\"alcedocore_collection_layouts\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE,
+                                CONSTRAINT \"fk_alcedocore_collection_layout_roles_role_id\" FOREIGN KEY (\"role_id\") REFERENCES {schema}.\"alcedocore_roles\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE
                             )",
                         ),
                         format!(
-                            "CREATE TABLE {schema}.\"alcedo_collection_sections\" (
+                            "CREATE TABLE {schema}.\"alcedocore_collection_sections\" (
                                 \"id\" uuid NOT NULL PRIMARY KEY DEFAULT gen_random_uuid(),
                                 \"collection_id\" integer NOT NULL,
                                 \"layout_id\" uuid NOT NULL,
@@ -74,8 +74,8 @@ impl Operation<Postgres> for M0005Operation {
                                 \"ordinal_position\" integer NOT NULL DEFAULT 0,
                                 \"created_at\" timestamp NOT NULL DEFAULT NOW(),
                                 \"updated_at\" timestamp NOT NULL DEFAULT NOW(),
-                                CONSTRAINT \"fk_alcedo_collection_sections_collection_id\" FOREIGN KEY (\"collection_id\") REFERENCES {schema}.\"alcedo_collections\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE,
-                                CONSTRAINT \"fk_alcedo_collection_sections_layout_id\" FOREIGN KEY (\"layout_id\") REFERENCES {schema}.\"alcedo_collection_layouts\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE
+                                CONSTRAINT \"fk_alcedocore_collection_sections_collection_id\" FOREIGN KEY (\"collection_id\") REFERENCES {schema}.\"alcedocore_collections\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE,
+                                CONSTRAINT \"fk_alcedocore_collection_sections_layout_id\" FOREIGN KEY (\"layout_id\") REFERENCES {schema}.\"alcedocore_collection_layouts\" (\"id\") ON DELETE CASCADE ON UPDATE CASCADE
                             )",
                         ),
                     ];
@@ -96,19 +96,19 @@ impl Operation<Postgres> for M0005Operation {
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
         let schema = format!("\"{}\"",&self.app_context.schema_name());
         sqlx::query(&format!(
-            "DROP TABLE IF EXISTS {schema}.\"alcedo_collection_sections\", {schema}.\"alcedo_collection_layout_roles\", {schema}.\"alcedo_collection_layouts\" CASCADE;"
+            "DROP TABLE IF EXISTS {schema}.\"alcedocore_collection_sections\", {schema}.\"alcedocore_collection_layout_roles\", {schema}.\"alcedocore_collection_layouts\" CASCADE;"
         ))
         .execute(&mut *connection)
         .await
         .unwrap();
         sqlx::query(&format!(
-            "ALTER TABLE {schema}.\"alcedo_fields\" DROP COLUMN IF EXISTS \"ordinal_position\";"
+            "ALTER TABLE {schema}.\"alcedocore_fields\" DROP COLUMN IF EXISTS \"ordinal_position\";"
         ))
         .execute(&mut *connection)
         .await
         .unwrap();
         sqlx::query(&format!(
-            "ALTER TABLE {schema}.\"alcedo_collections\" DROP COLUMN IF EXISTS \"created_at\", DROP COLUMN IF EXISTS \"updated_at\";"
+            "ALTER TABLE {schema}.\"alcedocore_collections\" DROP COLUMN IF EXISTS \"created_at\", DROP COLUMN IF EXISTS \"updated_at\";"
         ))
         .execute(&mut *connection)
         .await

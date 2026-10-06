@@ -28,7 +28,7 @@ impl Operation<Postgres> for M0006Operation {
 
                 async move {
                     let sql = format!(
-                        "ALTER TABLE {schema}.\"alcedo_collection_sections\" ADD COLUMN \"related_app\" text",
+                        "ALTER TABLE {schema}.\"alcedocore_collection_sections\" ADD COLUMN \"related_app\" text",
                     );
                     execute_query_transaction(&state, tx, &sql).await?;
                     Ok(())
@@ -44,7 +44,7 @@ impl Operation<Postgres> for M0006Operation {
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
         let schema = format!("\"{}\"", &self.app_context.schema_name());
         sqlx::query(&format!(
-            "ALTER TABLE {schema}.\"alcedo_collection_sections\" DROP COLUMN IF EXISTS \"related_app\";"
+            "ALTER TABLE {schema}.\"alcedocore_collection_sections\" DROP COLUMN IF EXISTS \"related_app\";"
         ))
         .execute(&mut *connection)
         .await

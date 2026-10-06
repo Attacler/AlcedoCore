@@ -10,7 +10,7 @@ use crate::services::{
 
 pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
     bus.on::<ItemsAfterUpdate, _>(
-        "after.items.update.alcedo_collections",
+        "after.items.update.alcedocore_collections",
         |_, context, state, _| {
             Box::pin(async move {
                 let table_service = SchemaService::new(&state, &context);
@@ -20,7 +20,7 @@ pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
     )
     .await;
     bus.on::<ItemsAfterCreate, _>(
-        "after.items.create.alcedo_fields",
+        "after.items.create.alcedocore_fields",
         |_, context, state, _| {
             Box::pin(async move {
                 let table_service = SchemaService::new(&state, &context);

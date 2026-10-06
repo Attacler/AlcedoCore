@@ -13,11 +13,11 @@ use crate::services::{
     items::{query::Query, service::ItemsService},
 };
 
-const USERS_COLLECTION: &str = "alcedo_users";
+const USERS_COLLECTION: &str = "alcedocore_users";
 
-/// Registers the global users table (`alcedo_users`) as a collection in every
+/// Registers the global users table (`alcedocore_users`) as a collection in every
 /// app×version schema so it can be a policy target and be referenced by `user`
-/// fields. There is no physical `alcedo_users` table in the app schema; the
+/// fields. There is no physical `alcedocore_users` table in the app schema; the
 /// inspector adds a synthetic entry for it.
 pub(crate) struct M0012Operation {
     app_context: AppContext,
@@ -27,7 +27,7 @@ async fn seed_users_collection(
     state: &AppState,
     app_context: &AppContext,
 ) -> Result<(), AlcedoError> {
-    let table = "alcedo_collections".to_string();
+    let table = "alcedocore_collections".to_string();
     let mut service = ItemsService::new(state, app_context, &table);
 
     let mut existing = Query::eq("table", json!(USERS_COLLECTION));

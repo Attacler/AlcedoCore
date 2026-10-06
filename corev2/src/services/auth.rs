@@ -45,7 +45,7 @@ impl AuthService<'_> {
         return AuthService {
             app_state,
             app_context: context,
-            collection: "alcedo_users".to_string(),
+            collection: "alcedocore_users".to_string(),
         };
     }
 
@@ -87,7 +87,7 @@ impl AuthService<'_> {
     ) -> Result<Option<i32>, AlcedoError> {
         let apps = self
             .read_by_eq(
-                "alcedo_apps",
+                "alcedocore_apps",
                 "api_name",
                 Value::String(app_name.to_string()),
             )
@@ -102,7 +102,7 @@ impl AuthService<'_> {
 
         let versions = self
             .read_by_eq(
-                "alcedo_versions",
+                "alcedocore_versions",
                 "version_name",
                 Value::String(version_name.to_string()),
             )
@@ -115,7 +115,7 @@ impl AuthService<'_> {
             return Ok(None);
         };
 
-        let collection = "alcedo_apps_versions".to_string();
+        let collection = "alcedocore_apps_versions".to_string();
         let service = ItemsService::new(&self.app_state, &self.app_context, &collection);
         let link = service
             .read_items_by_query(Query {
@@ -142,7 +142,7 @@ impl AuthService<'_> {
     ) -> Result<Option<Uuid>, AlcedoError> {
         let prefix = &token[..token.len().min(10)];
 
-        let collection = "alcedo_developer_api_keys".to_string();
+        let collection = "alcedocore_developer_api_keys".to_string();
         let service = ItemsService::new(&self.app_state, &self.app_context, &collection);
 
         let rows = service
@@ -176,7 +176,7 @@ impl AuthService<'_> {
     }
 
     async fn touch_developer_key(&self, id: Uuid) -> Result<(), AlcedoError> {
-        let collection = "alcedo_developer_api_keys".to_string();
+        let collection = "alcedocore_developer_api_keys".to_string();
         let mut service = ItemsService::new(&self.app_state, &self.app_context, &collection);
 
         let mut query = Query::eq("id", Value::String(id.to_string()));
@@ -269,7 +269,7 @@ impl AuthService<'_> {
         execute_query(
             &self.app_state,
             format!(
-                "UPDATE alcedo.alcedo_users SET last_login = NOW() WHERE id = '{}'",
+                "UPDATE alcedocore.alcedocore_users SET last_login = NOW() WHERE id = '{}'",
                 user_id
             ),
         )

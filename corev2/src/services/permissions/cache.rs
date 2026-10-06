@@ -1,6 +1,6 @@
 //! Caching for permission resolution.
 //!
-//! Resolving access is a pure read of `alcedo_user_roles` (which roles an
+//! Resolving access is a pure read of `alcedocore_user_roles` (which roles an
 //! identity holds) composed with `alcedocore_policy_permissions` joined to
 //! `alcedocore_role_policies` (what those roles grant). Both are written only
 //! through `ItemsService`, so the system-hook bus can invalidate them.
@@ -9,7 +9,7 @@
 //!
 //! - `auth:sessions:{schema}:{userId}` → the caller's role ids, plus whether they
 //!   are an app admin. TTL is short (the session's own lifetime is enforced
-//!   elsewhere); the `alcedo_user_roles` / `alcedo_role_scopes` hooks refresh it.
+//!   elsewhere); the `alcedocore_user_roles` / `alcedocore_role_scopes` hooks refresh it.
 //! - `auth:rules:{schema}:{roleId}` → every policy permission attached to that
 //!   role, as the raw DB rows. TTL is long (24h) because the policy hooks
 //!   refresh it on any write.
@@ -42,7 +42,7 @@ fn role_rules_key(schema: &str, role_id: &str) -> String {
 }
 
 /// A caller's cached role membership, plus the `is_app_admin` verdict that is
-/// derived from the same tables (`alcedo_roles` + `alcedo_role_scopes`).
+/// derived from the same tables (`alcedocore_roles` + `alcedocore_role_scopes`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedIdentity {
     pub role_ids: Vec<String>,
@@ -103,8 +103,8 @@ pub async fn cached_public_identity(
     Ok(identity)
 }
 
-/// Drops a caller's cached roles. Called by the `alcedo_user_roles` /
-/// `alcedo_role_scopes` hooks; without a user id (a role-wide change) every
+/// Drops a caller's cached roles. Called by the `alcedocore_user_roles` /
+/// `alcedocore_role_scopes` hooks; without a user id (a role-wide change) every
 /// caller layer for the schema is dropped.
 pub async fn invalidate_identity(state: &AppState, schema: &str, user_id: Option<Uuid>) {
     match user_id {
@@ -171,7 +171,7 @@ async fn load_identity(
 
     let sql = sea_query::Query::select()
         .column(Alias::new("role_id"))
-        .from((Alias::new(schema), Alias::new("alcedo_user_roles")))
+        .from((Alias::new(schema), Alias::new("alcedocore_user_roles")))
         .and_where(Expr::col(Alias::new("user_id")).eq(Expr::value(user_id.to_string())))
         .to_string(PostgresQueryBuilder);
 
@@ -202,7 +202,7 @@ async fn load_public_identity(
 
     let sql = sea_query::Query::select()
         .column(Alias::new("id"))
-        .from((Alias::new(schema), Alias::new("alcedo_roles")))
+        .from((Alias::new(schema), Alias::new("alcedocore_roles")))
         .and_where(Expr::col(Alias::new("name")).eq(Expr::value("public")))
         .to_string(PostgresQueryBuilder);
 
@@ -293,7 +293,7 @@ mod tests {
 
         let schema_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
-             WHERE table_schema = $1 AND table_name = 'alcedo_roles')",
+             WHERE table_schema = $1 AND table_name = 'alcedocore_roles')",
         )
         .bind(SCHEMA)
         .fetch_one(&*state.database_pool)
@@ -309,7 +309,7 @@ mod tests {
         let policy_id = Uuid::new_v4();
 
         sqlx::query(
-            "INSERT INTO alcedo.alcedo_users (id, email, password_hash, is_admin) \
+            "INSERT INTO alcedocore.alcedocore_users (id, email, password_hash, is_admin) \
              VALUES ($1, $2, 'x', false)",
         )
         .bind(user_id)
@@ -318,7 +318,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(&format!(
-            "INSERT INTO \"{SCHEMA}\".alcedo_roles (id, name, description, is_system) \
+            "INSERT INTO \"{SCHEMA}\".alcedocore_roles (id, name, description, is_system) \
              VALUES ($1, $2, '', false)"
         ))
         .bind(role_id)
@@ -327,7 +327,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(&format!(
-            "INSERT INTO \"{SCHEMA}\".alcedo_user_roles (id, user_id, role_id) VALUES ($1, $2, $3)"
+            "INSERT INTO \"{SCHEMA}\".alcedocore_user_roles (id, user_id, role_id) VALUES ($1, $2, $3)"
         ))
         .bind(Uuid::new_v4())
         .bind(user_id)
@@ -451,18 +451,18 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(&format!(
-            "DELETE FROM \"{SCHEMA}\".alcedo_user_roles WHERE role_id = $1"
+            "DELETE FROM \"{SCHEMA}\".alcedocore_user_roles WHERE role_id = $1"
         ))
         .bind(role_id)
         .execute(&*state.database_pool)
         .await
         .unwrap();
-        sqlx::query(&format!("DELETE FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1"))
+        sqlx::query(&format!("DELETE FROM \"{SCHEMA}\".alcedocore_roles WHERE id = $1"))
             .bind(role_id)
             .execute(&*state.database_pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM alcedo.alcedo_users WHERE id = $1")
+        sqlx::query("DELETE FROM alcedocore.alcedocore_users WHERE id = $1")
             .bind(user_id)
             .execute(&*state.database_pool)
             .await

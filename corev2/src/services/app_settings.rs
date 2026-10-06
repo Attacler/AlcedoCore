@@ -9,7 +9,7 @@ use crate::{
     },
 };
 
-/// App-scoped key/value settings backed by `alcedo_app_settings` in the app
+/// App-scoped key/value settings backed by `alcedocore_app_settings` in the app
 /// schema. Values are stored as JSONB, so strings, booleans and numbers all
 /// round-trip.
 pub struct AppSettingsService<'a> {
@@ -26,7 +26,7 @@ impl AppSettingsService<'_> {
         AppSettingsService {
             app_state,
             app_context,
-            table: "alcedo_app_settings".to_string(),
+            table: "alcedocore_app_settings".to_string(),
         }
     }
 

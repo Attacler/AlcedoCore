@@ -12,7 +12,7 @@ use crate::services::{
 pub async fn setup_user_hooks(bus: &Arc<MultiEventBus>) {
     bus.on::<CoreLoaded, _>("core.loaded", |_event, context, state, tx| {
         Box::pin(async move {
-            let collection = "alcedo_users".to_string();
+            let collection = "alcedocore_users".to_string();
             let mut service = ItemsService::new(&state, &context, &collection);
 
             // Only fetch the uuid of the first user.

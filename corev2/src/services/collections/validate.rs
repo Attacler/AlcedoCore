@@ -30,24 +30,18 @@ pub(crate) fn validate_collection_name(name: &str) -> Result<(), AlcedoError> {
             1,
         ));
     }
-    if name.starts_with("alcedo") {
+    if name.starts_with("alcedocore") {
         return Err(AlcedoError::InvalidInput(
             format!(
-                "'{}' uses the reserved 'alcedo' prefix, which is treated as framework data and bypasses record permissions",
+                "'{}' uses the reserved 'alcedocore' prefix, which is treated as framework data and bypasses record permissions",
                 name
             ),
             1,
         ));
     }
-    let reserved = [
-        "alcedo_users",
-        "alcedo_roles",
-        "alcedo_plugins",
-        "alcedo_collections",
-        "alcedo_fields",
-        "collections",
-        "settings",
-    ];
+    // Any `alcedocore_`-prefixed name is already rejected by the prefix check
+    // above; only these unprefixed names need an explicit entry.
+    let reserved = ["collections", "settings"];
     if reserved.contains(&name) {
         return Err(AlcedoError::InvalidInput(
             format!("'{}' is a reserved system collection name", name),
@@ -138,10 +132,10 @@ pub(crate) async fn validate_related_apps(
             let ok = schema
                 .tables
                 .iter()
-                .any(|t| t.schema == "alcedo" && t.name == GLOBAL_USERS_COLLECTION);
+                .any(|t| t.schema == "alcedocore" && t.name == GLOBAL_USERS_COLLECTION);
             if !ok {
                 return Err(AlcedoError::InvalidInput(
-                    "Related collection 'alcedo_users' not found".to_string(),
+                    "Related collection 'alcedocore_users' not found".to_string(),
                     1,
                 ));
             }

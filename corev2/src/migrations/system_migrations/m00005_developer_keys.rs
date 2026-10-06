@@ -27,7 +27,7 @@ impl Operation<Postgres> for M0005Operation {
 
                     table_service
                         .create_table(
-                            "alcedo_developer_api_keys",
+                            "alcedocore_developer_api_keys",
                             |builder| {
                                 builder.add_col("id", |mut c| {
                                     c.not_null().uuid().primary_key().clone()
@@ -36,10 +36,10 @@ impl Operation<Postgres> for M0005Operation {
                                 builder.add_col("version_id", |mut c| c.not_null().integer().clone());
                                 builder.add_fk(
                                     &app_context,
-                                    "alcedo_developer_api_keys",
+                                    "alcedocore_developer_api_keys",
                                     "version_id",
                                     &app_context,
-                                    "alcedo_versions",
+                                    "alcedocore_versions",
                                     "id",
                                 );
                                 builder.add_col("key_hash", |mut c| c.not_null().text().clone());
@@ -67,7 +67,7 @@ impl Operation<Postgres> for M0005Operation {
     }
 
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
-        sqlx::query("DROP TABLE IF EXISTS alcedo_developer_api_keys CASCADE;")
+        sqlx::query("DROP TABLE IF EXISTS alcedocore_developer_api_keys CASCADE;")
             .execute(connection)
             .await
             .unwrap();

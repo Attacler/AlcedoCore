@@ -6,7 +6,7 @@ use sqlx_migrator::operation::Operation;
 use crate::services::collections::ddl::quote;
 use crate::services::context::AppContext;
 
-/// Adds `alcedo_users.display_name` and makes `alcedo_sessions.user_id` cascade
+/// Adds `alcedocore_users.display_name` and makes `alcedocore_sessions.user_id` cascade
 /// on user delete, so removing a user cleans up their sessions.
 pub(crate) struct M0006Operation {
     app_context: AppContext,
@@ -18,18 +18,18 @@ impl Operation<Postgres> for M0006Operation {
         let schema = quote(&self.app_context.schema_name());
 
         sqlx::query(&format!(
-            r#"ALTER TABLE {schema}."alcedo_users" ADD COLUMN IF NOT EXISTS "display_name" varchar;"#
+            r#"ALTER TABLE {schema}."alcedocore_users" ADD COLUMN IF NOT EXISTS "display_name" varchar;"#
         ))
         .execute(&mut *connection)
         .await?;
 
         sqlx::query(&format!(
-            r#"ALTER TABLE {schema}."alcedo_sessions" DROP CONSTRAINT IF EXISTS "alcedo_sessions_user_id_alcedo_users_id";"#
+            r#"ALTER TABLE {schema}."alcedocore_sessions" DROP CONSTRAINT IF EXISTS "alcedocore_sessions_user_id_alcedocore_users_id";"#
         ))
         .execute(&mut *connection)
         .await?;
         sqlx::query(&format!(
-            r#"ALTER TABLE {schema}."alcedo_sessions" ADD CONSTRAINT "alcedo_sessions_user_id_alcedo_users_id" FOREIGN KEY ("user_id") REFERENCES {schema}."alcedo_users" ("id") ON DELETE CASCADE;"#
+            r#"ALTER TABLE {schema}."alcedocore_sessions" ADD CONSTRAINT "alcedocore_sessions_user_id_alcedocore_users_id" FOREIGN KEY ("user_id") REFERENCES {schema}."alcedocore_users" ("id") ON DELETE CASCADE;"#
         ))
         .execute(&mut *connection)
         .await?;
@@ -40,7 +40,7 @@ impl Operation<Postgres> for M0006Operation {
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
         let schema = quote(&self.app_context.schema_name());
         sqlx::query(&format!(
-            r#"ALTER TABLE {schema}."alcedo_users" DROP COLUMN IF EXISTS "display_name";"#
+            r#"ALTER TABLE {schema}."alcedocore_users" DROP COLUMN IF EXISTS "display_name";"#
         ))
         .execute(&mut *connection)
         .await?;

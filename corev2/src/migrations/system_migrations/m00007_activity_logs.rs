@@ -9,7 +9,7 @@ use crate::services::collections::ddl::quote;
 use crate::services::collections::schema::{SchemaService, TableBuilderExt};
 use crate::services::context::AppContext;
 
-/// Global activity log (system logs) in the `alcedo` schema. Records
+/// Global activity log (system logs) in the `alcedocore` schema. Records
 /// administrative/audit actions and is shared across every app×version.
 pub(crate) struct M0007Operation {
     app_context: AppContext,
@@ -23,7 +23,7 @@ impl Operation<Postgres> for M0007Operation {
 
         table_service
             .create_table(
-                "alcedo_system_logs",
+                "alcedocore_system_logs",
                 |builder| {
                     builder.add_col("id", |mut c| {
                         c.not_null()
@@ -53,14 +53,14 @@ impl Operation<Postgres> for M0007Operation {
         // Indexes mirroring v1's `alcedocore_system_logs` indexes.
         let schema = quote(&self.app_context.schema_name());
         for (name, cols) in [
-            ("idx_alcedo_system_logs_created_at", "created_at DESC"),
-            ("idx_alcedo_system_logs_action", "action"),
-            ("idx_alcedo_system_logs_target", "target"),
-            ("idx_alcedo_system_logs_request_id", "request_id"),
-            ("idx_alcedo_system_logs_actor_id", "actor_id"),
+            ("idx_alcedocore_system_logs_created_at", "created_at DESC"),
+            ("idx_alcedocore_system_logs_action", "action"),
+            ("idx_alcedocore_system_logs_target", "target"),
+            ("idx_alcedocore_system_logs_request_id", "request_id"),
+            ("idx_alcedocore_system_logs_actor_id", "actor_id"),
         ] {
             sqlx::query(&format!(
-                r#"CREATE INDEX IF NOT EXISTS "{name}" ON {schema}."alcedo_system_logs" ({cols});"#
+                r#"CREATE INDEX IF NOT EXISTS "{name}" ON {schema}."alcedocore_system_logs" ({cols});"#
             ))
             .execute(&mut *connection)
             .await?;
@@ -72,7 +72,7 @@ impl Operation<Postgres> for M0007Operation {
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
         let schema = quote(&self.app_context.schema_name());
         sqlx::query(&format!(
-            r#"DROP TABLE IF EXISTS {schema}."alcedo_system_logs" CASCADE;"#
+            r#"DROP TABLE IF EXISTS {schema}."alcedocore_system_logs" CASCADE;"#
         ))
         .execute(&mut *connection)
         .await?;

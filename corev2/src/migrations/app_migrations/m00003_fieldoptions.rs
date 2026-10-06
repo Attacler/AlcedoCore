@@ -21,7 +21,7 @@ impl Operation<Postgres> for M0003Operation {
 
         table_service
             .add_field(
-                "alcedo_fields",
+                "alcedocore_fields",
                 FieldCreationObject {
                     name: "options".to_string(),
                     col_type: "JSONB".to_string(),
@@ -41,7 +41,7 @@ impl Operation<Postgres> for M0003Operation {
         let state = generate_app_state_for_migrations().await;
         let table_service = SchemaService::new(&state, &self.app_context);
         table_service
-            .drop_field("alcedo_fields", "options", &mut None)
+            .drop_field("alcedocore_fields", "options", &mut None)
             .await
             .map_err(|e: crate::services::errors::AlcedoError| Error::Box(Box::new(e)))?;
         Ok(())

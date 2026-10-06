@@ -30,17 +30,17 @@ use crate::services::{
 };
 
 /// Policy/role tables whose writes change the resolved rules, and in the case
-/// of `alcedo_roles` / `alcedo_role_scopes`, the cached app-admin verdict too.
+/// of `alcedocore_roles` / `alcedocore_role_scopes`, the cached app-admin verdict too.
 const RULE_COLLECTIONS: &[&str] = &[
     "alcedocore_policy_permissions",
     "alcedocore_policies",
     "alcedocore_role_policies",
-    "alcedo_roles",
-    "alcedo_role_scopes",
+    "alcedocore_roles",
+    "alcedocore_role_scopes",
 ];
 
-/// `alcedo_user_roles` feeds only the caller layer (role membership).
-const USER_ROLES_COLLECTION: &str = "alcedo_user_roles";
+/// `alcedocore_user_roles` feeds only the caller layer (role membership).
+const USER_ROLES_COLLECTION: &str = "alcedocore_user_roles";
 
 pub async fn setup_permission_hooks(bus: &Arc<MultiEventBus>) {
     for collection in RULE_COLLECTIONS {
@@ -120,7 +120,7 @@ mod tests {
     async fn schema_seeded(state: &AppState) -> bool {
         sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
-             WHERE table_schema = $1 AND table_name = 'alcedo_roles')",
+             WHERE table_schema = $1 AND table_name = 'alcedocore_roles')",
         )
         .bind(SCHEMA)
         .fetch_one(&*state.database_pool)
@@ -161,7 +161,7 @@ mod tests {
         setup_permission_hooks(&state.event_bus).await;
 
         let role_id = Uuid::new_v4();
-        let collection = "alcedo_roles".to_string();
+        let collection = "alcedocore_roles".to_string();
         let ctx = ctx();
         let mut service = ItemsService::new(&state, &ctx, &collection);
 
@@ -183,7 +183,7 @@ mod tests {
         assert!(!present(&state, &rules).await, "rules must be purged");
 
         sqlx::query(&format!(
-            "DELETE FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1"
+            "DELETE FROM \"{SCHEMA}\".alcedocore_roles WHERE id = $1"
         ))
         .bind(role_id)
         .execute(&*state.database_pool)
@@ -191,7 +191,7 @@ mod tests {
         .unwrap();
     }
 
-    /// A write to `alcedo_user_roles` drops only the caller layer; the rule
+    /// A write to `alcedocore_user_roles` drops only the caller layer; the rule
     /// layer is untouched.
     #[tokio::test]
     async fn user_role_write_purges_only_sessions() {
@@ -207,7 +207,7 @@ mod tests {
         let user_id = Uuid::new_v4();
         let role_id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO alcedo.alcedo_users (id, email, password_hash, is_admin) \
+            "INSERT INTO alcedocore.alcedocore_users (id, email, password_hash, is_admin) \
              VALUES ($1, $2, 'x', false)",
         )
         .bind(user_id)
@@ -216,7 +216,7 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(&format!(
-            "INSERT INTO \"{SCHEMA}\".alcedo_roles (id, name, description, is_system) \
+            "INSERT INTO \"{SCHEMA}\".alcedocore_roles (id, name, description, is_system) \
              VALUES ($1, $2, '', false)"
         ))
         .bind(role_id)
@@ -227,7 +227,7 @@ mod tests {
 
         let (sessions, rules) = seed_keys(&state).await;
         let link_id = Uuid::new_v4().to_string();
-        let collection = "alcedo_user_roles".to_string();
+        let collection = "alcedocore_user_roles".to_string();
         let ctx = ctx();
         let mut service = ItemsService::new(&state, &ctx, &collection);
         service
@@ -246,20 +246,20 @@ mod tests {
         assert!(present(&state, &rules).await, "rules must be left intact");
 
         sqlx::query(&format!(
-            "DELETE FROM \"{SCHEMA}\".alcedo_user_roles WHERE role_id = $1"
+            "DELETE FROM \"{SCHEMA}\".alcedocore_user_roles WHERE role_id = $1"
         ))
         .bind(role_id)
         .execute(&*state.database_pool)
         .await
         .unwrap();
         sqlx::query(&format!(
-            "DELETE FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1"
+            "DELETE FROM \"{SCHEMA}\".alcedocore_roles WHERE id = $1"
         ))
         .bind(role_id)
         .execute(&*state.database_pool)
         .await
         .unwrap();
-        sqlx::query("DELETE FROM alcedo.alcedo_users WHERE id = $1")
+        sqlx::query("DELETE FROM alcedocore.alcedocore_users WHERE id = $1")
             .bind(user_id)
             .execute(&*state.database_pool)
             .await
@@ -281,7 +281,7 @@ mod tests {
 
         let (sessions, rules) = seed_keys(&state).await;
         let role_id = Uuid::new_v4();
-        let collection = "alcedo_roles".to_string();
+        let collection = "alcedocore_roles".to_string();
         let ctx = ctx();
         let mut service = ItemsService::new(&state, &ctx, &collection);
 
@@ -310,7 +310,7 @@ mod tests {
         assert!(!present(&state, &sessions).await, "sessions must be purged");
         assert!(!present(&state, &rules).await, "rules must be purged");
 
-        sqlx::query(&format!("DELETE FROM \"{SCHEMA}\".alcedo_roles WHERE id = $1"))
+        sqlx::query(&format!("DELETE FROM \"{SCHEMA}\".alcedocore_roles WHERE id = $1"))
             .bind(role_id)
             .execute(&*state.database_pool)
             .await

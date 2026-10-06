@@ -251,11 +251,11 @@ fn value_to_string(value: Option<&Value>) -> String {
     }
 }
 
-/// Framework/meta collections (`alcedo_*`, `alcedocore_*`) are never subject to
+/// Framework/meta collections (`alcedocore_*`, `alcedocore_*`) are never subject to
 /// record-level read permissions. The global users table is the exception: it has
 /// a synthetic collection (id `-1`) so policies can be defined on it.
 pub(crate) fn is_framework_collection(collection: &str) -> bool {
-    collection.starts_with("alcedo") && collection != GLOBAL_USERS_COLLECTION
+    collection.starts_with("alcedocore") && collection != GLOBAL_USERS_COLLECTION
 }
 
 /// Normalizes a stored `fields` JSON array into a rule whitelist. A non-empty
@@ -393,7 +393,7 @@ fn collect_user_paths_in_string(s: &str, out: &mut BTreeSet<String>) {
     }
 }
 
-/// Values resolved for the calling user: flat `alcedo_users` columns keyed by
+/// Values resolved for the calling user: flat `alcedocore_users` columns keyed by
 /// column name, plus deeper relation values keyed by their full dotted path
 /// (e.g. `customer.region.name`).
 #[derive(Debug, Default, Clone)]
@@ -483,13 +483,13 @@ fn replace_placeholders(s: &str, user: &UserValues) -> String {
 ///
 /// `sea-query` builds the statement without going through `ItemsService`: the
 /// latter routes through the item query path, which itself resolves access, so
-/// reading `alcedo_users` via it would create an async recursion cycle now that
+/// reading `alcedocore_users` via it would create an async recursion cycle now that
 /// relation reads also resolve access. `sea-query` is a pure SQL builder and
 /// carries no such risk. A missing user is treated as "not an admin".
 async fn is_admin_user(state: &AppState, user_id: Uuid) -> Result<bool, AlcedoError> {
     let sql = sea_query::Query::select()
         .column(Alias::new("is_admin"))
-        .from((Alias::new("alcedo"), Alias::new("alcedo_users")))
+        .from((Alias::new("alcedocore"), Alias::new("alcedocore_users")))
         .and_where(Expr::col(Alias::new("id")).eq(Expr::value(user_id.to_string())))
         .to_string(PostgresQueryBuilder);
 
@@ -528,19 +528,19 @@ pub(crate) async fn is_app_admin_in_schema(
     let sql = sea_query::Query::select()
         .expr(Expr::value(1))
         .from_as(
-            (Alias::new(schema), Alias::new("alcedo_user_roles")),
+            (Alias::new(schema), Alias::new("alcedocore_user_roles")),
             Alias::new("ur"),
         )
         .join_as(
             JoinType::InnerJoin,
-            (Alias::new(schema), Alias::new("alcedo_roles")),
+            (Alias::new(schema), Alias::new("alcedocore_roles")),
             Alias::new("r"),
             Expr::col((Alias::new("r"), Alias::new("id")))
                 .equals((Alias::new("ur"), Alias::new("role_id"))),
         )
         .join_as(
             JoinType::LeftJoin,
-            (Alias::new(schema), Alias::new("alcedo_role_scopes")),
+            (Alias::new(schema), Alias::new("alcedocore_role_scopes")),
             Alias::new("rs"),
             Expr::col((Alias::new("rs"), Alias::new("role_id")))
                 .equals((Alias::new("ur"), Alias::new("role_id"))),
@@ -594,7 +594,7 @@ fn scope_to_identity(select: &mut SelectStatement, schema: &str, identity: &Auth
         AuthLevel::User(user_id) => {
             select.join_as(
                 JoinType::InnerJoin,
-                (Alias::new(schema), Alias::new("alcedo_user_roles")),
+                (Alias::new(schema), Alias::new("alcedocore_user_roles")),
                 Alias::new("ur"),
                 Expr::col((Alias::new("ur"), Alias::new("role_id")))
                     .equals((Alias::new("rp"), Alias::new("role_id"))),
@@ -607,7 +607,7 @@ fn scope_to_identity(select: &mut SelectStatement, schema: &str, identity: &Auth
         AuthLevel::Public => {
             select.join_as(
                 JoinType::InnerJoin,
-                (Alias::new(schema), Alias::new("alcedo_roles")),
+                (Alias::new(schema), Alias::new("alcedocore_roles")),
                 Alias::new("r"),
                 Expr::col((Alias::new("r"), Alias::new("id")))
                     .equals((Alias::new("rp"), Alias::new("role_id"))),
@@ -620,7 +620,7 @@ fn scope_to_identity(select: &mut SelectStatement, schema: &str, identity: &Auth
     }
 }
 
-/// Fetches the requested `alcedo_users` columns for `user_id`. Returns `None`
+/// Fetches the requested `alcedocore_users` columns for `user_id`. Returns `None`
 /// when no such user exists (the caller then fails closed).
 async fn fetch_user_columns(
     state: &AppState,
@@ -637,7 +637,7 @@ async fn fetch_user_columns(
         select.column(Alias::new(column));
     }
     select
-        .from((Alias::new("alcedo"), Alias::new("alcedo_users")))
+        .from((Alias::new("alcedocore"), Alias::new("alcedocore_users")))
         .and_where(Expr::col(Alias::new("id")).eq(Expr::value(user_id.to_string())));
     let sql = select.to_string(PostgresQueryBuilder);
 
@@ -649,7 +649,7 @@ async fn fetch_user_columns(
 }
 
 /// Resolves the relation part of `{user.<relation>...<column>}` placeholders of
-/// any depth without relying on `alcedo_collections` metadata.
+/// any depth without relying on `alcedocore_collections` metadata.
 ///
 /// Each step follows the foreign key of the current table's `<segment>` column
 /// (a single-valued `M:1`); the final segment is read as a scalar. A null FK or
@@ -683,7 +683,7 @@ async fn fetch_user_nested(
     Ok(nested)
 }
 
-/// Walks `alcedo_users` -> ... -> `<column>` following foreign keys and returns
+/// Walks `alcedocore_users` -> ... -> `<column>` following foreign keys and returns
 /// the resolved column value for `path` (e.g. `customer.region.name`), or `None`
 /// when the path is unsafe or does not resolve.
 async fn resolve_user_nested_path(
@@ -696,8 +696,8 @@ async fn resolve_user_nested_path(
         return Ok(None);
     }
 
-    let mut schema = "alcedo".to_string();
-    let mut table = "alcedo_users".to_string();
+    let mut schema = "alcedocore".to_string();
+    let mut table = "alcedocore_users".to_string();
     let mut row_id = Value::String(user_id.to_string());
 
     for (index, segment) in segments.iter().enumerate() {
@@ -821,7 +821,7 @@ pub async fn resolve_access(
     identity: Option<&AuthLevel>,
     action: &str,
 ) -> Result<ReadAccess, AlcedoError> {
-    // Framework/meta collections (`alcedo_*`, `alcedocore_*`) carry no policies,
+    // Framework/meta collections (`alcedocore_*`, `alcedocore_*`) carry no policies,
     // so they are never subject to record-level checks. This must be decided
     // before the no-identity guard below: internal helpers (e.g. resolving a
     // user's role names) read those tables with `identity: None` in an
@@ -857,7 +857,7 @@ pub async fn resolve_access(
     }
 
     // The runtime `search_path` does not include the per-app-version schema, so
-    // all app-bound tables are qualified explicitly. `alcedo_users` is global.
+    // all app-bound tables are qualified explicitly. `alcedocore_users` is global.
     let schema = context.schema_name();
 
     // Layer 1 for a user must resolve before collection metadata: a global or
@@ -877,7 +877,7 @@ pub async fn resolve_access(
 
     // No collection metadata (e.g. a table created outside the collections API,
     // or a stale schema cache) means access cannot be evaluated: fail closed.
-    // This also keeps the global `alcedo` schema — which has no role tables —
+    // This also keeps the global `alcedocore` schema — which has no role tables —
     // from reaching the anonymous role cache below.
     let Some(collection_id) = state
         .database_schema
@@ -1365,10 +1365,10 @@ mod tests {
 
     #[test]
     fn framework_collection_gate() {
-        // `alcedo_users` is the exception: it is a policy-able collection.
-        assert!(!is_framework_collection("alcedo_users"));
+        // `alcedocore_users` is the exception: it is a policy-able collection.
+        assert!(!is_framework_collection("alcedocore_users"));
         assert!(is_framework_collection("alcedocore_policy_permissions"));
-        assert!(is_framework_collection("alcedo_collections"));
+        assert!(is_framework_collection("alcedocore_collections"));
         assert!(!is_framework_collection("orders"));
         assert!(!is_framework_collection("customers"));
     }
@@ -1511,26 +1511,26 @@ mod tests {
         let public = AuthLevel::Public;
         // A framework collection bypasses read checks even for anonymous.
         assert!(matches!(
-            resolve_read_access(&state, &system_ctx, "alcedo_collections", Some(&public))
+            resolve_read_access(&state, &system_ctx, "alcedocore_collections", Some(&public))
                 .await
                 .unwrap(),
             ReadAccess::Unrestricted
         ));
-        // `alcedo_users` is policy-able, so public access is not unrestricted.
+        // `alcedocore_users` is policy-able, so public access is not unrestricted.
         assert!(!matches!(
-            resolve_read_access(&state, &system_ctx, "alcedo_users", Some(&public))
+            resolve_read_access(&state, &system_ctx, "alcedocore_users", Some(&public))
                 .await
                 .unwrap(),
             ReadAccess::Unrestricted
         ));
 
         // `get_app_state` only loads raw tables/columns and the seeded
-        // `alcedo_apps_versions` is empty, so collection metadata is not
+        // `alcedocore_apps_versions` is empty, so collection metadata is not
         // populated. Source a collection id directly and inject the meta the
         // resolver reads. Skip when the DB has no seeded app collection.
         let schemas: Vec<String> = sqlx::query_scalar(
             "SELECT table_schema FROM information_schema.tables \
-             WHERE table_name = 'alcedo_collections' AND table_schema LIKE '%010%' \
+             WHERE table_name = 'alcedocore_collections' AND table_schema LIKE '%010%' \
              ORDER BY table_schema",
         )
         .fetch_all(&*state.database_pool)
@@ -1540,8 +1540,8 @@ mod tests {
         let mut chosen = None;
         for schema_name in schemas {
             let sql = format!(
-                "SELECT id, app_name, app_version, \"table\" FROM \"{schema_name}\".alcedo_collections \
-                 WHERE \"table\" NOT LIKE 'alcedo%' ORDER BY id LIMIT 1"
+                "SELECT id, app_name, app_version, \"table\" FROM \"{schema_name}\".alcedocore_collections \
+                 WHERE \"table\" NOT LIKE 'alcedocore%' ORDER BY id LIMIT 1"
             );
             if let Some(row) = sqlx::query(&sql)
                 .fetch_optional(&*state.database_pool)
@@ -1612,7 +1612,7 @@ mod tests {
 
         // If a global admin exists, the admin bypass must return Unrestricted.
         let admin_id =
-            sqlx::query("SELECT id FROM alcedo.alcedo_users WHERE is_admin = true LIMIT 1")
+            sqlx::query("SELECT id FROM alcedocore.alcedocore_users WHERE is_admin = true LIMIT 1")
                 .fetch_optional(&*state.database_pool)
                 .await
                 .unwrap()
@@ -1637,7 +1637,7 @@ mod tests {
         let state = crate::utils::test_utils::get_app_state().await;
 
         let user_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM alcedo.alcedo_users WHERE email = 'customer@acme.example'",
+            "SELECT id FROM alcedocore.alcedocore_users WHERE email = 'customer@acme.example'",
         )
         .fetch_optional(&*state.database_pool)
         .await
@@ -1659,7 +1659,7 @@ mod tests {
             Some("customer@acme.example")
         );
 
-        // A dotted path whose relation column does not exist on `alcedo_users`
+        // A dotted path whose relation column does not exist on `alcedocore_users`
         // is a policy misconfiguration and must error, not silently match nothing.
         let mut nested_paths = BTreeSet::new();
         nested_paths.insert("org.name".to_string());
@@ -1673,7 +1673,7 @@ mod tests {
         // Direct admin lookup (no ItemsService recursion) matches the DB flag.
         assert!(!is_admin_user(&state, user_id).await.unwrap());
         let admin_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM alcedo.alcedo_users WHERE is_admin = true LIMIT 1",
+            "SELECT id FROM alcedocore.alcedocore_users WHERE is_admin = true LIMIT 1",
         )
         .fetch_optional(&*state.database_pool)
         .await
@@ -1700,7 +1700,7 @@ mod integration_tests {
 
     const CRM_SCHEMA: &str = "crm010production";
 
-    /// `get_app_state` does not run `refresh_meta`, so inject the `alcedo_collections`
+    /// `get_app_state` does not run `refresh_meta`, so inject the `alcedocore_collections`
     /// metadata the resolver reads. Injects *every* collection in the schema so
     /// tests referencing relation tables (`customers_users`, `tickets`, …) resolve.
     /// Returns the `customers` collection id for convenience.
@@ -1711,7 +1711,7 @@ mod integration_tests {
     /// Injects collection metadata for all collections in `schema_name`.
     async fn inject_schema_meta(state: &AppState, schema_name: &str) -> Option<i64> {
         let rows = sqlx::query(&format!(
-            "SELECT id, app_name, app_version, \"table\", name FROM \"{schema_name}\".alcedo_collections"
+            "SELECT id, app_name, app_version, \"table\", name FROM \"{schema_name}\".alcedocore_collections"
         ))
         .fetch_all(&*state.database_pool)
         .await
@@ -1791,7 +1791,7 @@ mod integration_tests {
         }
 
         let user_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM alcedo.alcedo_users WHERE email = 'customer@acme.example'",
+            "SELECT id FROM alcedocore.alcedocore_users WHERE email = 'customer@acme.example'",
         )
         .fetch_optional(&*state.database_pool)
         .await
@@ -1854,7 +1854,7 @@ mod integration_tests {
         let state = crate::utils::test_utils::get_app_state().await;
 
         let customer_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM alcedo.alcedo_users WHERE email = 'customer@acme.example'",
+            "SELECT id FROM alcedocore.alcedocore_users WHERE email = 'customer@acme.example'",
         )
         .fetch_optional(&*state.database_pool)
         .await
@@ -1865,7 +1865,7 @@ mod integration_tests {
         };
 
         let customers_id = sqlx::query_scalar::<_, i32>(&format!(
-            "SELECT id FROM \"{CRM_SCHEMA}\".alcedo_collections WHERE \"table\" = 'customers' ORDER BY id LIMIT 1"
+            "SELECT id FROM \"{CRM_SCHEMA}\".alcedocore_collections WHERE \"table\" = 'customers' ORDER BY id LIMIT 1"
         ))
         .fetch_optional(&*state.database_pool)
         .await
@@ -1876,7 +1876,7 @@ mod integration_tests {
         };
 
         let contacts_id = sqlx::query_scalar::<_, i32>(&format!(
-            "SELECT id FROM \"{CRM_SCHEMA}\".alcedo_collections WHERE \"table\" = 'contacts' ORDER BY id LIMIT 1"
+            "SELECT id FROM \"{CRM_SCHEMA}\".alcedocore_collections WHERE \"table\" = 'contacts' ORDER BY id LIMIT 1"
         ))
         .fetch_optional(&*state.database_pool)
         .await
@@ -1910,7 +1910,7 @@ mod integration_tests {
 
         // A global admin bypasses read checks entirely.
         let admin_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM alcedo.alcedo_users WHERE is_admin = true LIMIT 1",
+            "SELECT id FROM alcedocore.alcedocore_users WHERE is_admin = true LIMIT 1",
         )
         .fetch_optional(&*state.database_pool)
         .await
@@ -2197,7 +2197,7 @@ mod integration_tests {
         let state = crate::utils::test_utils::get_app_state().await;
 
         let user_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM alcedo.alcedo_users WHERE email = 'customer@acme.example'",
+            "SELECT id FROM alcedocore.alcedocore_users WHERE email = 'customer@acme.example'",
         )
         .fetch_optional(&*state.database_pool)
         .await
@@ -2229,14 +2229,14 @@ mod integration_tests {
         let state = crate::utils::test_utils::get_app_state().await;
         let email = "perm-appadmin@test.local";
 
-        sqlx::query("DELETE FROM alcedo.alcedo_users WHERE email = $1")
+        sqlx::query("DELETE FROM alcedocore.alcedocore_users WHERE email = $1")
             .bind(email)
             .execute(&*state.database_pool)
             .await
             .unwrap();
         let user_id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO alcedo.alcedo_users (id, email, password_hash, is_admin) VALUES ($1,$2,'x',false)",
+            "INSERT INTO alcedocore.alcedocore_users (id, email, password_hash, is_admin) VALUES ($1,$2,'x',false)",
         )
         .bind(user_id)
         .bind(email)
@@ -2245,13 +2245,13 @@ mod integration_tests {
         .unwrap();
 
         let role_id: Option<Uuid> = sqlx::query_scalar(&format!(
-            "SELECT id FROM \"{CRM_SCHEMA}\".alcedo_roles WHERE name = 'admin' LIMIT 1"
+            "SELECT id FROM \"{CRM_SCHEMA}\".alcedocore_roles WHERE name = 'admin' LIMIT 1"
         ))
         .fetch_optional(&*state.database_pool)
         .await
         .unwrap();
         let Some(role_id) = role_id else {
-            sqlx::query("DELETE FROM alcedo.alcedo_users WHERE id = $1")
+            sqlx::query("DELETE FROM alcedocore.alcedocore_users WHERE id = $1")
                 .bind(user_id)
                 .execute(&*state.database_pool)
                 .await
@@ -2260,7 +2260,7 @@ mod integration_tests {
             return;
         };
         sqlx::query(&format!(
-            "INSERT INTO \"{CRM_SCHEMA}\".alcedo_user_roles (id, user_id, role_id) VALUES ($1,$2,$3)"
+            "INSERT INTO \"{CRM_SCHEMA}\".alcedocore_user_roles (id, user_id, role_id) VALUES ($1,$2,$3)"
         ))
         .bind(Uuid::new_v4())
         .bind(user_id)
@@ -2282,13 +2282,13 @@ mod integration_tests {
         );
 
         sqlx::query(&format!(
-            "DELETE FROM \"{CRM_SCHEMA}\".alcedo_user_roles WHERE user_id = $1"
+            "DELETE FROM \"{CRM_SCHEMA}\".alcedocore_user_roles WHERE user_id = $1"
         ))
         .bind(user_id)
         .execute(&*state.database_pool)
         .await
         .unwrap();
-        sqlx::query("DELETE FROM alcedo.alcedo_users WHERE id = $1")
+        sqlx::query("DELETE FROM alcedocore.alcedocore_users WHERE id = $1")
             .bind(user_id)
             .execute(&*state.database_pool)
             .await
@@ -2308,7 +2308,7 @@ mod integration_tests {
         }
 
         let user_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM alcedo.alcedo_users WHERE email = 'customer@acme.example'",
+            "SELECT id FROM alcedocore.alcedocore_users WHERE email = 'customer@acme.example'",
         )
         .fetch_optional(&*state.database_pool)
         .await
@@ -2380,7 +2380,7 @@ mod integration_tests {
         }
 
         let user_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT id FROM alcedo.alcedo_users WHERE email = 'customer@acme.example'",
+            "SELECT id FROM alcedocore.alcedocore_users WHERE email = 'customer@acme.example'",
         )
         .fetch_optional(&*state.database_pool)
         .await
@@ -2394,7 +2394,7 @@ mod integration_tests {
         let has_scoped_delete: bool = sqlx::query_scalar(&format!(
             "SELECT EXISTS(
                 SELECT 1 FROM \"{HELPDESK_SCHEMA}\".alcedocore_policy_permissions pp
-                JOIN \"{HELPDESK_SCHEMA}\".alcedo_collections c ON c.id = pp.collection
+                JOIN \"{HELPDESK_SCHEMA}\".alcedocore_collections c ON c.id = pp.collection
                 WHERE c.\"table\" = 'tickets' AND pp.action = 'delete'
                   AND pp.filter::text LIKE '%%{{user.id}}%%')"
         ))

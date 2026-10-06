@@ -120,7 +120,7 @@ async fn get_ts_schema(
     };
     let schema = state.database_schema.read().await;
 
-    let mut types = "type alcedo_apps = {\n".to_string();
+    let mut types = "type alcedocore_apps = {\n".to_string();
     let schemas_from_version: Vec<_> = schema
         .app_versions
         .iter()
@@ -154,7 +154,7 @@ async fn get_ts_schema(
                         .unwrap();
 
                     format!(
-                        "{}|alcedo_apps[\"{}\"][\"{}\"]",
+                        "{}|alcedocore_apps[\"{}\"][\"{}\"]",
                         column_type_to_ts(column.data_type.to_string()),
                         find_version.app_name,
                         find_app.name

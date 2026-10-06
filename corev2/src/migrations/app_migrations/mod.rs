@@ -91,7 +91,7 @@ pub async fn run_app_migrations(database_pool: &Pool<Postgres>) {
     let app_state = generate_app_state_for_migrations().await;
 
     let app_context = AppContext::system(RequestSource::Migration);
-    let collection = "alcedo_apps_versions".to_string();
+    let collection = "alcedocore_apps_versions".to_string();
     let table_service = SchemaService::new(&app_state, &app_context);
     table_service.refresh_schema().await;
 
@@ -111,7 +111,7 @@ pub async fn run_app_migrations(database_pool: &Pool<Postgres>) {
             ..Default::default()
         })
         .await
-        .expect("Could not query alcedo apps");
+        .expect("Could not query alcedocore apps");
 
     for app in apps {
         let app_context = AppContext {

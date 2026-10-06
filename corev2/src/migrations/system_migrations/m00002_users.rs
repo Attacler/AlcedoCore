@@ -26,7 +26,7 @@ impl Operation<Postgres> for M0002Operation {
 
                     table_service
                         .create_table(
-                            "alcedo_users",
+                            "alcedocore_users",
                             |builder| {
                                 builder.add_col("id", |mut c| {
                                     c.not_null().uuid().primary_key().clone()
@@ -60,7 +60,7 @@ impl Operation<Postgres> for M0002Operation {
     }
 
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
-        sqlx::query("DROP TABLE IF EXISTS alcedo_users CASCADE;")
+        sqlx::query("DROP TABLE IF EXISTS alcedocore_users CASCADE;")
             .execute(connection)
             .await
             .unwrap();

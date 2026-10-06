@@ -29,7 +29,7 @@ impl Operation<Postgres> for M0004Operation {
 
                     table_service
                         .create_table(
-                            "alcedo_roles",
+                            "alcedocore_roles",
                             |builder| {
                                 builder.add_col("id", |mut c| {
                                     c.not_null().uuid().primary_key().clone()
@@ -53,7 +53,7 @@ impl Operation<Postgres> for M0004Operation {
 
                     table_service
                         .create_table(
-                            "alcedo_role_scopes",
+                            "alcedocore_role_scopes",
                             |builder| {
                                 builder.add_col("id", |mut c| {
                                     c.not_null().uuid().primary_key().clone()
@@ -68,7 +68,7 @@ impl Operation<Postgres> for M0004Operation {
 
                     table_service
                         .create_table(
-                            "alcedo_user_roles",
+                            "alcedocore_user_roles",
                             |builder| {
                                 builder.add_col("id", |mut c| {
                                     c.not_null().uuid().primary_key().clone()
@@ -77,18 +77,18 @@ impl Operation<Postgres> for M0004Operation {
                                 builder.add_col("role_id", |mut c| c.not_null().uuid().clone());
                                 builder.add_fk(
                                     &app_context,
-                                    "alcedo_user_roles",
+                                    "alcedocore_user_roles",
                                     "user_id",
                                     &global_context,
-                                    "alcedo_users",
+                                    "alcedocore_users",
                                     "id",
                                 );
                                 builder.add_fk(
                                     &app_context,
-                                    "alcedo_user_roles",
+                                    "alcedocore_user_roles",
                                     "role_id",
                                     &app_context,
-                                    "alcedo_roles",
+                                    "alcedocore_roles",
                                     "id",
                                 );
                             },
@@ -128,7 +128,7 @@ impl Operation<Postgres> for M0004Operation {
                                     "alcedocore_role_policies",
                                     "role_id",
                                     &app_context,
-                                    "alcedo_roles",
+                                    "alcedocore_roles",
                                     "id",
                                 );
                             },
@@ -161,7 +161,7 @@ impl Operation<Postgres> for M0004Operation {
                                     "alcedocore_policy_permissions",
                                     "collection",
                                     &app_context,
-                                    "alcedo_collections",
+                                    "alcedocore_collections",
                                     "id",
                                 );
 
@@ -197,7 +197,7 @@ impl Operation<Postgres> for M0004Operation {
     }
 
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
-        sqlx::query("DROP TABLE IF EXISTS alcedo_roles,alcedo_role_scopes,alcedo_user_roles,alcedocore_policies,alcedocore_role_policies,alcedocore_policy_permissions CASCADE;")
+        sqlx::query("DROP TABLE IF EXISTS alcedocore_roles,alcedocore_role_scopes,alcedocore_user_roles,alcedocore_policies,alcedocore_role_policies,alcedocore_policy_permissions CASCADE;")
             .execute(connection)
             .await
             .unwrap();

@@ -19,8 +19,8 @@ impl Operation<Postgres> for M0007Operation {
             "SELECT c.\"table\" AS source_table, f.api_name AS field_name, \
                     f.options->>'related_collection' AS related_collection, \
                     f.options->>'related_app' AS related_app \
-             FROM {schema}.alcedo_fields f \
-             JOIN {schema}.alcedo_collections c ON c.id = f.collection_id \
+             FROM {schema}.alcedocore_fields f \
+             JOIN {schema}.alcedocore_collections c ON c.id = f.collection_id \
              WHERE f.options->>'type' = 'relationship' \
                AND f.options->>'relationship_type' = 'one_to_many'"
         ))

@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-pub const USERS_COLLECTION: &str = "alcedo_users";
+pub const USERS_COLLECTION: &str = "alcedocore_users";
 
 const MIN_PASSWORD_LEN: usize = 8;
 
@@ -28,7 +28,7 @@ fn without_secret(mut user: Map<String, Value>) -> Map<String, Value> {
     user
 }
 
-/// All `alcedo_users` reads and writes live here so the controller only deals
+/// All `alcedocore_users` reads and writes live here so the controller only deals
 /// with HTTP concerns (auth level, path/body parsing, response envelope).
 pub struct UsersService<'a> {
     app_state: &'a AppState,

@@ -50,18 +50,18 @@ impl DatabaseSchema {
             columns: vec![],
         };
 
-        let alcedo_tables_exist: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
-            .bind("alcedo.alcedo_apps_versions")
+        let alcedocore_tables_exist: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind("alcedocore.alcedocore_apps_versions")
             .fetch_one(&*app_state.database_pool)
             .await
             .unwrap();
 
-        if alcedo_tables_exist {
+        if alcedocore_tables_exist {
             let fetch_versions = execute_query(
             &app_state,
-            "select app_id,version_id, name,api_name,version_name from alcedo.alcedo_apps_versions
-join alcedo.alcedo_apps on alcedo.alcedo_apps.id = alcedo.alcedo_apps_versions.app_id
-join alcedo.alcedo_versions on alcedo.alcedo_versions.id = alcedo.alcedo_apps_versions.version_id"
+            "select app_id,version_id, name,api_name,version_name from alcedocore.alcedocore_apps_versions
+join alcedocore.alcedocore_apps on alcedocore.alcedocore_apps.id = alcedocore.alcedocore_apps_versions.app_id
+join alcedocore.alcedocore_versions on alcedocore.alcedocore_versions.id = alcedocore.alcedocore_apps_versions.version_id"
                 .to_string(),
         )
         .await;
@@ -89,7 +89,7 @@ join alcedo.alcedo_versions on alcedo.alcedo_versions.id = alcedo.alcedo_apps_ve
         let fetch_tables = execute_query(
             &app_state,
             "select * from information_schema.tables 
-  WHERE (table_schema like '%010%' or table_schema = 'alcedo') and table_type = 'BASE TABLE'"
+  WHERE (table_schema like '%010%' or table_schema = 'alcedocore') and table_type = 'BASE TABLE'"
                 .to_string(),
         )
         .await;
@@ -109,7 +109,7 @@ join alcedo.alcedo_versions on alcedo.alcedo_versions.id = alcedo.alcedo_apps_ve
             &app_state,
             "SELECT *
 FROM information_schema.columns
-WHERE (table_schema like '%010%' or table_schema = 'alcedo')
+WHERE (table_schema like '%010%' or table_schema = 'alcedocore')
 "
             .to_string(),
         )
@@ -285,12 +285,12 @@ ORDER BY tc.table_schema, tc.table_name, kcu.ordinal_position;
 
         // Register the global users table as a collection in every app schema so
         // it can be a policy target and be referenced by `user` fields. The
-        // physical table lives in the `alcedo` schema; the synthetic entry uses
+        // physical table lives in the `alcedocore` schema; the synthetic entry uses
         // the reserved collection id `-1`.
         let users_columns: Vec<Column> = schema
             .columns
             .iter()
-            .filter(|c| c.schema == "alcedo" && c.table == "alcedo_users")
+            .filter(|c| c.schema == "alcedocore" && c.table == "alcedocore_users")
             .cloned()
             .collect();
         if !users_columns.is_empty() {
@@ -299,14 +299,14 @@ ORDER BY tc.table_schema, tc.table_name, kcu.ordinal_position;
                 if schema
                     .tables
                     .iter()
-                    .any(|t| t.schema == app_schema && t.name == "alcedo_users")
+                    .any(|t| t.schema == app_schema && t.name == "alcedocore_users")
                 {
                     continue;
                 }
                 schema.tables.push(Table {
-                    name: "alcedo_users".to_string(),
+                    name: "alcedocore_users".to_string(),
                     schema: app_schema.clone(),
-                    // Meta is attached from the seeded `alcedo_collections` row
+                    // Meta is attached from the seeded `alcedocore_collections` row
                     // by `refresh_meta`.
                     meta: None,
                 });

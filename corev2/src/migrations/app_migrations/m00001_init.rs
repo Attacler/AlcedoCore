@@ -24,7 +24,7 @@ impl Operation<Postgres> for M0001Operation {
 
         table_service
             .create_table(
-                "alcedo_collections",
+                "alcedocore_collections",
                 |builder| {
                     builder.add_col("id", |mut c: sea_query::ColumnDef| {
                         c.not_null()
@@ -55,7 +55,7 @@ impl Operation<Postgres> for M0001Operation {
 
         table_service
             .create_table(
-                "alcedo_fields",
+                "alcedocore_fields",
                 |builder| {
                     builder.add_col("id", |mut c| {
                         c.not_null()
@@ -67,10 +67,10 @@ impl Operation<Postgres> for M0001Operation {
                     builder.add_col("collection_id", |mut c| c.not_null().integer().clone());
                     builder.add_fk(
                         &app_context,
-                        "alcedo_fields",
+                        "alcedocore_fields",
                         "collection_id",
                         &app_context,
-                        "alcedo_collections",
+                        "alcedocore_collections",
                         "id",
                     );
                     builder.add_col("api_name", |mut c| c.not_null().string().clone());
@@ -82,7 +82,7 @@ impl Operation<Postgres> for M0001Operation {
             .await
             .map_err(|e| Error::Box(Box::new(e)))?;
 
-        let collection = "alcedo_collections".to_string();
+        let collection = "alcedocore_collections".to_string();
         let mut collections_service = ItemsService::new(&state, &app_context, &collection);
 
         let collection_data = collections_service
@@ -92,7 +92,7 @@ impl Operation<Postgres> for M0001Operation {
                         "app_name" => app_context.app_api_name(),
                         "app_version" => app_context.version_api_name(),
                         "name" => "Alcedo collections",
-                        "table" => "alcedo_collections",
+                        "table" => "alcedocore_collections",
                         "singleton" => false,
                         "hidden" => true,
                     },
@@ -100,7 +100,7 @@ impl Operation<Postgres> for M0001Operation {
                         "app_name" => app_context.app_api_name(),
                         "app_version" => app_context.version_api_name(),
                         "name" => "Alcedo fields",
-                        "table" => "alcedo_collections",
+                        "table" => "alcedocore_collections",
                         "singleton" => false,
                         "hidden" => true,
                     },
@@ -114,18 +114,18 @@ impl Operation<Postgres> for M0001Operation {
             .get(0)
             .and_then(|s| s.parse().ok())
             .ok_or_else(|| Error::Box(Box::new(crate::services::errors::AlcedoError::SystemError(
-                "Could not resolve alcedo_collections id".to_string(),
+                "Could not resolve alcedocore_collections id".to_string(),
                 1,
             ))))?;
         let fields_id: i64 = collection_data
             .get(1)
             .and_then(|s| s.parse().ok())
             .ok_or_else(|| Error::Box(Box::new(crate::services::errors::AlcedoError::SystemError(
-                "Could not resolve alcedo_fields id".to_string(),
+                "Could not resolve alcedocore_fields id".to_string(),
                 1,
             ))))?;
 
-        let collection = "alcedo_fields".to_string();
+        let collection = "alcedocore_fields".to_string();
         let mut fields_service = ItemsService::new(&state, &app_context, &collection);
 
         let fields_in_collection_table =
@@ -168,11 +168,11 @@ impl Operation<Postgres> for M0001Operation {
         let state = generate_app_state_for_migrations().await;
         let table_service = SchemaService::new(&state, &self.app_context);
         table_service
-            .drop_table("alcedo_fields", &mut None)
+            .drop_table("alcedocore_fields", &mut None)
             .await
             .map_err(|e: crate::services::errors::AlcedoError| Error::Box(Box::new(e)))?;
         table_service
-            .drop_table("alcedo_collections", &mut None)
+            .drop_table("alcedocore_collections", &mut None)
             .await
             .map_err(|e: crate::services::errors::AlcedoError| Error::Box(Box::new(e)))?;
         Ok(())

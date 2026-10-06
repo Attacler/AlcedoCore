@@ -1,7 +1,7 @@
 //! Read-only activity-log endpoints.
 //!
 //! Three flat tables feed this module:
-//! - `alcedo.alcedo_system_logs` (global, admin-only) → `GET /api/platform/logs`
+//! - `alcedocore.alcedocore_system_logs` (global, admin-only) → `GET /api/platform/logs`
 //! - `{schema}.alcedocore_system_logs` (app-scoped) → `GET /api/app/logs/system`
 //! - `{schema}.alcedocore_collection_logs` (app-scoped) → `GET /api/app/logs/collections`
 //!
@@ -188,7 +188,7 @@ async fn get_platform_logs(
 
     let condition = log_condition(&params, "target");
     let (limit, offset) = normalized_pagination(&params);
-    read_log_page(&state, "alcedo", "alcedo_system_logs", &condition, limit, offset).await
+    read_log_page(&state, "alcedocore", "alcedocore_system_logs", &condition, limit, offset).await
 }
 
 #[utoipa::path(get, path = "/api/app/logs/system", tag = "Logs",

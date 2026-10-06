@@ -142,7 +142,7 @@ impl SchemaService<'_> {
     pub async fn refresh_schema(&self) {
         self.app_state.refresh_schema().await;
 
-        if self.app_context.app_name == "alcedo" {
+        if self.app_context.app_name == "alcedocore" {
             return;
         }
 
@@ -153,10 +153,10 @@ impl SchemaService<'_> {
     }
 
     pub async fn refresh_meta(&self) {
-        let collection = "alcedo_collections".to_string();
+        let collection = "alcedocore_collections".to_string();
         let meta_collections_service =
             ItemsService::new(self.app_state, self.app_context, &collection);
-        let collection = "alcedo_fields".to_string();
+        let collection = "alcedocore_fields".to_string();
         let meta_fields_service = ItemsService::new(self.app_state, self.app_context, &collection);
 
         let meta_collections = meta_collections_service
@@ -271,7 +271,7 @@ impl SchemaService<'_> {
             }
         };
         if let Some(meta) = meta {
-            let collection = "alcedo_collections".to_string();
+            let collection = "alcedocore_collections".to_string();
             let mut collections_service =
                 ItemsService::new(self.app_state, self.app_context, &collection);
 
@@ -342,7 +342,7 @@ impl SchemaService<'_> {
 
         if let Some(meta) = &find_table.meta {
             if let Some(meta_id) = meta.id {
-                let collection = "alcedo_fields".to_string();
+                let collection = "alcedocore_fields".to_string();
                 let mut column_meta_service =
                     ItemsService::new(&self.app_state, &self.app_context, &collection);
 
@@ -369,7 +369,7 @@ impl SchemaService<'_> {
                     .delete_items_by_query(query, &mut Some(tx_ref))
                     .await?;
 
-                let collection = "alcedo_collections".to_string();
+                let collection = "alcedocore_collections".to_string();
                 let mut table_meta_service =
                     ItemsService::new(&self.app_state, &self.app_context, &collection);
 
@@ -431,7 +431,7 @@ impl SchemaService<'_> {
                 }
             };
 
-            let collection = "alcedo_fields".to_string();
+            let collection = "alcedocore_fields".to_string();
             let mut collections_service =
                 ItemsService::new(self.app_state, self.app_context, &collection);
 
@@ -529,7 +529,7 @@ impl SchemaService<'_> {
 
             if let Some(field) = &find_field {
                 if let Some(meta) = &field.meta {
-                    let collection = "alcedo_fields".to_string();
+                    let collection = "alcedocore_fields".to_string();
                     let mut collections_service =
                         ItemsService::new(self.app_state, self.app_context, &collection);
                     collections_service

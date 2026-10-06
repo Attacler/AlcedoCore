@@ -47,7 +47,7 @@ async fn get_settings(
 ) -> Result<Json<JSendResponse<SettingsResponse>>, AlcedoError> {
     let app_context = AppContext::system(RequestSource::API);
 
-    let collection = "alcedo_settings".to_string();
+    let collection = "alcedocore_settings".to_string();
     let service = ItemsService::new(&state, &app_context, &collection);
 
     let settings = match service.read_items_by_query(Query::default()).await {
@@ -96,7 +96,7 @@ async fn update_settings(
     }
 
     let app_context = AppContext::system_request(RequestSource::API, &headers);
-    let collection = "alcedo_settings".to_string();
+    let collection = "alcedocore_settings".to_string();
     let mut service = ItemsService::new(&state, &app_context, &collection);
 
     // A single seeded row holds the platform name.

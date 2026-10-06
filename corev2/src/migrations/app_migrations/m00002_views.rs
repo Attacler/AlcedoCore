@@ -30,7 +30,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .create_table(
-                "alcedo_collection_views",
+                "alcedocore_collection_views",
                 |builder| {
                     builder.add_col("id", |mut c| {
                         c.not_null()
@@ -50,7 +50,7 @@ impl Operation<Postgres> for M0002Operation {
                     name: "Alcedo collection views".to_string(),
                     singleton: false,
                     sort_field: None,
-                    table: "alcedo_collection_views".to_string(),
+                    table: "alcedocore_collection_views".to_string(),
                 }),
                 &mut None,
             )
@@ -63,7 +63,7 @@ impl Operation<Postgres> for M0002Operation {
                 .tables
                 .iter()
                 .find(|t| {
-                    t.schema == app_context.schema_name() && t.name == "alcedo_collection_views"
+                    t.schema == app_context.schema_name() && t.name == "alcedocore_collection_views"
                 })
                 .unwrap();
 
@@ -72,7 +72,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .add_field(
-                "alcedo_collection_views",
+                "alcedocore_collection_views",
                 FieldCreationObject {
                     name: "collection".to_string(),
                     col_type: "Integer".to_string(),
@@ -80,7 +80,7 @@ impl Operation<Postgres> for M0002Operation {
                     foreign_key: Some(ForeignKey {
                         column: "id".to_string(),
                         schema: app_context.schema_name(),
-                        table: "alcedo_collections".to_string(),
+                        table: "alcedocore_collections".to_string(),
                     }),
                     ..Default::default()
                 },
@@ -97,7 +97,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .add_field(
-                "alcedo_collection_views",
+                "alcedocore_collection_views",
                 FieldCreationObject {
                     name: "name".to_string(),
                     col_type: "string".to_string(),
@@ -116,7 +116,7 @@ impl Operation<Postgres> for M0002Operation {
             .map_err(|e| Error::Box(Box::new(e)))?;
         table_service
             .add_field(
-                "alcedo_collection_views",
+                "alcedocore_collection_views",
                 FieldCreationObject {
                     name: "type".to_string(),
                     col_type: "string".to_string(),
@@ -136,7 +136,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .create_table(
-                "alcedo_collection_view_fields",
+                "alcedocore_collection_view_fields",
                 |builder| {
                     builder.add_col("id", |mut c| {
                         c.not_null()
@@ -156,7 +156,7 @@ impl Operation<Postgres> for M0002Operation {
                     name: "Alcedo collection view fields".to_string(),
                     singleton: false,
                     sort_field: None,
-                    table: "alcedo_collection_view_fields".to_string(),
+                    table: "alcedocore_collection_view_fields".to_string(),
                 }),
                 &mut None,
             )
@@ -170,7 +170,7 @@ impl Operation<Postgres> for M0002Operation {
                 .iter()
                 .find(|t| {
                     t.schema == app_context.schema_name()
-                        && t.name == "alcedo_collection_view_fields"
+                        && t.name == "alcedocore_collection_view_fields"
                 })
                 .unwrap();
 
@@ -179,7 +179,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .add_field(
-                "alcedo_collection_view_fields",
+                "alcedocore_collection_view_fields",
                 FieldCreationObject {
                     name: "view".to_string(),
                     col_type: "Integer".to_string(),
@@ -187,7 +187,7 @@ impl Operation<Postgres> for M0002Operation {
                     foreign_key: Some(ForeignKey {
                         column: "id".to_string(),
                         schema: app_context.schema_name(),
-                        table: "alcedo_collection_views".to_string(),
+                        table: "alcedocore_collection_views".to_string(),
                     }),
                     ..Default::default()
                 },
@@ -204,7 +204,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .add_field(
-                "alcedo_collection_view_fields",
+                "alcedocore_collection_view_fields",
                 FieldCreationObject {
                     name: "field".to_string(),
                     col_type: "Integer".to_string(),
@@ -212,7 +212,7 @@ impl Operation<Postgres> for M0002Operation {
                     foreign_key: Some(ForeignKey {
                         column: "id".to_string(),
                         schema: app_context.schema_name(),
-                        table: "alcedo_fields".to_string(),
+                        table: "alcedocore_fields".to_string(),
                     }),
                     ..Default::default()
                 },
@@ -229,7 +229,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .add_field(
-                "alcedo_collection_view_fields",
+                "alcedocore_collection_view_fields",
                 FieldCreationObject {
                     name: "x".to_string(),
                     col_type: "Integer".to_string(),
@@ -249,7 +249,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .add_field(
-                "alcedo_collection_view_fields",
+                "alcedocore_collection_view_fields",
                 FieldCreationObject {
                     name: "y".to_string(),
                     col_type: "Integer".to_string(),
@@ -269,7 +269,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .add_field(
-                "alcedo_collection_view_fields",
+                "alcedocore_collection_view_fields",
                 FieldCreationObject {
                     name: "w".to_string(),
                     col_type: "Integer".to_string(),
@@ -289,7 +289,7 @@ impl Operation<Postgres> for M0002Operation {
 
         table_service
             .add_field(
-                "alcedo_collection_view_fields",
+                "alcedocore_collection_view_fields",
                 FieldCreationObject {
                     name: "h".to_string(),
                     col_type: "Integer".to_string(),
@@ -314,11 +314,11 @@ impl Operation<Postgres> for M0002Operation {
         let state = generate_app_state_for_migrations().await;
         let table_service = SchemaService::new(&state, &self.app_context);
         table_service
-            .drop_table("alcedo_collection_views", &mut None)
+            .drop_table("alcedocore_collection_views", &mut None)
             .await
             .map_err(|e: crate::services::errors::AlcedoError| Error::Box(Box::new(e)))?;
         table_service
-            .drop_table("alcedo_collection_view_fields", &mut None)
+            .drop_table("alcedocore_collection_view_fields", &mut None)
             .await
             .map_err(|e: crate::services::errors::AlcedoError| Error::Box(Box::new(e)))?;
         Ok(())
@@ -339,7 +339,7 @@ impl Migration<Postgres> for M0002Migration {
     }
 
     /// Depends on m0003_fieldoptions: the rows inserted here carry an
-    /// `options` value which requires the `alcedo_fields.options` column.
+    /// `options` value which requires the `alcedocore_fields.options` column.
     fn parents(&self) -> Vec<Box<dyn Migration<Postgres>>> {
         vec![Box::new(super::m00003_fieldoptions::M0003Migration {
             app_context: self.app_context.clone(),

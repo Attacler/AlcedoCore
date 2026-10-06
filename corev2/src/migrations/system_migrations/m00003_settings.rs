@@ -26,7 +26,7 @@ impl Operation<Postgres> for M0003Operation {
                 async move {
                     let table_service = SchemaService::new(&state, &app_context);
 
-                    let table_name = "alcedo_settings".to_string();
+                    let table_name = "alcedocore_settings".to_string();
                     table_service
                         .create_table(
                             &table_name,
@@ -65,7 +65,7 @@ impl Operation<Postgres> for M0003Operation {
     }
 
     async fn down(&self, connection: &mut PgConnection) -> Result<(), Error> {
-        sqlx::query("DROP TABLE IF EXISTS alcedo_settings CASCADE;")
+        sqlx::query("DROP TABLE IF EXISTS alcedocore_settings CASCADE;")
             .execute(connection)
             .await
             .unwrap();

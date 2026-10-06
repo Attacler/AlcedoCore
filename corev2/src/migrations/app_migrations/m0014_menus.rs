@@ -122,7 +122,7 @@ impl Operation<Postgres> for M0014Operation {
                 r#"ALTER TABLE {schema}."alcedocore_menu_roles" ADD CONSTRAINT "alcedocore_menu_roles_menu_id_fkey" FOREIGN KEY ("menu_id") REFERENCES {schema}."alcedocore_menus" ("id") ON DELETE CASCADE;"#
             ),
             format!(
-                r#"ALTER TABLE {schema}."alcedocore_menu_roles" ADD CONSTRAINT "alcedocore_menu_roles_role_id_fkey" FOREIGN KEY ("role_id") REFERENCES {schema}."alcedo_roles" ("id") ON DELETE CASCADE;"#
+                r#"ALTER TABLE {schema}."alcedocore_menu_roles" ADD CONSTRAINT "alcedocore_menu_roles_role_id_fkey" FOREIGN KEY ("role_id") REFERENCES {schema}."alcedocore_roles" ("id") ON DELETE CASCADE;"#
             ),
         ] {
             sqlx::query(&statement).execute(&mut *connection).await?;

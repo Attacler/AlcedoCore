@@ -221,7 +221,7 @@ impl<'a> FilesService<'a> {
             })?;
 
         let system = AppContext::system(RequestSource::API);
-        let collection = "alcedo_apps".to_string();
+        let collection = "alcedocore_apps".to_string();
         let apps = ItemsService::new(self.state, &system, &collection);
         let rows = apps
             .read_items_by_query(Query {

@@ -50,10 +50,10 @@ impl RolesService<'_> {
         RolesService {
             app_state,
             app_context,
-            roles_table: "alcedo_roles".to_string(),
-            role_scopes_table: "alcedo_role_scopes".to_string(),
+            roles_table: "alcedocore_roles".to_string(),
+            role_scopes_table: "alcedocore_role_scopes".to_string(),
             role_policies_table: "alcedocore_role_policies".to_string(),
-            user_roles_table: "alcedo_user_roles".to_string(),
+            user_roles_table: "alcedocore_user_roles".to_string(),
         }
     }
 
@@ -483,7 +483,7 @@ impl RolesService<'_> {
             request_id: self.app_context.request_id.clone(),
         };
 
-        let user_roles_table = "alcedo_user_roles".to_string();
+        let user_roles_table = "alcedocore_user_roles".to_string();
         let user_roles = ItemsService::new(self.app_state, &ctx, &user_roles_table);
         let mut link_query = Query::eq("user_id", json!(user_id.to_string()));
         link_query.fields = vec!["role_id".to_string()];
@@ -498,7 +498,7 @@ impl RolesService<'_> {
             return Ok(vec![]);
         }
 
-        let roles_table = "alcedo_roles".to_string();
+        let roles_table = "alcedocore_roles".to_string();
         let roles = ItemsService::new(self.app_state, &ctx, &roles_table);
         let mut query = in_filter("id", role_ids);
         query.fields = vec!["name".to_string()];
@@ -593,7 +593,7 @@ impl RolesService<'_> {
             identity: None,
             request_id: self.app_context.request_id.clone(),
         };
-        let user_roles_table = "alcedo_user_roles".to_string();
+        let user_roles_table = "alcedocore_user_roles".to_string();
         let mut service = ItemsService::new(self.app_state, &ctx, &user_roles_table);
 
         let mut deduped: Vec<Uuid> = Vec::new();

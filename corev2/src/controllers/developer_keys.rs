@@ -71,7 +71,7 @@ async fn list_keys(
     require_admin(&state, auth_level).await?;
 
     let context = AppContext::system(RequestSource::API);
-    let collection = "alcedo_developer_api_keys".to_string();
+    let collection = "alcedocore_developer_api_keys".to_string();
     let service = ItemsService::new(&state, &context, &collection);
 
     let mut query_builder = Query {
@@ -129,7 +129,7 @@ async fn create_key(
     };
 
     let context = AppContext::system_request(RequestSource::API, &headers);
-    let collection = "alcedo_developer_api_keys".to_string();
+    let collection = "alcedocore_developer_api_keys".to_string();
     let mut service = ItemsService::new(&state, &context, &collection);
     service.create_many(vec![map], &mut None).await?;
 
@@ -163,7 +163,7 @@ async fn delete_key(
     require_admin(&state, auth_level).await?;
 
     let context = AppContext::system_request(RequestSource::API, &headers);
-    let collection = "alcedo_developer_api_keys".to_string();
+    let collection = "alcedocore_developer_api_keys".to_string();
     let mut service = ItemsService::new(&state, &context, &collection);
 
     let deleted = service
