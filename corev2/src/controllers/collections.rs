@@ -76,6 +76,7 @@ async fn get_schema(
         tables: schema.tables.clone(),
         columns: schema.columns.clone(),
         app_versions: schema.app_versions.clone(),
+        fields: schema.fields.clone(),
     })))
 }
 

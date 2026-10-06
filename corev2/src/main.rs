@@ -7,7 +7,7 @@ use anyhow::Result;
 use axum::{Router, http::StatusCode, middleware, response::IntoResponse};
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 mod app;
@@ -64,17 +64,12 @@ async fn main() -> Result<()> {
         cache,
         kv_cache,
         file_storage,
+        schema_cache_gen: Arc::new(Mutex::new(String::new())),
     };
 
-    let mut write_schema_lock = state.database_schema.write().await;
-    let refresh_schema = write_schema_lock.refresh(&state).await;
-    write_schema_lock.columns = refresh_schema.columns;
-    write_schema_lock.tables = refresh_schema.tables;
-    write_schema_lock.app_versions = refresh_schema.app_versions;
+    state.refresh_schema().await;
 
-    drop(write_schema_lock);
     SchemaService::refresh_all_meta(&state).await;
-
     VersionsService::new(&state).ensure_default().await?;
 
     setup_system_hooks(bus_clone).await;
@@ -106,6 +101,10 @@ async fn main() -> Result<()> {
         .fallback(handler_404)
         .layer(middleware::from_fn(middelware::log::log_request))
         .layer(middleware::from_fn(middelware::request_id::add_request_id))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            middelware::schema_cache::load_schema,
+        ))
         .with_state(state);
 
     println!("🚀 Listening on {listen_address}");

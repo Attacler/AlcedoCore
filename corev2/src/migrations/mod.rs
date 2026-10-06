@@ -1,6 +1,5 @@
 use std::sync::Arc;
-
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::{
     AppState,
@@ -24,6 +23,7 @@ pub async fn generate_app_state_for_migrations() -> AppState {
             columns: vec![],
             tables: vec![],
             app_versions: vec![],
+            fields: vec![],
         })),
         event_bus,
         config,
@@ -34,5 +34,6 @@ pub async fn generate_app_state_for_migrations() -> AppState {
             services::cache::in_memory::InMemoryCache::new(),
         ),
         file_storage,
+        schema_cache_gen: Arc::new(Mutex::new(String::new())),
     }
 }

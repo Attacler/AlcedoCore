@@ -1,4 +1,7 @@
 #[cfg(test)]
+use tokio::sync::Mutex;
+
+#[cfg(test)]
 use crate::{
     AppState,
     services::{cache::in_memory::InMemoryCache, postgres::pool::setup_pool},
@@ -27,17 +30,15 @@ pub async fn get_app_state() -> AppState {
         kv_cache: crate::services::cache::SystemCache::InMemory(InMemoryCache::new()),
         file_storage: std::sync::Arc::new(
             file_storage_local::LocalFileStorage::new(
-                &std::env::temp_dir().join("alcedocore-corev2-test-files").to_string_lossy(),
+                &std::env::temp_dir()
+                    .join("alcedocore-corev2-test-files")
+                    .to_string_lossy(),
             )
             .unwrap(),
         ),
+        schema_cache_gen: Arc::new(Mutex::new(String::new())),
     };
 
-    let mut write_schema_lock = state.database_schema.write().await;
-    let refresh_schema = write_schema_lock.refresh(&state).await;
-    write_schema_lock.columns = refresh_schema.columns;
-    write_schema_lock.tables = refresh_schema.tables;
-    drop(write_schema_lock);
-
+    state.refresh_schema().await;
     state
 }

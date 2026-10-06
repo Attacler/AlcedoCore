@@ -225,6 +225,7 @@ mod tests {
             }],
             tables: vec![],
             app_versions: vec![],
+            fields: vec![],
         }
     }
 
@@ -283,4 +284,3 @@ mod tests {
         assert!(expr.is_none());
     }
 }
-

@@ -28,7 +28,7 @@ use crate::{
         },
         postgres::{
             self,
-            inspector::{Column, DatabaseSchema, TableMeta},
+            inspector::{Column, DatabaseSchema, TableFields, TableMeta},
         },
     },
 };
@@ -142,10 +142,6 @@ impl SchemaService<'_> {
     pub async fn refresh_schema(&self) {
         self.app_state.refresh_schema().await;
 
-        if self.app_context.app_name == "alcedocore" {
-            return;
-        }
-
         match self.app_context.request_source {
             RequestSource::FirstMigration => (),
             _ => SchemaService::refresh_all_meta(&self.app_state).await,
@@ -213,9 +209,10 @@ impl SchemaService<'_> {
                     })
                     .collect();
 
-                for field in fields {
+                for field in &fields {
                     let meta: FieldSavedMetaObject =
-                        serde_json::from_value(serde_json::Value::Object(field.clone())).unwrap();
+                        serde_json::from_value(serde_json::Value::Object((*field).clone()))
+                            .unwrap();
 
                     let find = write_schema_lock.columns.iter_mut().find(|col| {
                         col.name == meta.api_name
@@ -227,6 +224,17 @@ impl SchemaService<'_> {
                         col.meta = Some(meta);
                     }
                 }
+
+                let field_defs: Vec<super::FieldDefinition> =
+                    fields.iter().map(|f| super::field_from_row(f)).collect();
+                write_schema_lock
+                    .fields
+                    .retain(|tf| !(tf.schema == table.schema && tf.table == table.name));
+                write_schema_lock.fields.push(TableFields {
+                    schema: table.schema.clone(),
+                    table: table.name.clone(),
+                    fields: field_defs,
+                });
             }
         }
     }
@@ -243,6 +251,7 @@ impl SchemaService<'_> {
             };
             SchemaService::new(state, &ctx).refresh_meta().await;
         }
+        state.save_schema_cache().await;
     }
 
     /// Refreshes the in-memory schema and repopulates collection meta.

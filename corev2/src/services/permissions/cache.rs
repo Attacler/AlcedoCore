@@ -47,6 +47,7 @@ fn role_rules_key(schema: &str, role_id: &str) -> String {
 pub struct CachedIdentity {
     pub role_ids: Vec<String>,
     pub is_app_admin: bool,
+    pub is_admin: bool,
 }
 
 /// One raw `alcedocore_policy_permissions` row, as resolved for a role.
@@ -166,8 +167,8 @@ async fn load_identity(
     schema: &str,
     user_id: Uuid,
 ) -> Result<CachedIdentity, AlcedoError> {
-    use sea_query::{Alias, Expr, PostgresQueryBuilder};
     use crate::services::postgres::pool::{execute_query, pgrow_to_json};
+    use sea_query::{Alias, Expr, PostgresQueryBuilder};
 
     let sql = sea_query::Query::select()
         .column(Alias::new("role_id"))
@@ -184,12 +185,14 @@ async fn load_identity(
         }
     }
 
-    let is_app_admin = crate::services::permissions::read::is_app_admin_in_schema(state, schema, user_id)
-        .await?;
+    let is_app_admin =
+        crate::services::permissions::read::is_app_admin_in_schema(state, schema, user_id).await?;
+    let is_admin = crate::services::permissions::read::is_admin_user(state, user_id).await?;
 
     Ok(CachedIdentity {
         role_ids,
         is_app_admin,
+        is_admin,
     })
 }
 
@@ -197,8 +200,8 @@ async fn load_public_identity(
     state: &AppState,
     schema: &str,
 ) -> Result<CachedIdentity, AlcedoError> {
-    use sea_query::{Alias, Expr, PostgresQueryBuilder};
     use crate::services::postgres::pool::{execute_query, pgrow_to_json};
+    use sea_query::{Alias, Expr, PostgresQueryBuilder};
 
     let sql = sea_query::Query::select()
         .column(Alias::new("id"))
@@ -218,6 +221,7 @@ async fn load_public_identity(
     Ok(CachedIdentity {
         role_ids,
         is_app_admin: false,
+        is_admin: false,
     })
 }
 
@@ -226,8 +230,8 @@ async fn load_role_permissions(
     schema: &str,
     role_id: &str,
 ) -> Result<Vec<CachedPermission>, AlcedoError> {
-    use sea_query::{Alias, Expr, JoinType, PostgresQueryBuilder};
     use crate::services::postgres::pool::{execute_query, pgrow_to_json};
+    use sea_query::{Alias, Expr, JoinType, PostgresQueryBuilder};
 
     let mut select = sea_query::Query::select();
     select
@@ -250,9 +254,7 @@ async fn load_role_permissions(
         .column((Alias::new("pp"), Alias::new("fields")))
         .column((Alias::new("pp"), Alias::new("filter")))
         .column((Alias::new("pp"), Alias::new("field_validation")))
-        .and_where(
-            Expr::col((Alias::new("rp"), Alias::new("role_id"))).eq(Expr::value(role_id)),
-        );
+        .and_where(Expr::col((Alias::new("rp"), Alias::new("role_id"))).eq(Expr::value(role_id)));
 
     let sql = select.to_string(PostgresQueryBuilder);
     let rows = execute_query(state, sql).await?;
@@ -354,11 +356,7 @@ mod tests {
         .await
         .unwrap();
 
-        async fn insert_permission(
-            state: &AppState,
-            policy_id: Uuid,
-            permission_id: Uuid,
-        ) {
+        async fn insert_permission(state: &AppState, policy_id: Uuid, permission_id: Uuid) {
             sqlx::query(&format!(
                 "INSERT INTO \"{SCHEMA}\".alcedocore_policy_permissions \
                  (id, policy_id, collection, action, fields, filter, field_validation) \
@@ -377,6 +375,8 @@ mod tests {
         let identity = cached_identity(&state, SCHEMA, user_id).await.unwrap();
         assert_eq!(identity.role_ids, vec![role_id.to_string()]);
         assert!(!identity.is_app_admin);
+        assert!(!identity.is_admin, "seeded user is not a global admin");
+
         let sessions_key = format!("auth:sessions:{SCHEMA}:{user_id}");
         assert!(
             state.cache.get(&sessions_key).await.unwrap().is_some(),
@@ -457,11 +457,13 @@ mod tests {
         .execute(&*state.database_pool)
         .await
         .unwrap();
-        sqlx::query(&format!("DELETE FROM \"{SCHEMA}\".alcedocore_roles WHERE id = $1"))
-            .bind(role_id)
-            .execute(&*state.database_pool)
-            .await
-            .unwrap();
+        sqlx::query(&format!(
+            "DELETE FROM \"{SCHEMA}\".alcedocore_roles WHERE id = $1"
+        ))
+        .bind(role_id)
+        .execute(&*state.database_pool)
+        .await
+        .unwrap();
         sqlx::query("DELETE FROM alcedocore.alcedocore_users WHERE id = $1")
             .bind(user_id)
             .execute(&*state.database_pool)

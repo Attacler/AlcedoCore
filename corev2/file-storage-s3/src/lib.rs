@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 use aws_sdk_s3::error::SdkError;
 use bytes::Bytes;
-use pcl::{FileStorage, FileStorageError};
+use futures_util::StreamExt;
+use pcl::{ByteStream, FileStorage, FileStorageError};
+use tokio_util::io::ReaderStream;
 use tracing::error;
 
 pub struct S3FileStorage {
@@ -50,7 +52,10 @@ impl FileStorage for S3FileStorage {
         Ok(key)
     }
 
-    async fn download(&self, path: &str) -> Result<Option<(String, Bytes)>, FileStorageError> {
+    async fn download_stream(
+        &self,
+        path: &str,
+    ) -> Result<Option<(String, ByteStream)>, FileStorageError> {
         let output = self
             .client
             .get_object()
@@ -65,16 +70,17 @@ impl FileStorage for S3FileStorage {
                     .content_type()
                     .unwrap_or("application/octet-stream")
                     .to_string();
-                let body = resp
-                    .body
-                    .collect()
-                    .await
-                    .map_err(|e| {
-                        error!(bucket = %self.bucket, key = %path, error = %e, "Failed to read S3 response body");
+                // Hand the SDK's body stream straight through instead of
+                // collecting it, so the object is never fully resident.
+                let bucket = self.bucket.clone();
+                let key = path.to_string();
+                let stream = ReaderStream::new(resp.body.into_async_read()).map(move |chunk| {
+                    chunk.map_err(|e| {
+                        error!(bucket = %bucket, key = %key, error = %e, "Failed to stream S3 response body");
                         FileStorageError::StorageError(e.to_string())
-                    })?;
-                let bytes = body.into_bytes();
-                Ok(Some((content_type, bytes)))
+                    })
+                });
+                Ok(Some((content_type, Box::pin(stream))))
             }
             Err(err) => match err {
                 SdkError::ServiceError(err) if err.err().is_no_such_key() => Ok(None),

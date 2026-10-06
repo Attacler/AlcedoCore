@@ -1137,3 +1137,17 @@ pub async fn set_layout_roles(
     guard.commit(state).await?;
     Ok(json!({ "updated": true }))
 }
+
+pub async fn fields_from_schema(
+    state: &AppState,
+    ctx: &AppContext,
+    table: &str,
+) -> Option<Vec<FieldDefinition>> {
+    let schema_name = ctx.schema_name();
+    let schema = state.database_schema.read().await;
+    schema
+        .fields
+        .iter()
+        .find(|tf| tf.schema == schema_name && tf.table == table)
+        .map(|tf| tf.fields.clone())
+}

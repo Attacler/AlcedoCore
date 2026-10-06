@@ -60,6 +60,9 @@ pub(crate) async fn collection_fields(
     ctx: &AppContext,
     collection: &str,
 ) -> Result<Vec<FieldDefinition>, AlcedoError> {
+    if let Some(fields) = collections::fields_from_schema(state, ctx, collection).await {
+        return Ok(fields);
+    }
     Ok(collections::get_collection(state, ctx, collection)
         .await?
         .fields)

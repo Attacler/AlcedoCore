@@ -486,10 +486,10 @@ fn replace_placeholders(s: &str, user: &UserValues) -> String {
 /// reading `alcedocore_users` via it would create an async recursion cycle now that
 /// relation reads also resolve access. `sea-query` is a pure SQL builder and
 /// carries no such risk. A missing user is treated as "not an admin".
-async fn is_admin_user(state: &AppState, user_id: Uuid) -> Result<bool, AlcedoError> {
+pub(crate) async fn is_admin_user(state: &AppState, user_id: Uuid) -> Result<bool, AlcedoError> {
     let sql = sea_query::Query::select()
         .column(Alias::new("is_admin"))
-        .from((Alias::new("alcedocore"), Alias::new("alcedocore_users")))
+        .from((Alias::new("alcedo"), Alias::new("alcedo_users")))
         .and_where(Expr::col(Alias::new("id")).eq(Expr::value(user_id.to_string())))
         .to_string(PostgresQueryBuilder);
 
@@ -500,17 +500,6 @@ async fn is_admin_user(state: &AppState, user_id: Uuid) -> Result<bool, AlcedoEr
         .transpose()?
         .and_then(|row| row.get("is_admin").and_then(Value::as_bool))
         .unwrap_or(false))
-}
-
-/// True when the caller holds an app-admin capability in `context`'s app schema.
-/// Thin wrapper over [`is_app_admin_in_schema`] so callers with a context need
-/// not thread the schema name through.
-async fn is_app_admin(
-    state: &AppState,
-    context: &AppContext,
-    user_id: Uuid,
-) -> Result<bool, AlcedoError> {
-    is_app_admin_in_schema(state, &context.schema_name(), user_id).await
 }
 
 /// True when `user_id` holds an app-admin capability in `schema`: the seeded
@@ -620,30 +609,44 @@ fn scope_to_identity(select: &mut SelectStatement, schema: &str, identity: &Auth
     }
 }
 
-/// Fetches the requested `alcedocore_users` columns for `user_id`. Returns `None`
+/// Fetches the requested `alcedo_users` columns for `user_id`. Returns `None`
 /// when no such user exists (the caller then fails closed).
 async fn fetch_user_columns(
     state: &AppState,
     user_id: Uuid,
     columns: &BTreeSet<String>,
 ) -> Result<Option<Map<String, Value>>, AlcedoError> {
-    if columns.is_empty() {
-        return Ok(Some(Map::new()));
+    let mut resolved = Map::new();
+
+    // `{user.id}` is the authenticated caller's own id, so there is nothing to
+    // read back. Only other columns need a query.
+    if columns.contains("id") {
+        resolved.insert("id".to_string(), Value::String(user_id.to_string()));
     }
 
-    // `columns` are validated `is_safe_identifier` names; `Alias` quotes them.
+    let query_columns: Vec<&String> = columns.iter().filter(|c| c.as_str() != "id").collect();
+    if query_columns.is_empty() {
+        return Ok(Some(resolved));
+    }
+
+    // `query_columns` are validated `is_safe_identifier` names; `Alias` quotes them.
     let mut select = sea_query::Query::select();
-    for column in columns {
-        select.column(Alias::new(column));
+    for column in &query_columns {
+        select.column(Alias::new(column.as_str()));
     }
     select
-        .from((Alias::new("alcedocore"), Alias::new("alcedocore_users")))
+        .from((Alias::new("alcedo"), Alias::new("alcedo_users")))
         .and_where(Expr::col(Alias::new("id")).eq(Expr::value(user_id.to_string())));
     let sql = select.to_string(PostgresQueryBuilder);
 
     let rows = execute_query(state, sql).await?;
     match rows.first() {
-        Some(row) => Ok(Some(pgrow_to_json(row)?)),
+        Some(row) => {
+            for (key, value) in pgrow_to_json(row)? {
+                resolved.insert(key, value);
+            }
+            Ok(Some(resolved))
+        }
         None => Ok(None),
     }
 }
@@ -867,7 +870,7 @@ pub async fn resolve_access(
             let cached =
                 crate::services::permissions::cache::cached_identity(state, &schema, *user_id)
                     .await?;
-            if is_admin_user(state, *user_id).await? || cached.is_app_admin {
+            if cached.is_admin || cached.is_app_admin {
                 return Ok(ReadAccess::Unrestricted);
             }
             Some(cached.role_ids)
@@ -1006,7 +1009,13 @@ pub async fn list_accessible_collections(
     }
 
     if let AuthLevel::User(user_id) = identity {
-        if is_admin_user(state, *user_id).await? || is_app_admin(state, context, *user_id).await? {
+        let cached = crate::services::permissions::cache::cached_identity(
+            state,
+            &context.schema_name(),
+            *user_id,
+        )
+        .await?;
+        if cached.is_admin || cached.is_app_admin {
             return Ok(None);
         }
     }

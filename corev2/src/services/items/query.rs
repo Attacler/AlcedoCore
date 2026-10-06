@@ -71,6 +71,8 @@ pub struct Query {
     pub page: Option<u64>,
     #[serde(default)]
     pub per_page: Option<u64>,
+    #[serde(default, rename = "includeCount")]
+    pub include_count: bool,
     /// Virtual 1:M relation hops referenced by `filter`, resolved just before
     /// the SQL is built. Not part of the wire format.
     #[serde(skip)]

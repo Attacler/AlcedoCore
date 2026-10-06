@@ -1,5 +1,6 @@
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Multipart, Path, Query, State},
     http::{StatusCode, header},
     routing::{get, post},
@@ -40,9 +41,7 @@ pub fn files_controller() -> Router<AppState> {
 
 /// Parses a `folder_id`/`parent_id` body field so missing, explicit `null`
 /// (move to root) and a UUID string stay distinguishable.
-fn deserialize_double_option_uuid<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<Uuid>>, D::Error>
+fn deserialize_double_option_uuid<'de, D>(deserializer: D) -> Result<Option<Option<Uuid>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -124,7 +123,9 @@ async fn list_files(
     Query(params): Query<ListFilesParams>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     read_scope(&state, &auth, &context).await?;
-    let data = FilesService::new(&state, &context).list_files(&params).await?;
+    let data = FilesService::new(&state, &context)
+        .list_files(&params)
+        .await?;
     Ok(Json(success(data)))
 }
 
@@ -187,7 +188,8 @@ async fn upload_file(
         .check_upload_permission(collection_name.as_deref())
         .await?;
 
-    let data = file_data.ok_or_else(|| AlcedoError::InvalidInput("No file provided".to_string(), 0))?;
+    let data =
+        file_data.ok_or_else(|| AlcedoError::InvalidInput("No file provided".to_string(), 0))?;
     let filename = filename.unwrap_or_else(|| "unnamed".to_string());
     let mime_type = mime_type.unwrap_or_else(|| "application/octet-stream".to_string());
     let uploaded_by = match auth {
@@ -273,11 +275,11 @@ async fn download_file(
     State(state): State<AppState>,
     ExtractContext(context): ExtractContext,
     Path(id): Path<Uuid>,
-) -> Result<([(header::HeaderName, String); 1], Vec<u8>), AlcedoError> {
+) -> Result<([(header::HeaderName, String); 1], Body), AlcedoError> {
     let service = FilesService::new(&state, &context);
     service.check_download_permission(id).await?;
-    let (mime, bytes) = service.download(id).await?;
-    Ok(([(header::CONTENT_TYPE, mime)], bytes.to_vec()))
+    let (mime, stream) = service.download_stream(id).await?;
+    Ok(([(header::CONTENT_TYPE, mime)], Body::from_stream(stream)))
 }
 
 #[utoipa::path(get, path = "/api/app/files/folders", tag = "Files",

@@ -1,8 +1,10 @@
 use async_trait::async_trait;
 use bytes::Bytes;
-use pcl::{FileStorage, FileStorageError};
+use futures_util::StreamExt;
+use pcl::{ByteStream, FileStorage, FileStorageError};
 use std::io;
 use std::path::PathBuf;
+use tokio_util::io::ReaderStream;
 use tracing::{info, warn};
 
 pub struct LocalFileStorage {
@@ -44,15 +46,20 @@ impl FileStorage for LocalFileStorage {
         Ok(storage_path)
     }
 
-    async fn download(&self, path: &str) -> Result<Option<(String, Bytes)>, FileStorageError> {
+    async fn download_stream(
+        &self,
+        path: &str,
+    ) -> Result<Option<(String, ByteStream)>, FileStorageError> {
         let full_path = self.base_path.join(path);
 
-        match tokio::fs::read(&full_path).await {
-            Ok(bytes) => {
+        match tokio::fs::File::open(&full_path).await {
+            Ok(file) => {
                 let mime_type = mime_guess::from_path(&full_path)
                     .first_or_octet_stream()
                     .to_string();
-                Ok(Some((mime_type, bytes.into())))
+                let stream = ReaderStream::new(file)
+                    .map(|chunk| chunk.map_err(|e| FileStorageError::StorageError(e.to_string())));
+                Ok(Some((mime_type, Box::pin(stream))))
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 warn!(path = %path, "File not found in local storage");
@@ -80,5 +87,56 @@ impl FileStorage for LocalFileStorage {
         tokio::fs::try_exists(&full_path)
             .await
             .map_err(|e| FileStorageError::StorageError(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::TryStreamExt;
+
+    fn temp_dir() -> PathBuf {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("file-storage-local-test-{n}"))
+    }
+
+    async fn collect(mut stream: ByteStream) -> Vec<u8> {
+        let mut buf = Vec::new();
+        while let Some(chunk) = stream.try_next().await.unwrap() {
+            buf.extend_from_slice(&chunk);
+        }
+        buf
+    }
+
+    #[tokio::test]
+    async fn streams_stored_bytes_back() {
+        let dir = temp_dir();
+        let storage = LocalFileStorage::new(dir.to_str().unwrap()).unwrap();
+        let data = Bytes::from_static(b"the quick brown fox");
+        let path = storage
+            .upload(data.clone(), "text/plain", "fox.txt", "sub")
+            .await
+            .unwrap();
+
+        let (mime, stream) = storage.download_stream(&path).await.unwrap().unwrap();
+        assert_eq!(mime, "text/plain");
+        assert_eq!(collect(stream).await, data.as_ref());
+
+        // The buffering `download` default must return the same bytes.
+        let (_, buffered) = storage.download(&path).await.unwrap().unwrap();
+        assert_eq!(buffered, data);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn missing_path_yields_none() {
+        let dir = temp_dir();
+        let storage = LocalFileStorage::new(dir.to_str().unwrap()).unwrap();
+        assert!(storage.download_stream("nope.bin").await.unwrap().is_none());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

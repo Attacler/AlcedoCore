@@ -54,7 +54,8 @@ pub struct DocsItemFilter {
         ("sort" = String, Query, description = "See \"Items - Query\" for more information"),
         ("limit" = String, Query, description = "See \"Items - Query\" for more information"),
         ("page" = String, Query, description = "1-based page number (admin UI)"),
-        ("per_page" = String, Query, description = "Page size (admin UI)"),
+        ("per_page" = String, Query, description = "Page size (admin UI)"),        ("includeCount" = String, Query, description = "When true, also return the total row count (default false)"),
+
         ("x-app" = String, Header, description = "App name header"),
         ("x-version" = String, Header, description = "Version name header"),
     ),
@@ -70,7 +71,12 @@ async fn get_items(
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     query.normalize_pagination();
     let service = ItemsService::new(&state, &context, &collection);
-    let total = service.count_items_by_query(query.clone()).await?;
+
+    let total = if query.include_count {
+        Some(service.count_items_by_query(query.clone()).await?)
+    } else {
+        None
+    };
     let limit = query.limit;
     let offset = query.offset;
     let items = service.read_items_by_query(query).await?;
@@ -78,12 +84,16 @@ async fn get_items(
         .augment_file_fields(&collection, items)
         .await;
 
-    Ok(Json(success(json!({
+    let mut body = json!({
         "data": items,
-        "total": total,
         "limit": limit,
         "offset": offset,
-    }))))
+    });
+    if let Some(total) = total {
+        body["total"] = json!(total);
+    }
+
+    Ok(Json(success(body)))
 }
 
 #[utoipa::path(get, path = "/api/app/items/{collection}/{id}",

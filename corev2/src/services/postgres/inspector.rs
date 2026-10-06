@@ -6,7 +6,7 @@ use utoipa::ToSchema;
 use crate::{
     AppState,
     services::{
-        collections::schema::FieldSavedMetaObject,
+        collections::{FieldDefinition, schema::FieldSavedMetaObject},
         context::{AppContext, RequestSource},
         postgres::pool::execute_query,
     },
@@ -17,6 +17,15 @@ pub struct DatabaseSchema {
     pub app_versions: Vec<AppVersion>,
     pub tables: Vec<Table>,
     pub columns: Vec<Column>,
+    #[serde(default)]
+    pub fields: Vec<TableFields>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TableFields {
+    pub schema: String,
+    pub table: String,
+    pub fields: Vec<FieldDefinition>,
 }
 
 impl DatabaseSchema {
@@ -25,6 +34,7 @@ impl DatabaseSchema {
             app_versions: vec![],
             columns: vec![],
             tables: vec![],
+            fields: vec![],
         };
     }
 
@@ -48,13 +58,15 @@ impl DatabaseSchema {
             app_versions: vec![],
             tables: vec![],
             columns: vec![],
+            fields: vec![],
         };
 
-        let alcedocore_tables_exist: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
-            .bind("alcedocore.alcedocore_apps_versions")
-            .fetch_one(&*app_state.database_pool)
-            .await
-            .unwrap();
+        let alcedocore_tables_exist: bool =
+            sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+                .bind("alcedocore.alcedocore_apps_versions")
+                .fetch_one(&*app_state.database_pool)
+                .await
+                .unwrap();
 
         if alcedocore_tables_exist {
             let fetch_versions = execute_query(

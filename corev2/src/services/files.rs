@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use file_storage::FileStorage;
+use file_storage::{ByteStream, FileStorage};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
@@ -214,10 +214,7 @@ impl<'a> FilesService<'a> {
             .get_version_id_by_name(&self.context.version)
             .await?
             .ok_or_else(|| {
-                AlcedoError::NotFound(
-                    format!("Version not found: {}", self.context.version),
-                    0,
-                )
+                AlcedoError::NotFound(format!("Version not found: {}", self.context.version), 0)
             })?;
 
         let system = AppContext::system(RequestSource::API);
@@ -227,10 +224,7 @@ impl<'a> FilesService<'a> {
             .read_items_by_query(Query {
                 fields: vec!["id".to_string()],
                 limit: 0,
-                ..Query::eq(
-                    "api_name",
-                    Value::String(self.context.app_api_name()),
-                )
+                ..Query::eq("api_name", Value::String(self.context.app_api_name()))
             })
             .await?;
         let app_id = rows
@@ -258,9 +252,10 @@ impl<'a> FilesService<'a> {
         let mut parts: Vec<String> = Vec::new();
         let mut current = Some(folder_id);
         while let Some(fid) = current {
-            let row = self.find_folder(fid).await?.ok_or_else(|| {
-                AlcedoError::NotFound("Folder not found".to_string(), 0)
-            })?;
+            let row = self
+                .find_folder(fid)
+                .await?
+                .ok_or_else(|| AlcedoError::NotFound("Folder not found".to_string(), 0))?;
             let name = row
                 .get("name")
                 .and_then(Value::as_str)
@@ -282,10 +277,7 @@ impl<'a> FilesService<'a> {
                 ..Query::eq("parent_id", Value::String(folder_id.to_string()))
             })
             .await?;
-        Ok(rows
-            .iter()
-            .filter_map(|row| row_uuid(row, "id"))
-            .collect())
+        Ok(rows.iter().filter_map(|row| row_uuid(row, "id")).collect())
     }
 
     /// `folder_id` plus every descendant, breadth-first.
@@ -425,9 +417,8 @@ impl<'a> FilesService<'a> {
                 },
             )),
             Some(folder_id) => {
-                let fid = Uuid::parse_str(folder_id).map_err(|_| {
-                    AlcedoError::InvalidInput("Invalid folder_id".to_string(), 0)
-                })?;
+                let fid = Uuid::parse_str(folder_id)
+                    .map_err(|_| AlcedoError::InvalidInput("Invalid folder_id".to_string(), 0))?;
                 conditions.push(field_cmp(
                     "folder_id",
                     Comparison {
@@ -478,7 +469,7 @@ impl<'a> FilesService<'a> {
         Ok(file_metadata_json(&row, self.context, id))
     }
 
-    pub async fn download(&self, id: Uuid) -> Result<(String, Bytes), AlcedoError> {
+    pub async fn download_stream(&self, id: Uuid) -> Result<(String, ByteStream), AlcedoError> {
         let row = self
             .find_metadata(id)
             .await?
@@ -496,8 +487,8 @@ impl<'a> FilesService<'a> {
             .unwrap_or("application/octet-stream")
             .to_string();
 
-        match self.state.file_storage.download(&storage_path).await {
-            Ok(Some((_stored_mime, bytes))) => Ok((mime, bytes)),
+        match self.state.file_storage.download_stream(&storage_path).await {
+            Ok(Some((_stored_mime, stream))) => Ok((mime, stream)),
             Ok(None) => Err(AlcedoError::NotFound(
                 format!("File '{}' not found in storage", id),
                 0,
@@ -516,7 +507,9 @@ impl<'a> FilesService<'a> {
             Some(AuthLevel::DeveloperKey { .. }) => Ok(true),
             Some(AuthLevel::User(user_id)) => {
                 let system = AppContext::system(RequestSource::API);
-                AuthService::new(self.state, &system).is_admin(*user_id).await
+                AuthService::new(self.state, &system)
+                    .is_admin(*user_id)
+                    .await
             }
             _ => Ok(false),
         }
@@ -622,11 +615,7 @@ impl<'a> FilesService<'a> {
                 }
             }
             None => {
-                let auth = self
-                    .context
-                    .identity
-                    .clone()
-                    .unwrap_or(AuthLevel::Public);
+                let auth = self.context.identity.clone().unwrap_or(AuthLevel::Public);
                 require_scope(self.state, &auth, self.context, "items.write").await
             }
         }
@@ -712,7 +701,10 @@ impl<'a> FilesService<'a> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-            size_bytes: result.get("size_bytes").and_then(Value::as_i64).unwrap_or(0),
+            size_bytes: result
+                .get("size_bytes")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
         };
         self.emit_file_event("file.uploaded", &mut event).await;
 
@@ -780,7 +772,8 @@ impl<'a> FilesService<'a> {
                 .and_then(Value::as_str)
                 .unwrap_or("application/octet-stream")
                 .to_string();
-            if let Ok(Some((_m, bytes))) = self.state.file_storage.download(&current_storage).await {
+            if let Ok(Some((_m, bytes))) = self.state.file_storage.download(&current_storage).await
+            {
                 let _ = self.state.file_storage.delete(&current_storage).await;
                 let new_storage = self
                     .state
@@ -788,17 +781,16 @@ impl<'a> FilesService<'a> {
                     .upload(bytes, &mime, &new_filename, &object_folder)
                     .await
                     .map_err(|e| {
-                        AlcedoError::SystemError(
-                            format!("File storage upload failed: {}", e),
-                            0,
-                        )
+                        AlcedoError::SystemError(format!("File storage upload failed: {}", e), 0)
                     })?;
                 payload.insert("storage_path".to_string(), json!(new_storage));
             }
             payload.insert("filename".to_string(), json!(new_filename));
             payload.insert(
                 "folder_id".to_string(),
-                new_folder.map(|f| json!(f.to_string())).unwrap_or(Value::Null),
+                new_folder
+                    .map(|f| json!(f.to_string()))
+                    .unwrap_or(Value::Null),
             );
         }
 
@@ -934,7 +926,10 @@ impl<'a> FilesService<'a> {
         }
         if let Some(pid) = parent_id {
             if self.find_folder(pid).await?.is_none() {
-                return Err(AlcedoError::NotFound("Parent folder not found".to_string(), 0));
+                return Err(AlcedoError::NotFound(
+                    "Parent folder not found".to_string(),
+                    0,
+                ));
             }
         }
         if self.folder_name_conflict(name, parent_id, None).await? {
@@ -1158,10 +1153,7 @@ impl<'a> FilesService<'a> {
                     if let Some(file_id) = row_uuid(&file, "id") {
                         let mut svc = self.metadata_svc();
                         let _ = svc
-                            .delete_items_by_pks(
-                                vec![Value::String(file_id.to_string())],
-                                None,
-                            )
+                            .delete_items_by_pks(vec![Value::String(file_id.to_string())], None)
                             .await;
                     }
                 }
@@ -1189,21 +1181,24 @@ impl<'a> FilesService<'a> {
         collection: &str,
         items: Vec<Map<String, Value>>,
     ) -> Vec<Map<String, Value>> {
-        let fields = match crate::services::collections::get_collection(
-            self.state,
-            self.context,
-            collection,
-        )
-        .await
-        {
-            Ok(collection) => collection.fields,
-            Err(_) => return items,
+        let file_fields: Vec<String> = {
+            let schema = self.state.database_schema.read().await;
+            let schema_name = self.context.schema_name();
+            schema
+                .columns
+                .iter()
+                .filter(|c| c.schema == schema_name && c.table == collection)
+                .filter(|c| {
+                    c.meta
+                        .as_ref()
+                        .and_then(|m| m.options.as_ref())
+                        .and_then(|o| o.get("type"))
+                        .and_then(Value::as_str)
+                        == Some("file")
+                })
+                .map(|c| c.name.clone())
+                .collect()
         };
-        let file_fields: Vec<String> = fields
-            .iter()
-            .filter(|f| f.field_type == "file")
-            .map(|f| f.name.clone())
-            .collect();
         if file_fields.is_empty() {
             return items;
         }
@@ -1259,11 +1254,7 @@ impl<'a> FilesService<'a> {
                 if let Some(Value::Array(values)) = item.get(field).cloned() {
                     let metadata: Vec<Value> = values
                         .iter()
-                        .filter_map(|value| {
-                            value
-                                .as_str()
-                                .and_then(|s| map.get(s).cloned())
-                        })
+                        .filter_map(|value| value.as_str().and_then(|s| map.get(s).cloned()))
                         .collect();
                     if !metadata.is_empty() {
                         item.insert(field.clone(), Value::Array(metadata));
