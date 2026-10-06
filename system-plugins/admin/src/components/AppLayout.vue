@@ -152,7 +152,7 @@ const settingsSections = computed<MenuSection[]>(() => {
         },
     ];
     for (const c of collectionsStore.collections) {
-        if (!c.name.startsWith("alcedo_"))
+        if (!c.name.startsWith("alcedocore_"))
             collectionItems.push({
                 id: `collection-${c.name}-settings`,
                 label: c.display_name || c.name,
