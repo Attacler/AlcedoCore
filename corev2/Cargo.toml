@@ -41,6 +41,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 cookie = "0.18"
 deadpool-redis = "0.23.1"
 argon2 = "0.6.0"
+aes-gcm = "0.10.3"
+base64 = "0.22.1"
+hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "webpki-roots", "ring", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [features]
 s3 = ["file-storage-s3"]

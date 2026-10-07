@@ -50,8 +50,8 @@ onMounted(async () => {
             const response = (await client.registries.get(
                 registryId.value,
             )) as { data?: any };
-            if (response.data) {
-                const reg = response.data;
+            const reg = response?.data ?? response;
+            if (reg) {
                 form.name = reg.name || "";
                 form.url = reg.url || "";
                 form.pull_url = reg.pull_url || "";
@@ -97,20 +97,19 @@ async function checkReachability(showToast: boolean) {
     if (!form.url.trim()) return;
     reachableStatus.value = "checking";
     try {
-        let response = (await fetch("/api/registries/health-check", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ url: form.url }),
-        }).then((r) => r.json())) as any;
-        if (response.data?.reachable) {
+        const response = (await client.registries.healthCheckUrl(
+            form.url,
+        )) as any;
+        // The SDK unwraps corev2's JSend envelope to the inner object.
+        const result = response?.data ?? response;
+        if (result?.reachable) {
             reachableStatus.value = "reachable";
 
             if (showToast) toast.show("Registry connected", "success");
         } else {
             reachableStatus.value = "unreachable";
             toast.show(
-                `Registry unreachable: ${response.data?.status || "Failed"}`,
+                `Registry unreachable: ${result?.status || "Failed"}`,
                 "error",
             );
         }

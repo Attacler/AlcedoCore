@@ -27,8 +27,8 @@ export const useRegistriesStore = defineStore('registries', () => {
     loading.value = true
     error.value = null
     try {
-      const response = await client.registries.list() as { data?: { registries: Registry[] } }
-      registries.value = response.data?.registries || []
+      const response = await client.registries.list() as { registries?: Registry[]; data?: { registries: Registry[] } }
+      registries.value = response.registries || response.data?.registries || []
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to fetch registries'
     } finally {
@@ -37,15 +37,15 @@ export const useRegistriesStore = defineStore('registries', () => {
   }
 
   async function createRegistry(data: { name: string; url: string; pull_url?: string; auth_type: string; username?: string; password?: string }) {
-    const response = await client.registries.create(data) as { data?: Registry }
+    const response = await client.registries.create(data) as { data?: Registry } & Partial<Registry>
     await fetchRegistries()
-    return response.data
+    return response.data || (response as Registry)
   }
 
   async function updateRegistry(id: number, data: { name?: string; url?: string; pull_url?: string; auth_type?: string; username?: string; password?: string }) {
-    const response = await client.registries.update(id, data) as { data?: Registry }
+    const response = await client.registries.update(id, data) as { data?: Registry } & Partial<Registry>
     await fetchRegistries()
-    return response.data
+    return response.data || (response as Registry)
   }
 
   async function deleteRegistry(id: number) {

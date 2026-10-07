@@ -141,7 +141,7 @@ mod tests {
 
         // Simulate another replica's write: clear the seen token, then the next
         // request picks the new schema up exactly once.
-        *state.schema_cache_gen.lock().unwrap() = String::new();
+        *state.schema_cache_gen.lock().await = String::new();
         assert!(state.load_cached_schema_if_stale().await.is_some());
         assert!(state.load_cached_schema_if_stale().await.is_none());
     }

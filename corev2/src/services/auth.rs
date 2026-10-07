@@ -15,10 +15,7 @@ use crate::services::{
     app_state::AppState,
     context::AppContext,
     errors::AlcedoError,
-    items::{
-        query::Query,
-        service::ItemsService,
-    },
+    items::{query::Query, service::ItemsService},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,7 +137,30 @@ impl AuthService<'_> {
         version_id: i32,
         token: &str,
     ) -> Result<Option<Uuid>, AlcedoError> {
+        self.authenticate_developer_key_scoped(token, Some(version_id))
+            .await
+    }
+    pub async fn authenticate_developer_key_any(
+        &self,
+        token: &str,
+    ) -> Result<Option<Uuid>, AlcedoError> {
+        self.authenticate_developer_key_scoped(token, None).await
+    }
+
+    async fn authenticate_developer_key_scoped(
+        &self,
+        token: &str,
+        version_id: Option<i32>,
+    ) -> Result<Option<Uuid>, AlcedoError> {
         let prefix = &token[..token.len().min(10)];
+
+        let mut filters = vec![
+            ("key_prefix", Value::String(prefix.to_string())),
+            ("is_active", Value::Bool(true)),
+        ];
+        if let Some(version_id) = version_id {
+            filters.push(("version_id", Value::from(version_id)));
+        }
 
         let collection = "alcedocore_developer_api_keys".to_string();
         let service = ItemsService::new(&self.app_state, &self.app_context, &collection);
@@ -149,11 +169,7 @@ impl AuthService<'_> {
             .read_items_by_query(Query {
                 fields: vec!["id".to_string(), "key_hash".to_string()],
                 limit: 0,
-                ..Query::eq_all(&[
-                    ("key_prefix", Value::String(prefix.to_string())),
-                    ("version_id", Value::from(version_id)),
-                    ("is_active", Value::Bool(true)),
-                ])
+                ..Query::eq_all(&filters)
             })
             .await?;
 

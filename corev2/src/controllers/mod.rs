@@ -10,6 +10,8 @@ pub mod kv;
 pub mod logs;
 pub mod menus;
 pub mod policies;
+pub mod registries;
+pub mod registry_proxy;
 pub mod roles;
 pub mod sessions;
 pub mod settings;

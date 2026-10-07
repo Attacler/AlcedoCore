@@ -27,6 +27,7 @@ pub struct Config {
     pub files_dir: String,
     pub s3_bucket: Option<String>,
     pub s3_prefix: String,
+    pub local_registry_url: String,
 }
 
 pub fn get_config() -> Config {
@@ -60,6 +61,7 @@ pub fn get_config() -> Config {
     let files_dir = env_str("FILES_DIR", "./files");
     let s3_bucket = env_opt("S3_BUCKET");
     let s3_prefix = env_str("S3_PREFIX", "");
+    let local_registry_url = env_str("LOCAL_REGISTRY_URL", "localhost:5000");
 
     if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
         eprintln!(
@@ -90,6 +92,7 @@ pub fn get_config() -> Config {
         files_dir,
         s3_bucket,
         s3_prefix,
+        local_registry_url,
     }
 }
 

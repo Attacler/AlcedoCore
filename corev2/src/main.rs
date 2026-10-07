@@ -71,6 +71,9 @@ async fn main() -> Result<()> {
 
     SchemaService::refresh_all_meta(&state).await;
     VersionsService::new(&state).ensure_default().await?;
+    services::registries::RegistriesService::new(&state)
+        .ensure_default()
+        .await?;
 
     setup_system_hooks(bus_clone).await;
 
@@ -97,6 +100,7 @@ async fn main() -> Result<()> {
         .nest("/api/platform", platform_controller())
         .nest("/api/dev", controllers::dev::dev_controller())
         .nest("/api/docs", controllers::docs::docs_controller())
+        .merge(controllers::registry_proxy::registry_proxy_controller())
         // .fallback_service(controllers::ui::ui_controller())
         .fallback(handler_404)
         .layer(middleware::from_fn(middelware::log::log_request))

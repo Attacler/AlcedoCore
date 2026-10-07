@@ -4,8 +4,8 @@ use utoipa::OpenApi;
 use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
 use crate::controllers::{
-    apps, auth, collections, dev, developer_keys, files, items, kv, logs, menus, policies, roles,
-    sessions, settings, users, versions,
+    apps, auth, collections, dev, developer_keys, files, items, kv, logs, menus, policies, registries,
+    roles, sessions, settings, users, versions,
 };
 use crate::services::menus::{MenuItemInput, MenuSectionInput};
 
@@ -95,6 +95,15 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         developer_keys::delete_key,
         // Dev
         dev::request_id,
+        // Registries
+        registries::list_registries,
+        registries::get_registry,
+        registries::create_registry,
+        registries::update_registry,
+        registries::delete_registry,
+        registries::health_check_url,
+        registries::health_check_registry,
+        registries::list_images,
         // Roles
         roles::list_roles,
         roles::create_role,
@@ -182,6 +191,7 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         (name = "Logs", description = "Activity logs (platform-global and app-scoped)"),
         (name = "KV", description = "App-scoped key/value store with optional TTL"),
         (name = "Dev", description = "Dev proxy helpers for locally-run plugins"),
+        (name = "Registries", description = "Container registries (global)"),
     ),
     components(
         schemas (
@@ -196,6 +206,15 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
             developer_keys::CreateDeveloperKeyRequest,
             dev::RequestIdPayload,
             dev::RequestIdResponse,
+            registries::RegistryResponse,
+            registries::ListRegistriesResponse,
+            registries::CreateRegistryRequest,
+            registries::UpdateRegistryRequest,
+            registries::DeleteRegistryResponse,
+            registries::HealthCheckResponse,
+            registries::HealthCheckUrlRequest,
+            registries::ImageListItem,
+            registries::ListImagesResponse,
             settings::SettingsResponse,
             settings::UpdatePlatformSettingsRequest,
             settings::UpdateAppSettingRequest,
