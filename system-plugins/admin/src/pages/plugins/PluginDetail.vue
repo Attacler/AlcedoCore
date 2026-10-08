@@ -1,12 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { usePluginsStore, type PluginStore } from "@/stores/plugins";
+import {
+    usePluginsStore,
+    type PluginStore,
+    type InstallStore,
+} from "@/stores/plugins";
 import { useToast } from "@/composables/useToast";
 import Button from "primevue/button";
+import Select from "primevue/select";
+import Menu from "primevue/menu";
 import { formatDate } from "@/utils/formatters";
 import Documentation from "@/components/plugins/details/documentation.vue";
 import Frontend from "@/components/plugins/details/frontend.vue";
+import Endpoints from "@/components/plugins/details/Endpoints.vue";
 import Schema from "@/components/plugins/details/schema.vue";
 import Settings from "@/components/plugins/details/settings.vue";
 import Logs from "@/components/plugins/details/logs.vue";
@@ -23,69 +30,87 @@ const route = useRoute(),
 const plugin = ref<PluginStore | null>(null),
     pluginLoading = ref(false),
     pluginError = ref<string | null>(null),
-    togglingEnable = ref(false);
+    busy = ref(false),
+    selectedAppVersionId = ref<number | null>(null),
+    actionsMenu = ref(),
+    activeTab = ref("Deployments"),
+    showDeleteModal = ref(false),
+    deleteTarget = ref<"install" | "plugin">("install");
 
-const activeTab = ref("Documentation");
-
-const allTabs = [
+const selected = computed<InstallStore | null>(
+        () =>
+            plugin.value?.installations.find(
+                (i) => i.app_version_id === selectedAppVersionId.value,
+            ) ?? null,
+    ),
+    actionItems = computed(() => {
+        const items: Array<Record<string, unknown>> = [];
+        if (selected.value) {
+            items.push({
+                label: selected.value.enabled ? "Disable" : "Enable",
+                icon: selected.value.enabled
+                    ? "pi pi-power-off"
+                    : "pi pi-check-circle",
+                command: () => toggleInstall(),
+            });
+            items.push({
+                label: "Uninstall",
+                icon: "pi pi-times",
+                command: () => {
+                    deleteTarget.value = "install";
+                    showDeleteModal.value = true;
+                },
+            });
+        }
+        if (plugin.value && plugin.value.plugin_type !== "system") {
+            if (items.length) items.push({ separator: true });
+            items.push({
+                label: "Delete Plugin",
+                icon: "pi pi-trash",
+                command: () => {
+                    deleteTarget.value = "plugin";
+                    showDeleteModal.value = true;
+                },
+            });
+        }
+        return items;
+    });
+const tabs = [
+    "Deployments",
+    "Settings",
+    "Permissions",
     "Documentation",
     "Frontend",
     "Endpoints",
     "Schema",
-    "Settings",
     "Logs",
     "Versions",
     "Instances",
-    "Permissions",
 ];
 
-const inAppZone = computed(() => route.meta.appZone === true);
-/// In the app zone an install supplied by a broader scope must be read-only.
-const isInherited = computed(
-    () => inAppZone.value && plugin.value?.scope !== "app",
-);
+function toggleActionsMenu(event: Event) {
+    actionsMenu.value.toggle(event);
+}
 
-/// Read-only tabs offered for inherited (read-only) installs. Write surfaces
-/// (Schema, Settings, Permissions, Versions, Instances) are excluded because
-/// they contain migration/scale/deploy/restart/settings write actions.
-const readOnlyTabs = [
-    "Documentation",
-    "Frontend",
-    "Endpoints",
-    "Logs",
-];
-
-const availableTabs = computed(() => {
-    const tabs =
-        !plugin.value || plugin.value.status === "enabled"
-            ? allTabs
-            : ["Versions"];
-    if (!isInherited.value) return tabs;
-    return tabs.filter((tab) => readOnlyTabs.includes(tab));
-});
-
-const showDeleteModal = ref(false);
-
-/// The install addressed by `?install_id=` (global zone), else null so the
-/// store falls back to context resolution (app zone).
-const installId = computed<number | null>(() => {
-    const raw = route.query.install_id;
-    const value = Array.isArray(raw) ? raw[0] : raw;
-    if (value == null || value === "") return null;
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-});
+function installLabel(install: InstallStore): string {
+    return `${install.app_name || install.api_name || "app"} / ${
+        install.version_name || install.version_id
+    }`;
+}
 
 async function loadPlugin() {
     pluginLoading.value = true;
     pluginError.value = null;
     try {
-        const name = route.params.name as string;
-        plugin.value = await store.fetchPluginDetail(name, installId.value);
-        if (plugin.value.status === "disabled") {
-            activeTab.value = "Versions";
-        } else {
-            activeTab.value = "Documentation";
+        const slug = route.params.name as string;
+        plugin.value = await store.fetchPluginDetail(slug);
+        const installs = plugin.value.installations;
+        if (
+            !installs.some(
+                (i) => i.app_version_id === selectedAppVersionId.value,
+            )
+        ) {
+            selectedAppVersionId.value = installs[0]?.app_version_id ?? null;
         }
     } catch (e) {
         pluginError.value =
@@ -97,45 +122,58 @@ async function loadPlugin() {
 
 onMounted(loadPlugin);
 
-// Hash-only navigation between two plugin detail routes keeps the same
-// component instance, so re-load when the slug or install id changes.
 watch(
-    () => [route.params.name, installId.value],
-    () => {
-        loadPlugin();
-    },
+    () => route.params.name,
+    () => loadPlugin(),
 );
 
-async function toggleEnable() {
-    if (!plugin.value) return;
-    togglingEnable.value = true;
+async function toggleInstall() {
+    if (!plugin.value || !selected.value) return;
+    busy.value = true;
     try {
-        if (plugin.value.status === "enabled") {
-            await store.disablePlugin(plugin.value.name);
-        } else {
-            await store.enablePlugin(plugin.value.name);
-        }
-        plugin.value = await store.fetchPluginDetail(
-            route.params.name as string,
-            installId.value,
+        await store.setInstallEnabled(
+            plugin.value.name,
+            selected.value.app_version_id,
+            !selected.value.enabled,
         );
+        await loadPlugin();
     } catch (e) {
-        const msg = e instanceof Error ? e.message : "Failed to toggle plugin";
-        pluginError.value = msg;
-        toast.show(msg, "error");
+        toast.show(
+            e instanceof Error ? e.message : "Failed to update install",
+            "error",
+        );
     } finally {
-        togglingEnable.value = false;
+        busy.value = false;
     }
 }
 
-function setActiveTab(tab: string) {
-    activeTab.value = tab;
+async function confirmUninstall() {
+    if (!plugin.value || !selected.value) return;
+    try {
+        await store.uninstallPlugin(
+            plugin.value.name,
+            selected.value.app_version_id,
+        );
+        toast.show(
+            `Uninstalled from ${installLabel(selected.value)}`,
+            "success",
+        );
+        await loadPlugin();
+    } catch (e) {
+        toast.show(
+            `Failed to uninstall: ${e instanceof Error ? e.message : "Unknown error"}`,
+            "error",
+        );
+    } finally {
+        showDeleteModal.value = false;
+    }
 }
 
 async function confirmDelete() {
+    if (!plugin.value) return;
     try {
-        await store.deletePlugin(plugin.value!.name);
-        toast.show(`Plugin "${plugin.value!.name}" deleted`, "success");
+        await store.deletePlugin(plugin.value.name);
+        toast.show(`Plugin "${plugin.value.name}" deleted`, "success");
         router.push(appPath("/plugins"));
     } catch (e) {
         toast.show(
@@ -145,6 +183,18 @@ async function confirmDelete() {
     } finally {
         showDeleteModal.value = false;
     }
+}
+
+function deployToAnother() {
+    if (!plugin.value) return;
+    const query: Record<string, string> = {};
+    query.registry_id = String(plugin.value.registry_id);
+
+    const repo = plugin.value.image || plugin.value.slug;
+    if (repo) query.repo = repo;
+    const tag = selected.value?.plugin_version;
+    if (tag) query.tag = tag;
+    router.push({ path: appPath("/plugins/new"), query });
 }
 </script>
 
@@ -159,23 +209,32 @@ async function confirmDelete() {
         <div class="bg-white p-6 rounded-lg shadow-sm mb-6" v-if="plugin">
             <ConfirmDialog
                 :visible="showDeleteModal"
-                header="Uninstall Plugin"
-                :message="`By uninstalling ${plugin.name} both the instances and the plugin data will be deleted. Do you want to proceed?`"
-                @confirm="confirmDelete"
+                :header="
+                    deleteTarget === 'plugin'
+                        ? 'Delete Plugin'
+                        : 'Uninstall from app version'
+                "
+                :message="
+                    deleteTarget === 'plugin'
+                        ? `Delete ${plugin.name} and all its deployments?`
+                        : `Uninstall ${plugin.name} from ${
+                              selected ? installLabel(selected) : ''
+                          }?`
+                "
+                @confirm="
+                    deleteTarget === 'plugin'
+                        ? confirmDelete()
+                        : confirmUninstall()
+                "
                 @cancel="showDeleteModal = false"
-                confirmLabel="Uninstall"
+                :confirmLabel="
+                    deleteTarget === 'plugin' ? 'Delete' : 'Uninstall'
+                "
             />
-            <div class="flex w-full place-content-between">
+            <div class="flex w-full place-content-between gap-4 flex-wrap">
                 <div>
                     <h1 class="text-2xl font-bold mb-3">{{ plugin.name }}</h1>
-                    <p v-if="isInherited" class="text-xs text-gray-500 mb-2">
-                        Inherited from a {{ plugin.scope }}-scoped install.
-                        Manage it from the global Plugins area.
-                    </p>
-                    <div class="flex gap-2 items-center mb-2">
-                        <span class="text-sm text-gray-500"
-                            >v{{ plugin.version }}</span
-                        >
+                    <div class="flex gap-2 items-center mb-2 flex-wrap">
                         <span
                             class="px-2 py-0.5 rounded-full text-xs font-medium capitalize"
                             :class="{
@@ -196,52 +255,60 @@ async function confirmDelete() {
                             }"
                             >{{ plugin.status }}</span
                         >
-                        <span
-                            class="px-2 py-0.5 rounded-full text-xs font-medium capitalize"
-                            :class="{
-                                'bg-purple-100 text-purple-800':
-                                    plugin.scope === 'app',
-                                'bg-indigo-100 text-indigo-800':
-                                    plugin.scope === 'version',
-                                'bg-slate-100 text-slate-700':
-                                    plugin.scope === 'global',
-                            }"
-                            >{{ plugin.scope }}</span
+                        <span class="text-sm text-gray-500"
+                            >Registry: {{ plugin.registry || "—" }}</span
                         >
+                        <span class="text-sm text-gray-500"
+                            >{{ plugin.installations.length }} deployment{{
+                                plugin.installations.length === 1 ? "" : "s"
+                            }}</span
+                        >
+                    </div>
+                    <div
+                        v-if="plugin.description"
+                        class="text-sm text-gray-600 mb-1"
+                    >
+                        {{ plugin.description }}
                     </div>
                     <div class="text-sm text-gray-500">
                         Created: {{ formatDate(plugin.created_at) }} | Updated:
                         {{ formatDate(plugin.updated_at) }}
                     </div>
                 </div>
-                <div class="flex gap-2 mb-auto">
-                    <Button
-                        v-if="
-                            plugin.status === 'enabled' &&
-                            plugin.plugin_type !== 'system' &&
-                            !isInherited
-                        "
-                        :label="togglingEnable ? 'Disabling...' : 'Disable'"
-                        severity="danger"
-                        size="small"
-                        :disabled="togglingEnable"
-                        @click="toggleEnable"
+
+                <!-- Controls: deployment switcher + install actions + delete -->
+                <div class="flex gap-2 items-center flex-wrap h-fit">
+                    <Select
+                        v-if="plugin.installations.length"
+                        v-model="selectedAppVersionId"
+                        :options="plugin.installations"
+                        :option-label="(i: any) => installLabel(i)"
+                        option-value="app_version_id"
+                        placeholder="Select deployment"
+                        class="w-full sm:w-64"
                     />
-                    <!-- TODO: not working trough the API -->
-                    <!-- <Button
-                        v-if="plugin.status === 'disabled'"
-                        :label="togglingEnable ? 'Enabling...' : 'Enable'"
-                        severity="success"
-                        size="small"
-                        :disabled="togglingEnable"
-                        @click="toggleEnable"
-                    /> -->
                     <Button
-                        v-if="plugin.plugin_type === 'user' && !isInherited"
-                        label="Uninstall"
-                        severity="danger"
+                        label="Deploy to another app"
+                        severity="secondary"
+                        outlined
                         size="small"
-                        @click="showDeleteModal = true"
+                        @click="deployToAnother"
+                    />
+                    <Button
+                        label="Manage plugin"
+                        severity="danger"
+                        outlined
+                        size="small"
+                        aria-haspopup="true"
+                        aria-controls="plugin-actions"
+                        :disabled="actionItems.length === 0"
+                        @click="toggleActionsMenu"
+                    />
+                    <Menu
+                        ref="actionsMenu"
+                        id="plugin-actions"
+                        :model="actionItems"
+                        :popup="true"
                     />
                 </div>
             </div>
@@ -256,29 +323,118 @@ async function confirmDelete() {
         >
             {{ pluginError }}
         </div>
-        <Message v-if="plugin?.status === 'disabled'">
-            Settings not available for a disabled plugin
-        </Message>
-        <template v-else>
+
+        <template v-if="plugin && !pluginLoading">
             <div class="overflow-x-auto -mx-4 sm:mx-0 mb-4">
                 <div
                     class="flex gap-1 border-b-2 border-gray-200 px-4 sm:px-0 min-w-max"
                 >
                     <Button
-                        v-for="tab in availableTabs"
+                        v-for="tab in tabs"
                         :key="tab"
                         :label="tab"
                         :text="activeTab !== tab"
                         severity="secondary"
                         size="small"
-                        @click="setActiveTab(tab)"
+                        @click="activeTab = tab"
                     />
                 </div>
             </div>
 
-            <div class="bg-white p-6 rounded-lg shadow-sm" v-if="plugin">
+            <div class="bg-white p-6 rounded-lg shadow-sm">
+                <!-- Deployments -->
+                <template v-if="activeTab === 'Deployments'">
+                    <div
+                        v-if="plugin.installations.length === 0"
+                        class="text-gray-400 italic"
+                    >
+                        Not deployed to any app version yet.
+                    </div>
+                    <table v-else class="w-full text-sm">
+                        <thead>
+                            <tr class="text-left text-gray-500 border-b">
+                                <th class="py-2">App</th>
+                                <th class="py-2">Version</th>
+                                <th class="py-2">Plugin tag</th>
+                                <th class="py-2">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr
+                                v-for="install in plugin.installations"
+                                :key="install.id"
+                                class="border-b last:border-0 cursor-pointer hover:bg-gray-50"
+                                :class="{
+                                    'bg-blue-50':
+                                        selectedAppVersionId ===
+                                        install.app_version_id,
+                                }"
+                                @click="
+                                    selectedAppVersionId =
+                                        install.app_version_id
+                                "
+                            >
+                                <td class="py-2 font-medium">
+                                    {{ install.app_name || install.api_name }}
+                                </td>
+                                <td class="py-2">
+                                    {{
+                                        install.version_name ||
+                                        install.version_id
+                                    }}
+                                </td>
+                                <td class="py-2 font-mono">
+                                    {{ install.plugin_version }}
+                                </td>
+                                <td class="py-2">
+                                    <span
+                                        class="px-2 py-0.5 rounded-full text-xs font-medium capitalize"
+                                        :class="{
+                                            'bg-green-100 text-green-800':
+                                                install.enabled,
+                                            'bg-yellow-100 text-yellow-800':
+                                                !install.enabled,
+                                        }"
+                                        >{{
+                                            install.enabled
+                                                ? "enabled"
+                                                : "disabled"
+                                        }}</span
+                                    >
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </template>
+
+                <!-- Settings (selected deployment) -->
+                <template v-else-if="activeTab === 'Settings'">
+                    <div v-if="!selected" class="text-gray-400 italic">
+                        Select a deployment to view its settings.
+                    </div>
+                    <Settings
+                        v-else
+                        :key="'settings-' + selected.app_version_id"
+                        :plugin="plugin"
+                        :app-version-id="selected.app_version_id"
+                    />
+                </template>
+
+                <!-- Permissions / policies (selected deployment) -->
+                <template v-else-if="activeTab === 'Permissions'">
+                    <div v-if="!selected" class="text-gray-400 italic">
+                        Select a deployment to view its policies and scopes.
+                    </div>
+                    <Permissions
+                        v-else
+                        :key="'perms-' + selected.app_version_id"
+                        :plugin="plugin"
+                        :app-version-id="selected.app_version_id"
+                    />
+                </template>
+
                 <Documentation
-                    v-if="activeTab === 'Documentation'"
+                    v-else-if="activeTab === 'Documentation'"
                     :plugin="plugin"
                 />
                 <Frontend
@@ -290,11 +446,7 @@ async function confirmDelete() {
                     :plugin="plugin"
                 />
                 <Schema v-else-if="activeTab === 'Schema'" :plugin="plugin" />
-                <Settings
-                    v-else-if="activeTab === 'Settings'"
-                    :plugin="plugin"
-                />
-                <Logs v-else-if="activeTab === 'Logs'" :plugin="plugin"></Logs>
+                <Logs v-else-if="activeTab === 'Logs'" :plugin="plugin" />
                 <Versions
                     v-else-if="activeTab === 'Versions'"
                     :plugin="plugin"
@@ -303,10 +455,7 @@ async function confirmDelete() {
                     v-else-if="activeTab === 'Instances'"
                     :plugin="plugin"
                 />
-                <Permissions
-                    v-else-if="activeTab === 'Permissions'"
-                    :plugin="plugin"
-                /></div
-        ></template>
+            </div>
+        </template>
     </div>
 </template>

@@ -17,6 +17,16 @@ export interface UserAppAccess {
     roles: string[];
 }
 
+/** An app × version link — a deploy target. */
+export interface AppVersionRow {
+    id: number;
+    app_id: number;
+    app_name: string;
+    api_name: string;
+    version_id: number;
+    version_name: string;
+}
+
 export interface CreateAppInput {
     name: string;
     api_name: string;
@@ -56,6 +66,9 @@ export function createAppsResource(ky: KyInstance) {
                 .json<{ success: boolean }>(),
         me: (options?: any) =>
             ky.get("platform/me/apps", options).json<UserAppAccess[]>(),
+        /** Every app × version pair (deploy targets for plugins). */
+        appVersions: (options?: any) =>
+            ky.get("platform/app-versions", options).json<AppVersionRow[]>(),
         getUserAccess: (userId: string, options?: any) =>
             ky
                 .get(`platform/users/${encodeURIComponent(userId)}/app-access`, options)

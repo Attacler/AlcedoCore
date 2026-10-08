@@ -18,10 +18,10 @@ use crate::{
     services::{
         apps::{AppsService, version_names_for_app},
         auth::AuthService,
+        collections::schema::{SchemaService, drop_schema},
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
-        collections::schema::{drop_schema, SchemaService},
         respond::{JSendResponse, success},
         roles::RolesService,
         versions::VersionsService,
@@ -116,7 +116,8 @@ async fn fetch_app_row(state: &AppState, id: i32) -> Result<Option<AppRow>, Alce
     let row = service
         .get_single_item_by_pk(Value::String(id.to_string()))
         .await?;
-    row.map(|row| app_row_from_json(Value::Object(row))).transpose()
+    row.map(|row| app_row_from_json(Value::Object(row)))
+        .transpose()
 }
 
 async fn fetch_app(state: &AppState, id: i32) -> Result<Option<AppWithVersions>, AlcedoError> {
@@ -466,6 +467,68 @@ pub async fn set_user_app_access(
         .set_user_app_access(user_id, &payload.app, &payload.version, &payload.role_ids)
         .await?;
     Ok(Json(success(serde_json::json!({ "success": true }))))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AppVersionRow {
+    pub id: i32,
+    pub app_id: i32,
+    pub app_name: String,
+    pub api_name: String,
+    pub version_id: i32,
+    pub version_name: String,
+}
+
+#[utoipa::path(get, path = "/api/platform/app-versions", tag = "Apps",
+    responses((status = OK, body = JSendResponse<Vec<AppVersionRow>>))
+)]
+pub async fn list_app_versions(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+) -> Result<Json<JSendResponse<Vec<AppVersionRow>>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let rows = AppsService::new(&state).list_app_version_rows().await?;
+    let mut result: Vec<AppVersionRow> = Vec::new();
+    for row in &rows {
+        let Some(id) = row.get("id").and_then(Value::as_i64) else {
+            continue;
+        };
+        let app = row.get("app_id");
+        let version = row.get("version_id");
+        result.push(AppVersionRow {
+            id: id as i32,
+            app_id: app
+                .and_then(|a| a.get("id"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0) as i32,
+            app_name: app
+                .and_then(|a| a.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            api_name: app
+                .and_then(|a| a.get("api_name"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            version_id: version
+                .and_then(|v| v.get("id"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0) as i32,
+            version_name: version
+                .and_then(|v| v.get("version_name"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    result.sort_by(|a, b| {
+        a.app_name
+            .to_lowercase()
+            .cmp(&b.app_name.to_lowercase())
+            .then(a.version_name.cmp(&b.version_name))
+    });
+    Ok(Json(success(result)))
 }
 
 async fn roles_for_user(

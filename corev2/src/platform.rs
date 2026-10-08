@@ -14,6 +14,7 @@ pub fn platform_controller() -> Router<AppState> {
             controllers::developer_keys::developer_keys_controller(),
         )
         .route("/me/apps", get(controllers::apps::me_apps))
+        .route("/app-versions", get(controllers::apps::list_app_versions))
         .route(
             "/users/{id}/app-access",
             get(controllers::apps::get_user_app_access)
@@ -24,5 +25,6 @@ pub fn platform_controller() -> Router<AppState> {
         .nest(
             "/registries",
             controllers::registries::registries_controller(),
-        );
+        )
+        .nest("/plugins", controllers::plugins::plugins_controller());
 }

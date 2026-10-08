@@ -11,8 +11,8 @@ export function createPoliciesResource(ky: any) {
     deletePermission: (id: string, permissionId: string, options?: any) => ky.delete(`app/policies/${encodeURIComponent(id)}/permissions/${encodeURIComponent(permissionId)}`, options).json(),
     deleteCollectionPermissions: (id: string, collectionName: string, options?: any) => ky.delete(`app/policies/${encodeURIComponent(id)}/permissions/collection/${encodeURIComponent(collectionName)}`, options).json(),
     listAssignedPlugins: (policyId: string, options?: any) => ky.get(`app/policies/${encodeURIComponent(policyId)}/plugins`, options).json(),
-    listPluginPolicies: (pluginSlug: string, options?: any) => ky.get(`plugins/${encodeURIComponent(pluginSlug)}/policies`, options).json(),
-    assignPluginPolicy: (pluginSlug: string, policyId: string, options?: any) => ky.post(`plugins/${encodeURIComponent(pluginSlug)}/policies`, { json: { policy_id: policyId }, ...options }).json(),
-    unassignPluginPolicy: (pluginSlug: string, policyId: string, options?: any) => ky.delete(`plugins/${encodeURIComponent(pluginSlug)}/policies/${encodeURIComponent(policyId)}`, options).json(),
+    listPluginPolicies: (pluginSlug: string, options?: any) => ky.get(`platform/plugins/${encodeURIComponent(pluginSlug)}/policies`, options).json(),
+    assignPluginPolicy: (pluginSlug: string, policyId: string, options?: any) => ky.post(`platform/plugins/${encodeURIComponent(pluginSlug)}/policies`, { json: { policy_id: policyId }, ...options }).json(),
+    unassignPluginPolicy: (pluginSlug: string, policyId: string, options?: any) => ky.delete(`platform/plugins/${encodeURIComponent(pluginSlug)}/policies/${encodeURIComponent(policyId)}`, options).json(),
   };
 }

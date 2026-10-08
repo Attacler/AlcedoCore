@@ -15,6 +15,8 @@ pub(crate) mod m00005_developer_keys;
 pub(crate) mod m00006_user_profile_fk;
 pub(crate) mod m00007_activity_logs;
 pub(crate) mod m00008_registries;
+pub(crate) mod m00009_plugins;
+pub(crate) mod m00010_plugin_image;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -42,6 +44,10 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
         m00008_registries::M0008Migration {
             app_context: app_context.clone()
         },
+        m00009_plugins::M0009Migration {
+            app_context: app_context.clone()
+        },
+        m00010_plugin_image::M0010Migration,
     ]
 }
 

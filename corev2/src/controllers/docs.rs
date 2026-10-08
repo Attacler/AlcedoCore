@@ -4,8 +4,8 @@ use utoipa::OpenApi;
 use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
 use crate::controllers::{
-    apps, auth, collections, dev, developer_keys, files, items, kv, logs, menus, policies, registries,
-    roles, sessions, settings, users, versions,
+    apps, auth, collections, dev, developer_keys, files, items, kv, logs, menus, plugins, policies,
+    registries, roles, sessions, settings, users, versions,
 };
 use crate::services::menus::{MenuItemInput, MenuSectionInput};
 
@@ -85,6 +85,7 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         apps::update_app,
         apps::delete_app,
         apps::me_apps,
+        apps::list_app_versions,
         // Versions
         versions::list_versions,
         versions::create_version,
@@ -104,6 +105,35 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         registries::health_check_url,
         registries::health_check_registry,
         registries::list_images,
+        // Plugins
+        plugins::list_plugins,
+        plugins::get_plugin,
+        plugins::create_plugin,
+        plugins::update_plugin,
+        plugins::delete_plugin,
+        plugins::deploy_plugin,
+        plugins::preview_plugin,
+        plugins::uninstall_plugin,
+        plugins::enable_plugin,
+        plugins::disable_plugin,
+        plugins::get_install_scopes,
+        plugins::set_install_scopes,
+        plugins::get_install_settings,
+        plugins::patch_install_settings,
+        plugins::get_runtime,
+        plugins::list_instances,
+        plugins::list_logs,
+        plugins::list_versions,
+        plugins::list_docs,
+        plugins::get_schema,
+        plugins::list_migrations,
+        plugins::run_migration,
+        plugins::rollback_migration,
+        plugins::list_pages,
+        plugins::get_assets,
+        plugins::scale_plugin,
+        plugins::restart_plugin,
+        plugins::stop_plugin,
         // Roles
         roles::list_roles,
         roles::create_role,
@@ -192,6 +222,7 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         (name = "KV", description = "App-scoped key/value store with optional TTL"),
         (name = "Dev", description = "Dev proxy helpers for locally-run plugins"),
         (name = "Registries", description = "Container registries (global)"),
+        (name = "Plugins", description = "Installed plugin records (global). Runtime surfaces return mocked empties until Docker/K8s lands"),
     ),
     components(
         schemas (
@@ -200,6 +231,7 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
             apps::CreateAppRequest,
             apps::UpdateAppRequest,
             apps::UserAppAccess,
+            apps::AppVersionRow,
             versions::VersionRow,
             versions::CreateVersionRequest,
             developer_keys::DeveloperKeyResponse,
@@ -215,6 +247,16 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
             registries::HealthCheckUrlRequest,
             registries::ImageListItem,
             registries::ListImagesResponse,
+            plugins::ListPluginsResponse,
+            plugins::UpdatePluginRequest,
+            plugins::PreviewRequest,
+            plugins::SetScopesRequest,
+            plugins::ScopesResponse,
+            plugins::SettingsResponse,
+            plugins::DeletePluginResponse,
+            crate::services::plugins::PluginRecord,
+            crate::services::plugins::InstallRecord,
+            crate::services::plugins::DeployInput,
             settings::SettingsResponse,
             settings::UpdatePlatformSettingsRequest,
             settings::UpdateAppSettingRequest,

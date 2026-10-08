@@ -23,7 +23,7 @@ async function loadFrontendManifest() {
             const module = await store.fetchPluginAssets(
                 route.params.name as string,
             );
-            frontendManifest.value = module.default || null;
+            frontendManifest.value = module?.default || null;
         },
         "Failed to load frontend assets",
     );

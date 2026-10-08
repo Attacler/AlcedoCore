@@ -3,13 +3,11 @@ import { useToast } from "@/composables/useToast";
 import { PluginStore, usePluginsStore } from "@/stores/plugins";
 import { withAsyncHandlingVoid } from "@/utils/asyncUtils";
 import { ref, onMounted } from "vue";
-import { useRoute, useRouter } from "vue-router";
 
-const route = useRoute(),
-    store = usePluginsStore(),
+const store = usePluginsStore(),
     toast = useToast();
 
-const props = defineProps<{ plugin: PluginStore }>();
+const props = defineProps<{ plugin: PluginStore; appVersionId: number }>();
 
 // Settings state
 const settingsSchema = ref<Record<string, any> | null>(null),
@@ -29,7 +27,10 @@ async function loadSettings() {
         settingsError,
         async () => {
             const { settings, schema: fetchedSchema } =
-                await store.fetchPluginSettings(route.params.name as string);
+                await store.fetchPluginSettings(
+                    props.plugin.name,
+                    props.appVersionId,
+                );
             if (fetchedSchema) {
                 settingsSchema.value = fetchedSchema;
                 settingsFormValues.value = settings ? { ...settings } : {};
@@ -49,7 +50,8 @@ async function saveSettings() {
     settingsError.value = null;
     try {
         await store.savePluginSettings(
-            route.params.name as string,
+            props.plugin.name,
+            props.appVersionId,
             settingsFormValues.value,
         );
         settingsOriginalValues.value = JSON.parse(

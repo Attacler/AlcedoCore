@@ -6,7 +6,6 @@ import { createLogsResource } from "./logs.js";
 import { createHealthResource } from "./health.js";
 import { createPluginsResource } from "./plugins.js";
 import { createMigrationsResource } from "./migrations.js";
-import { createSettingsResource } from "./settings.js";
 import { createUsageResource } from "./usage.js";
 import { createClient } from "./client.js";
 
@@ -215,7 +214,7 @@ describe("Schema Resource", () => {
         const ky = mockKy({ tables: [] });
         const schema = createSchemaResource(ky);
         const result = await schema.get("my-plugin");
-        expect(getLastUrl(ky)).toBe("plugins/my-plugin/schema");
+        expect(getLastUrl(ky)).toBe("platform/plugins/my-plugin/schema");
         expect(result).toEqual({ tables: [] });
     });
 });
@@ -229,7 +228,7 @@ describe("Logs Resource", () => {
         const ky = mockKy({ logs: [] });
         const logs = createLogsResource(ky);
         const result = await logs.list("my-plugin");
-        expect(getLastUrl(ky)).toBe("plugins/my-plugin/logs");
+        expect(getLastUrl(ky)).toBe("platform/plugins/my-plugin/logs");
         expect(result).toEqual({ logs: [] });
     });
 });
@@ -253,97 +252,103 @@ describe("Health Resource", () => {
 // ---------------------------------------------------------------------------
 
 describe("Plugins Resource", () => {
-    it("list calls GET plugins", async () => {
-        const ky = mockKy([{ name: "p1" }]);
+    it("list calls GET platform/plugins", async () => {
+        const ky = mockKy({ plugins: [] });
         const plugins = createPluginsResource(ky);
         const result = await plugins.list();
-        expect(getLastUrl(ky)).toBe("plugins");
-        expect(result).toEqual([{ name: "p1" }]);
+        expect(getLastUrl(ky)).toBe("platform/plugins");
+        expect(result).toEqual({ plugins: [] });
     });
 
-    it("get calls GET plugins/:name", async () => {
-        const ky = mockKy({ name: "p1" });
+    it("get calls GET platform/plugins/:slug", async () => {
+        const ky = mockKy({ slug: "p1" });
         const plugins = createPluginsResource(ky);
         const result = await plugins.get("p1");
-        expect(getLastUrl(ky)).toBe("plugins/p1");
-        expect(result).toEqual({ name: "p1" });
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1");
+        expect(result).toEqual({ slug: "p1" });
     });
 
-    it("schema calls GET plugins/:name/schema", async () => {
+    it("deploy posts the deploy payload", async () => {
+        const ky = mockKy({ slug: "p1" });
+        const plugins = createPluginsResource(ky);
+        await plugins.deploy({ slug: "p1", plugin_version: "1.0.0", version_id: 1 });
+        expect(getLastUrl(ky)).toBe("platform/plugins/deploy");
+        expect(getLastBody(ky)).toEqual({
+            slug: "p1",
+            plugin_version: "1.0.0",
+            version_id: 1,
+        });
+    });
+
+    it("preview posts image + registry id", async () => {
+        const ky = mockKy({ slug: "p1" });
+        const plugins = createPluginsResource(ky);
+        await plugins.preview("localhost:5000/p1:1.0.0", 0);
+        expect(getLastUrl(ky)).toBe("platform/plugins/preview");
+        expect(getLastBody(ky)).toEqual({
+            image: "localhost:5000/p1:1.0.0",
+            registry_id: 0,
+        });
+    });
+
+    it("enable is version-scoped", async () => {
+        const ky = mockKy({ slug: "p1" });
+        const plugins = createPluginsResource(ky);
+        await plugins.enable("p1", 2);
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/installs/2/enable");
+    });
+
+    it("disable is version-scoped", async () => {
+        const ky = mockKy({ slug: "p1" });
+        const plugins = createPluginsResource(ky);
+        await plugins.disable("p1", 2);
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/installs/2/disable");
+    });
+
+    it("uninstall is version-scoped", async () => {
+        const ky = mockKy({ uninstalled: true });
+        const plugins = createPluginsResource(ky);
+        await plugins.uninstall("p1", 2);
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/installs/2");
+    });
+
+    it("getScopes is version-scoped", async () => {
+        const ky = mockKy({ requested_scopes: [], granted_scopes: [] });
+        const plugins = createPluginsResource(ky);
+        await plugins.getScopes("p1", 2);
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/installs/2/scopes");
+    });
+
+    it("updateSettings PATCHes version-scoped settings", async () => {
+        const ky = mockKy({ settings: {} });
+        const plugins = createPluginsResource(ky);
+        await plugins.updateSettings("p1", 2, { theme: "dark" });
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/installs/2/settings");
+        expect(getLastBody(ky)).toEqual({ theme: "dark" });
+    });
+
+    it("schema calls GET plugins/:slug/schema", async () => {
         const ky = mockKy({ tables: [] });
         const plugins = createPluginsResource(ky);
         const result = await plugins.schema("p1");
-        expect(getLastUrl(ky)).toBe("plugins/p1/schema");
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/schema");
         expect(result).toEqual({ tables: [] });
     });
 
-    it("declarations calls GET plugins/:name/declarations", async () => {
-        const ky = mockKy({ decls: [] });
-        const plugins = createPluginsResource(ky);
-        const result = await plugins.declarations("p1");
-        expect(getLastUrl(ky)).toBe("plugins/p1/declarations");
-        expect(result).toEqual({ decls: [] });
-    });
-
-    it("pages calls GET plugins/:name/pages and returns parsed pages", async () => {
+    it("pages calls GET plugins/:slug/pages and returns parsed pages", async () => {
         const ky = mockKy({ pages: [{ path: "/index", label: "Home" }] });
         const plugins = createPluginsResource(ky);
         const result = await plugins.pages("p1");
-        expect(getLastUrl(ky)).toBe("plugins/p1/pages");
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/pages");
         expect(result).toEqual([{ path: "/index", label: "Home" }]);
     });
 
-    it("assets calls GET plugins/:name/pages/assets", async () => {
+    it("assets calls GET plugins/:slug/pages/assets", async () => {
         const ky = mockKy({ js: "app.js", css: "style.css" });
         const plugins = createPluginsResource(ky);
         const result = await plugins.assets("p1");
-        expect(getLastUrl(ky)).toBe("plugins/p1/pages/assets");
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/pages/assets");
         expect(result).toEqual({ js: "app.js", css: "style.css" });
-    });
-
-    it("install sends FormData with zip", async () => {
-        const ky = mockKy({ name: "p1" });
-        const plugins = createPluginsResource(ky);
-        const zip = new Blob(["fake-zip"]);
-        const result = await plugins.install(zip);
-        expect(getLastUrl(ky)).toBe("plugins/install");
-        // ky.post should have been called with a body that is FormData
-        expect(ky.post.mock.calls[0][1]?.body).toBeInstanceOf(FormData);
-        expect(result).toEqual({ name: "p1" });
-    });
-
-    it("uninstall calls DELETE plugins/uninstall with name", async () => {
-        const ky = mockKy({ success: true });
-        const plugins = createPluginsResource(ky);
-        await plugins.uninstall("p1");
-        expect(getLastUrl(ky)).toBe("plugins/uninstall");
-        expect(getLastBody(ky)).toEqual({ name: "p1" });
-    });
-
-    it("update sends FormData with zip", async () => {
-        const ky = mockKy({ name: "p1" });
-        const plugins = createPluginsResource(ky);
-        const zip = new Blob(["fake-zip"]);
-        const result = await plugins.update("p1", zip);
-        expect(getLastUrl(ky)).toBe("plugins/p1");
-        expect(ky.put.mock.calls[0][1]?.body).toBeInstanceOf(FormData);
-        expect(result).toEqual({ name: "p1" });
-    });
-
-    it("enable calls POST plugins/enable", async () => {
-        const ky = mockKy({ success: true });
-        const plugins = createPluginsResource(ky);
-        await plugins.enable("p1");
-        expect(getLastUrl(ky)).toBe("plugins/enable");
-        expect(getLastBody(ky)).toEqual({ name: "p1" });
-    });
-
-    it("disable calls POST plugins/disable", async () => {
-        const ky = mockKy({ success: true });
-        const plugins = createPluginsResource(ky);
-        await plugins.disable("p1");
-        expect(getLastUrl(ky)).toBe("plugins/disable");
-        expect(getLastBody(ky)).toEqual({ name: "p1" });
     });
 });
 
@@ -356,7 +361,7 @@ describe("Migrations Resource", () => {
         const ky = mockKy([{ name: "m1", pending: true }]);
         const migrations = createMigrationsResource(ky);
         const result = await migrations.list("my-plugin");
-        expect(getLastUrl(ky)).toBe("plugins/my-plugin/migrations");
+        expect(getLastUrl(ky)).toBe("platform/plugins/my-plugin/migrations");
         expect(result).toEqual([{ name: "m1", pending: true }]);
     });
 
@@ -364,7 +369,7 @@ describe("Migrations Resource", () => {
         const ky = mockKy({ success: true });
         const migrations = createMigrationsResource(ky);
         const result = await migrations.run("my-plugin");
-        expect(getLastUrl(ky)).toBe("plugins/my-plugin/migrations");
+        expect(getLastUrl(ky)).toBe("platform/plugins/my-plugin/migrations");
         expect(result).toBeUndefined();
     });
 
@@ -372,31 +377,7 @@ describe("Migrations Resource", () => {
         const ky = mockKy({ success: true });
         const migrations = createMigrationsResource(ky);
         const result = await migrations.rollback("my-plugin", "v1");
-        expect(getLastUrl(ky)).toBe("plugins/my-plugin/rollback/v1");
-        expect(result).toEqual({ success: true });
-    });
-});
-
-// ---------------------------------------------------------------------------
-// Settings Resource
-// ---------------------------------------------------------------------------
-
-describe("Settings Resource", () => {
-    it("get calls GET plugins/:name/settings", async () => {
-        const ky = mockKy({ theme: "dark" });
-        const settings = createSettingsResource(ky);
-        const result = await settings.get("my-plugin");
-        expect(getLastUrl(ky)).toBe("plugins/my-plugin/settings");
-        expect(result).toEqual({ theme: "dark" });
-    });
-
-    it("update calls PATCH with settings", async () => {
-        const ky = mockKy({ success: true });
-        const settings = createSettingsResource(ky);
-        const newSettings = { theme: "light" };
-        const result = await settings.update("my-plugin", newSettings);
-        expect(getLastUrl(ky)).toBe("plugins/my-plugin/settings");
-        expect(getLastBody(ky)).toEqual(newSettings);
+        expect(getLastUrl(ky)).toBe("platform/plugins/my-plugin/rollback/v1");
         expect(result).toEqual({ success: true });
     });
 });
@@ -425,7 +406,6 @@ describe("createClient", () => {
         expect(client).toHaveProperty("plugins");
         expect(client).toHaveProperty("health");
         expect(client).toHaveProperty("migrations");
-        expect(client).toHaveProperty("settings");
         expect(client).toHaveProperty("usage");
         expect(client).toHaveProperty("kv");
         expect(client).toHaveProperty("db");

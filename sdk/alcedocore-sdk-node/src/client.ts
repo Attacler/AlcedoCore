@@ -2,7 +2,6 @@ import ky, { type AfterResponseHook, type BeforeRequestHook } from "ky";
 import { createPluginsResource } from "./plugins.js";
 import { createHealthResource } from "./health.js";
 import { createMigrationsResource } from "./migrations.js";
-import { createSettingsResource } from "./settings.js";
 import { createUsageResource } from "./usage.js";
 import { createKvResource } from "./kv.js";
 import { createDbResource } from "./db.js";
@@ -155,7 +154,6 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
         menus: createMenusResource(kyInstance),
         registries: createRegistriesResource(kyInstance),
         migrations: createMigrationsResource(kyInstance),
-        settings: createSettingsResource(kyInstance),
         usage: createUsageResource(kyInstance),
         kv: createKvResource(kyInstance),
         db: createDbResource(kyInstance),

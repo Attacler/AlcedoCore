@@ -94,25 +94,53 @@ const grantRootAccess = ref(false);
 
 const configSettings = ref<Record<string, any>>({});
 const installMode = ref<"install" | "install-and-start">("install-and-start");
-const installScope = ref<"global" | "version" | "app">(
-    inAppZone.value ? "app" : "global",
-);
 
-const settingsSchema = computed(
-    () => previewManifest.value?.settings_schema || null,
-);
-const manifestScopes = computed<ManifestScope[]>(
-    () => previewManifest.value?.scopes || [],
-);
+interface AppVersionNode {
+    id: number;
+    app_id: number;
+    app_name: string;
+    api_name: string;
+    version_id: number;
+    version_name: string;
+}
+const appVersionRows = ref<AppVersionNode[]>([]),
+    targetAppVersionId = ref<number | null>(null),
+    pluginSlug = ref(""),
+    installPhase = ref<"pulling" | "done" | "error">("pulling"),
+    installError = ref(""),
+    phaseLabels: Record<string, string> = {
+        pulling: "Deploying plugin...",
+        done: "Done!",
+        error: "Error",
+    };
+const groupedAppVersions = computed(() => {
+    const map = new Map<
+        string,
+        { version_name: string; apps: AppVersionNode[] }
+    >();
+    for (const row of appVersionRows.value) {
+        const group = map.get(row.version_name) || {
+            version_name: row.version_name,
+            apps: [] as AppVersionNode[],
+        };
+        group.apps.push(row);
+        map.set(row.version_name, group);
+    }
+    return Array.from(map.values());
+});
+const selectedTarget = computed(
+        () =>
+            appVersionRows.value.find(
+                (v) => v.id === targetAppVersionId.value,
+            ) || null,
+    ),
+    settingsSchema = computed(
+        () => previewManifest.value?.settings_schema || null,
+    ),
+    manifestScopes = computed<ManifestScope[]>(
+        () => previewManifest.value?.scopes || [],
+    );
 
-const pluginSlug = ref("");
-const installPhase = ref<"pulling" | "done" | "error">("pulling");
-const installError = ref("");
-const phaseLabels: Record<string, string> = {
-    pulling: "Deploying plugin...",
-    done: "Done!",
-    error: "Error",
-};
 const phaseOrder: string[] = ["pulling", "done"];
 const installPhaseLabel = computed(() => phaseLabels[installPhase.value]);
 const installProgress = computed(() => {
@@ -125,8 +153,6 @@ function getImageRef(): string {
         (r) => String(r.id) === selectedRegistryId.value,
     );
     const rawHost = reg ? reg.url.replace(/^https?:\/\//, "") : "";
-    // Always use localhost:5000 for the local registry — Docker treats
-    // non-localhost as HTTPS-only, but the dev registry is HTTP only.
     const port = rawHost.split(":")[1];
     const isLocal = port === "5000";
     const host = isLocal ? "localhost:5000" : rawHost;
@@ -144,8 +170,8 @@ function stepClass(idx: number): Record<string, boolean> {
 
 async function fetchRegistries() {
     try {
-        const r = await client.registries.list();
-        registries.value = r.data?.registries || [];
+        const r: any = await client.registries.list();
+        registries.value = r.data?.registries || r.registries || [];
     } catch (e) {
         toast.show("Failed to fetch registries", "error");
     }
@@ -164,7 +190,7 @@ async function onRegistryChange() {
         const r = await client.registries.images(
             Number(selectedRegistryId.value),
         );
-        images.value = r.data?.images || [];
+        images.value = r.data?.images || r.images || [];
     } catch (e) {
         images.value = [];
         toast.show("Failed to fetch images from registry", "error");
@@ -193,30 +219,25 @@ async function goToPreview() {
 }
 
 async function fetchPreview() {
-    const ref = getImageRef();
+    const imageRef = getImageRef();
     previewLoading.value = true;
     previewError.value = "";
     previewManifest.value = null;
     previewMigrations.value = [];
     try {
-        const res = await fetch("/api/plugins/preview", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                image: ref,
-                registry_id: Number(selectedRegistryId.value),
-            }),
-        });
-        if (!res.ok) throw new Error(`Preview failed (${res.status})`);
-        const json = await res.json();
-        previewManifest.value = json.data?.manifest || null;
-        previewMigrations.value = json.data?.migrations || [];
-        pluginSlug.value = json.data?.slug || selectedRepo.value || "";
+        // Preview is mocked server-side (real preview needs the image).
+        const manifest = await client.plugins.preview(
+            imageRef,
+            Number(selectedRegistryId.value),
+        );
+        previewManifest.value = manifest;
+        previewMigrations.value = [];
+        pluginSlug.value = manifest?.slug || selectedRepo.value || "";
 
-        if (previewManifest.value?.settings_schema?.properties) {
+        if (manifest?.settings_schema?.properties) {
             const init: Record<string, any> = {};
             for (const [k, p] of Object.entries(
-                previewManifest.value.settings_schema.properties,
+                manifest.settings_schema.properties,
             )) {
                 init[k] = (p as JsonSchemaProperty).default ?? "";
             }
@@ -231,44 +252,59 @@ async function fetchPreview() {
     }
 }
 
+async function fetchAppVersions() {
+    try {
+        appVersionRows.value = await client.apps.appVersions();
+        if (inAppZone.value) {
+            const match = appVersionRows.value.find(
+                (v) =>
+                    v.api_name === route.params.appSlug &&
+                    v.version_name === route.params.version,
+            );
+            if (match) targetAppVersionId.value = match.id;
+        } else if (appVersionRows.value.length && !targetAppVersionId.value) {
+            targetAppVersionId.value = appVersionRows.value[0].id;
+        }
+    } catch {
+        /* app versions are required to install; surfaced by the disabled button */
+    }
+}
+
 async function startInstall() {
-    const ref = getImageRef();
     const slug = selectedRepo.value || "";
     pluginSlug.value = slug;
+
+    if (!targetAppVersionId.value) {
+        toast.show("Select a target app", "error");
+        return;
+    }
+
     currentStep.value = 4;
     installPhase.value = "pulling";
     installError.value = "";
 
     try {
-        const scope = inAppZone.value ? "app" : installScope.value;
-        const body: Record<string, any> = {
-            slug,
-            version: selectedTag.value,
-            image: ref,
-            registry_id: Number(selectedRegistryId.value),
-            env: {},
-            start_container: installMode.value === "install-and-start",
-            scope,
-        };
-
-        if (Object.keys(configSettings.value).length) {
-            body.settings = configSettings.value;
-        }
         const scopes = manifestScopes.value.map((s) => s.name);
         if (grantRootAccess.value) {
             scopes.push("rootaccess.all");
         }
-        if (scopes.length) {
-            body.granted_scopes = scopes;
-        }
 
-        const res = await fetch("/api/plugins/deploy", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+        await store.deployPlugin({
+            slug,
+            plugin_version: selectedTag.value || "latest",
+            registry_id: Number(selectedRegistryId.value) || undefined,
+            image: selectedRepo.value || undefined,
+            app_version_id: targetAppVersionId.value,
+            plugin_type: previewManifest.value?.plugin_type,
+            description: previewManifest.value?.description,
+            endpoints: previewManifest.value?.endpoints,
+            requested_scopes: manifestScopes.value,
+            granted_scopes: scopes.length ? scopes : undefined,
+            settings: Object.keys(configSettings.value).length
+                ? configSettings.value
+                : undefined,
+            enabled: installMode.value === "install-and-start",
         });
-
-        if (!res.ok) throw new Error(`Deploy failed (${res.status})`);
 
         installPhase.value = "done";
         await store.fetchPlugins();
@@ -288,7 +324,9 @@ function retryInstall() {
 
 function viewPlugin() {
     if (pluginSlug.value) {
-        router.push(appPath(`/plugins/${encodeURIComponent(pluginSlug.value)}`));
+        router.push(
+            appPath(`/plugins/${encodeURIComponent(pluginSlug.value)}`),
+        );
     }
 }
 
@@ -309,11 +347,27 @@ function methodBadgeClass(m: string): string {
 
 onMounted(async () => {
     await fetchRegistries();
-    const [firstRegistry] = registries.value;
+    await fetchAppVersions();
 
-    if (firstRegistry) {
-        selectedRegistryId.value = firstRegistry.id + "";
-        onRegistryChange();
+    // Prefill from the query parameters
+    const qRegistry = route.query.registry_id as string;
+    const qRepo = route.query.repo as string;
+    const qTag = route.query.tag as string;
+
+    const chosen =
+        registries.value.find((r) => String(r.id) === qRegistry) ??
+        registries.value[0];
+    if (chosen) {
+        selectedRegistryId.value = String(chosen.id);
+        await onRegistryChange();
+    }
+
+    if (qRepo) {
+        selectRepo(qRepo);
+        if (qTag) selectedTag.value = qTag;
+        // Registry + image are known — go straight to Preview.
+        currentStep.value = 2;
+        await fetchPreview();
     }
 });
 </script>
@@ -511,10 +565,6 @@ onMounted(async () => {
                                     >{{ selectedRepo }}:{{ selectedTag }}</span
                                 >
                             </h2>
-                            <div>
-                                <span class="text-gray-500">Name:</span>
-                                {{ previewManifest.name || "-" }}
-                            </div>
                             <div
                                 v-if="previewManifest.description"
                                 class="col-span-2"
@@ -765,32 +815,57 @@ onMounted(async () => {
 
             <div class="bg-white rounded-lg border border-gray-200 p-4">
                 <h3 class="text-sm font-semibold text-gray-700 mb-2">
-                    Install Scope
+                    Target app
                 </h3>
-                <template v-if="inAppZone">
-                    <p class="text-sm text-gray-600">
-                        App — this app ({{ route.params.appSlug }}) on this
-                        version only.
-                    </p>
-                </template>
-                <div v-else class="flex gap-4">
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <RadioButton
-                            v-model="installScope"
-                            input-id="scope-global"
-                            value="global"
-                        />
-                        <span class="text-sm">Global (all app versions)</span>
-                    </label>
-                    <label class="flex items-center gap-2 cursor-pointer">
-                        <RadioButton
-                            v-model="installScope"
-                            input-id="scope-version"
-                            value="version"
-                        />
-                        <span class="text-sm">Version (every app on this version)</span>
-                    </label>
+                <p class="text-xs text-gray-500 mb-3">
+                    Pick the app (under its version) to deploy to. The install
+                    and its system logs are scoped to that app × version.
+                </p>
+                <div
+                    v-if="groupedAppVersions.length === 0"
+                    class="text-xs text-red-500"
+                >
+                    No app versions available — create an app first.
                 </div>
+                <div
+                    v-else
+                    class="border border-gray-200 rounded-lg overflow-hidden max-h-72 overflow-y-auto"
+                >
+                    <div
+                        v-for="group in groupedAppVersions"
+                        :key="group.version_name"
+                    >
+                        <div
+                            class="px-3 py-1.5 bg-gray-50 text-xs font-semibold text-gray-600 uppercase tracking-wide flex items-center gap-2"
+                        >
+                            {{ group.version_name }}
+                        </div>
+                        <div
+                            v-for="node in group.apps"
+                            :key="node.id"
+                            class="flex items-center gap-2 px-3 py-2 pl-8 cursor-pointer border-t border-gray-100 hover:bg-blue-50"
+                            :class="{
+                                'bg-blue-50 ring-1 ring-inset ring-blue-300':
+                                    targetAppVersionId === node.id,
+                            }"
+                            @click="targetAppVersionId = node.id"
+                        >
+                            <span class="text-sm text-gray-800">{{
+                                node.app_name
+                            }}</span>
+                            <span class="text-xs text-gray-400 font-mono">{{
+                                node.api_name
+                            }}</span>
+                        </div>
+                    </div>
+                </div>
+                <p v-if="selectedTarget" class="text-xs text-gray-500 mt-2">
+                    Deploying to
+                    <b
+                        >{{ selectedTarget.app_name }} /
+                        {{ selectedTarget.version_name }}</b
+                    >.
+                </p>
             </div>
 
             <div class="flex justify-between pt-4 border-t border-gray-200">
@@ -803,6 +878,7 @@ onMounted(async () => {
                 <Button
                     label="Install"
                     severity="primary"
+                    :disabled="!targetAppVersionId"
                     @click="startInstall"
                 />
             </div>

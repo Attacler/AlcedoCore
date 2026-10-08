@@ -9,7 +9,7 @@ import { actionSeverity } from "@/utils/formatters.ts";
 import { Select } from "primevue";
 import { appPath } from "@/utils/appHeaders";
 
-const props = defineProps<{ plugin: PluginStore }>();
+const props = defineProps<{ plugin: PluginStore; appVersionId: number }>();
 
 const route = useRoute(),
     store = usePluginsStore();
@@ -81,7 +81,8 @@ async function loadScopes() {
         scopesError,
         async () => {
             scopesData.value = await store.fetchPluginScopes(
-                route.params.name as string,
+                props.plugin.name,
+                props.appVersionId,
             );
         },
         "Failed to load scopes",
@@ -98,7 +99,8 @@ function openScopesDialog() {
 async function saveScopes() {
     try {
         await store.updatePluginScopes(
-            route.params.name as string,
+            props.plugin.name,
+            props.appVersionId,
             scopesEdit.value,
         );
         await loadScopes();

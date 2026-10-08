@@ -11,7 +11,6 @@ import Dashboard from "@/pages/Dashboard.vue";
 import PluginList from "@/pages/plugins/PluginList.vue";
 import PluginCreate from "@/pages/plugins/PluginCreate.vue";
 import PluginDetail from "@/pages/plugins/PluginDetail.vue";
-import PluginSettings from "@/pages/plugins/PluginSettings.vue";
 import PluginPage from "@/pages/plugins/PluginPage.vue";
 import RegistryList from "@/pages/RegistryList.vue";
 import RegistryDetail from "@/pages/RegistryDetail.vue";
@@ -133,11 +132,6 @@ const routes: RouteRecordRaw[] = [
         name: "PluginDetail",
         component: PluginDetail,
     },
-    {
-        path: "/plugins/:name/settings",
-        name: "PluginSettings",
-        component: PluginSettings,
-    },
     // ---------------------------------------------------------------------
     // App zone (scoped to /app/:appSlug/:version)
     // ---------------------------------------------------------------------
@@ -255,11 +249,6 @@ const routes: RouteRecordRaw[] = [
                 path: "plugins/:name",
                 name: "AppPluginDetail",
                 component: PluginDetail,
-            },
-            {
-                path: "plugins/:name/settings",
-                name: "AppPluginSettings",
-                component: PluginSettings,
             },
             {
                 path: "apidocs",

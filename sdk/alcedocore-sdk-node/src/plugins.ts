@@ -3,156 +3,112 @@ import {
     PluginAssetsResponseSchema,
 } from "./zod-schemas.js";
 
-/** Plugin install scope. `global` = everywhere, `version` = every app on a version, `app` = one app × version. */
-export type PluginScope = "global" | "version" | "app";
+const path = (suffix: string) => `platform/plugins/${suffix}`;
+const slugPath = (slug: string, suffix = "") =>
+    path(`${encodeURIComponent(slug)}${suffix}`);
+const installPath = (slug: string, appVersionId: number, suffix = "") =>
+    slugPath(slug, `/installs/${appVersionId}${suffix}`);
 
 export function createPluginsResource(ky: any) {
     return {
-        list: (options?: any) => ky.get("plugins", options).json(),
-        get: (name: string, options?: any) =>
-            ky.get(`plugins/${name}`, options).json(),
-        schema: (name: string, options?: any) =>
-            ky.get(`plugins/${name}/schema`, options).json(),
-        declarations: (name: string, options?: any) =>
-            ky.get(`plugins/${name}/declarations`, options).json(),
-        pages: (name: string, options?: any) =>
+        list: (options?: any) => ky.get("platform/plugins", options).json(),
+        get: (slug: string, options?: any) =>
+            ky.get(slugPath(slug), options).json(),
+        update: (slug: string, data: any, options?: any) =>
+            ky.put(slugPath(slug), { json: data, ...options }).json(),
+        delete: (slug: string, options?: any) =>
+            ky.delete(slugPath(slug), options).json(),
+
+        // --- deploy ---
+        deploy: (data: any, options?: any) =>
+            ky.post(path("deploy"), { json: data, ...options }).json(),
+        preview: (image: string, registryId?: number, options?: any) =>
             ky
-                .get(`plugins/${name}/pages`, options)
-                .json()
-                .then((res: any) => PluginPagesResponseSchema.parse(res).pages),
-        assets: (name: string, options?: any) =>
-            ky
-                .get(`plugins/${name}/pages/assets`, options)
-                .json()
-                .then((res: any) => PluginAssetsResponseSchema.parse(res)),
-        install: (zipFile: File | Blob, options?: any) => {
-            const formData = new FormData();
-            formData.append("zip", zipFile);
-            return ky
-                .post("plugins/install", { body: formData, ...options })
-                .json();
-        },
-        uninstall: (name: string, options?: any) =>
-            ky
-                .delete("plugins/uninstall", { json: { name }, ...options })
-                .json(),
-        update: (name: string, zipFile: File | Blob, options?: any) => {
-            const formData = new FormData();
-            formData.append("zip", zipFile);
-            return ky
-                .put(`plugins/${name}`, { body: formData, ...options })
-                .json();
-        },
-        enable: (name: string, options?: any) =>
-            ky
-                .post(`plugins/${encodeURIComponent(name)}/enable`, options)
-                .json(),
-        disable: (name: string, options?: any) =>
-            ky
-                .post(`plugins/${encodeURIComponent(name)}/disable`, options)
-                .json(),
-        create: (data: any, options?: any) =>
-            ky.post("plugins", { json: data, ...options }).json(),
-        createFromRegistry: (
-            data: { slug: string; image: string; registry_id?: number; status?: string },
-            options?: any,
-        ) => ky.post("plugins", { json: data, ...options }).json(),
-        delete: (name: string, options?: any) =>
-            ky.delete(`plugins/${encodeURIComponent(name)}`, options).json(),
-        docs: (name: string, options?: any) =>
-            ky.get(`plugins/${encodeURIComponent(name)}/docs`, options).json(),
-        docContent: (name: string, path: string, options?: any) => {
-            let cleanPath = path;
-            if (path.startsWith("docs/")) cleanPath = path.slice(5);
-            else if (path.startsWith("./")) cleanPath = path.slice(2);
-            return ky
-                .get(
-                    `plugins/${encodeURIComponent(name)}/docs/${cleanPath}`,
-                    options,
-                )
-                .text();
-        },
-        runtimeInfo: (name: string, options?: any) =>
-            ky
-                .get(`plugins/${encodeURIComponent(name)}/runtime`, options)
-                .json(),
-        versions: (name: string, options?: any) =>
-            ky
-                .get(`plugins/${encodeURIComponent(name)}/versions`, options)
-                .json(),
-        // Re-deploying an existing install may require addressing it by `install_id`
-        // (server-side query param).
-        deploy: (name: string, tag: string, scope?: PluginScope, options?: any) =>
-            ky
-                .post(`plugins/${encodeURIComponent(name)}/deploy`, {
-                    json: { tag, scope },
+                .post(path("preview"), {
+                    json: { image, registry_id: registryId },
                     ...options,
                 })
                 .json(),
-        instances: (slug: string, options?: any) =>
+
+        // --- installs (plugin × version) ---
+        uninstall: (slug: string, appVersionId: number, options?: any) =>
+            ky.delete(installPath(slug, appVersionId), options).json(),
+        enable: (slug: string, appVersionId: number, options?: any) =>
+            ky.post(installPath(slug, appVersionId, "/enable"), options).json(),
+        disable: (slug: string, appVersionId: number, options?: any) =>
             ky
-                .get(`plugins/${encodeURIComponent(slug)}/instances`, options)
+                .post(installPath(slug, appVersionId, "/disable"), options)
                 .json(),
-        instance: (slug: string, taskId: string, options?: any) =>
+        getSettings: (slug: string, appVersionId: number, options?: any) =>
             ky
-                .get(
-                    `plugins/${encodeURIComponent(slug)}/instances/${encodeURIComponent(taskId)}`,
-                    options,
-                )
+                .get(installPath(slug, appVersionId, "/settings"), options)
                 .json(),
-        instanceStats: (slug: string, taskId: string, options?: any) =>
-            ky
-                .get(
-                    `plugins/${encodeURIComponent(slug)}/instances/${encodeURIComponent(taskId)}/stats`,
-                    options,
-                )
-                .json(),
-        instanceLogs: (slug: string, taskId: string, options?: any) =>
-            ky
-                .get(
-                    `plugins/${encodeURIComponent(slug)}/instances/${encodeURIComponent(taskId)}/logs`,
-                    options,
-                )
-                .json(),
-        scale: (
+        updateSettings: (
             slug: string,
-            data: {
-                replicas: number;
-                resource_limits?: { cpu_limit: number; memory_limit: number };
-            },
+            appVersionId: number,
+            data: any,
             options?: any,
         ) =>
-            ky.post(`plugins/${encodeURIComponent(slug)}/scale`, {
-                json: data,
-                ...options,
-            }),
-        restart: (name: string, containerId?: string, options?: any) =>
-            ky.post(`plugins/${encodeURIComponent(name)}/restart`, {
-                json: { deployment_id: containerId },
-                ...options,
-            }),
-        scopes: (slug: string, options?: any) =>
             ky
-                .get(`plugins/${encodeURIComponent(slug)}/scopes`, options)
+                .patch(installPath(slug, appVersionId, "/settings"), {
+                    json: data,
+                    ...options,
+                })
                 .json(),
-        updateScopes: (slug: string, scopes: string[], options?: any) =>
-            ky.post(`plugins/${encodeURIComponent(slug)}/scopes`, {
-                json: { scopes },
-                ...options,
-            }),
+        getScopes: (slug: string, appVersionId: number, options?: any) =>
+            ky.get(installPath(slug, appVersionId, "/scopes"), options).json(),
+        updateScopes: (
+            slug: string,
+            appVersionId: number,
+            scopes: string[],
+            options?: any,
+        ) =>
+            ky
+                .post(installPath(slug, appVersionId, "/scopes"), {
+                    json: { scopes },
+                    ...options,
+                })
+                .json(),
+
+        runtimeInfo: (slug: string, options?: any) =>
+            ky.get(slugPath(slug, "/runtime"), options).json(),
+        instances: (slug: string, options?: any) =>
+            ky.get(slugPath(slug, "/instances"), options).json(),
+        versions: (slug: string, options?: any) =>
+            ky.get(slugPath(slug, "/versions"), options).json(),
         requestLogs: (slug: string, params?: URLSearchParams, options?: any) =>
             ky
-                .get(`plugins/${encodeURIComponent(slug)}/logs`, {
+                .get(slugPath(slug, "/logs"), {
                     searchParams: params as any,
                     ...options,
                 })
                 .json(),
-        requestLogDetail: (slug: string, requestId: string, options?: any) =>
+        docs: (slug: string, options?: any) =>
+            ky.get(slugPath(slug, "/docs"), options).json(),
+        docContent: (slug: string, docPath: string, options?: any) => {
+            let clean = docPath;
+            if (clean.startsWith("docs/")) clean = clean.slice(5);
+            else if (clean.startsWith("./")) clean = clean.slice(2);
+            return ky.get(slugPath(slug, `/docs/${clean}`), options).text();
+        },
+        schema: (slug: string, options?: any) =>
+            ky.get(slugPath(slug, "/schema"), options).json(),
+        pages: (slug: string, options?: any) =>
             ky
-                .get(
-                    `plugins/${encodeURIComponent(slug)}/logs/${encodeURIComponent(requestId)}`,
-                    options,
-                )
-                .json(),
+                .get(slugPath(slug, "/pages"), options)
+                .json()
+                .then((res: any) => PluginPagesResponseSchema.parse(res).pages),
+        assets: (slug: string, options?: any) =>
+            ky
+                .get(slugPath(slug, "/pages/assets"), options)
+                .json()
+                .then((res: any) => PluginAssetsResponseSchema.parse(res)),
+        scale: (slug: string, data: any, options?: any) =>
+            ky.post(slugPath(slug, "/scale"), { json: data, ...options }),
+        restart: (slug: string, containerId?: string, options?: any) =>
+            ky.post(slugPath(slug, "/restart"), {
+                json: { deployment_id: containerId },
+                ...options,
+            }),
     };
 }
