@@ -28,6 +28,7 @@ use crate::{
             HookContext, MultiEventBus, systemhooks::setup_system_hooks,
             types::lifecycle::CoreLoaded,
         },
+        plugin_platform::MockPlatform,
         postgres::inspector::DatabaseSchema,
         versions::VersionsService,
     },
@@ -56,6 +57,11 @@ async fn main() -> Result<()> {
 
     let file_storage = services::files::build_file_storage(&config).await;
 
+    let platform = Arc::new(MockPlatform::new(
+        Arc::clone(&database_pool),
+        config.mock_plugin_port,
+    ));
+
     let state = AppState {
         database_pool,
         database_schema: Arc::new(RwLock::new(DatabaseSchema::new())),
@@ -65,6 +71,7 @@ async fn main() -> Result<()> {
         kv_cache,
         file_storage,
         schema_cache_gen: Arc::new(Mutex::new(String::new())),
+        platform,
     };
 
     state.refresh_schema().await;
@@ -101,6 +108,7 @@ async fn main() -> Result<()> {
         .nest("/api/dev", controllers::dev::dev_controller())
         .nest("/api/docs", controllers::docs::docs_controller())
         .merge(controllers::registry_proxy::registry_proxy_controller())
+        .merge(controllers::proxy::proxy_controller())
         // .fallback_service(controllers::ui::ui_controller())
         .fallback(handler_404)
         .layer(middleware::from_fn(middelware::log::log_request))

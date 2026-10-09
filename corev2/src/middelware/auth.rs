@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::services::{
     auth::AuthService,
     context::{AppContext, RequestSource},
+    plugins::PluginRequestIdentity,
 };
 use crate::utils::session_cookie::read_session_cookie;
 use crate::{AppState, services::errors::AlcedoError, services::sessions};
@@ -13,6 +14,7 @@ use crate::{AppState, services::errors::AlcedoError, services::sessions};
 pub enum AuthLevel {
     User(Uuid),
     DeveloperKey { version_id: i32 },
+    Plugin(PluginRequestIdentity),
     Public,
 }
 
@@ -24,7 +26,36 @@ impl AuthLevel {
                 "Developer API keys have no user identity".to_string(),
                 0,
             )),
+            AuthLevel::Plugin(_) => Err(AlcedoError::Forbidden(
+                "Plugins have no user identity".to_string(),
+                0,
+            )),
             AuthLevel::Public => Err(AlcedoError::UnAuthenticated()),
+        }
+    }
+}
+
+/// Reads the install identity the proxy registered for this request id.
+async fn lookup_plugin_identity(
+    state: &AppState,
+    request_id: &str,
+) -> Option<PluginRequestIdentity> {
+    let raw = state
+        .cache
+        .get(&format!("plugin_req:{}", request_id))
+        .await
+        .ok()
+        .flatten()?;
+    match serde_json::from_str::<PluginRequestIdentity>(&raw) {
+        Ok(identity) if !identity.slug.is_empty() => Some(identity),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!(
+                "[AUTH] plugin_req:{} is not a valid identity: {}",
+                request_id,
+                e
+            );
+            None
         }
     }
 }
@@ -80,6 +111,22 @@ impl FromRequestParts<AppState> for AuthLevel {
                     ));
                 }
             }
+        }
+
+        // Plugin callbacks: `X-Request-ID` names an id the proxy registered for
+        // the plugin it forwarded to. Checked only when no Bearer key was sent,
+        // so a developer key always wins; a miss falls through to the session.
+        let request_id = parts
+            .headers
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let Some(identity) = match request_id {
+            Some(request_id) => lookup_plugin_identity(state, request_id).await,
+            None => None,
+        } {
+            return Ok(AuthLevel::Plugin(identity));
         }
 
         let Some(session_id) =

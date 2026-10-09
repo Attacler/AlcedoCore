@@ -593,7 +593,7 @@ fn scope_to_identity(select: &mut SelectStatement, schema: &str, identity: &Auth
                     .eq(Expr::value(user_id.to_string())),
             );
         }
-        AuthLevel::Public => {
+        AuthLevel::Public | AuthLevel::Plugin(_) => {
             select.join_as(
                 JoinType::InnerJoin,
                 (Alias::new(schema), Alias::new("alcedocore_roles")),
@@ -895,7 +895,9 @@ pub async fn resolve_access(
     // Layer 1 for the anonymous caller, and the final role set for a user.
     let role_ids: Vec<String> = match identity {
         AuthLevel::User(_) => user_role_ids.unwrap_or_default(),
-        AuthLevel::Public => {
+        // A plugin has no roles of its own until `granted_scopes` are enforced
+        // per install, so it reads as the anonymous caller does.
+        AuthLevel::Public | AuthLevel::Plugin(_) => {
             crate::services::permissions::cache::cached_public_identity(state, &schema)
                 .await?
                 .role_ids

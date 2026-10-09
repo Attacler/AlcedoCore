@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::services::{
     cache::SystemCache, config, errors::AlcedoError, hooks::MultiEventBus,
-    postgres::inspector::DatabaseSchema,
+    plugin_platform::PluginPlatform, postgres::inspector::DatabaseSchema,
 };
 const SCHEMA_CACHE_KEY: &str = "system_schema_cache";
 const SCHEMA_CACHE_GEN_KEY: &str = "system_schema_cache_gen";
@@ -22,6 +22,7 @@ pub struct AppState {
     pub kv_cache: SystemCache,
     pub file_storage: Arc<dyn FileStorage>,
     pub schema_cache_gen: Arc<Mutex<String>>,
+    pub platform: Arc<dyn PluginPlatform>,
 }
 impl AppState {
     pub async fn refresh_schema(&self) {

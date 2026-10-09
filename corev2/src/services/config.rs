@@ -28,6 +28,7 @@ pub struct Config {
     pub s3_bucket: Option<String>,
     pub s3_prefix: String,
     pub local_registry_url: String,
+    pub mock_plugin_port: u16,
 }
 
 pub fn get_config() -> Config {
@@ -62,6 +63,7 @@ pub fn get_config() -> Config {
     let s3_bucket = env_opt("S3_BUCKET");
     let s3_prefix = env_str("S3_PREFIX", "");
     let local_registry_url = env_str("LOCAL_REGISTRY_URL", "localhost:5000");
+    let mock_plugin_port = env_or_msg("MOCK_PLUGIN_PORT", 8080, "must be a number");
 
     if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
         eprintln!(
@@ -93,6 +95,7 @@ pub fn get_config() -> Config {
         s3_bucket,
         s3_prefix,
         local_registry_url,
+        mock_plugin_port,
     }
 }
 

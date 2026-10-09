@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use utoipa::ToSchema;
 
 use crate::{
-    AppState,
+    AppState, item_map,
     services::{
         activity_logs,
         apps::AppsService,
@@ -29,6 +29,21 @@ pub struct AppVersionInfo {
     pub version_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PluginRequestIdentity {
+    pub slug: String,
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub app_version_id: Option<i32>,
+    #[serde(default)]
+    pub version_id: Option<i32>,
+    #[serde(default)]
+    pub install_id: Option<i64>,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct InstallRecord {
     pub id: i32,
@@ -42,6 +57,7 @@ pub struct InstallRecord {
     pub enabled: bool,
     pub settings: Value,
     pub granted_scopes: Value,
+    pub deployment_id: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -120,6 +136,7 @@ fn install_record(row: &Map<String, Value>, infos: &HashMap<i32, AppVersionInfo>
         enabled: bool_field(row, "enabled"),
         settings: json_field(row, "settings"),
         granted_scopes: json_field(row, "granted_scopes"),
+        deployment_id: str_field(row, "deployment_id"),
         created_at: str_field(row, "created_at"),
         updated_at: str_field(row, "updated_at"),
     }
@@ -486,6 +503,7 @@ impl PluginsService<'_> {
                 },
             )
             .await?;
+        let mut install_id = existing.first().and_then(|row| int_field(row, "id"));
 
         let mut install_map = Map::new();
         install_map.insert(
@@ -514,7 +532,11 @@ impl PluginsService<'_> {
                 Value::from(input.enabled.unwrap_or(false)),
             );
             let mut service = ItemsService::new(self.app_state, &context, &installs_collection);
-            service.create_many(vec![install_map], &mut None).await?;
+            install_id = service
+                .create_many(vec![install_map], &mut None)
+                .await?
+                .first()
+                .and_then(|pk| pk.parse::<i32>().ok());
         } else {
             let mut service = ItemsService::new(self.app_state, &context, &installs_collection);
             let mut query = Query::eq_all(&[
@@ -525,6 +547,39 @@ impl PluginsService<'_> {
                 .update_items_by_query(&mut query, install_map, &mut None)
                 .await?;
         }
+
+        let image = match input.image.clone() {
+            Some(image) => image,
+            None => self
+                .get_catalog(&slug)
+                .await?
+                .and_then(|row| str_field(&row, "image"))
+                .unwrap_or_default(),
+        };
+        let deployment_id = self
+            .app_state
+            .platform
+            .deploy(
+                &input.slug,
+                &input.plugin_version,
+                &image,
+                HashMap::new(),
+                install_id.map(i64::from),
+            )
+            .await?;
+
+        let mut service = ItemsService::new(self.app_state, &context, &installs_collection);
+        let mut query = Query::eq_all(&[
+            ("plugin_id", Value::from(plugin_id)),
+            ("app_version_id", Value::from(input.app_version_id)),
+        ]);
+        service
+            .update_items_by_query(
+                &mut query,
+                item_map! { "deployment_id" => deployment_id },
+                &mut None,
+            )
+            .await?;
 
         // System log in the target app×version schema.
         let metadata = serde_json::json!({
@@ -639,15 +694,12 @@ impl PluginsService<'_> {
 
     // --- mocked deployment/runtime surfaces -----------------------------
 
-    pub async fn runtime_info(&self, _slug: &str) -> Result<Value, AlcedoError> {
-        Ok(serde_json::json!({
-            "image": "", "image_id": "", "tags": [], "size": 0,
-            "deployment_id": null, "deployment_state": null, "status": "not_deployed",
-        }))
+    pub async fn runtime_info(&self, slug: &str) -> Result<Value, AlcedoError> {
+        self.app_state.platform.runtime_info(slug).await
     }
 
-    pub async fn instances(&self, _slug: &str) -> Result<Value, AlcedoError> {
-        Ok(serde_json::json!({ "data": { "instances": [] } }))
+    pub async fn instances(&self, slug: &str) -> Result<Value, AlcedoError> {
+        self.app_state.platform.instances(slug).await
     }
 
     pub async fn request_logs(&self, _slug: &str) -> Result<Value, AlcedoError> {
@@ -692,6 +744,108 @@ impl PluginsService<'_> {
             "pages": [],
             "settings_schema": { "properties": {} },
         }))
+    }
+}
+
+/// An install plus the platform deployment it points at.
+pub struct ResolvedInstall {
+    pub install: InstallRecord,
+}
+
+impl ResolvedInstall {
+    /// The identity to cache for this request. Without `X-App`/`X-Version` the
+    /// names are unknown, so only the ids travel — enough for the auth extractor.
+    pub fn identity(&self, slug: &str) -> PluginRequestIdentity {
+        PluginRequestIdentity {
+            slug: slug.to_string(),
+            app: self.install.api_name.clone(),
+            version: self.install.version_name.clone(),
+            app_version_id: Some(self.install.app_version_id),
+            version_id: self.install.version_id,
+            install_id: Some(self.install.id as i64),
+        }
+    }
+}
+
+/// Resolves which install a request refers to, most-specific-wins within
+/// corev2's single scope (app × version).
+pub async fn resolve_install(
+    state: &AppState,
+    slug: &str,
+    app: Option<&str>,
+    version: Option<&str>,
+) -> Result<ResolvedInstall, AlcedoError> {
+    let service = PluginsService::new(state);
+    let Some(plugin) = service.get_plugin(slug).await? else {
+        return Err(AlcedoError::NotFound(
+            format!("Plugin not found: {}", slug),
+            0,
+        ));
+    };
+
+    let mut candidates: Vec<InstallRecord> = plugin.installations;
+    if let (Some(app), Some(version)) = (app, version) {
+        candidates.retain(|i| {
+            i.api_name.as_deref() == Some(app) && i.version_name.as_deref() == Some(version)
+        });
+        if candidates.is_empty() {
+            return Err(AlcedoError::NotFound(
+                format!("Plugin '{}' is not installed on {}/{}", slug, app, version),
+                0,
+            ));
+        }
+    } else {
+        candidates.retain(|i| i.enabled);
+        if candidates.len() > 1 {
+            return Err(AlcedoError::NotFound(
+                format!(
+                    "Plugin '{}' is installed on several app versions; send X-App and X-Version",
+                    slug
+                ),
+                0,
+            ));
+        }
+    }
+
+    let mut candidates = candidates;
+    let install = candidates
+        .drain(..)
+        .next()
+        .ok_or_else(|| AlcedoError::NotFound(format!("Plugin '{}' is not deployed", slug), 0))?;
+
+    Ok(ResolvedInstall { install })
+}
+
+/// Registers `plugin_req:{request_id}` → identity for `seconds`, the mapping the
+/// auth extractor reads to authenticate a plugin's callback.
+pub async fn register_plugin_request(
+    state: &AppState,
+    request_id: &str,
+    identity: &PluginRequestIdentity,
+    seconds: u64,
+) {
+    let Ok(raw) = serde_json::to_string(identity) else {
+        tracing::error!(
+            "[PLUGIN-PROXY] could not serialize identity: {}",
+            identity.slug
+        );
+        return;
+    };
+
+    if let Err(e) = state
+        .cache
+        .set_ttl(
+            format!("plugin_req:{}", request_id),
+            raw,
+            std::time::Duration::from_secs(seconds),
+        )
+        .await
+    {
+        tracing::error!(
+            "[PLUGIN-PROXY] could not register request id {}: {:?}",
+            request_id,
+            e
+        );
     }
 }
 

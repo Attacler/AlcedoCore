@@ -15,6 +15,7 @@ pub mod items;
 pub mod kv;
 pub mod menus;
 pub mod permissions;
+pub mod plugin_platform;
 pub mod plugins;
 pub mod policies;
 pub mod postgres;

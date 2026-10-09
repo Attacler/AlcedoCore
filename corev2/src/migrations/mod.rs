@@ -16,6 +16,10 @@ pub async fn generate_app_state_for_migrations() -> AppState {
     let database_pool = services::postgres::pool::setup_pool(&config).await.unwrap();
     let event_bus = Arc::new(MultiEventBus::new());
     let file_storage = services::files::build_file_storage(&config).await;
+    let platform = Arc::new(services::plugin_platform::MockPlatform::new(
+        Arc::clone(&database_pool),
+        config.mock_plugin_port,
+    ));
 
     AppState {
         database_pool,
@@ -35,5 +39,6 @@ pub async fn generate_app_state_for_migrations() -> AppState {
         ),
         file_storage,
         schema_cache_gen: Arc::new(Mutex::new(String::new())),
+        platform,
     }
 }

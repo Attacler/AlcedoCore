@@ -352,7 +352,9 @@ pub async fn me_apps(
         AuthLevel::User(user_id) => (Some(user_id), None),
         // Developer keys are root for the version they were issued for.
         AuthLevel::DeveloperKey { version_id } => (None, Some(version_id)),
-        AuthLevel::Public => return Err(AlcedoError::UnAuthenticated()),
+        AuthLevel::Public | AuthLevel::Plugin(_) => {
+            return Err(AlcedoError::UnAuthenticated());
+        }
     };
 
     let is_admin = match user_id {

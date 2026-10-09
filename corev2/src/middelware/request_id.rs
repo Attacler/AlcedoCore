@@ -37,6 +37,9 @@ pub async fn add_request_id(mut req: Request, next: Next) -> Response {
         .insert(X_REQUEST_ID.clone(), header.clone());
 
     let mut response = REQUEST_ID.scope(id, next.run(req)).await;
-    response.headers_mut().insert(X_REQUEST_ID.clone(), header);
+
+    if !response.headers().contains_key(&X_REQUEST_ID) {
+        response.headers_mut().insert(X_REQUEST_ID.clone(), header);
+    }
     response
 }

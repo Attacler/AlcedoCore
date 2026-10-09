@@ -48,7 +48,8 @@ pub fn plugins_controller() -> Router<AppState> {
             "/{slug}/installs/{app_version_id}/scopes",
             get(get_install_scopes).post(set_install_scopes),
         )
-        // Deployment / runtime surfaces — mocked empties until Docker/K8s lands.
+        // Deployment / runtime surfaces. `runtime` and `instances` are served by the
+// platform; the rest stay mocked empties until Docker/K8s lands.
         .route("/{slug}/runtime", get(get_runtime))
         .route("/{slug}/instances", get(list_instances))
         .route("/{slug}/logs", get(list_logs))

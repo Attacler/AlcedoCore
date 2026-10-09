@@ -17,6 +17,7 @@ pub(crate) mod m00007_activity_logs;
 pub(crate) mod m00008_registries;
 pub(crate) mod m00009_plugins;
 pub(crate) mod m00010_plugin_image;
+pub(crate) mod m00011_install_deployment_id;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -48,6 +49,7 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
             app_context: app_context.clone()
         },
         m00010_plugin_image::M0010Migration,
+        m00011_install_deployment_id::M0011Migration,
     ]
 }
 

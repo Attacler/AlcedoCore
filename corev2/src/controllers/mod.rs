@@ -11,6 +11,7 @@ pub mod logs;
 pub mod menus;
 pub mod policies;
 pub mod plugins;
+pub mod proxy;
 pub mod registries;
 pub mod registry_proxy;
 pub mod roles;
@@ -33,6 +34,10 @@ use crate::{
 pub async fn require_admin(state: &AppState, auth_level: AuthLevel) -> Result<(), AlcedoError> {
     match auth_level {
         AuthLevel::DeveloperKey { .. } => Ok(()),
+        AuthLevel::Plugin(_) => Err(AlcedoError::Forbidden(
+            "Plugins cannot perform admin operations".to_string(),
+            0,
+        )),
         AuthLevel::User(user_id) => {
             let context = AppContext::system(RequestSource::API);
             let auth = AuthService::new(state, &context);

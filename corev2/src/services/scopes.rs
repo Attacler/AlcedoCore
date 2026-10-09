@@ -92,7 +92,12 @@ pub async fn require_scope(
             }
             check_entity_scope(state, ctx, ScopeSource::User(*user_id), required).await
         }
-        AuthLevel::Public => check_entity_scope(state, ctx, ScopeSource::Public, required).await,
+        // Plugins fall back to the public role until `granted_scopes` are
+        // enforced per install — see the plugin scope enforcement follow-up.
+        // No plugin gets more than an anonymous caller already does.
+        AuthLevel::Public | AuthLevel::Plugin(_) => {
+            check_entity_scope(state, ctx, ScopeSource::Public, required).await
+        }
     }
 }
 

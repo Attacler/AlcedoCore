@@ -1,14 +1,14 @@
-use std::time::Duration;
-
 use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
     AppState, controllers::require_admin, middelware::auth::AuthLevel,
-    services::errors::AlcedoError,
+    services::{
+        errors::AlcedoError,
+        plugins::{PluginRequestIdentity, register_plugin_request, resolve_install},
+    },
 };
 
 /// Dev proxy helper, mounted at `/api/dev` (not app- or platform-scoped).
@@ -53,32 +53,34 @@ async fn request_id(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
+    let app = header("x-app");
+    let version = header("x-version");
 
-    // v1 wrote `plugin_req:{id}` -> install identity so SDK callbacks authenticate.
-    // corev2 has no plugin install table (slug-only) and no reader of this key yet;
-    // keep the write so the mapping exists once plugin request-id auth lands.
-    // ponytail: dead key until the plugin subsystem reads it.
-    let identity = json!({
-        "slug": payload.slug,
-        "app": header("x-app"),
-        "version": header("x-version"),
-        "app_version_id": null,
-        "version_id": null,
-        "install_id": null,
-    })
-    .to_string();
-
-    if let Err(e) = state
-        .cache
-        .set_ttl(
-            format!("plugin_req:{}", request_id),
-            identity,
-            Duration::from_secs(60 * 15),
-        )
+    // The CLI proxies to a plugin running outside the platform, so there is no
+    // deployment to resolve — but the identity is the same shape the proxy
+    // writes, so callbacks authenticate identically either way. An unresolvable
+    // slug falls back to slug-only identity (v1 parity) rather than failing:
+    // the CLI mints ids before the plugin is installed in the core.
+    let identity = match resolve_install(&state, &payload.slug, app.as_deref(), version.as_deref())
         .await
     {
-        tracing::error!("[DEV] Could not register dev request id: {:?}", e);
-    }
+        Ok(install) => install.identity(&payload.slug),
+        Err(e) => {
+            tracing::warn!(
+                "[DEV] Could not resolve install for {} ({}), registering slug-only identity",
+                payload.slug,
+                e
+            );
+            PluginRequestIdentity {
+                slug: payload.slug.clone(),
+                app: app.clone(),
+                version: version.clone(),
+                ..Default::default()
+            }
+        }
+    };
+
+    register_plugin_request(&state, &request_id, &identity, 60 * 15).await;
 
     tracing::info!(
         "[DEV] Registered request id: id={} slug={}",

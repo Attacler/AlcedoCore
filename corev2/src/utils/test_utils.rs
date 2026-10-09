@@ -21,6 +21,10 @@ pub async fn get_app_state() -> AppState {
     let pool = setup_pool(&config).await.unwrap();
 
     let event_bus = Arc::new(MultiEventBus::new());
+    let platform = Arc::new(crate::services::plugin_platform::MockPlatform::new(
+        Arc::clone(&pool),
+        config.mock_plugin_port,
+    ));
     let state = AppState {
         database_pool: pool,
         database_schema: Arc::new(RwLock::new(DatabaseSchema::new())),
@@ -37,6 +41,7 @@ pub async fn get_app_state() -> AppState {
             .unwrap(),
         ),
         schema_cache_gen: Arc::new(Mutex::new(String::new())),
+        platform,
     };
 
     state.refresh_schema().await;
