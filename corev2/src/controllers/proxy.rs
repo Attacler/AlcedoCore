@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::Body,
-    extract::{Path, Request, State},
+    extract::{Request, State},
     http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::get,
@@ -15,21 +15,16 @@ use crate::{
     },
 };
 
-/// `plugin_req:{id}` TTL, matching v1 so a long-running plugin request can
-/// still authenticate its callbacks.
 const REQUEST_ID_TTL_SECONDS: u64 = 60 * 15;
 
-/// Forwards `/p/{slug}/...` to the plugin's container.
-///
-/// `/p` means *proxy*, not *public* — the request reaches the plugin verbatim.
-/// Unauthenticated like v1: the caller is whoever holds the slug, which is why
-/// the plugin sees only the request id minted here and never the caller's
-/// credentials.
 pub fn proxy_controller() -> Router<AppState> {
     Router::new()
         .route(
             "/p/{slug}",
-            get(proxy_plugin).post(proxy_plugin).put(proxy_plugin).delete(proxy_plugin),
+            get(proxy_plugin)
+                .post(proxy_plugin)
+                .put(proxy_plugin)
+                .delete(proxy_plugin),
         )
         .route(
             "/p/{slug}/{*path}",
@@ -40,15 +35,10 @@ pub fn proxy_controller() -> Router<AppState> {
         )
 }
 
-async fn proxy_plugin(
-    State(state): State<AppState>,
-    // Both routes share this handler; the path is derived from the URI so the
-    // extractor shapes stay identical (`{slug}` alone has no catch-all).
-    Path((slug, _path)): Path<(String, String)>,
-    req: Request,
-) -> Response {
+async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
     let (mut parts, body) = req.into_parts();
 
+    let slug = slug_of(&parts.uri);
     let app = header_str(&parts.headers, "x-app");
     let version = header_str(&parts.headers, "x-version");
 
@@ -97,11 +87,19 @@ async fn proxy_plugin(
         }
         headers.insert(name.clone(), value.clone());
     }
-    headers.insert(HeaderName::from_static("x-request-id"), header_value.clone());
+    headers.insert(
+        HeaderName::from_static("x-request-id"),
+        header_value.clone(),
+    );
     parts.headers = headers;
 
     // Static assets never call back into the core, so skip the cache write.
-    let is_asset = parts.uri.path().rsplit('/').next().is_some_and(|last| last.contains('.'));
+    let is_asset = parts
+        .uri
+        .path()
+        .rsplit('/')
+        .next()
+        .is_some_and(|last| last.contains('.'));
     if !is_asset {
         register_plugin_request(
             &state,
@@ -138,6 +136,16 @@ async fn proxy_plugin(
         .headers
         .insert(HeaderName::from_static("x-request-id"), header_value);
     Response::from_parts(upstream_parts, Body::new(upstream_body))
+}
+
+/// `/p/hello-world/api/items/foo` → `hello-world`
+fn slug_of(uri: &Uri) -> String {
+    let rest = uri.path().strip_prefix("/p/").unwrap_or_default();
+    match rest.split_once('/') {
+        Some((slug, _tail)) => slug,
+        None => rest,
+    }
+    .to_string()
 }
 
 /// `/p/{slug}/api/items/foo` proxied to a plugin becomes `/api/items/foo`;
@@ -193,8 +201,43 @@ fn should_strip(name: &HeaderName) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_strip, target_path};
-    use axum::http::{HeaderName, Uri};
+    use super::{proxy_controller, should_strip, slug_of, target_path};
+    use axum::body::Body;
+    use axum::http::{HeaderName, Request, Uri};
+    use tower::ServiceExt;
+
+    #[test]
+    fn reads_slug_from_both_route_shapes() {
+        assert_eq!(slug_of(&Uri::from_static("/p/hello")), "hello");
+        assert_eq!(
+            slug_of(&Uri::from_static("/p/hello-world/api/items")),
+            "hello-world"
+        );
+    }
+
+    #[tokio::test]
+    async fn both_route_shapes_reach_the_handler() {
+        let state = crate::utils::test_utils::get_app_state().await;
+
+        for uri in ["/p/does-not-exist", "/p/does-not-exist/api/items"] {
+            let response = proxy_controller()
+                .with_state(state.clone())
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 4096)
+                .await
+                .unwrap();
+            let body = String::from_utf8_lossy(&body);
+
+            assert!(
+                !body.contains("path arguments"),
+                "{uri} failed extraction: {status} {body}"
+            );
+        }
+    }
 
     #[test]
     fn targets_plugin_root() {
@@ -215,7 +258,10 @@ mod tests {
             target_path(&Uri::from_static("/p/hello-world/api/x?limit=5")),
             "/api/x?limit=5"
         );
-        assert_eq!(target_path(&Uri::from_static("/p/hello?limit=5")), "/?limit=5");
+        assert_eq!(
+            target_path(&Uri::from_static("/p/hello?limit=5")),
+            "/?limit=5"
+        );
     }
 
     #[test]
