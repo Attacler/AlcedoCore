@@ -8,7 +8,7 @@
         "build:pages": "node ../../cli/page-compiler/dist/input.js --plugin=./pages --output=./pages/dist"
     },
     "dependencies": {
-        "express": "^4.21.0",
-        "alcedocore-sdk-node": "file:../../sdk/alcedocore-sdk-node"
+        "@alcedocore/sdk": "^0.0.1-rc.3",
+        "express": "^4.21.0"
     }
 }

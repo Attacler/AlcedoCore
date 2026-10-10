@@ -68,7 +68,7 @@ describe("KV Resource", () => {
         const ky = mockKy(response);
         const kv = createKvResource(ky);
         const result = await kv.get("my-key");
-        expect(getLastUrl(ky)).toBe("kv/my-key");
+        expect(getLastUrl(ky)).toBe("app/kv/my-key");
         expect(result).toEqual(response);
     });
 
@@ -76,7 +76,7 @@ describe("KV Resource", () => {
         const ky = mockKy({ success: true });
         const kv = createKvResource(ky);
         await kv.set("my-key", "hello", 3600);
-        expect(getLastUrl(ky)).toBe("kv/my-key");
+        expect(getLastUrl(ky)).toBe("app/kv/my-key");
         expect(getLastBody(ky)?.value).toBe("hello");
         expect(getLastSearchParams(ky)).toEqual({ ttl: "3600" });
     });
@@ -92,7 +92,7 @@ describe("KV Resource", () => {
         const ky = mockKy({ success: true });
         const kv = createKvResource(ky);
         await kv.delete("my-key");
-        expect(getLastUrl(ky)).toBe("kv/my-key");
+        expect(getLastUrl(ky)).toBe("app/kv/my-key");
         expect(ky.delete).toHaveBeenCalled();
     });
 
@@ -100,21 +100,21 @@ describe("KV Resource", () => {
         const ky = mockKy({ exists: true });
         const kv = createKvResource(ky);
         await kv.exists("my-key");
-        expect(getLastUrl(ky)).toBe("kv/my-key/exists");
+        expect(getLastUrl(ky)).toBe("app/kv/my-key/exists");
     });
 
     it("ttl constructs correct URL", async () => {
         const ky = mockKy({ ttl: 300 });
         const kv = createKvResource(ky);
         await kv.ttl("my-key");
-        expect(getLastUrl(ky)).toBe("kv/my-key/ttl");
+        expect(getLastUrl(ky)).toBe("app/kv/my-key/ttl");
     });
 
     it("list with prefix sends query param", async () => {
         const ky = mockKy([{ key: "a" }]);
         const kv = createKvResource(ky);
         await kv.list("prefix-");
-        expect(getLastUrl(ky)).toBe("kv");
+        expect(getLastUrl(ky)).toBe("app/kv");
         expect(getLastSearchParams(ky)).toEqual({ prefix: "prefix-" });
     });
 
@@ -122,7 +122,7 @@ describe("KV Resource", () => {
         const ky = mockKy([]);
         const kv = createKvResource(ky);
         await kv.list();
-        expect(getLastUrl(ky)).toBe("kv");
+        expect(getLastUrl(ky)).toBe("app/kv");
         expect(getLastSearchParams(ky)).toBeUndefined();
     });
 
@@ -130,7 +130,7 @@ describe("KV Resource", () => {
         const ky = mockKy({ items: [] });
         const kv = createKvResource(ky);
         await kv.batch_get(["a", "b"]);
-        expect(getLastUrl(ky)).toBe("kv/batch/get");
+        expect(getLastUrl(ky)).toBe("app/kv/batch/get");
         expect(getLastBody(ky)).toEqual({ keys: ["a", "b"] });
     });
 
@@ -138,7 +138,7 @@ describe("KV Resource", () => {
         const ky = mockKy({ success: true });
         const kv = createKvResource(ky);
         await kv.batch_set([{ key: "a", value: 1 }]);
-        expect(getLastUrl(ky)).toBe("kv/batch/set");
+        expect(getLastUrl(ky)).toBe("app/kv/batch/set");
         expect(getLastBody(ky)).toEqual([{ key: "a", value: 1 }]);
     });
 
@@ -146,7 +146,7 @@ describe("KV Resource", () => {
         const ky = mockKy({ success: true });
         const kv = createKvResource(ky);
         await kv.batch_delete(["a", "b"]);
-        expect(getLastUrl(ky)).toBe("kv/batch/delete");
+        expect(getLastUrl(ky)).toBe("app/kv/batch/delete");
         expect(getLastBody(ky)).toEqual({ keys: ["a", "b"] });
     });
 
@@ -154,7 +154,7 @@ describe("KV Resource", () => {
         const ky = mockKy([{ key: "a" }]);
         const kv = createKvResource(ky);
         await kv.query("a*");
-        expect(getLastUrl(ky)).toBe("kv/query");
+        expect(getLastUrl(ky)).toBe("app/kv/query");
         expect(getLastSearchParams(ky)).toEqual({ pattern: "a*" });
     });
 
@@ -162,7 +162,7 @@ describe("KV Resource", () => {
         const ky = mockKy([]);
         const kv = createKvResource(ky);
         await kv.query();
-        expect(getLastUrl(ky)).toBe("kv/query");
+        expect(getLastUrl(ky)).toBe("app/kv/query");
         expect(getLastSearchParams(ky)).toBeUndefined();
     });
 });

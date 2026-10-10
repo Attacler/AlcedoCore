@@ -204,15 +204,39 @@ impl PluginsService<'_> {
     }
 
     pub async fn delete_catalog(&self, slug: &str) -> Result<u64, AlcedoError> {
+        // Collect install ids first: deleting the catalog row cascades the
+        // installs away, and after that there is nothing left to tear down.
+        let installs: Vec<i32> = match self.get_catalog(slug).await? {
+            Some(row) => match int_field(&row, "id") {
+                Some(id) => self
+                    .list_installs(id)
+                    .await?
+                    .iter()
+                    .filter_map(|i| int_field(i, "id"))
+                    .collect(),
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+
         let context = Self::system_context();
         let collection = CATALOG.to_string();
         let mut service = ItemsService::new(self.app_state, &context, &collection);
-        service
+        let deleted = service
             .delete_items_by_query(
                 Query::eq("slug", Value::String(slug.to_string())),
                 &mut None,
             )
-            .await
+            .await?;
+
+        for install_id in installs {
+            self.app_state
+                .platform
+                .ensure_absent(install_id as i64)
+                .await?;
+        }
+
+        Ok(deleted)
     }
 
     // --- installs --------------------------------------------------------
@@ -681,7 +705,8 @@ impl PluginsService<'_> {
         plugin_id: i32,
         app_version_id: i32,
     ) -> Result<(), AlcedoError> {
-        let _ = self.require_install(plugin_id, app_version_id).await?;
+        let install = self.require_install(plugin_id, app_version_id).await?;
+        let install_id = int_field(&install, "id").unwrap_or_default();
         let context = Self::system_context();
         let collection = INSTALLS.to_string();
         let mut service = ItemsService::new(self.app_state, &context, &collection);
@@ -693,6 +718,12 @@ impl PluginsService<'_> {
                 ]),
                 &mut None,
             )
+            .await?;
+        // Row first, then teardown: a platform that refuses to clean up must not
+        // leave the install row behind pretending the deployment still exists.
+        self.app_state
+            .platform
+            .ensure_absent(i64::from(install_id))
             .await?;
         Ok(())
     }

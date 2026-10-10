@@ -450,10 +450,12 @@ function deployToAnother() {
                 <Versions
                     v-else-if="activeTab === 'Versions'"
                     :plugin="plugin"
+                    :install-id="selected?.id"
                 />
                 <Instances
                     v-else-if="activeTab === 'Instances'"
                     :plugin="plugin"
+                    :install-id="selected?.id"
                 />
             </div>
         </template>

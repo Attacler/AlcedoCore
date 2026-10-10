@@ -127,6 +127,54 @@ update uses `PATCH` rather than v1's `PUT`.
 | POST /api/kv/batch/set | Batch set KV values | yes |
 | POST /api/kv/batch/delete | Batch delete KV values | yes |
 | POST /api/dev/request-id | Mint plugin auth request ID | yes |
+| GET /api/registries | List registries | yes |
+| POST /api/registries | Create registry | yes |
+| POST /api/registries/health-check | Health check registry URL | yes |
+| GET /api/registries/:id | Get registry | yes |
+| PUT /api/registries/:id | Update registry | yes |
+| DELETE /api/registries/:id | Delete registry | yes |
+| GET /api/registries/:id/health | Health check registry | yes |
+| GET /api/registries/:id/images | List registry images | yes |
+| ANY /api/internal-registry-proxy/*path | Registry image proxy | yes |
+| ANY /p/:slug | Proxy request to plugin (GET/POST/PUT/DELETE) | intentionally different — now `/p/:install_id` |
+| ANY /p/:slug/*path | Proxy request to plugin path (GET/POST/PUT/DELETE) | intentionally different — now `/p/:install_id/*path` |
+| GET /api/plugins | List plugin records | yes |
+| POST /api/plugins | Create plugin record | yes |
+| GET /api/plugins/:slug | Get plugin | yes |
+| PUT /api/plugins/:slug | Update plugin | yes |
+| DELETE /api/plugins/:slug | Delete plugin | yes |
+| POST /api/plugins/:slug/enable | Enable plugin | yes |
+| POST /api/plugins/:slug/disable | Disable plugin | yes |
+| GET /api/plugins/:slug/scopes | Get plugin scopes | yes |
+| POST /api/plugins/:slug/scopes | Update plugin scopes | yes |
+| GET /api/plugins/:slug/settings | Get plugin settings | yes |
+| PATCH /api/plugins/:slug/settings | Update plugin settings | yes |
+
+## Plugins — mocked stubs (route exists, no runtime yet)
+
+These routes are registered and return empty payloads from `PluginsService`
+until the Docker/K8s runtime lands:
+
+`runtime` and `instances` are answered by the `PluginPlatform` seam from the
+install row and the persisted `deployment_id`; the rest are still hardcoded
+empties. With `--features docker` and `PLUGIN_PLATFORM=docker` they report live
+Swarm state instead (see "Deployment backends" below).
+
+| endpoint | short description | backed by |
+| --- | --- | --- |
+| GET /api/plugins/:slug/logs | Plugin request logs | mock empty |
+| GET /api/plugins/:slug/versions | Image tags | mock empty |
+| GET /api/plugins/:slug/schema | Plugin DB schema | mock empty |
+| GET /api/plugins/:slug/migrations | List migrations | mock empty |
+| POST /api/plugins/:slug/migrations | Run migration | no-op |
+| POST /api/plugins/:slug/rollback/:version | Rollback migration | no-op |
+| GET /api/plugins/:slug/pages | Plugin pages | mock empty |
+| GET /api/plugins/:slug/pages/assets | Plugin assets | mock empty |
+| GET /api/plugins/:slug/docs | Plugin docs | mock empty |
+| POST /api/plugins/:slug/deploy | Deploy plugin | no-op |
+| POST /api/plugins/:slug/scale | Scale replicas | no-op |
+| POST /api/plugins/:slug/restart | Restart plugin | no-op |
+| POST /api/plugins/:slug/stop | Stop plugin | no-op |
 
 ## Not implemented
 
@@ -148,63 +196,154 @@ update uses `PATCH` rather than v1's `PUT`.
 | POST /api/items/:slug/grouped | Grouped item counts | no |
 | GET /api/logs/system | List system logs | no |
 | GET /api/logs/collections | List collection logs | no |
-| GET /api/plugins | List plugins | no |
-| POST /api/plugins | Create plugin | no |
 | POST /api/plugins/preview | Preview plugin manifest | no |
-| GET /api/plugins/:slug | Get plugin | no |
-| PUT /api/plugins/:slug | Update plugin | no |
-| DELETE /api/plugins/:slug | Delete plugin | no |
-| POST /api/plugins/:slug/enable | Enable plugin | no |
-| POST /api/plugins/:slug/disable | Disable plugin | no |
-| POST /api/plugins/:slug/deploy | Deploy plugin | no |
-| GET /api/plugins/:slug/versions | List plugin versions | no |
-| GET /api/plugins/:slug/instances/:instanceId/logs | Get instance logs | no |
 | POST /api/plugins/deploy | Deploy plugin (admin) | no |
-| POST /api/plugins/:slug/stop | Stop plugin | no |
-| POST /api/plugins/:slug/restart | Restart plugin | no |
-| POST /api/plugins/:slug/scale | Scale plugin replicas | no |
-| GET /api/plugins/:slug/instances | List plugin instances | no |
 | GET /api/plugins/:slug/instances/:instanceId | Get plugin instance | no |
 | GET /api/plugins/:slug/instances/:instanceId/stats | Get instance stats | no |
+| GET /api/plugins/:slug/instances/:instanceId/logs | Get instance logs | no |
 | GET /api/plugins/:slug/events | Get event subscriptions | no |
-| GET /api/plugins/:slug/schema | Get plugin schema | no |
-| GET /api/plugins/:slug/migrations | List plugin migrations | no |
-| POST /api/plugins/:slug/migrations | Run plugin migration | no |
 | POST /api/plugins/:slug/migrations/upload | Upload plugin migrations | no |
-| POST /api/plugins/:slug/rollback/:version | Rollback plugin migration | no |
-| GET /api/plugins/:slug/settings | Get plugin settings | no |
-| PATCH /api/plugins/:slug/settings | Update plugin settings | no |
-| GET /api/plugins/:slug/pages | Get plugin pages | no |
-| GET /api/plugins/:slug/pages/assets | Get plugin page assets | no |
-| GET /api/plugins/:slug/runtime | Get plugin runtime info | no |
-| GET /api/plugins/:slug/logs | Get plugin logs | no |
 | GET /api/plugins/:slug/logs/:requestId | Get request log detail | no |
-| GET /api/plugins/:slug/scopes | Get plugin scopes | no |
-| POST /api/plugins/:slug/scopes | Update plugin scopes | no |
-| GET /api/plugins/:slug/docs | List plugin docs | no |
 | GET /api/plugins/:slug/docs/*path | Fetch plugin doc file | no |
-| GET /api/registries | List registries | no |
-| POST /api/registries | Create registry | no |
-| POST /api/registries/health-check | Health check registry URL | no |
-| GET /api/registries/:id | Get registry | no |
-| PUT /api/registries/:id | Update registry | no |
-| DELETE /api/registries/:id | Delete registry | no |
-| GET /api/registries/:id/health | Health check registry | no |
-| GET /api/registries/:id/images | List registry images | no |
 | GET /api/openapi.json | OpenAPI spec | no |
 | GET /health | Health check | no |
-| ANY /p/:slug | Proxy request to plugin | no |
-| ANY /p/:slug/*path | Proxy request to plugin path | no |
 | GET /:slug/public/*path | Serve plugin static files | no |
 | GET /:slug | Serve plugin index or static | no |
 | GET /:slug/*path | Serve plugin nested static | no |
-| ANY /api/internal-registry-proxy/*path | Registry image proxy | no |
 
 ## Summary
 
-- 109 of 176 v1 endpoints implemented.
-- Missing: 67 — all of Plugins, Registries, Logs, Saved Views,
-  item `query`/`grouped`, plugin↔policy assignment, app×version access grants,
-  `/health`, and the proxy/static/registry-proxy routes.
+- 131 of 176 v1 endpoints implemented, including the `/p/:install_id` proxy
+  routes (which forward to `MOCK_PLUGIN_PORT` today, via `MockPlatform`), plus 13
+  plugin runtime routes registered under `/api/platform/plugins/*` that still
+  return **mocked empties** (see "Plugins — mocked stubs") until the Docker/K8s
+  runtime lands.
+- Missing: 30 — plugin↔policy assignment, plugin preview / admin deploy /
+  events / instance detail+logs / migrations upload / doc content, Logs,
+  Saved Views, item `query`/`grouped`, app×version access grants, `/health`,
+  and the static-file routes.
   (KV is **implemented** as app-scoped `/api/app/kv` backed by the cache;
   files are **implemented**.)
+
+### Proxy addressing (breaking)
+
+The proxy is keyed by **install id**, not slug. `/p/{install_id}` and
+`/p/{install_id}/{*path}` forward the remainder verbatim (`/p/7/api/items`
+arrives as `/api/items`; `/p/7` arrives as `/`, query strings preserved).
+
+- One install id names exactly one deployment, so no `X-App`/`X-Version` headers
+  are read and no slug guessing is possible. Browser navigation, link clicks and
+  asset fetches resolve the same way an API call does — browsers never attach
+  custom headers.
+- Non-numeric, empty, zero and negative segments → `404`. Unknown install →
+  `404`. Disabled install → `403`. Install with no `deployment_id`, or a
+  deployment with no reachable address → `503`.
+- The install id is stable across redeploys (the install row is upserted by
+  `deploy`), so a base path baked into plugin configuration survives them.
+  `deploy()` injects `PLUGIN_BASE_PATH=/p/{install_id}` for exactly this.
+- Clients read the id from `deploy`'s response: `installations[].id`.
+
+`GET /api/platform/plugins/{slug}/runtime` and `/{slug}/instances` moved to
+`/api/platform/plugins/installs/{install_id}/runtime` and
+`/installs/{install_id}/instances` — a slug can be installed on several app
+versions, so only the install names a single deployment.
+
+`POST /api/dev/request-id` (the CLI dev proxy) stays **slug**-keyed; it predates
+the proxy and mints ids for locally-run plugins that have no deployment.
+
+### Deployment backends
+
+`PLUGIN_PLATFORM` selects the backend; `mock` is the default and needs nothing.
+`docker` requires `--features docker` and creates real Swarm services. Startup is
+**fail-fast**: an unreachable socket or a daemon without Swarm control aborts the
+boot rather than degrading.
+
+```bash
+# dev / CI: mock platform, nothing to install
+cargo run
+
+# real containers
+cargo run --features docker      # PLUGIN_PLATFORM=docker in .env
+
+# the whole stack: Postgres + core joined to the plugin overlay network
+PLUGIN_NETWORK=alcedocore_plugins docker compose up -d --build
+```
+
+| variable | default | purpose |
+| --- | --- | --- |
+| `PLUGIN_PLATFORM` | `mock` | `mock` or `docker` |
+| `DOCKER_SOCKET` | `/var/run/docker.sock` | bollard connection |
+| `PLUGIN_NETWORK` | `alcedocore_plugins` | overlay network for plugin services |
+| `PLUGIN_CORE_URL` | `http://core:8080` | injected into plugins as `CORE_URL` |
+| `PLUGIN_PORT` | `8080` | port plugins listen on; used in `get_address` |
+
+Under Docker, one install is one Swarm service named `plugin_{install_id}` — the
+same string as the persisted `deployment_id`, and the DNS name the proxy
+resolves. The name is stable across redeploys; redeploy replaces the service
+rather than adding one. The slug is not in the name, so `docker service ls` does
+not show it — it is carried in the `alcedocore.plugin` and
+`alcedocore.install_id` labels instead.
+
+`PLUGIN_NETWORK` must be a genuine swarm overlay network. A network with the
+right name but a `bridge` driver is refused at startup: services attached to a
+bridge get no DNS entry, so every proxied request would time out instead of
+failing at boot.
+
+**Topology prerequisite.** A swarm service is reachable by its DNS name only
+from inside the overlay network, so the core itself has to run on it — a core
+running on the host cannot proxy to plugins (requests fail with `502` at the
+connect step). `docker-compose.yaml` therefore joins the core to
+`PLUGIN_NETWORK`; without the feature compiled in it logs a warning and falls
+back to the mock platform.
+
+`docker-compose.yaml` builds the core from `Dockerfile` (the ones at the repo
+root are stale v1 copies that build `core/`, not this package). Two values are
+overridable because they collide with whatever else is on the host:
+
+| variable | default | why |
+| --- | --- | --- |
+| `PLUGIN_NETWORK` | `alcedocore_plugins` | a leftover network of this name with a bridge driver makes the core refuse to start |
+| `POSTGRES_PUBLISHED_PORT` | `5432` | host-side only; the core always reaches the DB in-network at `database:5432` |
+
+### Plugin request auth
+
+### Plugin request auth
+
+A request proxied through `/p/:install_id` is registered as `plugin_req:{id}` →
+`PluginRequestIdentity` (TTL 900s), and the auth extractor turns that id back
+into `AuthLevel::Plugin` on the plugin's callback. A plugin has no user
+identity, so `require_user` and admin handlers reject it.
+
+A plugin's authority is the **`granted_scopes` of its install row**, read on
+every scoped call. The public role's policies are the *caller's* permissions and
+are neither added to nor substituted for it: a granted scope outrules whatever
+the caller could do, and a withheld one is not lent by the caller either. That
+covers both layers — `require_scope` for the coarse capabilities (`kv.*`), and
+`resolve_access` for item reads and writes, where a plugin that holds
+`items.read` / `items.write` is not further filtered by the public role's
+record-level policies, and one that does not hold it is denied outright
+(`403 Missing required scope: items.read`) rather than inheriting the caller's
+view.
+
+Grants are set at deploy time (`granted_scopes`) or per install
+(`POST /api/platform/plugins/{slug}/installs/{app_version_id}/scopes`), and
+revoking one takes effect on the next request. An install row that no longer
+exists grants nothing, so deleting an install revokes access immediately.
+Wildcards follow the v1 rules (`kv.all` covers `kv.*`, `rootaccess.all` covers
+everything).
+
+Two paths still fall back to the public role rather than an install: a
+slug-only plugin identity (the CLI dev proxy mints ids for plugins with no
+deployment), and any caller that is not a plugin.
+
+`/p/:install_id` is unauthenticated, matching v1: any caller receives a response
+`X-Request-ID` that authenticates as that plugin for up to 900s. That id is
+minted per request and replaces any inbound `X-Request-ID`, so a caller cannot
+choose its own plugin identity.
+
+Both `/p/:install_id` (targets `/`) and `/p/:install_id/*path` bind to one
+handler that takes the id and path from the URI rather than from the router's
+captures — the two routes capture a different number of segments, and a shared
+`Path` extractor cannot satisfy both. `/p/:install_id/` (trailing slash) is
+registered separately: matchit treats it as a distinct path and the wildcard
+route needs a non-empty segment, so without it the plugin root would 404.

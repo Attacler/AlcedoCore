@@ -27,6 +27,13 @@ pub fn proxy_controller() -> Router<AppState> {
                 .delete(proxy_plugin),
         )
         .route(
+            "/p/{install_id}/",
+            get(proxy_plugin)
+                .post(proxy_plugin)
+                .put(proxy_plugin)
+                .delete(proxy_plugin),
+        )
+        .route(
             "/p/{install_id}/{*path}",
             get(proxy_plugin)
                 .post(proxy_plugin)
@@ -268,11 +275,21 @@ mod tests {
         // Minimal fixture: catalog row + a disabled install. `enabled` is the
         // gate the header path used to skip, so this is the regression guard.
         // The 403 short-circuits before any upstream connection is attempted.
-        let app_version_id: i32 =
-            sqlx::query_scalar("SELECT id FROM alcedocore.alcedocore_apps_versions ORDER BY id LIMIT 1")
-                .fetch_one(pool)
-                .await
-                .expect("test DB has at least one app version");
+        let app_version_id: i32 = sqlx::query_scalar(
+            "SELECT id FROM alcedocore.alcedocore_apps_versions ORDER BY id LIMIT 1",
+        )
+        .fetch_one(pool)
+        .await
+        .expect("test DB has at least one app version");
+
+        // Clear any row a previously interrupted run left behind, otherwise the
+        // unique slug constraint fails before the test even starts.
+        sqlx::query(
+            "DELETE FROM alcedocore.alcedocore_plugins WHERE slug = 'proxy-disabled-fixture'",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
 
         let plugin_id: i32 = sqlx::query_scalar(
             "INSERT INTO alcedocore.alcedocore_plugins (slug, plugin_type, registry_id) \

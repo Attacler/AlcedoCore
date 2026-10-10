@@ -6,7 +6,9 @@ import { formatFileSize } from "@/utils/formatters";
 import { onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 
-const props = defineProps<{ plugin: PluginStore }>();
+// `installId` is the selected install's own id. Runtime detail is keyed by it
+// rather than the slug, because a slug can be installed on several app versions.
+const props = defineProps<{ plugin: PluginStore; installId?: number | null }>();
 
 const route = useRoute(),
     store = usePluginsStore(),
@@ -35,13 +37,12 @@ const availableVersions = ref<{ tag: string; size: number }[]>([]),
     deployingTag = ref<string | null>(null);
 
 async function loadDockerInfo() {
+    if (!props.installId) return;
     await withAsyncHandlingVoid(
         dockerLoading,
         dockerError,
         async () => {
-            const result = await store.fetchPluginDockerInfo(
-                route.params.name as string,
-            );
+            const result = await store.fetchPluginDockerInfo(props.installId!);
             if (result?.data) {
                 dockerInfo.value = result.data;
             }

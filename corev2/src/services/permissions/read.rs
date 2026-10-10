@@ -859,6 +859,23 @@ pub async fn resolve_access(
         return Ok(ReadAccess::Unrestricted);
     }
 
+    if let AuthLevel::Plugin(identity) = identity
+        && let Some(install_id) = identity.install_id
+    {
+        let required = match action {
+            "read" => "items.read",
+            _ => "items.write",
+        };
+        crate::services::scopes::check_entity_scope(
+            state,
+            context,
+            crate::services::scopes::ScopeSource::Plugin(install_id),
+            required,
+        )
+        .await?;
+        return Ok(ReadAccess::Unrestricted);
+    }
+
     // The runtime `search_path` does not include the per-app-version schema, so
     // all app-bound tables are qualified explicitly. `alcedocore_users` is global.
     let schema = context.schema_name();

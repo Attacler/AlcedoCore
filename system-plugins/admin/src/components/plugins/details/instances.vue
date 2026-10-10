@@ -5,13 +5,18 @@ import {
     DeploymentStatsSnapshot,
 } from "@/stores/plugins";
 import { withAsyncHandlingVoid } from "@/utils/asyncUtils";
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { onBeforeUnmount } from "vue";
 import { useRoute } from "vue-router";
 import InstanceLogsDrawer from "./InstanceLogsDrawer.vue";
 
 const route = useRoute(),
     store = usePluginsStore();
+
+// This tab is about one deployment, and a slug can be installed on several app
+// versions — so the parent passes the selected install's own id, which is what
+// `/platform/plugins/installs/{id}/instances` is keyed on.
+const props = defineProps<{ plugin: unknown; installId?: number | null }>();
 
 // Instances state
 const instances = ref<InstanceInfo[]>([]),
@@ -29,13 +34,15 @@ const instances = ref<InstanceInfo[]>([]),
 let instancesPollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function loadInstances() {
+    if (!props.installId) {
+        instances.value = [];
+        return;
+    }
     await withAsyncHandlingVoid(
         instancesLoading,
         instancesError,
         async () => {
-            const list = await store.fetchPluginInstances(
-                route.params.name as string,
-            );
+            const list = await store.fetchPluginInstances(props.installId!);
             instances.value = list;
             scaleReplicas.value = list.length;
             await pollInstanceStats();
@@ -66,10 +73,9 @@ async function pollInstanceStats() {
 function startInstancesPolling() {
     stopInstancesPolling();
     instancesPollTimer = setInterval(async () => {
+        if (!props.installId) return;
         try {
-            const list = await store.fetchPluginInstances(
-                route.params.name as string,
-            );
+            const list = await store.fetchPluginInstances(props.installId);
             instances.value = list;
             await pollInstanceStats();
         } catch {
@@ -134,6 +140,15 @@ onMounted(() => {
     loadInstances();
     startInstancesPolling();
 });
+
+// Switching the selected app version changes the install, so the deployment on
+// screen changes too.
+watch(
+    () => props.installId,
+    async () => {
+        await loadInstances();
+    },
+);
 
 onBeforeUnmount(() => {
     stopInstancesPolling();

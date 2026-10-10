@@ -1,0 +1,14 @@
+# Without this, `COPY . .` ships the whole target/ dir (multi-GB) into the
+# build context on every build.
+target/
+docker/
+.git/
+.gitignore
+.env
+.env.*
+!.env.example
+plan.md
+
+# NOTE: do not exclude *.md or dist/ — the build embeds both at compile time
+# (`include_str!("../../api-docs/query.md")` in controllers/docs.rs and
+# `include_dir!("$CARGO_MANIFEST_DIR/dist")` in controllers/ui.rs).

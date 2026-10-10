@@ -1,31 +1,112 @@
+# PREREQUISITE: this stack must run on the host's native Docker daemon:
+#
+#   docker context use default      # points at unix:///var/run/docker.sock
+#
+# If the active context is Docker Desktop (`docker context ls` shows a `*` on
+# `desktop-linux`), `docker compose` creates these containers on the Desktop VM
+# daemon while the core talks to the native daemon via DOCKER_SOCKET. The two
+# daemons have separate swarm state and separate networks, so plugin services
+# would be created on one network and looked up on the other.
+#
+# The native daemon must also have swarm enabled (`docker swarm init` on a
+# fresh host, or `docker info` showing LocalNodeState: active).
 services:
-  database:
-    image: postgis/postgis:17-master
-    restart: always
-    volumes:
-      - ./docker/database:/var/lib/postgresql/data
-    environment:
-      POSTGRES_USER: "postgres"
-      POSTGRES_PASSWORD: "postgres"
-      POSTGRES_DB: "postgres"
-    healthcheck:
-      test: ["CMD", "pg_isready", "--host=postgres", "--username=postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_interval: 5s
-      start_period: 30s
-    ports:
-      - 5432:5432
-  pgadmin:
-    image: dpage/pgadmin4
-    container_name: pgadmin4_container
-    restart: always
-    ports:
-      - "8888:80"
-    environment:
-      PGADMIN_DEFAULT_EMAIL: test@test.nl
-      PGADMIN_DEFAULT_PASSWORD: test
-    volumes:
-      - ./docker/pgadmin-data:/var/lib/pgadmin
-      - ./docker/pgadmin-data-backups:/var/lib/pgadmin/storage/test_test.nl/
+    database:
+        image: postgis/postgis:17-master
+        restart: always
+        volumes:
+            # The image only creates POSTGRES_DB, but DATABASE_URL targets
+            # `plugin_core` (AGENTS.md notes this mismatch). The init script runs once
+            # on first boot of an empty volume.
+            - ./docker/database:/var/lib/postgresql/data
+            - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+        environment:
+            POSTGRES_USER: "postgres"
+            POSTGRES_PASSWORD: "postgres"
+            POSTGRES_DB: "postgres"
+        healthcheck:
+            # Must be `localhost` or a unix socket, not the service name: pg_isready
+            # treats `postgres` as a *database* name and fails against `database`.
+            test:
+                ["CMD", "pg_isready", "--host=localhost", "--username=postgres"]
+            interval: 10s
+            timeout: 5s
+            retries: 5
+            start_interval: 5s
+            start_period: 30s
+        ports:
+            # Host-side only; the core reaches Postgres in-network at `database:5432`,
+            # so this is free to move when 5432 is already taken.
+            - "${POSTGRES_PUBLISHED_PORT:-5432}:5432"
+    pgadmin:
+        image: dpage/pgadmin4
+        container_name: pgadmin4_container
+        restart: always
+        ports:
+            - "8888:80"
+        environment:
+            PGADMIN_DEFAULT_EMAIL: test@test.nl
+            PGADMIN_DEFAULT_PASSWORD: test
+        volumes:
+            - ./docker/pgadmin-data:/var/lib/pgadmin
+            - ./docker/pgadmin-data-backups:/var/lib/pgadmin/storage/test_test.nl/
+    # The core. It must sit on the plugin overlay network: a Swarm service is only
+    # reachable by its VIP/DNS name from inside that network, and the proxy
+    # resolves `plugin_{install_id}` there. A core running on the host cannot.
+    core:
+        build: .
+        restart: always
+        depends_on:
+            database:
+                condition: service_healthy
+        # The core runs as root (no USER in the Dockerfile), so CAP_DAC_OVERRIDE
+        # already grants access to the socket. Kept in sync with the host's docker
+        # group for the case where the image is later switched to a non-root user.
+        group_add:
+            - "${DOCKER_GID:-986}"
+        environment:
+            DATABASE_URL: postgres://postgres:postgres@database:5432/postgres
+            CACHE_STRATEGY: in_memory
+            CORE_PORT: "8080"
+            PLUGIN_PLATFORM: docker
+            PLUGIN_NETWORK: alcedocore_plugins_dev
+            PLUGIN_PORT: "8080"
+            PLUGIN_CORE_URL: http://core:8080
+            DOCKER_SOCKET: /var/run/docker.sock
+
+            ADMIN_EMAIL: admin@alcedo.dev
+            ADMIN_PASSWORD: admin123!
+            REGISTRY_ENCRYPTION_KEY: UuG5d1HEJuBH0tElr6R4I3deq/BabTiHhfByFS9xom4=
+            LOCAL_REGISTRY_URL: registry:5000
+        volumes:
+            - /home/atlr/.docker/desktop/docker.sock:/var/run/docker.sock
+        ports:
+            - "8080:8080"
+        networks:
+            - default
+            - plugin_net
+    registry:
+        image: registry:3
+        container_name: registry
+        restart: unless-stopped
+        ports:
+            - "5000:5000"
+        volumes:
+            - registry-data:/var/lib/registry
+
+networks:
+    # Declared (not external) so `docker compose up` works on a clean host: swarm
+    # attaches overlay-scoped networks to every node, which requires swarm to be
+    # initialized. `attachable` is what lets this non-swarm compose service join
+    # it and reach plugin service DNS.
+    #
+    # The name is overridable because a leftover network with the same name and a
+    # bridge driver (from the v1 stack) would otherwise be adopted silently:
+    #   PLUGIN_NETWORK=some_free_name docker compose up
+    plugin_net:
+        name: alcedocore_plugins_dev
+        driver: overlay
+        attachable: true
+
+volumes:
+    registry-data:

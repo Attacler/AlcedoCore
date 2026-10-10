@@ -8,6 +8,9 @@ const slugPath = (slug: string, suffix = "") =>
     path(`${encodeURIComponent(slug)}${suffix}`);
 const installPath = (slug: string, appVersionId: number, suffix = "") =>
     slugPath(slug, `/installs/${appVersionId}${suffix}`);
+// Runtime/instances are keyed by the install's own id, not by slug + version.
+const installIdPath = (installId: number, suffix = "") =>
+    path(`installs/${encodeURIComponent(String(installId))}${suffix}`);
 
 export function createPluginsResource(ky: any) {
     return {
@@ -70,10 +73,13 @@ export function createPluginsResource(ky: any) {
                 })
                 .json(),
 
-        runtimeInfo: (slug: string, options?: any) =>
-            ky.get(slugPath(slug, "/runtime"), options).json(),
-        instances: (slug: string, options?: any) =>
-            ky.get(slugPath(slug, "/instances"), options).json(),
+        // Runtime detail and instances are keyed by install id, not slug: a slug
+        // can be installed on several app versions and each install is its own
+        // deployment, so the slug-keyed shape can no longer name one.
+        runtimeInfo: (installId: number, options?: any) =>
+            ky.get(installIdPath(installId, "/runtime"), options).json(),
+        instances: (installId: number, options?: any) =>
+            ky.get(installIdPath(installId, "/instances"), options).json(),
         versions: (slug: string, options?: any) =>
             ky.get(slugPath(slug, "/versions"), options).json(),
         requestLogs: (slug: string, params?: URLSearchParams, options?: any) =>

@@ -57,6 +57,13 @@ impl From<std::io::Error> for AlcedoError {
     }
 }
 
+#[cfg(feature = "docker")]
+impl From<bollard::errors::Error> for AlcedoError {
+    fn from(err: bollard::errors::Error) -> Self {
+        AlcedoError::SystemError(format!("Docker error: {}", err), 0)
+    }
+}
+
 impl AlcedoError {
     pub fn to_json_response<T>(&self) -> Json<JSendResponse<T>> {
         let jsend_response: JSendResponse<T> = match self {

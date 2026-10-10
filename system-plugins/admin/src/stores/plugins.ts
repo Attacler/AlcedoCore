@@ -504,8 +504,8 @@ export const usePluginsStore = defineStore("plugins", () => {
         return response.data || { logs: [], next_cursor: null };
     }
 
-    async function fetchPluginDockerInfo(slug: string) {
-        return (await client.plugins.runtimeInfo(slug)) as { data?: DockerInfoResponse };
+    async function fetchPluginDockerInfo(installId: number) {
+        return (await client.plugins.runtimeInfo(installId)) as { data?: DockerInfoResponse };
     }
 
     async function fetchPluginVersions(slug: string) {
@@ -513,8 +513,8 @@ export const usePluginsStore = defineStore("plugins", () => {
         return response.data || { versions: [] };
     }
 
-    async function fetchPluginInstances(slug: string): Promise<InstanceInfo[]> {
-        const json: any = await client.plugins.instances(slug);
+    async function fetchPluginInstances(installId: number): Promise<InstanceInfo[]> {
+        const json: any = await client.plugins.instances(installId);
         return json.data?.instances || [];
     }
 

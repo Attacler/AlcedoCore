@@ -31,6 +31,10 @@ pub struct Config {
     pub mock_plugin_port: u16,
     pub plugin_core_url: String,
     pub plugin_port: u16,
+    /// `mock` or `docker`. `docker` only takes effect with the `docker` feature.
+    pub plugin_platform: String,
+    pub docker_socket: String,
+    pub plugin_network: String,
 }
 
 pub fn get_config() -> Config {
@@ -68,6 +72,9 @@ pub fn get_config() -> Config {
     let mock_plugin_port = env_or_msg("MOCK_PLUGIN_PORT", 8080, "must be a number");
     let plugin_core_url = env_str("PLUGIN_CORE_URL", "http://core:8080");
     let plugin_port = env_or_msg("PLUGIN_PORT", 8080u16, "must be a number");
+    let plugin_platform = env_str("PLUGIN_PLATFORM", "mock");
+    let docker_socket = env_str("DOCKER_SOCKET", "/var/run/docker.sock");
+    let plugin_network = env_str("PLUGIN_NETWORK", "alcedocore_plugins");
 
     if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
         eprintln!(
@@ -102,6 +109,9 @@ pub fn get_config() -> Config {
         mock_plugin_port,
         plugin_core_url,
         plugin_port,
+        plugin_platform,
+        docker_socket,
+        plugin_network,
     }
 }
 

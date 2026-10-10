@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use sqlx::{Pool, Postgres, Row};
 
-use crate::services::errors::AlcedoError;
+use crate::services::{config::Config, errors::AlcedoError};
 
 #[allow(dead_code)]
 #[async_trait]
@@ -43,6 +43,36 @@ pub trait PluginPlatform: Send + Sync {
     /// install row without this orphans whatever is actually running.
     /// Implementations ignore "not found"; the mock platform has nothing to do.
     async fn ensure_absent(&self, install_id: i64) -> Result<(), AlcedoError>;
+}
+
+pub async fn build_platform(
+    pool: Arc<Pool<Postgres>>,
+    config: &Config,
+) -> Result<Arc<dyn PluginPlatform>, AlcedoError> {
+    #[cfg(feature = "docker")]
+    if config.plugin_platform.eq_ignore_ascii_case("docker") {
+        tracing::info!(
+            "[PLATFORM] Using Docker Swarm backend ({})",
+            config.docker_socket
+        );
+        let platform = crate::services::docker_platform::DockerPlatform::connect(
+            &config.docker_socket,
+            Arc::clone(&pool),
+            config,
+        )
+        .await?;
+        return Ok(Arc::new(platform));
+    }
+
+    #[cfg(not(feature = "docker"))]
+    if config.plugin_platform.eq_ignore_ascii_case("docker") {
+        tracing::warn!(
+            "[PLATFORM] PLUGIN_PLATFORM=docker ignored: rebuild with `--features docker`. \
+             Falling back to the mock platform."
+        );
+    }
+
+    Ok(Arc::new(MockPlatform::new(pool, config.mock_plugin_port)))
 }
 
 /// Stands in for Docker/K8s: everything resolves to `MOCK_PLUGIN_PORT`, which
@@ -120,22 +150,21 @@ impl PluginPlatform for MockPlatform {
     }
 
     async fn instances(&self, install_id: i64) -> Result<Value, AlcedoError> {
-        let deployed: Option<String> =
-            sqlx::query("SELECT deployment_id FROM alcedocore.alcedocore_plugins_installs WHERE id = $1")
-                .bind(install_id)
-                .fetch_optional(&*self.pool)
-                .await?
-                .and_then(|row| row.try_get("deployment_id").unwrap_or(None));
+        let deployed: Option<String> = sqlx::query(
+            "SELECT deployment_id FROM alcedocore.alcedocore_plugins_installs WHERE id = $1",
+        )
+        .bind(install_id)
+        .fetch_optional(&*self.pool)
+        .await?
+        .and_then(|row| row.try_get("deployment_id").unwrap_or(None));
 
         Ok(json!({
-            "data": {
-                "instances": [{
-                    "id": deployed.unwrap_or_else(|| Self::deployment_id(Some(install_id))),
-                    "install_id": install_id,
-                    "address": format!("localhost:{}", self.port),
-                    "status": "running",
-                }]
-            }
+            "instances": [{
+                "id": deployed.unwrap_or_else(|| Self::deployment_id(Some(install_id))),
+                "install_id": install_id,
+                "address": format!("localhost:{}", self.port),
+                "status": "running",
+            }]
         }))
     }
 

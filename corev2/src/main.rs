@@ -28,7 +28,7 @@ use crate::{
             HookContext, MultiEventBus, systemhooks::setup_system_hooks,
             types::lifecycle::CoreLoaded,
         },
-        plugin_platform::MockPlatform,
+        plugin_platform,
         postgres::inspector::DatabaseSchema,
         versions::service::VersionsService,
     },
@@ -57,10 +57,7 @@ async fn main() -> Result<()> {
 
     let file_storage = services::files::build_file_storage(&config).await;
 
-    let platform = Arc::new(MockPlatform::new(
-        Arc::clone(&database_pool),
-        config.mock_plugin_port,
-    ));
+    let platform = plugin_platform::build_platform(Arc::clone(&database_pool), &config).await?;
 
     let state = AppState {
         database_pool,
