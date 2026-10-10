@@ -50,8 +50,8 @@ pub fn plugins_controller() -> Router<AppState> {
         )
         // Deployment / runtime surfaces. `runtime` and `instances` are served by the
 // platform; the rest stay mocked empties until Docker/K8s lands.
-        .route("/{slug}/runtime", get(get_runtime))
-        .route("/{slug}/instances", get(list_instances))
+        .route("/installs/{install_id}/runtime", get(get_runtime))
+        .route("/installs/{install_id}/instances", get(list_instances))
         .route("/{slug}/logs", get(list_logs))
         .route("/{slug}/versions", get(list_versions))
         .route("/{slug}/docs", get(list_docs))
@@ -490,30 +490,30 @@ fn ok(value: Value) -> Json<JSendResponse<Value>> {
     Json(success(value))
 }
 
-#[utoipa::path(get, path = "/api/platform/plugins/{slug}/runtime", tag = "Plugins",
-    params(("slug" = String, Path)),
+#[utoipa::path(get, path = "/api/platform/plugins/installs/{install_id}/runtime", tag = "Plugins",
+    params(("install_id" = i64, Path, description = "Install id — build /p/{install_id} URLs with it")),
     responses((status = OK, body = JSendResponse<Value>))
 )]
 async fn get_runtime(
     State(state): State<AppState>,
     auth_level: AuthLevel,
-    Path(slug): Path<String>,
+    Path(install_id): Path<i64>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).runtime_info(&slug).await?))
+    Ok(ok(PluginsService::new(&state).runtime_info(install_id).await?))
 }
 
-#[utoipa::path(get, path = "/api/platform/plugins/{slug}/instances", tag = "Plugins",
-    params(("slug" = String, Path)),
+#[utoipa::path(get, path = "/api/platform/plugins/installs/{install_id}/instances", tag = "Plugins",
+    params(("install_id" = i64, Path)),
     responses((status = OK, body = JSendResponse<Value>))
 )]
 async fn list_instances(
     State(state): State<AppState>,
     auth_level: AuthLevel,
-    Path(slug): Path<String>,
+    Path(install_id): Path<i64>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).instances(&slug).await?))
+    Ok(ok(PluginsService::new(&state).instances(install_id).await?))
 }
 
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/logs", tag = "Plugins",

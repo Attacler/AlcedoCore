@@ -64,7 +64,7 @@ async fn request_id(
     let identity = match resolve_install(&state, &payload.slug, app.as_deref(), version.as_deref())
         .await
     {
-        Ok(install) => install.identity(&payload.slug),
+        Ok(install) => install.identity(),
         Err(e) => {
             tracing::warn!(
                 "[DEV] Could not resolve install for {} ({}), registering slug-only identity",

@@ -28,20 +28,27 @@ pub trait PluginPlatform: Send + Sync {
     /// Whether the deployment has more than one replica behind it.
     fn is_replicated_service(&self, deployment_id: &str) -> bool;
 
-    /// Container/runtime detail for one plugin.
-    async fn runtime_info(&self, slug: &str) -> Result<Value, AlcedoError>;
+    /// Container/runtime detail for one install's deployment.
+    async fn runtime_info(&self, install_id: i64) -> Result<Value, AlcedoError>;
 
-    /// Running instances of one plugin.
-    async fn instances(&self, slug: &str) -> Result<Value, AlcedoError>;
+    /// Running instances of one install's deployment.
+    async fn instances(&self, install_id: i64) -> Result<Value, AlcedoError>;
 
     /// Every deployment the platform knows about.
     async fn list_deployments(&self) -> Result<Vec<Value>, AlcedoError>;
 
     async fn health_check(&self) -> Result<(), AlcedoError>;
+
+    /// Best-effort teardown of the deployment backing one install. Deleting the
+    /// install row without this orphans whatever is actually running.
+    /// Implementations ignore "not found"; the mock platform has nothing to do.
+    async fn ensure_absent(&self, install_id: i64) -> Result<(), AlcedoError>;
 }
 
 /// Stands in for Docker/K8s: everything resolves to `MOCK_PLUGIN_PORT`, which
-/// is where a locally-run plugin (or the CLI dev proxy) listens.
+/// is where a locally-run plugin (or the CLI dev proxy) listens. One local
+/// plugin serves every install, so the address is deliberately not keyed by
+/// install id.
 pub struct MockPlatform {
     pool: Arc<Pool<Postgres>>,
     port: u16,
@@ -53,27 +60,8 @@ impl MockPlatform {
     }
 
     /// Deterministic so the persisted id is stable across restarts and tests.
-    fn deployment_id(slug: &str, install_id: Option<i64>) -> String {
-        format!("mock-{}-{}", slug, install_id.unwrap_or(0))
-    }
-
-    async fn install_for(&self, slug: &str) -> Result<Option<(i32, Option<String>)>, AlcedoError> {
-        let install = sqlx::query(
-            "SELECT i.app_version_id, i.deployment_id
-             FROM alcedocore.alcedocore_plugins_installs i
-             JOIN alcedocore.alcedocore_plugins p ON p.id = i.plugin_id
-             WHERE p.slug = $1
-             ORDER BY i.id
-             LIMIT 1",
-        )
-        .bind(slug)
-        .fetch_optional(&*self.pool)
-        .await?;
-
-        Ok(install.map(|row| {
-            let deployment_id: Option<String> = row.try_get("deployment_id").unwrap_or(None);
-            (row.try_get("app_version_id").unwrap_or(0), deployment_id)
-        }))
+    fn deployment_id(install_id: Option<i64>) -> String {
+        format!("mock-{}", install_id.unwrap_or(0))
     }
 }
 
@@ -81,13 +69,13 @@ impl MockPlatform {
 impl PluginPlatform for MockPlatform {
     async fn deploy(
         &self,
-        slug: &str,
+        _slug: &str,
         _version: &str,
         _image: &str,
         _env: HashMap<String, String>,
         install_id: Option<i64>,
     ) -> Result<String, AlcedoError> {
-        Ok(Self::deployment_id(slug, install_id))
+        Ok(Self::deployment_id(install_id))
     }
 
     async fn get_address(&self, _deployment_id: &str) -> Result<Option<String>, AlcedoError> {
@@ -98,25 +86,29 @@ impl PluginPlatform for MockPlatform {
         false
     }
 
-    async fn runtime_info(&self, slug: &str) -> Result<Value, AlcedoError> {
-        let catalog =
-            sqlx::query("SELECT image FROM alcedocore.alcedocore_plugins WHERE slug = $1")
-                .bind(slug)
-                .fetch_optional(&*self.pool)
-                .await?;
+    async fn runtime_info(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        let row = sqlx::query(
+            "SELECT p.image, i.deployment_id
+             FROM alcedocore.alcedocore_plugins_installs i
+             JOIN alcedocore.alcedocore_plugins p ON p.id = i.plugin_id
+             WHERE i.id = $1",
+        )
+        .bind(install_id)
+        .fetch_optional(&*self.pool)
+        .await?;
 
-        let Some(catalog) = catalog else {
+        let Some(row) = row else {
             return Err(AlcedoError::NotFound(
-                format!("Plugin not found: {}", slug),
+                format!("Plugin install not found: {}", install_id),
                 0,
             ));
         };
-        let image: Option<String> = catalog.try_get("image").unwrap_or(None);
 
-        let install = self.install_for(slug).await?;
-        let deployed = install.and_then(|(_, deployment_id)| deployment_id);
+        let image: Option<String> = row.try_get("image").unwrap_or(None);
+        let deployed: Option<String> = row.try_get("deployment_id").unwrap_or(None);
 
         Ok(json!({
+            "install_id": install_id,
             "image": image.unwrap_or_default(),
             "image_id": "",
             "tags": [],
@@ -127,20 +119,20 @@ impl PluginPlatform for MockPlatform {
         }))
     }
 
-    async fn instances(&self, slug: &str) -> Result<Value, AlcedoError> {
-        let address = format!("localhost:{}", self.port);
-        let deployment_id = self
-            .install_for(slug)
-            .await?
-            .and_then(|(_, deployment_id)| deployment_id)
-            .unwrap_or_else(|| Self::deployment_id(slug, None));
+    async fn instances(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        let deployed: Option<String> =
+            sqlx::query("SELECT deployment_id FROM alcedocore.alcedocore_plugins_installs WHERE id = $1")
+                .bind(install_id)
+                .fetch_optional(&*self.pool)
+                .await?
+                .and_then(|row| row.try_get("deployment_id").unwrap_or(None));
 
         Ok(json!({
             "data": {
                 "instances": [{
-                    "id": deployment_id,
-                    "slug": slug,
-                    "address": address,
+                    "id": deployed.unwrap_or_else(|| Self::deployment_id(Some(install_id))),
+                    "install_id": install_id,
+                    "address": format!("localhost:{}", self.port),
                     "status": "running",
                 }]
             }
@@ -176,6 +168,10 @@ impl PluginPlatform for MockPlatform {
     async fn health_check(&self) -> Result<(), AlcedoError> {
         Ok(())
     }
+
+    async fn ensure_absent(&self, _install_id: i64) -> Result<(), AlcedoError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -184,13 +180,7 @@ mod tests {
 
     #[test]
     fn deployment_id_is_deterministic() {
-        assert_eq!(
-            MockPlatform::deployment_id("hello-world", Some(4)),
-            "mock-hello-world-4"
-        );
-        assert_eq!(
-            MockPlatform::deployment_id("hello-world", None),
-            "mock-hello-world-0"
-        );
+        assert_eq!(MockPlatform::deployment_id(Some(4)), "mock-4");
+        assert_eq!(MockPlatform::deployment_id(None), "mock-0");
     }
 }

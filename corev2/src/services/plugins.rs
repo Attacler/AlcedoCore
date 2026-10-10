@@ -9,6 +9,7 @@ use crate::{
     services::{
         activity_logs,
         apps::AppsService,
+        config::Config,
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
@@ -93,6 +94,7 @@ pub struct DeployInput {
     pub granted_scopes: Option<Value>,
     pub settings: Option<Value>,
     pub enabled: Option<bool>,
+    pub env: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -373,6 +375,7 @@ impl PluginsService<'_> {
     }
 
     // --- deploy ----------------------------------------------------------
+
     pub async fn deploy(&self, input: DeployInput) -> Result<PluginRecord, AlcedoError> {
         let slug = input.slug.clone();
 
@@ -556,6 +559,20 @@ impl PluginsService<'_> {
                 .and_then(|row| str_field(&row, "image"))
                 .unwrap_or_default(),
         };
+        if image.trim().is_empty() {
+            return Err(AlcedoError::InvalidInput(
+                "image is required to deploy a plugin".to_string(),
+                0,
+            ));
+        }
+
+        let Some(install_id) = install_id else {
+            return Err(AlcedoError::SystemError(
+                "Plugin install was not created".to_string(),
+                0,
+            ));
+        };
+
         let deployment_id = self
             .app_state
             .platform
@@ -563,8 +580,8 @@ impl PluginsService<'_> {
                 &input.slug,
                 &input.plugin_version,
                 &image,
-                HashMap::new(),
-                install_id.map(i64::from),
+                plugin_env(&self.app_state.config, &input, install_id),
+                Some(install_id.into()),
             )
             .await?;
 
@@ -694,12 +711,12 @@ impl PluginsService<'_> {
 
     // --- mocked deployment/runtime surfaces -----------------------------
 
-    pub async fn runtime_info(&self, slug: &str) -> Result<Value, AlcedoError> {
-        self.app_state.platform.runtime_info(slug).await
+    pub async fn runtime_info(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        self.app_state.platform.runtime_info(install_id).await
     }
 
-    pub async fn instances(&self, slug: &str) -> Result<Value, AlcedoError> {
-        self.app_state.platform.instances(slug).await
+    pub async fn instances(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        self.app_state.platform.instances(install_id).await
     }
 
     pub async fn request_logs(&self, _slug: &str) -> Result<Value, AlcedoError> {
@@ -750,14 +767,15 @@ impl PluginsService<'_> {
 /// An install plus the platform deployment it points at.
 pub struct ResolvedInstall {
     pub install: InstallRecord,
+    pub slug: String,
 }
 
 impl ResolvedInstall {
-    /// The identity to cache for this request. Without `X-App`/`X-Version` the
-    /// names are unknown, so only the ids travel — enough for the auth extractor.
-    pub fn identity(&self, slug: &str) -> PluginRequestIdentity {
+    /// The identity to cache for this request. The app/version names ride along
+    /// so the auth extractor can scope a plugin's callback to this install.
+    pub fn identity(&self) -> PluginRequestIdentity {
         PluginRequestIdentity {
-            slug: slug.to_string(),
+            slug: self.slug.clone(),
             app: self.install.api_name.clone(),
             version: self.install.version_name.clone(),
             app_version_id: Some(self.install.app_version_id),
@@ -767,8 +785,80 @@ impl ResolvedInstall {
     }
 }
 
-/// Resolves which install a request refers to, most-specific-wins within
-/// corev2's single scope (app × version).
+/// Environment every plugin gets. `PLUGIN_BASE_PATH` is install-keyed so a
+/// server-rendered plugin can put its assets behind the `/p/{install_id}`
+/// prefix; the install id survives redeploys, so the base path is stable.
+/// `input.env` is merged last so a deploy payload can override any default.
+pub fn plugin_env(
+    config: &Config,
+    input: &DeployInput,
+    install_id: i32,
+) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert("PORT".to_string(), config.plugin_port.to_string());
+    env.insert("CORE_URL".to_string(), config.plugin_core_url.clone());
+    if let Ok(redis) = std::env::var("REDIS_URL")
+        && !redis.is_empty()
+    {
+        env.insert("REDIS_URL".to_string(), redis);
+    }
+    env.insert("PLUGIN_BASE_PATH".to_string(), format!("/p/{}", install_id));
+    if let Some(extra) = &input.env {
+        env.extend(extra.iter().map(|(k, v)| (k.clone(), v.clone())));
+    }
+    env
+}
+
+/// Resolves an install by its own id — the routing key for the proxy and the
+/// only address that needs no `X-App`/`X-Version` disambiguation.
+pub async fn resolve_install_by_id(
+    state: &AppState,
+    install_id: i64,
+) -> Result<ResolvedInstall, AlcedoError> {
+    let service = PluginsService::new(state);
+
+    let row = service
+        .read(
+            INSTALLS,
+            Query {
+                fields: vec!["*".to_string()],
+                limit: 1,
+                ..Query::eq("id", Value::from(install_id))
+            },
+        )
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            AlcedoError::NotFound(format!("Plugin install not found: {}", install_id), 0)
+        })?;
+
+    if !bool_field(&row, "enabled") {
+        return Err(AlcedoError::Forbidden(
+            format!("Plugin install is disabled: {}", install_id),
+            0,
+        ));
+    }
+
+    let plugin_id = int_field(&row, "plugin_id").unwrap_or_default();
+    let slug = service
+        .list_catalog(Query {
+            fields: vec!["slug".to_string()],
+            limit: 1,
+            ..Query::eq("id", Value::from(plugin_id))
+        })
+        .await?
+        .into_iter()
+        .next()
+        .and_then(|r| str_field(&r, "slug"))
+        .ok_or_else(|| AlcedoError::NotFound(format!("Plugin not found: {}", plugin_id), 0))?;
+
+    let install = install_record(&row, &service.app_version_infos().await?);
+    Ok(ResolvedInstall { install, slug })
+}
+
+/// Resolves which install a slug-keyed caller means. `/api/dev/request-id` is
+/// the only survivor of slug-keyed addressing — the proxy is install-keyed.
 pub async fn resolve_install(
     state: &AppState,
     slug: &str,
@@ -785,8 +875,10 @@ pub async fn resolve_install(
 
     let mut candidates: Vec<InstallRecord> = plugin.installations;
     if let (Some(app), Some(version)) = (app, version) {
+        // The header path used to skip the `enabled` check, so a disabled
+        // install still resolved and proxied when the headers were supplied.
         candidates.retain(|i| {
-            i.api_name.as_deref() == Some(app) && i.version_name.as_deref() == Some(version)
+            i.enabled && i.api_name.as_deref() == Some(app) && i.version_name.as_deref() == Some(version)
         });
         if candidates.is_empty() {
             return Err(AlcedoError::NotFound(
@@ -813,7 +905,10 @@ pub async fn resolve_install(
         .next()
         .ok_or_else(|| AlcedoError::NotFound(format!("Plugin '{}' is not deployed", slug), 0))?;
 
-    Ok(ResolvedInstall { install })
+    Ok(ResolvedInstall {
+        install,
+        slug: slug.to_string(),
+    })
 }
 
 /// Registers `plugin_req:{request_id}` → identity for `seconds`, the mapping the
@@ -900,5 +995,63 @@ mod tests {
             "hello-world"
         );
         assert_eq!(slug_from_image("nginx"), "nginx");
+    }
+
+    fn env_fixture() -> (Config, DeployInput) {
+        let mut input = DeployInput {
+            slug: "hello-world".to_string(),
+            plugin_version: "1.0.0".to_string(),
+            registry_id: None,
+            image: None,
+            app_version_id: 1,
+            plugin_type: None,
+            description: None,
+            endpoints: None,
+            requested_scopes: None,
+            granted_scopes: None,
+            settings: None,
+            enabled: None,
+            env: None,
+        };
+        let mut config = crate::services::config::get_config();
+        config.plugin_port = 8080;
+        config.plugin_core_url = "http://core:8080".to_string();
+        (config, input)
+    }
+
+    #[test]
+    fn plugin_env_carries_the_install_base_path() {
+        let (config, input) = env_fixture();
+
+        let env = plugin_env(&config, &input, 7);
+
+        assert_eq!(env.get("PORT").map(String::as_str), Some("8080"));
+        assert_eq!(
+            env.get("CORE_URL").map(String::as_str),
+            Some("http://core:8080")
+        );
+        // The base path is what a Nuxt-style plugin needs to resolve its assets.
+        assert_eq!(
+            env.get("PLUGIN_BASE_PATH").map(String::as_str),
+            Some("/p/7")
+        );
+    }
+
+    #[test]
+    fn plugin_env_lets_the_payload_override_defaults() {
+        let (config, mut input) = env_fixture();
+        input.env = Some(HashMap::from([
+            ("PORT".to_string(), "9999".to_string()),
+            ("MY_SETTING".to_string(), "on".to_string()),
+        ]));
+
+        let env = plugin_env(&config, &input, 7);
+
+        assert_eq!(env.get("PORT").map(String::as_str), Some("9999"));
+        assert_eq!(env.get("MY_SETTING").map(String::as_str), Some("on"));
+        assert_eq!(
+            env.get("PLUGIN_BASE_PATH").map(String::as_str),
+            Some("/p/7")
+        );
     }
 }
