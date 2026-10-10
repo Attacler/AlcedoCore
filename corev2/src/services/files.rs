@@ -25,7 +25,7 @@ use crate::{
         },
         permissions::read::{ReadAccess, resolve_access},
         scopes::require_scope,
-        versions::VersionsService,
+        versions::service::VersionsService,
     },
 };
 

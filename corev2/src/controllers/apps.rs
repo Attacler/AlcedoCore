@@ -24,7 +24,7 @@ use crate::{
         items::{query::Query, service::ItemsService},
         respond::{JSendResponse, success},
         roles::RolesService,
-        versions::VersionsService,
+        versions::service::VersionsService,
     },
     utils::{parse_uuid_named, slugify},
 };
@@ -211,7 +211,6 @@ async fn create_app(
             ));
         }
     };
-
     let context = AppContext::system(RequestSource::API);
     let collection = "alcedocore_apps".to_string();
     let mut service = ItemsService::new(&state, &context, &collection);
@@ -240,6 +239,7 @@ async fn create_app(
     let app = fetch_app(&state, app_id)
         .await?
         .ok_or_else(|| AlcedoError::SystemError("App was not created".to_string(), 0))?;
+
     Ok(Json(success(app)))
 }
 

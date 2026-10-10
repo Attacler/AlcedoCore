@@ -125,107 +125,88 @@ watch(
 </script>
 
 <template>
-    <Card>
-        <template #title>
-            <div class="flex items-center justify-between gap-2">
-                <div class="flex items-center gap-2">
-                    <span class="material-symbols-outlined text-blue-600"
-                        >key</span
-                    >
-                    <span class="font-semibold">Developer API Keys</span>
+    <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-2">
+            <span class="material-symbols-outlined text-blue-600">key</span>
+            <span class="font-semibold">Developer API Keys</span>
+        </div>
+        <Button
+            label="New Key"
+            icon="pi pi-plus"
+            size="small"
+            outlined
+            @click="toggleKeyForm"
+        />
+    </div>
+    <div v-if="showKeyForm" class="flex flex-wrap items-center gap-2 mb-3">
+        <InputText
+            v-model="newKeyName"
+            placeholder="Key name (e.g. CI/CD)"
+            class="flex-1 min-w-40"
+            @keyup.enter="createKey"
+            autofocus
+        />
+        <Button
+            label="Create"
+            icon="pi pi-key"
+            size="small"
+            :disabled="!newKeyName.trim() || creatingKey"
+            @click="createKey"
+        />
+        <Button
+            label="Cancel"
+            severity="secondary"
+            size="small"
+            @click="toggleKeyForm"
+        />
+    </div>
+
+    <div v-if="loading" class="text-sm text-gray-400 py-2">Loading keys…</div>
+
+    <div
+        v-else-if="error"
+        class="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3"
+    >
+        <p class="text-sm mb-2">{{ error }}</p>
+        <Button label="Retry" size="small" @click="loadKeys()" />
+    </div>
+
+    <div v-else-if="keys.length === 0" class="text-sm text-gray-500 py-2">
+        No developer API keys for this version.
+    </div>
+
+    <div v-else class="space-y-2">
+        <div
+            v-for="key in keys"
+            :key="key.id"
+            class="flex items-center justify-between px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg"
+        >
+            <div class="flex-1 min-w-0 mr-3">
+                <div class="text-sm font-medium text-gray-900 truncate">
+                    {{ key.name }}
                 </div>
-                <Button
-                    label="New Key"
-                    icon="pi pi-plus"
-                    size="small"
-                    outlined
-                    @click="toggleKeyForm"
-                />
-            </div>
-        </template>
-        <template #content>
-            <div
-                v-if="showKeyForm"
-                class="flex flex-wrap items-center gap-2 mb-3"
-            >
-                <InputText
-                    v-model="newKeyName"
-                    placeholder="Key name (e.g. CI/CD)"
-                    class="flex-1 min-w-40"
-                    @keyup.enter="createKey"
-                />
-                <Button
-                    label="Create"
-                    icon="pi pi-key"
-                    size="small"
-                    :disabled="!newKeyName.trim() || creatingKey"
-                    @click="createKey"
-                />
-                <Button
-                    label="Cancel"
-                    severity="secondary"
-                    size="small"
-                    @click="toggleKeyForm"
-                />
-            </div>
-
-            <div v-if="loading" class="text-sm text-gray-400 py-2">
-                Loading keys…
-            </div>
-
-            <div
-                v-else-if="error"
-                class="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3"
-            >
-                <p class="text-sm mb-2">{{ error }}</p>
-                <Button label="Retry" size="small" @click="loadKeys()" />
-            </div>
-
-            <div
-                v-else-if="keys.length === 0"
-                class="text-sm text-gray-500 py-2"
-            >
-                No developer API keys for this version.
-            </div>
-
-            <div v-else class="space-y-2">
-                <div
-                    v-for="key in keys"
-                    :key="key.id"
-                    class="flex items-center justify-between px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg"
-                >
-                    <div class="flex-1 min-w-0 mr-3">
-                        <div class="text-sm font-medium text-gray-900 truncate">
-                            {{ key.name }}
-                        </div>
-                        <div class="text-xs text-gray-500 mt-0.5">
-                            {{ key.key_prefix }}••••• Created
-                            {{ formatDate(key.created_at) }}
-                            <span v-if="key.last_used_at">
-                                · Last used {{ formatDate(key.last_used_at) }}
-                            </span>
-                        </div>
-                    </div>
-                    <div class="flex items-center gap-2 shrink-0">
-                        <Tag
-                            v-if="key.is_active"
-                            value="Active"
-                            severity="success"
-                        />
-                        <Tag v-else value="Inactive" severity="warn" />
-                        <Button
-                            icon="pi pi-trash"
-                            severity="danger"
-                            text
-                            size="small"
-                            title="Revoke key"
-                            @click="confirmRevoke(key)"
-                        />
-                    </div>
+                <div class="text-xs text-gray-500 mt-0.5">
+                    {{ key.key_prefix }}••••• Created
+                    {{ formatDate(key.created_at) }}
+                    <span v-if="key.last_used_at">
+                        · Last used {{ formatDate(key.last_used_at) }}
+                    </span>
                 </div>
             </div>
-        </template>
-    </Card>
+            <div class="flex items-center gap-2 shrink-0">
+                <Tag v-if="key.is_active" value="Active" severity="success" />
+                <Tag v-else value="Inactive" severity="warn" />
+                <Button
+                    icon="pi pi-trash"
+                    severity="danger"
+                    text
+                    size="small"
+                    title="Revoke key"
+                    @click="confirmRevoke(key)"
+                />
+            </div>
+        </div>
+    </div>
 
     <!-- Raw key dialog -->
     <Dialog

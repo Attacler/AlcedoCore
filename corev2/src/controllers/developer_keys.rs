@@ -20,7 +20,7 @@ use crate::{
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
         respond::{JSendResponse, success},
-        versions::VersionsService,
+        versions::service::VersionsService,
     },
 };
 

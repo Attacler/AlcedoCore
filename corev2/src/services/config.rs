@@ -50,7 +50,7 @@ pub fn get_config() -> Config {
     let admin_email = env_opt("ADMIN_EMAIL");
     let admin_password = env_opt("ADMIN_PASSWORD");
 
-    let session_cookie_name = env_str("SECURITY_COOKIE_NAME", "alcedo_session");
+    let session_cookie_name = env_str("SECURITY_COOKIE_NAME", "alcedocore_session");
     let session_cookie_path = env_str("SECURITY_COOKIE_PATH", "/");
     let session_cookie_http_only =
         env_or_msg("SECURITY_COOKIE_HTTP_ONLY", true, "must be a boolean");

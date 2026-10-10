@@ -489,7 +489,7 @@ fn replace_placeholders(s: &str, user: &UserValues) -> String {
 pub(crate) async fn is_admin_user(state: &AppState, user_id: Uuid) -> Result<bool, AlcedoError> {
     let sql = sea_query::Query::select()
         .column(Alias::new("is_admin"))
-        .from((Alias::new("alcedo"), Alias::new("alcedo_users")))
+        .from((Alias::new("alcedocore"), Alias::new("alcedocore_users")))
         .and_where(Expr::col(Alias::new("id")).eq(Expr::value(user_id.to_string())))
         .to_string(PostgresQueryBuilder);
 
@@ -635,7 +635,7 @@ async fn fetch_user_columns(
         select.column(Alias::new(column.as_str()));
     }
     select
-        .from((Alias::new("alcedo"), Alias::new("alcedo_users")))
+        .from((Alias::new("alcedocore"), Alias::new("alcedocore_users")))
         .and_where(Expr::col(Alias::new("id")).eq(Expr::value(user_id.to_string())));
     let sql = select.to_string(PostgresQueryBuilder);
 

@@ -7,9 +7,9 @@ import { useToast } from "@/composables/useToast";
 import { slugify } from "@/utils/formatters";
 import Card from "primevue/card";
 import Button from "primevue/button";
-import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import Tag from "primevue/tag";
+import { Drawer } from "primevue";
 
 interface VersionRow {
     id: number;
@@ -203,12 +203,11 @@ onMounted(() => {
         </template>
 
         <!-- Create Version dialog -->
-        <Dialog
+        <Drawer
             v-model:visible="showCreateVersion"
             header="Add Version"
-            :modal="true"
             :style="{ width: '420px' }"
-            :draggable="false"
+            position="right"
         >
             <div class="flex flex-col gap-3">
                 <div class="flex flex-col gap-1">
@@ -238,20 +237,22 @@ onMounted(() => {
                 </p>
             </div>
             <template #footer>
-                <Button
-                    label="Cancel"
-                    severity="secondary"
-                    outlined
-                    :disabled="creatingVersion"
-                    @click="showCreateVersion = false"
-                />
-                <Button
-                    label="Create"
-                    icon="pi pi-check"
-                    :loading="creatingVersion"
-                    @click="createVersion"
-                />
+                <div class="flex gap-2">
+                    <Button
+                        label="Cancel"
+                        severity="secondary"
+                        outlined
+                        :disabled="creatingVersion"
+                        @click="showCreateVersion = false"
+                    />
+                    <Button
+                        label="Create"
+                        icon="pi pi-check"
+                        :loading="creatingVersion"
+                        @click="createVersion"
+                    />
+                </div>
             </template>
-        </Dialog>
+        </Drawer>
     </div>
 </template>

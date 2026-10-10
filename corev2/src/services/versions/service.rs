@@ -9,6 +9,7 @@ use crate::{
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
+        versions::clone_production::clone_schema_batched,
     },
 };
 
@@ -203,7 +204,11 @@ impl VersionsService<'_> {
             .collect())
     }
 
-    pub async fn clone_production_apps(&self, target_version_id: i32) -> Result<(), AlcedoError> {
+    pub async fn clone_production_apps(
+        &self,
+        target_version_id: i32,
+        target_name: &str,
+    ) -> Result<(), AlcedoError> {
         let Some(production_id) = self.get_version_id_by_name(PRODUCTION_VERSION).await? else {
             return Ok(());
         };
@@ -220,10 +225,47 @@ impl VersionsService<'_> {
             .into_iter()
             .map(|app_id| (app_id, target_version_id))
             .collect();
-        AppsService::new(self.app_state)
-            .link_apps_to_version(&pairs)
-            .await?;
-        run_app_migrations(&self.app_state.database_pool).await;
+        let apps_service = AppsService::new(self.app_state);
+
+        apps_service.link_apps_to_version(&pairs).await?;
+        let api_names = self.app_api_names_for_version(production_id).await?;
+
+        for api_name in api_names {
+            let handle = tokio::spawn(clone_schema_batched(
+                (*self.app_state.database_pool).clone(),
+                format!("{}010production", api_name),
+                format!("{}010{}", api_name, target_name),
+                vec![
+                    "_sqlx_migrator_migrations".to_string(),
+                    "alcedocore_collections".to_string(),
+                    "alcedocore_fields".to_string(),
+                    "alcedocore_role_scopes".to_string(),
+                    "alcedocore_roles".to_string(),
+                    "alcedocore_role_policies".to_string(),
+                    "alcedocore_policy_permissions".to_string(),
+                    "alcedocore_policies".to_string(),
+                    "alcedocore_collection_layouts".to_string(),
+                    "alcedocore_collection_layout_roles".to_string(),
+                    "alcedocore_collection_sections".to_string(),
+                    "alcedocore_menus".to_string(),
+                    "alcedocore_menu_sections".to_string(),
+                    "alcedocore_menu_items".to_string(),
+                    "alcedocore_menu_roles".to_string(),
+                    "alcedocore_app_settings".to_string(),
+                    "alcedocore_file_folders".to_string(),
+                    "alcedocore_file_metadata".to_string(),
+                    "alcedocore_item_files".to_string(),
+                    "alcedocore_system_logs".to_string(),
+                    "alcedocore_collection_logs".to_string(),
+                    "alcedocore_collection_views".to_string(),
+                    "alcedocore_collection_view_fields".to_string(),
+                ],
+            ));
+
+            // Await the cloning task to complete
+            let res = handle.await;
+        }
+
         SchemaService::refresh_schema_and_meta(self.app_state).await;
         Ok(())
     }

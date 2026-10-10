@@ -12,11 +12,7 @@ import TabPanel from "primevue/tabpanel";
 import Tag from "primevue/tag";
 import AccessTab from "@/components/version-detail/AccessTab.vue";
 import DeveloperKeysTab from "@/components/version-detail/DeveloperKeysTab.vue";
-
-interface VersionRow {
-    id: number;
-    version_name: string;
-}
+import DangerZone from "@/components/version-detail/DangerZone.vue";
 
 const route = useRoute(),
     authStore = useAuthStore(),
@@ -29,6 +25,9 @@ const versionId = computed(() => Number(route.params.id)),
     notFound = ref(false),
     activeTab = ref("access");
 
+// The production version cannot be deleted, so it has no danger zone tab.
+const isProduction = computed(() => versionName.value === "production");
+
 async function load() {
     loading.value = true;
     error.value = "";
@@ -39,6 +38,9 @@ async function load() {
         const match = list.find((v) => v.id === versionId.value);
         if (match) {
             versionName.value = match.version_name;
+            if (isProduction.value) {
+                activeTab.value = "access";
+            }
         } else {
             notFound.value = true;
         }
@@ -141,6 +143,9 @@ watch(() => route.params.id, reloadIfAdmin);
                     <TabList>
                         <Tab value="access">Access</Tab>
                         <Tab value="keys">Developer Keys</Tab>
+                        <Tab v-if="!isProduction" value="danger"
+                            >Danger zone</Tab
+                        >
                     </TabList>
                     <TabPanels>
                         <TabPanel value="access">
@@ -152,6 +157,13 @@ watch(() => route.params.id, reloadIfAdmin);
                         </TabPanel>
                         <TabPanel value="keys">
                             <DeveloperKeysTab :version-id="versionId" />
+                        </TabPanel>
+                        <TabPanel v-if="!isProduction" value="danger">
+                            <DangerZone
+                                v-if="versionName"
+                                :version-id="versionId"
+                                :version-name="versionName"
+                            />
                         </TabPanel>
                     </TabPanels>
                 </Tabs>

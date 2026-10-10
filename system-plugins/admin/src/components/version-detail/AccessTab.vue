@@ -128,8 +128,7 @@ async function load() {
         );
         columns.value = loaded;
     } catch (e) {
-        error.value =
-            e instanceof Error ? e.message : "Failed to load access";
+        error.value = e instanceof Error ? e.message : "Failed to load access";
     } finally {
         loading.value = false;
     }
@@ -354,8 +353,7 @@ async function saveAddUser() {
         toast.show("User access saved", "success");
         await load();
     } catch (e) {
-        addError.value =
-            e instanceof Error ? e.message : "Failed to add user";
+        addError.value = e instanceof Error ? e.message : "Failed to add user";
     } finally {
         savingAdd.value = false;
     }
@@ -444,10 +442,7 @@ watch(
                     <div v-if="col.error" class="text-xs text-red-600">
                         {{ col.error }}
                     </div>
-                    <div
-                        v-else-if="col.loading"
-                        class="text-xs text-gray-400"
-                    >
+                    <div v-else-if="col.loading" class="text-xs text-gray-400">
                         Loading…
                     </div>
                     <button
@@ -457,9 +452,7 @@ watch(
                         @click="openCell(data, col)"
                     >
                         <template
-                            v-if="
-                                col.byUser[data.user_id]?.role_names?.length
-                            "
+                            v-if="col.byUser[data.user_id]?.role_names?.length"
                         >
                             <Tag
                                 v-for="name in col.byUser[data.user_id]
@@ -491,7 +484,10 @@ watch(
             :style="{ width: '460px' }"
             :draggable="false"
         >
-            <div v-if="editingUser && editingColumn" class="flex flex-col gap-3">
+            <div
+                v-if="editingUser && editingColumn"
+                class="flex flex-col gap-3"
+            >
                 <div class="text-sm text-gray-600">
                     <span class="font-medium text-gray-900">{{
                         editingUser.email

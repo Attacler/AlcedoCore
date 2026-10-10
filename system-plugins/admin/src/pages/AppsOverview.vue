@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useAuthStore } from "@/stores/authStore";
@@ -9,6 +9,7 @@ import Select from "primevue/select";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
 import { Drawer } from "primevue";
+import { slugify } from "@/utils/formatters";
 
 interface AppWithVersions {
     id: number;
@@ -17,19 +18,6 @@ interface AppWithVersions {
     icon?: string | null;
     logo?: string | null;
     versions: string[];
-}
-
-interface VersionRow {
-    id: number;
-    version_name: string;
-}
-
-interface UserAppAccess {
-    app_id: number;
-    app_name: string;
-    api_name: string;
-    version: string;
-    roles: string[];
 }
 
 interface VersionOption {
@@ -129,7 +117,6 @@ function openApp(app: AppWithVersions) {
     );
 }
 
-// ── Create ──
 const showCreateDialog = ref(false),
     creating = ref(false),
     createError = ref(""),
@@ -173,7 +160,6 @@ async function createApp() {
     }
 }
 
-// ── Edit ──
 const showEditDialog = ref(false),
     saving = ref(false),
     editError = ref(""),
@@ -220,7 +206,6 @@ async function saveEdit() {
     }
 }
 
-// ── Delete ──
 function confirmDelete(app: AppWithVersions) {
     confirm.require({
         message: `Delete app "${app.name}"? It will be removed from all versions. This cannot be undone.`,
@@ -251,6 +236,18 @@ function confirmDelete(app: AppWithVersions) {
 onMounted(() => {
     load();
 });
+
+watch(
+    () => newApp.value.name,
+    (newValue, oldValue) => {
+        if (
+            !newApp.value.apiName ||
+            slugify(oldValue) == newApp.value.apiName
+        ) {
+            newApp.value.apiName = slugify(newValue);
+        }
+    },
+);
 </script>
 
 <template>
@@ -418,19 +415,21 @@ onMounted(() => {
                 </p>
             </div>
             <template #footer>
-                <Button
-                    label="Cancel"
-                    severity="secondary"
-                    outlined
-                    :disabled="creating"
-                    @click="showCreateDialog = false"
-                />
-                <Button
-                    label="Create"
-                    icon="pi pi-check"
-                    :loading="creating"
-                    @click="createApp"
-                />
+                <div class="flex gap-2">
+                    <Button
+                        label="Cancel"
+                        severity="secondary"
+                        outlined
+                        :disabled="creating"
+                        @click="showCreateDialog = false"
+                    />
+                    <Button
+                        label="Create"
+                        icon="pi pi-check"
+                        :loading="creating"
+                        @click="createApp"
+                    />
+                </div>
             </template>
         </Drawer>
 
@@ -474,19 +473,21 @@ onMounted(() => {
                 </p>
             </div>
             <template #footer>
-                <Button
-                    label="Cancel"
-                    severity="secondary"
-                    outlined
-                    :disabled="saving"
-                    @click="showEditDialog = false"
-                />
-                <Button
-                    label="Save"
-                    icon="pi pi-check"
-                    :loading="saving"
-                    @click="saveEdit"
-                />
+                <div class="flex gap-2">
+                    <Button
+                        label="Cancel"
+                        severity="secondary"
+                        outlined
+                        :disabled="saving"
+                        @click="showEditDialog = false"
+                    />
+                    <Button
+                        label="Save"
+                        icon="pi pi-check"
+                        :loading="saving"
+                        @click="saveEdit"
+                    />
+                </div>
             </template>
         </Dialog>
     </div>

@@ -21,7 +21,7 @@ use sqlx::{Postgres, Transaction};
 
 use crate::AppState;
 use crate::middelware::auth::AuthLevel;
-use crate::services::context::AppContext;
+use crate::services::context::{AppContext, RequestSource};
 use crate::services::errors::AlcedoError;
 
 /// Records a single activity-log row. See the module docs for the routing rule.
@@ -45,6 +45,13 @@ pub async fn record(
     item_id: Option<Value>,
     tx: Option<&mut Transaction<'_, Postgres>>,
 ) -> Result<(), AlcedoError> {
+    // Framework seeds are not user activity, and they run before the app schema
+    // has its log tables (m0017), so logging them can only ever fail.
+    match context.request_source {
+        RequestSource::Migration | RequestSource::FirstMigration => return Ok(()),
+        _ => {}
+    }
+
     let actor_id = actor_id(context);
     // Keep secrets out of the audit metadata (the item snapshot can hold
     // password/key hashes).
@@ -90,13 +97,8 @@ pub async fn record(
             ])
             .to_string(PostgresQueryBuilder)
     } else {
-        let table = if schema == "alcedocore" {
-            "alcedocore_system_logs"
-        } else {
-            "alcedocore_system_logs"
-        };
         Query::insert()
-            .into_table((Alias::new(&schema), Alias::new(table)))
+            .into_table((Alias::new(&schema), Alias::new("alcedocore_system_logs")))
             .columns([
                 Alias::new("actor_id"),
                 Alias::new("action"),

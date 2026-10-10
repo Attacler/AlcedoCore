@@ -12,12 +12,15 @@ use crate::{
     controllers::require_admin,
     middelware::auth::AuthLevel,
     services::{
+        collections::schema::{SchemaService, drop_schema},
         context::{AppContext, RequestSource},
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
-        collections::schema::{drop_schema, SchemaService},
         respond::{JSendResponse, success},
-        versions::{PRODUCTION_VERSION, VersionsService},
+        versions::{
+            self,
+            service::{PRODUCTION_VERSION, VersionsService},
+        },
     },
     utils::slugify,
 };
@@ -90,7 +93,9 @@ async fn create_version(
         .ok_or_else(|| AlcedoError::SystemError("Version insert returned no id".to_string(), 0))?;
 
     // New versions inherit the apps defined in `production`.
-    versions.clone_production_apps(version_id).await?;
+    versions
+        .clone_production_apps(version_id, &payload.version_name)
+        .await?;
 
     Ok(Json(success(version_row_from_json(Value::Object(row))?)))
 }

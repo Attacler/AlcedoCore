@@ -93,16 +93,6 @@ export const SETTING_META: Record<string, SettingMeta> = {
         required: false,
         defaultValue: "",
     },
-    catch_all_plugin_slug: {
-        key: "catch_all_plugin_slug",
-        label: "Catch-all Plugin",
-        description:
-            "Plugin slug that receives all unmatched requests. Empty = disabled.",
-        category: "general",
-        type: "select",
-        required: false,
-        defaultValue: "",
-    },
 };
 
 export const useSettingsStore = defineStore("settings", () => {
@@ -120,9 +110,7 @@ export const useSettingsStore = defineStore("settings", () => {
     const searchQuery = ref("");
     const dynamicOptions = ref<
         Record<string, { value: string; label: string }[]>
-    >({
-        catch_all_plugin_slug: [{ label: "(Disabled)", value: "" }],
-    });
+    >({});
 
     // ── Computed ──
     const isDirty = computed(() => {
@@ -242,29 +230,6 @@ export const useSettingsStore = defineStore("settings", () => {
             appSettings.value = await client.appSettings.list();
             savedValues.value = { ...appSettings.value };
             localEdits.value = {};
-
-            try {
-                const pluginsRes = await client.plugins.list();
-                const plugins =
-                    pluginsRes?.data?.plugins || pluginsRes?.plugins || [];
-                dynamicOptions.value["catch_all_plugin_slug"] = [
-                    { label: "(Disabled)", value: "" },
-                    ...plugins
-                        .filter((p: any) => p.slug && p.plugin_type != "static")
-                        .map((p: any) => ({
-                            label: p.display_name || p.slug,
-                            value: p.slug,
-                        })),
-                ];
-            } catch (e) {
-                console.error(
-                    "[SETTINGS] Failed to fetch plugins for dropdown:",
-                    e,
-                );
-                dynamicOptions.value["catch_all_plugin_slug"] = [
-                    { label: "(Disabled)", value: "" },
-                ];
-            }
         } catch (e) {
             error.value =
                 e instanceof Error ? e.message : "Failed to fetch settings";

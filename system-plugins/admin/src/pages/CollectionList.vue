@@ -269,21 +269,23 @@ function closeDeleteModal() {
                 </div>
             </form>
             <template #footer>
-                <Button
-                    label="Cancel"
-                    severity="secondary"
-                    outlined
-                    @click="closeCreateModal"
-                />
-                <Button
-                    label="Create"
-                    severity="primary"
-                    :disabled="
-                        !!nameError || !newCollectionName.trim() || creating
-                    "
-                    @click="handleCreate"
-                    type="submit"
-                />
+                <div class="flex gap-2">
+                    <Button
+                        label="Cancel"
+                        severity="secondary"
+                        outlined
+                        @click="closeCreateModal"
+                    />
+                    <Button
+                        label="Create"
+                        severity="primary"
+                        :disabled="
+                            !!nameError || !newCollectionName.trim() || creating
+                        "
+                        @click="handleCreate"
+                        type="submit"
+                    />
+                </div>
             </template>
         </Drawer>
 

@@ -30,7 +30,7 @@ use crate::{
         },
         plugin_platform::MockPlatform,
         postgres::inspector::DatabaseSchema,
-        versions::VersionsService,
+        versions::service::VersionsService,
     },
 };
 
