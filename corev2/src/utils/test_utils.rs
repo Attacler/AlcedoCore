@@ -8,6 +8,9 @@ use crate::{
 };
 
 #[cfg(test)]
+static ENV_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+#[cfg(test)]
 pub async fn get_app_state() -> AppState {
     use std::sync::Arc;
 
@@ -44,6 +47,11 @@ pub async fn get_app_state() -> AppState {
         platform,
     };
 
-    state.refresh_schema().await;
+    ENV_READY
+        .get_or_init(|| crate::utils::fixtures::ensure_test_env(&state))
+        .await;
+
+    crate::services::collections::schema::SchemaService::refresh_schema_and_meta(&state).await;
+
     state
 }

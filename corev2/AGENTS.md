@@ -21,6 +21,15 @@ tower-http, Redis or in-memory cache, argon2 sessions.
 
 - Tests are DB-backed: `utils/test_utils.rs::get_app_state()` builds a real pool
   from `.env` and refreshes the schema, so a reachable Postgres is required.
+- `get_app_state()` also provisions the test environment once per test binary via
+  `utils/fixtures.rs`: migrations, the `crm` / `helpdesk` / `testing` apps on
+  `production`, their collections with the columns and relationships the
+  permission tests assert on, a customer user and a seeded read policy. It is
+  idempotent and reconciles at field level, so it works against an empty
+  database and a previously-seeded one alike. On a fresh database `cargo test`
+  should be **168 passed / 0 failed** (174 with `--features docker`); anything
+  short of that usually means stale rows left by an older hand-seeding rather
+  than a missing fixture.
 - `.cargo/config.toml` forces `clang` + `mold` on Linux. Without `mold` installed
   builds fail; override via `RUSTFLAGS` or remove that entry.
 

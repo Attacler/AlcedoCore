@@ -2,6 +2,9 @@ pub mod extract_request_uuid;
 pub mod session_cookie;
 pub mod test_utils;
 
+#[cfg(test)]
+pub mod fixtures;
+
 use uuid::Uuid;
 
 use crate::services::errors::AlcedoError;
