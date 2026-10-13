@@ -2,7 +2,8 @@ import http from "node:http";
 import type { AddressInfo } from "node:net";
 import detectPort from "detect-port";
 
-export const PROXY_PREFIX = "/api/internal-registry-proxy";
+/** The registry v2 API prefix the core serves on its own port. */
+export const PROXY_PREFIX = "/v2";
 
 export interface RegistryForwarder {
     port: number;
@@ -12,8 +13,11 @@ export interface RegistryForwarder {
 /**
  * Loopback HTTP server that makes real `docker push` work with a developer
  * API key. Docker talks plain HTTP to this server (localhost is treated as
- * insecure); we forward to the core's internal registry proxy, injecting the
- * dev key as a Bearer token.
+ * insecure); we forward to the core's registry proxy, injecting the dev key as
+ * a Bearer token.
+ *
+ * The path is forwarded unchanged — docker already speaks `/v2/...`, which is
+ * exactly what the core serves.
  */
 export async function startRegistryForwarder(opts: {
     coreUrl: string;
@@ -27,9 +31,15 @@ export async function startRegistryForwarder(opts: {
 
     const server = http.createServer((clientReq, clientRes) => {
         const incomingPath = clientReq.url || "/";
-        const targetPath = incomingPath.startsWith(PROXY_PREFIX)
-            ? incomingPath
-            : `${PROXY_PREFIX}${incomingPath}`;
+
+        if (
+            incomingPath !== PROXY_PREFIX &&
+            !incomingPath.startsWith(`${PROXY_PREFIX}/`)
+        ) {
+            clientRes.writeHead(404, { "Content-Type": "text/plain" });
+            clientRes.end("forwarder only proxies the registry API");
+            return;
+        }
 
         const headers: Record<string, any> = { ...clientReq.headers };
         headers["authorization"] = `Bearer ${opts.apiKey}`;
@@ -48,7 +58,7 @@ export async function startRegistryForwarder(opts: {
             {
                 hostname: core.hostname,
                 port: core.port || (core.protocol === "https:" ? 443 : 80),
-                path: targetPath,
+                path: incomingPath,
                 method: clientReq.method,
                 headers,
             },
@@ -56,7 +66,10 @@ export async function startRegistryForwarder(opts: {
                 const responseHeaders = { ...proxyRes.headers };
                 delete responseHeaders["transfer-encoding"];
                 delete responseHeaders["connection"];
-                clientRes.writeHead(proxyRes.statusCode || 502, responseHeaders);
+                clientRes.writeHead(
+                    proxyRes.statusCode || 502,
+                    responseHeaders,
+                );
                 proxyRes.pipe(clientRes);
             },
         );

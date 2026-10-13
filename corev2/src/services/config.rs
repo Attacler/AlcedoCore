@@ -28,6 +28,9 @@ pub struct Config {
     pub s3_bucket: Option<String>,
     pub s3_prefix: String,
     pub local_registry_url: String,
+    /// Public address of this instance, e.g. `http://localhost:8080`. Used to
+    pub host_url: String,
+    pub root_system_developer_token: Option<String>,
     pub mock_plugin_port: u16,
     pub plugin_core_url: String,
     pub plugin_port: u16,
@@ -69,6 +72,11 @@ pub fn get_config() -> Config {
     let s3_bucket = env_opt("S3_BUCKET");
     let s3_prefix = env_str("S3_PREFIX", "");
     let local_registry_url = env_str("LOCAL_REGISTRY_URL", "localhost:5000");
+    let host_url = env_str("HOST_URL", &format!("http://localhost:{}", listen_port))
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let root_system_developer_token = env_opt("ROOT_SYSTEM_DEVELOPER_TOKEN");
     let mock_plugin_port = env_or_msg("MOCK_PLUGIN_PORT", 8080, "must be a number");
     let plugin_core_url = env_str("PLUGIN_CORE_URL", "http://core:8080");
     let plugin_port = env_or_msg("PLUGIN_PORT", 8080u16, "must be a number");
@@ -106,6 +114,8 @@ pub fn get_config() -> Config {
         s3_bucket,
         s3_prefix,
         local_registry_url,
+        host_url,
+        root_system_developer_token,
         mock_plugin_port,
         plugin_core_url,
         plugin_port,
@@ -115,15 +125,10 @@ pub fn get_config() -> Config {
     }
 }
 
-/// Reads a required environment variable, panicking with a descriptive message
-/// when it is missing.
 fn env_required(key: &str) -> String {
     env::var(key).unwrap_or_else(|_| panic!("Environment variable '{}' is not defined!", key))
 }
 
-/// Reads an environment variable and parses it into `T`, falling back to
-/// `default` when the variable is absent. An invalid value panics with the
-/// given message.
 fn env_or_msg<T>(key: &str, default: T, message: &str) -> T
 where
     T: FromStr,
@@ -137,13 +142,10 @@ where
     }
 }
 
-/// Reads an environment variable as a string, falling back to `default` when
-/// the variable is absent.
 fn env_str(key: &str, default: &str) -> String {
     env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-/// Reads an optional, non-empty environment variable as a `String`.
 fn env_opt(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.is_empty())
 }

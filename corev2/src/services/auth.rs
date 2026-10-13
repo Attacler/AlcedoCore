@@ -16,7 +16,12 @@ use crate::services::{
     context::AppContext,
     errors::AlcedoError,
     items::{query::Query, service::ItemsService},
+    versions::service::VersionsService,
 };
+
+/// Name of the developer key seeded from `ROOT_SYSTEM_DEVELOPER_TOKEN`. Rows
+/// carrying it are the ones deactivated when the token is rotated.
+const ROOT_SYSTEM_TOKEN_NAME: &str = "root-system";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlcedoUser {
@@ -130,6 +135,127 @@ impl AuthService<'_> {
         } else {
             Some(version_id as i32)
         })
+    }
+
+    pub async fn ensure_root_developer_token(&self) -> Result<(), AlcedoError> {
+        let Some(raw) = self
+            .app_state
+            .config
+            .root_system_developer_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+        else {
+            return Ok(());
+        };
+
+        if !raw.starts_with("dev_") || raw.len() < 10 {
+            return Err(AlcedoError::SystemError(
+                "ROOT_SYSTEM_DEVELOPER_TOKEN must start with 'dev_' and be at least 10 characters"
+                    .to_string(),
+                0,
+            ));
+        }
+        let key_prefix = raw[..10].to_string();
+
+        let context = AppContext::system(crate::services::context::RequestSource::API);
+        let collection = "alcedocore_developer_api_keys".to_string();
+        let service = ItemsService::new(&self.app_state, &context, &collection);
+
+        let seeded = service
+            .read_items_by_query(Query {
+                fields: vec!["id".to_string(), "key_prefix".to_string()],
+                limit: 0,
+                ..Query::eq("name", Value::String(ROOT_SYSTEM_TOKEN_NAME.to_string()))
+            })
+            .await?;
+        for row in seeded {
+            let prefix = row
+                .get("key_prefix")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if prefix == key_prefix {
+                continue;
+            }
+            if let Some(id) = row.get("id").and_then(Value::as_str) {
+                let mut writer = ItemsService::new(&self.app_state, &context, &collection);
+                writer
+                    .update_items_by_query(
+                        &mut Query::eq("id", Value::String(id.to_string())),
+                        item_map! { "is_active" => false },
+                        &mut None,
+                    )
+                    .await?;
+                tracing::info!(
+                    "[AUTH] Deactivated superseded root system developer key (prefix {})",
+                    prefix
+                );
+            }
+        }
+
+        // Reuse the matching row if it already exists.
+        if let Some(row) = service
+            .read_items_by_query(Query {
+                fields: vec!["id".to_string(), "is_active".to_string()],
+                limit: 0,
+                ..Query::eq("key_prefix", Value::String(key_prefix.clone()))
+            })
+            .await?
+            .first()
+        {
+            let id = row
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let is_active = row
+                .get("is_active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !is_active {
+                let mut writer = ItemsService::new(&self.app_state, &context, &collection);
+                writer
+                    .update_items_by_query(
+                        &mut Query::eq("id", Value::String(id)),
+                        item_map! { "is_active" => true },
+                        &mut None,
+                    )
+                    .await?;
+            }
+            return Ok(());
+        }
+
+        let versions = VersionsService::new(&self.app_state).list().await?;
+        let version_id = versions
+            .first()
+            .and_then(|version| version.get("id"))
+            .and_then(Value::as_i64)
+            .ok_or_else(|| {
+                AlcedoError::SystemError(
+                    "ROOT_SYSTEM_DEVELOPER_TOKEN is set but no version exists to attach it to"
+                        .to_string(),
+                    0,
+                )
+            })? as i32;
+
+        let key_hash = AuthService::hash_password(raw).await?;
+        let mut writer = ItemsService::new(&self.app_state, &context, &collection);
+        writer
+            .create_many(
+                vec![item_map! {
+                    "id" => Uuid::new_v4().to_string(),
+                    "name" => ROOT_SYSTEM_TOKEN_NAME,
+                    "version_id" => version_id,
+                    "key_hash" => key_hash,
+                    "key_prefix" => key_prefix,
+                    "is_active" => true,
+                }],
+                &mut None,
+            )
+            .await?;
+
+        tracing::info!("[AUTH] Seeded root system developer key from ROOT_SYSTEM_DEVELOPER_TOKEN");
+        Ok(())
     }
 
     pub async fn authenticate_developer_key(

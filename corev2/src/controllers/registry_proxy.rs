@@ -12,40 +12,72 @@ use crate::{
     services::{
         auth::AuthService,
         context::{AppContext, RequestSource},
-        registry_client::{build_client, normalize_registry_base},
+        registry_client::{authority_of, build_client, normalize_registry_base},
     },
 };
 
-pub const REGISTRY_PROXY_PREFIX: &str = "/api/internal-registry-proxy";
-
 pub fn registry_proxy_controller() -> Router<AppState> {
     Router::new()
-        .route(REGISTRY_PROXY_PREFIX, any(registry_proxy_handler))
-        .route(
-            "/api/internal-registry-proxy/{*path}",
-            any(registry_proxy_handler),
-        )
+        .route("/v2/", any(registry_proxy_handler))
+        .route("/v2/{*path}", any(registry_proxy_handler))
 }
 
 pub async fn registry_proxy_handler(State(state): State<AppState>, req: Request) -> Response {
     if let Err(response) = authorize(&state, req.headers()).await {
         return response;
     }
+
     let registry_base = normalize_registry_base(&state.config.local_registry_url);
+
+    // Refuse to proxy to ourselves.
+    if let (Some(target), Some(self_authority)) = (
+        authority_of(&registry_base),
+        authority_of(&state.config.host_url),
+    ) {
+        if target.eq_ignore_ascii_case(self_authority) {
+            tracing::error!(
+                "[REGISTRY-PROXY] LOCAL_REGISTRY_URL ({}) resolves to this instance ({}); refusing to loop",
+                registry_base,
+                self_authority
+            );
+            return (
+                StatusCode::LOOP_DETECTED,
+                "Registry proxy is misconfigured to point back at the core",
+            )
+                .into_response();
+        }
+    }
+
     let external_base = external_base(req.headers(), req.uri());
     proxy_registry_request(&registry_base, &external_base, req).await
 }
 
+const CHALLENGE: &str = r#"Basic realm="alcedo-registry""#;
+
+fn unauthorized(message: &'static str) -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [(header::WWW_AUTHENTICATE, CHALLENGE)],
+        message,
+    )
+        .into_response()
+}
+
+/// Only developer API keys are accepted — from `docker login` clients, and from
+/// the core's own pulls, which present the key seeded from
+/// `ROOT_SYSTEM_DEVELOPER_TOKEN`. There is deliberately no second credential
+/// and no unauthenticated path.
 async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), Response> {
-    let Some(token) = bearer(headers) else {
-        return Err((StatusCode::UNAUTHORIZED, "Developer API key required").into_response());
-    };
+    let token = bearer(headers)
+        .map(str::to_string)
+        .or_else(|| basic_auth_password(headers))
+        .ok_or_else(|| unauthorized("Developer API key required"))?;
 
     let context = AppContext::system(RequestSource::API);
     let auth = AuthService::new(state, &context);
-    match auth.authenticate_developer_key_any(token).await {
+    match auth.authenticate_developer_key_any(&token).await {
         Ok(Some(_)) => Ok(()),
-        Ok(None) => Err((StatusCode::UNAUTHORIZED, "Invalid developer API key").into_response()),
+        Ok(None) => Err(unauthorized("Invalid developer API key")),
         Err(e) => Err(e.into_response()),
     }
 }
@@ -59,6 +91,19 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .filter(|token| !token.is_empty())
 }
 
+fn basic_auth_password(headers: &HeaderMap) -> Option<String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let encoded = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Basic "))?
+        .trim();
+    let decoded = STANDARD.decode(encoded).ok()?;
+    let decoded = std::str::from_utf8(&decoded).ok()?;
+    let (_, password) = decoded.split_once(':')?;
+    (!password.is_empty()).then(|| password.to_string())
+}
+
 pub async fn proxy_registry_request(
     registry_base: &str,
     external_base: &str,
@@ -66,12 +111,9 @@ pub async fn proxy_registry_request(
 ) -> Response {
     let (mut parts, body) = req.into_parts();
 
-    let path = parts
-        .uri
-        .path()
-        .strip_prefix(REGISTRY_PROXY_PREFIX)
-        .unwrap_or(parts.uri.path());
-    let path = if path.is_empty() { "/" } else { path };
+    // The incoming path is already the registry API path: `/v2/...` is what
+    // the registry expects, so it is forwarded untouched.
+    let path = parts.uri.path();
     let query = parts
         .uri
         .query()
@@ -131,11 +173,9 @@ fn external_base(headers: &HeaderMap, uri: &Uri) -> String {
         .map(str::to_string)
         .or_else(|| uri.authority().map(|a| a.as_str().to_string()))
         .unwrap_or_else(|| "localhost".to_string());
-    format!("{}://{}{}", scheme, host, REGISTRY_PROXY_PREFIX)
+    format!("{}://{}", scheme, host)
 }
 
-/// Rewrite a `Location` that points at the registry back to the proxy prefix, so
-/// docker's blob-upload session URLs keep flowing through the core.
 pub fn rewrite_location(location: &str, registry_base: &str, external_base: &str) -> String {
     if let Some(rest) = location.strip_prefix(registry_base) {
         return format!("{}{}", external_base, rest);
@@ -183,21 +223,17 @@ mod tests {
             rewrite_location(
                 "http://localhost:5000/v2/foo/blobs/uploads/uuid?_state=x",
                 "http://localhost:5000",
-                "http://localhost:4000/api/internal-registry-proxy",
+                "http://localhost:4000",
             ),
-            "http://localhost:4000/api/internal-registry-proxy/v2/foo/blobs/uploads/uuid?_state=x"
+            "http://localhost:4000/v2/foo/blobs/uploads/uuid?_state=x"
         );
     }
 
     #[test]
     fn rewrites_scheme_less_location() {
         assert_eq!(
-            rewrite_location(
-                "localhost:5000/v2/foo",
-                "http://localhost:5000",
-                "http://x/api/internal-registry-proxy",
-            ),
-            "http://x/api/internal-registry-proxy/v2/foo"
+            rewrite_location("localhost:5000/v2/foo", "http://localhost:5000", "http://x",),
+            "http://x/v2/foo"
         );
     }
 
@@ -207,7 +243,7 @@ mod tests {
             rewrite_location(
                 "/v2/foo/manifests/sha256:abc",
                 "http://localhost:5000",
-                "http://x/api/internal-registry-proxy",
+                "http://x/v2",
             ),
             "/v2/foo/manifests/sha256:abc"
         );

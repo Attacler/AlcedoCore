@@ -83,6 +83,7 @@ export interface ClientOptions {
     requestId?: string;
     app?: string;
     version?: string;
+    apiKey?: string;
     retry?: {
         limit?: number;
         delay?: (attempt: number) => number;
@@ -124,6 +125,13 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
                     const rid = state.options?.requestId ?? options.requestId;
 
                     if (rid) state.request.headers.set("X-Request-ID", rid);
+
+                    if (options.apiKey) {
+                        state.request.headers.set(
+                            "Authorization",
+                            `Bearer ${options.apiKey}`,
+                        );
+                    }
 
                     resolveAppHeaders(
                         options,

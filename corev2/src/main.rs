@@ -20,10 +20,11 @@ use crate::{
     platform::platform_controller,
     services::{
         app_state::AppState,
+        auth::AuthService,
         cache::{SystemCache, in_memory::InMemoryCache, redis::RedisCache},
         collections::schema::SchemaService,
         config::get_config,
-        context::AppContext,
+        context::{AppContext, RequestSource},
         hooks::{
             HookContext, MultiEventBus, systemhooks::setup_system_hooks,
             types::lifecycle::CoreLoaded,
@@ -77,6 +78,9 @@ async fn main() -> Result<()> {
     VersionsService::new(&state).ensure_default().await?;
     services::registries::RegistriesService::new(&state)
         .ensure_default()
+        .await?;
+    AuthService::new(&state, &AppContext::system(RequestSource::API))
+        .ensure_root_developer_token()
         .await?;
 
     setup_system_hooks(bus_clone).await;

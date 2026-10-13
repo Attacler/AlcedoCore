@@ -78,8 +78,10 @@ services:
             ADMIN_PASSWORD: admin123!
             REGISTRY_ENCRYPTION_KEY: UuG5d1HEJuBH0tElr6R4I3deq/BabTiHhfByFS9xom4=
             LOCAL_REGISTRY_URL: registry:5000
+            HOST_URL: ${HOST_URL:-http://localhost:8080}
+            ROOT_SYSTEM_DEVELOPER_TOKEN: ${ROOT_SYSTEM_DEVELOPER_TOKEN:?set ROOT_SYSTEM_DEVELOPER_TOKEN in .env}
         volumes:
-            - /home/atlr/.docker/desktop/docker.sock:/var/run/docker.sock
+            - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
         ports:
             - "8080:8080"
         networks:
@@ -89,20 +91,10 @@ services:
         image: registry:3
         container_name: registry
         restart: unless-stopped
-        ports:
-            - "5000:5000"
         volumes:
             - registry-data:/var/lib/registry
 
 networks:
-    # Declared (not external) so `docker compose up` works on a clean host: swarm
-    # attaches overlay-scoped networks to every node, which requires swarm to be
-    # initialized. `attachable` is what lets this non-swarm compose service join
-    # it and reach plugin service DNS.
-    #
-    # The name is overridable because a leftover network with the same name and a
-    # bridge driver (from the v1 stack) would otherwise be adopted silently:
-    #   PLUGIN_NETWORK=some_free_name docker compose up
     plugin_net:
         name: alcedocore_plugins_dev
         driver: overlay

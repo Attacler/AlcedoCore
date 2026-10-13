@@ -1,0 +1,6 @@
+# Installed inside the image by `npm install`; copying the host's tree in
+# makes npm's tree reconciliation fail and pins platform-specific binaries.
+node_modules
+npm-debug.log*
+dist
+.git

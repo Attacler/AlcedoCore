@@ -73,10 +73,21 @@ pub struct CreateRegistryRequest {
 pub struct UpdateRegistryRequest {
     pub name: Option<String>,
     pub url: Option<String>,
-    pub pull_url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    #[schema(value_type = Option<String>)]
+    pub pull_url: Option<Option<String>>,
     pub auth_type: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
+}
+
+/// Deserializes a present-but-null field to `Some(None)` rather than `None`.
+fn deserialize_nullable<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -115,6 +126,22 @@ pub struct ListRegistriesQuery {
 
 fn valid_auth_type(auth_type: &str) -> bool {
     matches!(auth_type, "none" | "basic" | "bearer")
+}
+
+fn auth_from_row(row: &Map<String, Value>) -> registry_client::RegistryAuth {
+    let field = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_string);
+    let password = field("password").map(|stored| match encryption::decrypt(&stored) {
+        Ok(plaintext) => plaintext,
+        Err(_) => {
+            tracing::warn!("[REGISTRIES] Stored password is not decryptable; using it verbatim");
+            stored
+        }
+    });
+    registry_client::RegistryAuth {
+        auth_type: field("auth_type").unwrap_or_else(|| "none".to_string()),
+        username: field("username"),
+        password,
+    }
 }
 
 fn registry_from_row(row: &Map<String, Value>) -> Result<RegistryResponse, AlcedoError> {
@@ -300,7 +327,13 @@ async fn update_registry(
         map.insert("url".to_string(), Value::String(url.clone()));
     }
     if let Some(pull_url) = &payload.pull_url {
-        map.insert("pull_url".to_string(), Value::String(pull_url.clone()));
+        map.insert(
+            "pull_url".to_string(),
+            match pull_url {
+                Some(value) => Value::String(value.clone()),
+                None => Value::Null,
+            },
+        );
     }
     if let Some(auth_type) = &payload.auth_type {
         map.insert("auth_type".to_string(), Value::String(auth_type.clone()));
@@ -365,7 +398,11 @@ async fn health_check_url(
     Json(payload): Json<HealthCheckUrlRequest>,
 ) -> Result<Json<JSendResponse<HealthCheckResponse>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    let result = registry_client::check_url(payload.url.trim()).await;
+    let result = registry_client::check_url(
+        payload.url.trim(),
+        &registry_client::RegistryAuth::default(),
+    )
+    .await;
     Ok(Json(success(HealthCheckResponse {
         reachable: result.reachable,
         status: result.status,
@@ -397,7 +434,7 @@ async fn health_check_registry(
         })));
     }
 
-    let result = registry_client::check_url(&url).await;
+    let result = registry_client::check_url(&url, &auth_from_row(&registry)).await;
     Ok(Json(success(HealthCheckResponse {
         reachable: result.reachable,
         status: result.status,
@@ -429,16 +466,18 @@ async fn list_images(
 
     let base = registry_client::normalize_registry_base(&url);
     let client = registry_client::build_client();
+    let auth = auth_from_row(&registry);
 
     // A registry without a reachable/parsable catalog yields no images rather
     // than an error — the caller can use the health endpoint for reachability.
-    let catalog = match registry_client::get_json(&client, &format!("{}/v2/_catalog", base)).await {
-        Ok(catalog) => catalog,
-        Err(e) => {
-            tracing::warn!("[REGISTRIES] catalog fetch failed for {}: {}", base, e);
-            return Ok(Json(success(ListImagesResponse { images: Vec::new() })));
-        }
-    };
+    let catalog =
+        match registry_client::get_json(&client, &format!("{base}/v2/_catalog"), &auth).await {
+            Ok(catalog) => catalog,
+            Err(e) => {
+                tracing::warn!("[REGISTRIES] catalog fetch failed for {}: {}", base, e);
+                return Ok(Json(success(ListImagesResponse { images: Vec::new() })));
+            }
+        };
 
     let repos: Vec<String> = catalog
         .get("repositories")
@@ -454,7 +493,7 @@ async fn list_images(
     let mut images = Vec::new();
     for repo in repos {
         let tags =
-            match registry_client::get_json(&client, &format!("{}/v2/{}/tags/list", base, repo))
+            match registry_client::get_json(&client, &format!("{base}/v2/{repo}/tags/list"), &auth)
                 .await
             {
                 Ok(tags) => tags,

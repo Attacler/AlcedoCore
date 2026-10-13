@@ -23,17 +23,23 @@ use futures::StreamExt;
 use serde_json::{Value, json};
 use sqlx::{Pool, Postgres, Row};
 
-use crate::services::{config::Config, errors::AlcedoError, plugin_platform::PluginPlatform};
+use crate::services::{
+    config::Config, encryption, errors::AlcedoError, plugin_platform::PluginPlatform,
+    registry_client::authority_of,
+};
 
 const SERVICE_PREFIX: &str = "plugin_";
 const LABEL_PLUGIN: &str = "alcedocore.plugin";
 const LABEL_INSTALL_ID: &str = "alcedocore.install_id";
+const PROXY_BASIC_USER: &str = "alcedo";
 
 pub struct DockerPlatform {
     docker: Docker,
     pool: Arc<Pool<Postgres>>,
     network: String,
     port: u16,
+    host_authority: Option<String>,
+    proxy_token: Option<String>,
 }
 
 impl DockerPlatform {
@@ -55,6 +61,8 @@ impl DockerPlatform {
             pool,
             network: config.plugin_network.clone(),
             port: config.plugin_port,
+            host_authority: authority_of(&config.host_url).map(str::to_string),
+            proxy_token: config.root_system_developer_token.clone(),
         };
         platform.health_check().await?;
         platform.require_swarm().await?;
@@ -144,8 +152,7 @@ impl DockerPlatform {
         slug: &str,
     ) -> Result<Option<DockerCredentials>, AlcedoError> {
         let row = sqlx::query(
-            "SELECT r.auth_type, r.username, r.password,
-                    COALESCE(NULLIF(r.pull_url, ''), r.url) AS server
+            "SELECT r.auth_type, r.username, r.password, r.url, r.pull_url
              FROM alcedocore.alcedocore_plugins p
              JOIN alcedocore.alcedocore_registries r ON r.id = p.registry_id
              WHERE p.slug = $1",
@@ -158,25 +165,68 @@ impl DockerPlatform {
             return Ok(None);
         };
 
-        let server: Option<String> = row.try_get("server").unwrap_or(None);
+        let url: Option<String> = row.try_get("url").unwrap_or(None);
+        let pull_url: Option<String> = row.try_get("pull_url").unwrap_or(None);
+
+        let server = pull_url
+            .as_deref()
+            .and_then(server_address)
+            .or_else(|| url.as_deref().and_then(server_address));
+
+        let via_proxy = server
+            .as_deref()
+            .zip(self.host_authority.as_deref())
+            .is_some_and(|(server, host)| server.eq_ignore_ascii_case(host));
+
+        if via_proxy && self.proxy_token.is_none() {
+            tracing::warn!(
+                "[DOCKER] {} pulls via this instance's registry proxy but \
+                 ROOT_SYSTEM_DEVELOPER_TOKEN is unset; the pull will be rejected as unauthenticated",
+                slug
+            );
+        }
+        let proxy_password = match (&via_proxy, self.proxy_token.as_deref()) {
+            (true, Some(token)) if !token.is_empty() => Some(token.to_string()),
+            _ => None,
+        };
+        let proxy_username = proxy_password
+            .as_ref()
+            .map(|_| PROXY_BASIC_USER.to_string());
+
+        if let Some(server) = &server {
+            tracing::info!(
+                "[DOCKER] Pulling {} from registry {}{}",
+                slug,
+                server,
+                if via_proxy { " (via proxy)" } else { "" }
+            );
+        }
 
         let auth_type: String = row.try_get("auth_type").unwrap_or_default();
         if auth_type.eq_ignore_ascii_case("none") {
             return Ok(Some(DockerCredentials {
-                username: None,
-                password: None,
-                serveraddress: server.map(|s| {
-                    s.trim_start_matches("http://")
-                        .trim_start_matches("https://")
-                        .trim_end_matches('/')
-                        .to_string()
-                }),
+                username: proxy_username,
+                password: proxy_password,
+                serveraddress: server,
                 ..Default::default()
             }));
         }
 
         let username: Option<String> = row.try_get("username").unwrap_or(None);
-        let password: Option<String> = row.try_get("password").unwrap_or(None);
+        let stored: Option<String> = row.try_get("password").unwrap_or(None);
+
+        let password: Option<String> = stored.map(|stored| {
+            match encryption::decrypt(&stored) {
+                Ok(plaintext) => plaintext,
+                // Tolerate rows written before encryption was introduced.
+                Err(_) => {
+                    tracing::warn!(
+                        "[DOCKER] Stored registry password is not decryptable; using it verbatim"
+                    );
+                    stored
+                }
+            }
+        });
         let (Some(username), Some(password)) = (username, password) else {
             tracing::warn!(
                 "[DOCKER] Registry auth_type={} but no username/password for {}; pulling anonymously",
@@ -189,12 +239,7 @@ impl DockerPlatform {
         Ok(Some(DockerCredentials {
             username: Some(username),
             password: Some(password),
-            serveraddress: server.map(|s| {
-                s.trim_start_matches("http://")
-                    .trim_start_matches("https://")
-                    .trim_end_matches('/')
-                    .to_string()
-            }),
+            serveraddress: server,
             ..Default::default()
         }))
     }
@@ -205,25 +250,24 @@ impl DockerPlatform {
         version: &str,
         credentials: Option<DockerCredentials>,
     ) -> Result<String, AlcedoError> {
-        println!("image: {}", image);
-        let (from_image, tag) = split_image(image);
-        println!("from_image: {} tag: {:?} {}", from_image, tag, version);
-        let full_image_name = if let Some(credentials) = &credentials {
-            if let Some(server) = &credentials.serveraddress {
-                format!("{}/{}", server, from_image)
-            } else {
-                from_image
-            }
-        } else {
-            from_image
+        let (from_image, _tag) = split_image(image);
+
+        let server = credentials
+            .as_ref()
+            .and_then(|c| c.serveraddress.as_deref())
+            .filter(|_| !is_registry_qualified(&from_image));
+
+        let full_image_name = match server {
+            Some(server) => format!("{}/{}", server, from_image),
+            None => from_image,
         };
+
         let full_image_name = format!("{}:{}", full_image_name, version);
         let options = CreateImageOptions {
             from_image: Some(full_image_name.clone()),
             tag: None,
             ..Default::default()
         };
-        println!("options: {:?} {:?}", options, credentials);
 
         let mut stream = self.docker.create_image(Some(options), None, credentials);
         while let Some(item) = stream.next().await {
@@ -231,7 +275,7 @@ impl DockerPlatform {
                 AlcedoError::SystemError(format!("Could not pull image {}: {}", image, e), 0)
             })?;
         }
-        tracing::info!("[DOCKER] Pulled {}", image);
+        tracing::info!("[DOCKER] Pulled {}", full_image_name);
         Ok(full_image_name)
     }
 
@@ -308,6 +352,49 @@ fn split_image(image: &str) -> (String, Option<String>) {
     match image.rsplit_once(':') {
         Some((name, tag)) if !tag.contains('/') => (name.to_string(), Some(tag.to_string())),
         _ => (image.to_string(), None),
+    }
+}
+
+fn is_registry_qualified(image: &str) -> bool {
+    match image.split_once('/') {
+        Some((head, _)) => head == "localhost" || head.contains('.') || head.contains(':'),
+        None => false,
+    }
+}
+
+fn server_address(url: &str) -> Option<String> {
+    let trimmed = url.trim().trim_end_matches('/');
+    let without_scheme = trimmed
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    // Drop any path so `host:port/prefix` still yields just the authority.
+    let host = without_scheme.split('/').next().unwrap_or_default();
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+#[cfg(test)]
+mod registry_address_tests {
+    use super::server_address;
+
+    #[test]
+    fn server_address_drops_scheme_and_path() {
+        assert_eq!(
+            server_address("http://registry:5000").as_deref(),
+            Some("registry:5000")
+        );
+        assert_eq!(
+            server_address("https://reg.example.com/").as_deref(),
+            Some("reg.example.com")
+        );
+        assert_eq!(
+            server_address("registry:5000").as_deref(),
+            Some("registry:5000")
+        );
+        assert_eq!(
+            server_address("http://localhost:8080").as_deref(),
+            Some("localhost:8080")
+        );
+        assert_eq!(server_address(""), None);
     }
 }
 
@@ -542,5 +629,25 @@ mod tests {
             ("localhost:5000/hello-world".to_string(), None)
         );
         assert_eq!(split_image("nginx"), ("nginx".to_string(), None));
+    }
+
+    #[test]
+    fn detects_an_already_qualified_image() {
+        // Already carries a registry: prepending another one would produce
+        // `localhost:8080/localhost:5000/hello-world`.
+        assert!(is_registry_qualified("localhost:5000/hello-world"));
+        assert!(is_registry_qualified("ghcr.io/org/plugin"));
+        assert!(is_registry_qualified(
+            "registry.example.com:5000/team/plugin"
+        ));
+        assert!(is_registry_qualified("localhost/plugin"));
+    }
+
+    #[test]
+    fn a_bare_repository_is_not_qualified() {
+        assert!(!is_registry_qualified("hello-world"));
+        assert!(!is_registry_qualified("nginx"));
+        // `org/plugin` is a namespace, not a registry host.
+        assert!(!is_registry_qualified("org/plugin"));
     }
 }

@@ -9,7 +9,7 @@ describe("startRegistryForwarder", () => {
         closers.length = 0;
     });
 
-    it("prefixes /v2 paths and injects the bearer key", async () => {
+    it("forwards /v2 paths unchanged and injects the bearer key", async () => {
         const seen: { url?: string; auth?: string } = {};
         const core = http.createServer((req, res) => {
             seen.url = req.url;
@@ -27,16 +27,18 @@ describe("startRegistryForwarder", () => {
         });
         closers.push(fwd.close, () => new Promise<void>((r) => core.close(() => r())));
 
-        const res = await fetch(`http://127.0.0.1:${fwd.port}/v2/foo/tags/list`);
+        const res = await fetch(`http://127.0.0.1:${fwd.port}${PROXY_PREFIX}/foo/tags/list`);
         expect(res.status).toBe(200);
-        expect(seen.url).toBe(`${PROXY_PREFIX}/v2/foo/tags/list`);
+        // The core serves the registry API on /v2 itself, so the path is
+        // forwarded verbatim rather than being re-prefixed.
+        expect(seen.url).toBe(`${PROXY_PREFIX}/foo/tags/list`);
         expect(seen.auth).toBe("Bearer dev_test");
     });
 
-    it("passes already-prefixed paths through unchanged", async () => {
-        const seen: { url?: string } = {};
-        const core = http.createServer((req, res) => {
-            seen.url = req.url;
+    it("refuses to forward non-registry paths", async () => {
+        let coreHits = 0;
+        const core = http.createServer((_req, res) => {
+            coreHits++;
             res.writeHead(200);
             res.end("ok");
         });
@@ -50,8 +52,11 @@ describe("startRegistryForwarder", () => {
         });
         closers.push(fwd.close, () => new Promise<void>((r) => core.close(() => r())));
 
-        await fetch(`http://127.0.0.1:${fwd.port}${PROXY_PREFIX}/v2/foo`);
-        expect(seen.url).toBe(`${PROXY_PREFIX}/v2/foo`);
+        // Without this guard a local caller could reach the core's admin API
+        // with the developer key attached.
+        const res = await fetch(`http://127.0.0.1:${fwd.port}/api/platform/users`);
+        expect(res.status).toBe(404);
+        expect(coreHits).toBe(0);
     });
 
     it("auto-selects a free port when none is given", async () => {
@@ -73,8 +78,8 @@ describe("startRegistryForwarder", () => {
         expect(typeof fwd.port).toBe("number");
         expect(fwd.port).toBeGreaterThan(0);
 
-        const res = await fetch(`http://127.0.0.1:${fwd.port}/v2/foo`);
+        const res = await fetch(`http://127.0.0.1:${fwd.port}${PROXY_PREFIX}/foo`);
         expect(res.status).toBe(200);
-        expect(seen.url).toBe(`${PROXY_PREFIX}/v2/foo`);
+        expect(seen.url).toBe(`${PROXY_PREFIX}/foo`);
     });
 });

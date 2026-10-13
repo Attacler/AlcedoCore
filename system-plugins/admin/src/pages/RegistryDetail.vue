@@ -122,21 +122,12 @@ async function checkReachability(showToast: boolean) {
 async function saveRegistry() {
     if (!validate()) return;
 
-    // For existing registries, verify reachability before saving
-    if (registryId.value) {
-        if (reachableStatus.value === "unknown") {
-            await checkReachability(false);
-            if ((reachableStatus.value as string) !== "reachable") {
-                toast.show(
-                    "Please wait for registry validation to complete",
-                    "warning",
-                );
-                return;
-            }
-        } else if (reachableStatus.value === "unreachable") {
-            toast.show("Cannot save: registry is not reachable", "error");
-            return;
-        }
+    if (
+        isEdit.value &&
+        registryId.value &&
+        reachableStatus.value === "unknown"
+    ) {
+        await checkReachability(false);
     }
 
     saving.value = true;

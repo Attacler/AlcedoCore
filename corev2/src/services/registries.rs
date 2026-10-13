@@ -52,6 +52,14 @@ impl RegistriesService<'_> {
             })
             .await?;
         if !existing.is_empty() {
+            let mut writer = ItemsService::new(self.app_state, &context, &collection);
+            writer
+                .update_items_by_query(
+                    &mut Query::eq("name", Value::String(LOCAL_REGISTRY_NAME.to_string())),
+                    item_map! { "pull_url" => self.app_state.config.host_url.clone() },
+                    &mut None,
+                )
+                .await?;
             return Ok(());
         }
 
@@ -59,6 +67,7 @@ impl RegistriesService<'_> {
         let map = item_map! {
             "name" => LOCAL_REGISTRY_NAME,
             "url" => url,
+            "pull_url" => self.app_state.config.host_url.clone(),
             "auth_type" => "none",
         };
 

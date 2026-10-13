@@ -1,14 +1,30 @@
 import express from "express";
-import { createClient, NotFoundError } from "alcedocore-sdk-node";
+import { createClient, AlcedoApiError } from "@alcedocore/sdk";
+
+/** The SDK reports a missing KV key as an AlcedoApiError with httpStatus 404. */
+const isNotFound = (err) =>
+    err instanceof AlcedoApiError && err.httpStatus === 404;
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const CORE_URL = process.env.CORE_URL || "http://localhost:8080";
 const PLUGIN_SLUG = process.env.PLUGIN_SLUG || "hello-world-node";
 
 // ─── SDK Client ────────────────────────────────────────────────────────────
+// `app`/`version` become the X-App / X-Version headers the core needs to
+// resolve an app context.
+//
+// Credentials are passed per call because the published SDK predates its
+// `apiKey` option. Once a release includes it, drop AUTH and add
+// `apiKey: process.env.API_KEY` here instead.
+const AUTH = process.env.API_KEY
+    ? { headers: { Authorization: `Bearer ${process.env.API_KEY}` } }
+    : {};
+
 const client = createClient(CORE_URL, {
     timeout: 30_000,
     retry: { limit: 2 },
+    app: process.env.APP,
+    version: process.env.VERSION,
 });
 
 const app = express();
@@ -29,7 +45,8 @@ app.use((req, res, next) => {
 // ─── Task 1: Health Check ──────────────────────────────────────────────────
 app.get("/health", async (_req, res) => {
     try {
-        const health = await client.health.check();
+        // The health resource is itself callable, not an object with `.check`.
+        const health = await client.health(AUTH);
         res.json({
             status: "healthy",
             service: "hello-world-node",
@@ -60,10 +77,10 @@ app.get("/api/hello", async (_req, res) => {
 // GET /api/kv/:key — Retrieve a KV entry
 app.get("/api/kv/:key", async (req, res) => {
     try {
-        const value = await client.kv.get(req.params.key);
+        const value = await client.kv.get(req.params.key, AUTH);
         res.json({ key: req.params.key, value });
     } catch (err) {
-        if (err instanceof NotFoundError) {
+        if (isNotFound(err)) {
             res.status(404).json({
                 key: req.params.key,
                 value: null,
@@ -79,7 +96,12 @@ app.get("/api/kv/:key", async (req, res) => {
 app.put("/api/kv/:key", async (req, res) => {
     try {
         const { value, ttl } = req.body;
-        const result = await client.kv.set(req.params.key, value ?? "", ttl);
+        const result = await client.kv.set(
+            req.params.key,
+            value ?? "",
+            ttl,
+            AUTH,
+        );
         res.json({ key: req.params.key, value: value ?? "", ttl, result });
     } catch (err) {
         res.status(500).json({ key: req.params.key, error: err.message });
@@ -89,7 +111,7 @@ app.put("/api/kv/:key", async (req, res) => {
 // DELETE /api/kv/:key — Delete a KV entry
 app.delete("/api/kv/:key", async (req, res) => {
     try {
-        const result = await client.kv.delete(req.params.key);
+        const result = await client.kv.delete(req.params.key, AUTH);
         res.json({ key: req.params.key, deleted: true, result });
     } catch (err) {
         res.status(500).json({ key: req.params.key, error: err.message });
@@ -99,10 +121,10 @@ app.delete("/api/kv/:key", async (req, res) => {
 // GET /api/kv/:key/ttl — Check TTL of a KV entry
 app.get("/api/kv/:key/ttl", async (req, res) => {
     try {
-        const ttl = await client.kv.ttl(req.params.key);
+        const ttl = await client.kv.ttl(req.params.key, AUTH);
         res.json({ key: req.params.key, ttl });
     } catch (err) {
-        if (err instanceof NotFoundError) {
+        if (isNotFound(err)) {
             res.status(404).json({
                 key: req.params.key,
                 ttl: null,
@@ -118,7 +140,7 @@ app.get("/api/kv/:key/ttl", async (req, res) => {
 app.get("/api/kv/list", async (req, res) => {
     try {
         const prefix = req.query.prefix || "";
-        const entries = await client.kv.list(prefix);
+        const entries = await client.kv.list(prefix, AUTH);
         res.json({ prefix, entries });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -132,7 +154,7 @@ app.post("/api/kv/batch-get", async (req, res) => {
         if (!Array.isArray(keys)) {
             return res.status(400).json({ error: "keys must be an array" });
         }
-        const values = await client.kv.batch_get(keys);
+        const values = await client.kv.batch_get(keys, AUTH);
         res.json({ keys, values });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -146,7 +168,7 @@ app.post("/api/kv/batch-set", async (req, res) => {
         if (!Array.isArray(pairs)) {
             return res.status(400).json({ error: "pairs must be an array" });
         }
-        const result = await client.kv.batch_set(pairs);
+        const result = await client.kv.batch_set(pairs, AUTH);
         res.json({ count: pairs.length, result });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -160,7 +182,7 @@ app.post("/api/kv/batch-delete", async (req, res) => {
         if (!Array.isArray(keys)) {
             return res.status(400).json({ error: "keys must be an array" });
         }
-        const result = await client.kv.batch_delete(keys);
+        const result = await client.kv.batch_delete(keys, AUTH);
         res.json({ count: keys.length, result });
     } catch (err) {
         res.status(500).json({ error: err.message });
@@ -170,7 +192,7 @@ app.post("/api/kv/batch-delete", async (req, res) => {
 // ─── Task 4: Settings Access ──────────────────────────────────────────────
 app.get("/api/settings", async (_req, res) => {
     try {
-        const settings = await client.settings.get(PLUGIN_SLUG);
+        const settings = await client.appSettings.list(AUTH);
         res.json({ slug: PLUGIN_SLUG, settings });
     } catch (err) {
         res.status(500).json({ slug: PLUGIN_SLUG, error: err.message });
@@ -181,9 +203,9 @@ app.get("/api/settings", async (_req, res) => {
 app.post("/api/migrate", async (_req, res) => {
     try {
         // List current migration status
-        const status = await client.migrations.list(PLUGIN_SLUG);
+        const status = await client.migrations.list(PLUGIN_SLUG, AUTH);
         // Run pending migrations
-        await client.migrations.run(PLUGIN_SLUG);
+        await client.migrations.run(PLUGIN_SLUG, AUTH);
         res.json({
             slug: PLUGIN_SLUG,
             previous_status: status,
@@ -203,6 +225,7 @@ app.get("/api/db/items", async (_req, res) => {
             [],
             30,
             100,
+            AUTH,
         );
         res.json({ slug: PLUGIN_SLUG, items });
     } catch (err) {
