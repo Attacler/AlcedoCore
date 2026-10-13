@@ -20,6 +20,7 @@ pub enum AlcedoError {
     Other(String, i32),
     SystemError(String, i32),
     Forbidden(String, i32),
+    NotImplemented(String, i32),
     #[serde(skip_serializing)]
     Sqlx(sqlx::Error),
     #[serde(skip_serializing)]
@@ -34,6 +35,9 @@ impl fmt::Display for AlcedoError {
             AlcedoError::Other(msg, code) => write!(f, "Other error ({}): {}", code, msg),
             AlcedoError::SystemError(msg, code) => write!(f, "System error ({}): {}", code, msg),
             AlcedoError::Forbidden(msg, code) => write!(f, "Forbidden ({}): {}", code, msg),
+            AlcedoError::NotImplemented(msg, code) => {
+                write!(f, "Not implemented ({}): {}", code, msg)
+            }
             AlcedoError::Sqlx(error) => write!(f, "SQLx error: {}", error.to_string()),
             AlcedoError::Io(error) => write!(f, "IO error: {}", error.to_string()),
             AlcedoError::UnAuthenticated() => write!(f, "Unauthenticated"),
@@ -72,6 +76,7 @@ impl AlcedoError {
             AlcedoError::Other(msg, code) => respond::error(msg, Some(*code), None),
             AlcedoError::SystemError(msg, code) => respond::error(msg, Some(*code), None),
             AlcedoError::Forbidden(msg, code) => respond::error(msg, Some(*code), None),
+            AlcedoError::NotImplemented(msg, code) => respond::error(msg, Some(*code), None),
             AlcedoError::Sqlx(error) => respond::error(error.to_string(), Some(0), None),
             AlcedoError::Io(error) => respond::error(error.to_string(), Some(0), None),
             AlcedoError::UnAuthenticated() => respond::error("Unauthenticated", Some(0), None),
@@ -89,6 +94,7 @@ impl AlcedoError {
             AlcedoError::Other(msg, _) => msg,
             AlcedoError::SystemError(msg, _) => msg,
             AlcedoError::Forbidden(msg, _) => msg,
+            AlcedoError::NotImplemented(msg, _) => msg,
             AlcedoError::Sqlx(error) => return error.to_string(),
             AlcedoError::Unauthorized(error, _) => return error.to_string(),
             AlcedoError::Io(error) => return error.to_string(),
@@ -111,6 +117,7 @@ impl IntoResponse for AlcedoError {
             AlcedoError::Sqlx(_) => StatusCode::INTERNAL_SERVER_ERROR,
             AlcedoError::SystemError(_, _) => StatusCode::INTERNAL_SERVER_ERROR,
             AlcedoError::Forbidden(_, _) => StatusCode::FORBIDDEN,
+            AlcedoError::NotImplemented(_, _) => StatusCode::NOT_IMPLEMENTED,
             AlcedoError::UnAuthenticated() => StatusCode::UNAUTHORIZED,
             AlcedoError::TooManyRequests() => StatusCode::TOO_MANY_REQUESTS,
             AlcedoError::Unauthorized(_, _) => StatusCode::UNAUTHORIZED,

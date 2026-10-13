@@ -596,7 +596,7 @@ mod tests {
         let state = utils::test_utils::get_app_state().await;
         let context = AppContext {
             app_name: "testing".to_string(),
-            version: "".to_string(),
+            version: "production".to_string(),
             request_source: RequestSource::SystemTest,
             identity: None,
             request_id: None,
@@ -617,9 +617,12 @@ mod tests {
             .await
             .expect("Error: could not create test table!");
 
-        execute_query(&state, "drop table automated_create_test".to_string())
-            .await
-            .expect("Error: could not remove test table");
+        execute_query(
+            &state,
+            format!("drop table {}.automated_create_test", context.schema_name()),
+        )
+        .await
+        .expect("Error: could not remove test table");
         ()
     }
 
@@ -628,7 +631,7 @@ mod tests {
         let state = utils::test_utils::get_app_state().await;
         let context = AppContext {
             app_name: "testing".to_string(),
-            version: "".to_string(),
+            version: "production".to_string(),
             request_source: RequestSource::SystemTest,
             identity: None,
             request_id: None,
@@ -661,7 +664,7 @@ mod tests {
         let state = utils::test_utils::get_app_state().await;
         let context = AppContext {
             app_name: "testing".to_string(),
-            version: "".to_string(),
+            version: "production".to_string(),
             request_source: RequestSource::SystemTest,
             identity: None,
             request_id: None,
@@ -787,7 +790,7 @@ mod tests {
         let state = utils::test_utils::get_app_state().await;
         let context = AppContext {
             app_name: "testing".to_string(),
-            version: "".to_string(),
+            version: "production".to_string(),
             request_source: RequestSource::SystemTest,
             identity: None,
             request_id: None,

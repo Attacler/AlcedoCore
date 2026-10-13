@@ -635,7 +635,7 @@ async fn get_assets(
 
 #[utoipa::path(post, path = "/api/platform/plugins/{slug}/scale", tag = "Plugins",
     params(("slug" = String, Path)),
-    responses((status = OK, body = JSendResponse<Value>))
+    responses((status = NOT_IMPLEMENTED, body = JSendResponse<String>))
 )]
 async fn scale_plugin(
     State(state): State<AppState>,
@@ -643,12 +643,15 @@ async fn scale_plugin(
     Path(_slug): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(serde_json::json!({ "status": "not_implemented" })))
+    Err(AlcedoError::NotImplemented(
+        "Scaling plugin instances is not wired to the runtime yet".to_string(),
+        0,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/platform/plugins/{slug}/restart", tag = "Plugins",
     params(("slug" = String, Path)),
-    responses((status = OK, body = JSendResponse<Value>))
+    responses((status = NOT_IMPLEMENTED, body = JSendResponse<String>))
 )]
 async fn restart_plugin(
     State(state): State<AppState>,
@@ -656,12 +659,15 @@ async fn restart_plugin(
     Path(_slug): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(serde_json::json!({ "status": "not_implemented" })))
+    Err(AlcedoError::NotImplemented(
+        "Restarting a plugin is not wired to the runtime yet".to_string(),
+        0,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/platform/plugins/{slug}/stop", tag = "Plugins",
     params(("slug" = String, Path)),
-    responses((status = OK, body = JSendResponse<Value>))
+    responses((status = NOT_IMPLEMENTED, body = JSendResponse<String>))
 )]
 async fn stop_plugin(
     State(state): State<AppState>,
@@ -669,5 +675,10 @@ async fn stop_plugin(
     Path(_slug): Path<String>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(serde_json::json!({ "status": "not_implemented" })))
+    Err(AlcedoError::NotImplemented(
+        "Stopping a plugin is not wired to the runtime yet; use DELETE \
+         /api/platform/plugins/{slug}/installs/{app_version_id} to uninstall it"
+            .to_string(),
+        0,
+    ))
 }
