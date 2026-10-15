@@ -7,6 +7,7 @@ import {
     type InstallStore,
 } from "@/stores/plugins";
 import { useToast } from "@/composables/useToast";
+import { useAppContextStore } from "@/stores/appContext";
 import Button from "primevue/button";
 import Select from "primevue/select";
 import Menu from "primevue/menu";
@@ -25,6 +26,7 @@ import { appPath } from "@/utils/appHeaders";
 const route = useRoute(),
     router = useRouter(),
     store = usePluginsStore(),
+    appContext = useAppContextStore(),
     toast = useToast();
 
 const plugin = ref<PluginStore | null>(null),
@@ -125,6 +127,18 @@ onMounted(loadPlugin);
 watch(
     () => route.params.name,
     () => loadPlugin(),
+);
+
+watch(
+    selected,
+    (install) => {
+        if (route.params.appSlug) return;
+        appContext.setContext(
+            install?.api_name ?? install?.app_name ?? null,
+            install?.version_name ?? null,
+        );
+    },
+    { immediate: true },
 );
 
 async function toggleInstall() {
@@ -433,19 +447,33 @@ function deployToAnother() {
                     />
                 </template>
 
+                <template v-else-if="!selected">
+                    <div class="text-gray-400 italic">
+                        Select a deployment to view it.
+                    </div>
+                </template>
                 <Documentation
                     v-else-if="activeTab === 'Documentation'"
+                    :key="'docs-' + selected.id"
                     :plugin="plugin"
+                    :install-id="selected.id"
                 />
                 <Frontend
                     v-else-if="activeTab === 'Frontend'"
+                    :key="'frontend-' + selected.id"
                     :plugin="plugin"
+                    :install-id="selected.id"
                 />
                 <Endpoints
                     v-else-if="activeTab === 'Endpoints'"
                     :plugin="plugin"
                 />
-                <Schema v-else-if="activeTab === 'Schema'" :plugin="plugin" />
+                <Schema
+                    v-else-if="activeTab === 'Schema'"
+                    :key="'schema-' + selected.id"
+                    :plugin="plugin"
+                    :install-id="selected.id"
+                />
                 <Logs v-else-if="activeTab === 'Logs'" :plugin="plugin" />
                 <Versions
                     v-else-if="activeTab === 'Versions'"

@@ -25,6 +25,13 @@ interface ExpandedRowState {
     item: Record<string, any> | null;
 }
 
+export interface RowAction {
+    label: string;
+    icon?: string;
+    severity?: string;
+    onSelect: () => void | Promise<void>;
+}
+
 const props = withDefaults(
     defineProps<{
         items: any[];
@@ -52,6 +59,7 @@ const props = withDefaults(
         lazy?: boolean;
         rowLinkTo?: (item: any) => string;
         rowHref?: (item: any) => string;
+        rowActions?: (item: any) => RowAction[];
     }>(),
     {
         embedded: false,
@@ -233,6 +241,22 @@ const displayFields = computed(() => {
             >
                 <template #body="slotProps">
                     <div class="flex items-center justify-end gap-2">
+                        <template
+                            v-for="(action, actionIndex) in rowActions?.(
+                                slotProps.data,
+                            ) ?? []"
+                            :key="actionIndex"
+                        >
+                            <Button
+                                :icon="action.icon"
+                                :aria-label="action.label"
+                                :title="action.label"
+                                :severity="action.severity ?? 'secondary'"
+                                text
+                                size="small"
+                                @click.stop="action.onSelect()"
+                            />
+                        </template>
                         <a
                             v-if="rowHref"
                             :href="rowHref(slotProps.data)"
@@ -256,9 +280,7 @@ const displayFields = computed(() => {
                             @click.stop="$emit('edit-item', slotProps.data)"
                         />
                         <Button
-                            v-if="
-                                slotProps.data.$delete_permission !== false
-                            "
+                            v-if="slotProps.data.$delete_permission !== false"
                             icon="pi pi-trash"
                             text
                             severity="danger"

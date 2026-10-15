@@ -4,10 +4,10 @@ use sqlx_migrator::migration::Migration;
 use sqlx_migrator::{Migrate, Migrator, Plan, vec_box};
 
 use crate::migrations::generate_app_state_for_migrations;
+use crate::services::collections::schema::SchemaService;
 use crate::services::context::{AppContext, RequestSource};
 use crate::services::items::query::{LogicOp, Query};
 use crate::services::items::service::ItemsService;
-use crate::services::collections::schema::SchemaService;
 
 pub(crate) mod m00001_init;
 pub(crate) mod m00002_views;
@@ -27,6 +27,7 @@ pub(crate) mod m0015_app_settings;
 pub(crate) mod m0016_files;
 pub(crate) mod m0017_activity_logs;
 pub(crate) mod m0018_collection_logs_actor_id;
+pub(crate) mod m0019_plugin_policies;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -82,6 +83,9 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
             app_context: app_context.clone()
         },
         m0018_collection_logs_actor_id::M0018Migration {
+            app_context: app_context.clone()
+        },
+        m0019_plugin_policies::M0019Migration {
             app_context: app_context.clone()
         }
     ]

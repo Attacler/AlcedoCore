@@ -9,6 +9,7 @@ import type {
 } from "@alcedocore/sdk";
 import { useAlcedoClient } from "../composables/useAlcedoClient";
 import { withAsyncHandlingVoid } from "../utils/asyncUtils";
+import { getAppHeaders } from "@/utils/appHeaders";
 import TableViewSettings from "@/views/TableViewSettings.vue";
 import TableView from "@/views/TableView.vue";
 import CardsView from "@/views/CardsView.vue";
@@ -59,8 +60,8 @@ export interface PluginStore {
     documentation?: string[];
     requested_scopes?: Array<{ name: string; description?: string }>;
     installations: InstallStore[];
-    /** Derived: any install enabled. */
-    status: "enabled" | "disabled";
+    /** Derived: any install enabled; "not deployed" when there are none. */
+    status: "enabled" | "disabled" | "not deployed";
     /** Derived: newest deployed plugin tag (list column). */
     version: string;
     created_at?: string;
@@ -142,6 +143,8 @@ export interface DockerInfoResponse {
     deployment_id: string | null;
     deployment_state: string | null;
     status: string;
+    replicas?: number | null;
+    service?: any;
 }
 
 export interface VersionItem {
@@ -246,7 +249,12 @@ function mapBackendPlugin(p: any): PluginStore {
         documentation: p.documentation,
         requested_scopes: p.requested_scopes,
         installations,
-        status: enabled ? "enabled" : "disabled",
+        status:
+            installations.length === 0
+                ? "not deployed"
+                : enabled
+                  ? "enabled"
+                  : "disabled",
         version: installations.length
             ? installations[installations.length - 1].plugin_version
             : "",
@@ -344,9 +352,50 @@ export const usePluginsStore = defineStore("plugins", () => {
                 [];
             plugins.value = pluginList.map(mapBackendPlugin);
             await nextTick();
-            // ponytail: plugin asset loading (pages/inputs/displays) is deferred.
+
+            for (const plugin of plugins.value.filter(
+                (p) => p.status === "enabled",
+            )) {
+                try {
+                    await registerPluginPages(plugin);
+                } catch (e) {
+                    console.warn(
+                        `[PLUGINS] Failed to load pages for ${plugin.name}:`,
+                        e,
+                    );
+                }
+            }
         });
         pluginsReady.value = true;
+    }
+
+    async function registerPluginPages(plugin: PluginStore) {
+        const { app, version } = getAppHeaders();
+        const install =
+            plugin.installations.find(
+                (i) =>
+                    i.enabled &&
+                    app &&
+                    version &&
+                    (i.api_name ?? i.app_name) === app &&
+                    i.version_name === version,
+            ) ?? plugin.installations.find((i) => i.enabled);
+        if (!install) return;
+
+        const load = await fetchPluginAssets(plugin.slug, install.id);
+        if (!load?.default) return;
+
+        registeredPlugins.add(plugin.slug);
+        for (const page of load.default.pages || []) {
+            extensionRegistry.registerNavItem({
+                component: page.component,
+                icon: page.icon,
+                label: page.label,
+                pluginSlug: plugin.slug,
+                path: page.path,
+                sidebar: page.sidebar ?? true,
+            });
+        }
     }
 
     async function fetchPluginDetail(slug: string): Promise<PluginStore> {
@@ -385,12 +434,14 @@ export const usePluginsStore = defineStore("plugins", () => {
     /** Toggle the newest install (convenience for the list/detail actions). */
     async function enablePlugin(slug: string) {
         const install = currentPlugin.value?.installations[0];
-        if (install) await setInstallEnabled(slug, install.app_version_id, true);
+        if (install)
+            await setInstallEnabled(slug, install.app_version_id, true);
     }
 
     async function disablePlugin(slug: string) {
         const install = currentPlugin.value?.installations[0];
-        if (install) await setInstallEnabled(slug, install.app_version_id, false);
+        if (install)
+            await setInstallEnabled(slug, install.app_version_id, false);
     }
 
     async function deletePlugin(slug: string) {
@@ -398,18 +449,28 @@ export const usePluginsStore = defineStore("plugins", () => {
         await fetchPlugins();
     }
 
-    async function fetchPluginSchema(slug: string): Promise<PluginSchemaResponse> {
-        const backend = await client.plugins.schema(slug);
+    async function fetchPluginSchema(
+        slug: string,
+        installId?: number,
+    ): Promise<PluginSchemaResponse> {
+        const backend = await client.plugins.schema(
+            slug,
+            installOptions(installId),
+        );
         return mapSchema(backend as unknown as BackendSchemaResponse);
     }
 
-    async function fetchPluginMigrations(slug: string) {
-        const response = await client.migrations.list(slug);
+    async function fetchPluginMigrations(slug: string, installId?: number) {
+        const response = await client.migrations.list(
+            slug,
+            installOptions(installId),
+        );
         if (Array.isArray(response)) {
             return { migrations: response.map(mapMigration) };
         }
-        const data = (response as { migrations?: BackendMigrationStatus[] })
-            .migrations || [];
+        const data =
+            (response as { migrations?: BackendMigrationStatus[] })
+                .migrations || [];
         return { migrations: data.map(mapMigration) };
     }
 
@@ -421,8 +482,20 @@ export const usePluginsStore = defineStore("plugins", () => {
         return await client.migrations.rollback(slug, version);
     }
 
-    async function fetchPluginAssets(slug: string): Promise<null | any> {
-        const assets = await client.plugins.assets(slug);
+    function installOptions(installId?: number | null) {
+        return installId
+            ? { searchParams: { install_id: String(installId) } }
+            : undefined;
+    }
+
+    async function fetchPluginAssets(
+        slug: string,
+        installId?: number,
+    ): Promise<null | any> {
+        const assets = await client.plugins.assets(
+            slug,
+            installOptions(installId),
+        );
         if (!assets?.js) return null;
         const blob = new Blob([assets.js], { type: "application/javascript" });
         const url = URL.createObjectURL(blob);
@@ -440,8 +513,14 @@ export const usePluginsStore = defineStore("plugins", () => {
         return module;
     }
 
-    async function fetchPluginPages(slug: string): Promise<SdkPluginPage[]> {
-        const pages = await client.plugins.pages(slug);
+    async function fetchPluginPages(
+        slug: string,
+        installId?: number,
+    ): Promise<SdkPluginPage[]> {
+        const pages = await client.plugins.pages(
+            slug,
+            installOptions(installId),
+        );
         pluginPagesMap.value[slug] = pages as SdkPluginPage[];
         return pages as SdkPluginPage[];
     }
@@ -483,86 +562,140 @@ export const usePluginsStore = defineStore("plugins", () => {
         await client.plugins.updateScopes(slug, appVersionId, scopes);
     }
 
-    // --- docs / runtime (mocked empties, keyed by slug) ---
-
-    async function fetchPluginDocs(slug: string) {
-        const response: any = await client.plugins.docs(slug);
-        return response.data || { plugin: slug, docs: [] };
+    async function fetchPluginDocs(slug: string, installId?: number) {
+        return (await client.plugins.docs(slug, installOptions(installId))) as {
+            plugin: string;
+            docs: Array<{ path: string; size: number }>;
+        };
     }
 
-    async function fetchDocContent(slug: string, docPath: string) {
-        return await client.plugins.docContent(slug, docPath);
+    async function fetchDocContent(
+        slug: string,
+        docPath: string,
+        installId?: number,
+    ) {
+        return await client.plugins.docContent(
+            slug,
+            docPath,
+            installOptions(installId),
+        );
     }
 
-    async function fetchPluginLogs(slug: string, options?: { limit?: number; cursor?: string; status_code?: number; path?: string }) {
+    async function fetchPluginLogs(
+        slug: string,
+        options?: {
+            limit?: number;
+            cursor?: string;
+            status_code?: number;
+            path?: string;
+        },
+    ) {
         const params = new URLSearchParams();
         if (options?.limit) params.set("limit", String(options.limit));
         if (options?.cursor) params.set("cursor", options.cursor);
-        if (options?.status_code) params.set("status_code", String(options.status_code));
+        if (options?.status_code)
+            params.set("status_code", String(options.status_code));
         if (options?.path) params.set("path", options.path);
         const response: any = await client.plugins.requestLogs(slug, params);
         return response.data || { logs: [], next_cursor: null };
     }
 
     async function fetchPluginDockerInfo(installId: number) {
-        return (await client.plugins.runtimeInfo(installId)) as { data?: DockerInfoResponse };
+        return (await client.plugins.runtimeInfo(
+            installId,
+        )) as DockerInfoResponse;
     }
 
     async function fetchPluginVersions(slug: string) {
-        const response: any = await client.plugins.versions(slug);
-        return response.data || { versions: [] };
+        const response = (await client.plugins.versions(slug)) as {
+            versions?: VersionItem[];
+        };
+        return { versions: response?.versions ?? [] };
     }
 
-    async function fetchPluginInstances(installId: number): Promise<InstanceInfo[]> {
+    async function fetchPluginInstances(
+        installId: number,
+    ): Promise<InstanceInfo[]> {
         const json: any = await client.plugins.instances(installId);
-        return json.data?.instances || [];
+        return json?.instances || [];
     }
 
-    // Runtime detail draws — no runtime yet, return empties.
-    async function fetchInstanceDetail(_slug: string, taskId: string): Promise<InstanceDetail> {
-        return {
-            task_id: taskId,
-            slot: 0,
-            status: "",
-            desired_state: "",
-            deployment_id: null,
-            deployment: null,
-        };
+    async function fetchInstanceDetail(
+        installId: number,
+        taskId: string,
+    ): Promise<InstanceDetail> {
+        return (await client.plugins.instanceDetail(
+            installId,
+            taskId,
+        )) as InstanceDetail;
     }
 
-    async function fetchInstanceStats(_slug: string, _taskId: string): Promise<DeploymentStatsSnapshot> {
-        return {
-            timestamp: new Date().toISOString(),
-            cpu_percent: 0,
-            memory_usage_bytes: 0,
-        };
+    async function fetchInstanceStats(
+        installId: number,
+        taskId: string,
+    ): Promise<DeploymentStatsSnapshot> {
+        return (await client.plugins.instanceStats(
+            installId,
+            taskId,
+        )) as DeploymentStatsSnapshot;
     }
 
-    async function fetchInstanceLogs(_slug: string, _taskId: string): Promise<string[]> {
-        return [];
+    async function fetchInstanceLogs(
+        installId: number,
+        taskId: string,
+    ): Promise<string[]> {
+        const json: any = await client.plugins.instanceLogs(installId, taskId);
+        return json?.logs || [];
     }
 
-    async function fetchPluginLogDetail(_slug: string, _requestId: string): Promise<LogDetailResponse> {
+    async function fetchPluginLogDetail(
+        _slug: string,
+        _requestId: string,
+    ): Promise<LogDetailResponse> {
         return { request: null as unknown as RequestLogEntry, host_calls: [] };
     }
 
-    async function scalePlugin(slug: string, replicas: number, resourceLimits?: { cpu_limit: number; memory_limit: number }) {
-        await client.plugins.scale(slug, { replicas, resource_limits: resourceLimits });
+    async function scalePlugin(
+        slug: string,
+        replicas: number,
+        resourceLimits?: { cpu_limit: number; memory_limit: number },
+        installId?: number | null,
+    ) {
+        await client.plugins.scale(
+            slug,
+            { replicas, resource_limits: resourceLimits },
+            installId
+                ? { searchParams: { install_id: String(installId) } }
+                : undefined,
+        );
     }
 
-    async function restartPlugin(slug: string, containerId?: string) {
-        return await client.plugins.restart(slug, containerId);
+    async function restartPlugin(
+        slug: string,
+        containerId?: string,
+        installId?: number | null,
+    ) {
+        return await client.plugins.restart(
+            slug,
+            containerId,
+            installId
+                ? { searchParams: { install_id: String(installId) } }
+                : undefined,
+        );
     }
 
-    async function deployPluginVersion(slug: string, tag: string) {
-        // Re-deploy to the newest install's version.
-        const install = currentPlugin.value?.installations[0];
-        if (!install) throw new Error("Plugin has no install to redeploy");
+    async function deployPluginVersion(
+        slug: string,
+        tag: string,
+        appVersionId: number,
+    ) {
+        const plugin = currentPlugin.value;
+        if (!plugin) throw new Error("Plugin is not loaded");
         return await deployPlugin({
             slug,
             plugin_version: tag,
-            registry_id: currentPlugin.value?.registry_id,
-            app_version_id: install.app_version_id,
+            registry_id: plugin.registry_id,
+            app_version_id: appVersionId,
         });
     }
 

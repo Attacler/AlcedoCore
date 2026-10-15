@@ -5,6 +5,7 @@ import { useSettingsStore } from "@/stores/settingsStore";
 import type { FieldDefinition } from "@/stores/collections";
 import { useExtensionRegistryStore } from "@/stores/extensionRegistry";
 import { appPath } from "@/utils/appHeaders";
+import type { RowAction } from "@/views/TableView";
 
 const savedViewsStore = useSavedViewsStore(),
     settingsStore = useSettingsStore(),
@@ -38,6 +39,7 @@ const props = defineProps<{
     viewSpecific?: Record<string, any>;
     lazy?: boolean;
     rowLinkTo?: (item: any) => string;
+    rowActions?: (item: any) => RowAction[];
     defaultViewConfig?: {
         render_mode?: string;
         view_specific?: Record<string, any>;
@@ -162,6 +164,7 @@ const currentViewComponent = computed(() => {
             :view-specific="viewSpecific"
             :lazy="lazy"
             :row-link-to="rowLinkTo"
+            :row-actions="rowActions"
             @update:sort="
                 (field: string, order: 'asc' | 'desc') =>
                     $emit('update:sort', field, order)

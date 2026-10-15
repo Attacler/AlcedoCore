@@ -459,9 +459,20 @@ async fn list_images(
         .trim()
         .to_string();
 
-    // The pass-through system registry has no URL and therefore no catalog.
     if url.is_empty() {
-        return Ok(Json(success(ListImagesResponse { images: Vec::new() })));
+        let images = state
+            .platform
+            .local_images()
+            .await?
+            .into_iter()
+            .filter_map(|entry| {
+                Some(ImageListItem {
+                    name: entry.get("name")?.as_str()?.to_string(),
+                    tag: entry.get("tag")?.as_str()?.to_string(),
+                })
+            })
+            .collect();
+        return Ok(Json(success(ListImagesResponse { images })));
     }
 
     let base = registry_client::normalize_registry_base(&url);

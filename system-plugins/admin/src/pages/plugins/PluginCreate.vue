@@ -148,7 +148,19 @@ const installProgress = computed(() => {
     return i >= 0 ? (i / (phaseOrder.length - 1)) * 100 : 0;
 });
 
+function repoIsQualified(repo: string): boolean {
+    const first = repo.split("/")[0];
+    return repo.includes("/") && (first.includes(":") || first.includes("."));
+}
+
+function slugFromRepo(repo: string): string {
+    return (repo.split("/").pop() || "").split(":")[0] || "";
+}
+
 function getImageRef(): string {
+    const repo = selectedRepo.value || "";
+    if (repoIsQualified(repo)) return `${repo}:${selectedTag.value}`;
+
     const reg = registries.value.find(
         (r) => String(r.id) === selectedRegistryId.value,
     );
@@ -156,7 +168,7 @@ function getImageRef(): string {
     const port = rawHost.split(":")[1];
     const isLocal = port === "5000";
     const host = isLocal ? "localhost:5000" : rawHost;
-    return `${host}/${selectedRepo.value}:${selectedTag.value}`;
+    return `${host}/${repo}:${selectedTag.value}`;
 }
 
 function stepClass(idx: number): Record<string, boolean> {
@@ -232,7 +244,7 @@ async function fetchPreview() {
         );
         previewManifest.value = manifest;
         previewMigrations.value = [];
-        pluginSlug.value = manifest?.slug || selectedRepo.value || "";
+        pluginSlug.value = slugFromRepo(selectedRepo.value || "");
 
         if (manifest?.settings_schema?.properties) {
             const init: Record<string, any> = {};
@@ -271,8 +283,14 @@ async function fetchAppVersions() {
 }
 
 async function startInstall() {
-    const slug = selectedRepo.value || "";
+    const slug = slugFromRepo(selectedRepo.value || "");
+    const imageRef = getImageRef();
     pluginSlug.value = slug;
+
+    if (!slug) {
+        toast.show("Select a plugin to install", "error");
+        return;
+    }
 
     if (!targetAppVersionId.value) {
         toast.show("Select a target app", "error");
@@ -293,7 +311,7 @@ async function startInstall() {
             slug,
             plugin_version: selectedTag.value || "latest",
             registry_id: Number(selectedRegistryId.value) || undefined,
-            image: selectedRepo.value || undefined,
+            image: imageRef,
             app_version_id: targetAppVersionId.value,
             plugin_type: previewManifest.value?.plugin_type,
             description: previewManifest.value?.description,

@@ -11,18 +11,149 @@ use crate::{
         apps::AppsService,
         config::Config,
         context::{AppContext, RequestSource},
+        encryption,
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
+        plugin_platform::ResourceLimits,
+        registry_client,
     },
+    utils::{image_reference, normalize_image_reference},
 };
 
 pub const CATALOG: &str = "alcedocore_plugins";
 pub const INSTALLS: &str = "alcedocore_plugins_installs";
 pub const SYSTEM_REGISTRY_ID: i32 = 0;
 
+pub const IMAGE_DOCS: &str = "docs";
+pub const IMAGE_PAGES: &str = "pages";
+pub const IMAGE_MIGRATIONS: &str = "migrations";
+pub const IMAGE_PUBLIC: &str = "public";
+pub const IMAGE_MANIFEST: &str = "manifest.json";
+
+const IMAGE_ROOTS: &[&str] = &["app"];
+
+fn image_candidate(root: &str, sub: &str) -> String {
+    format!("/{root}/{sub}")
+}
+pub fn plugin_dir(config: &Config, install_id: i64) -> std::path::PathBuf {
+    std::path::Path::new(&config.plugins_dir).join(install_id.to_string())
+}
+
+pub fn plugin_subdir(config: &Config, install_id: i64, sub: &str) -> std::path::PathBuf {
+    plugin_dir(config, install_id).join(sub)
+}
+
+pub fn safe_join(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
+    let candidate = std::path::Path::new(relative);
+    if candidate.is_absolute()
+        || candidate
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+
+    let joined = root.join(candidate);
+    joined.starts_with(root).then_some(joined)
+}
+
+pub fn list_files(root: &std::path::Path) -> Vec<String> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else if let Ok(rel) = path.strip_prefix(root) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
+}
+
+fn read_lossy(path: &std::path::Path) -> String {
+    std::fs::read(path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+        .unwrap_or_default()
+}
+
+fn render_dir_listing(root: &std::path::Path, dir: &std::path::Path) -> String {
+    let heading = dir
+        .strip_prefix(root)
+        .ok()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "docs".to_string());
+
+    let mut entries: Vec<(String, bool)> = std::fs::read_dir(dir)
+        .map(|read| {
+            read.flatten()
+                .map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    let is_dir = e.path().is_dir();
+                    (name, is_dir)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    entries.sort();
+
+    let mut out = format!("# {}\n\n", heading);
+    for (name, is_dir) in entries {
+        if is_dir {
+            out.push_str(&format!("- [{name}/]({name}/)\n"));
+        } else {
+            out.push_str(&format!("- [{name}]({name})\n"));
+        }
+    }
+    out
+}
+
+fn normalize_pages(pages: &Value) -> Value {
+    let Some(items) = pages.as_array() else {
+        return serde_json::json!({ "pages": [] });
+    };
+
+    let normalized: Vec<Value> = items
+        .iter()
+        .map(|page| {
+            let mut out = serde_json::Map::new();
+            let label = page
+                .get("label")
+                .or_else(|| page.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            out.insert("label".to_string(), Value::String(label.to_string()));
+            out.insert(
+                "path".to_string(),
+                Value::String(
+                    page.get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("/")
+                        .to_string(),
+                ),
+            );
+            for key in ["icon", "sidebar"] {
+                if let Some(value) = page.get(key) {
+                    out.insert(key.to_string(), value.clone());
+                }
+            }
+            Value::Object(out)
+        })
+        .collect();
+
+    serde_json::json!({ "pages": normalized })
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct AppVersionInfo {
-    pub id: i32,
     pub app_id: Option<i32>,
     pub app_name: Option<String>,
     pub api_name: Option<String>,
@@ -286,7 +417,6 @@ impl PluginsService<'_> {
             map.insert(
                 id,
                 AppVersionInfo {
-                    id,
                     app_id: app
                         .and_then(|a| a.get("id"))
                         .and_then(Value::as_i64)
@@ -398,10 +528,26 @@ impl PluginsService<'_> {
         Ok(self.assemble(vec![row], None).await?.into_iter().next())
     }
 
+    pub async fn get_catalog_by_id(
+        &self,
+        id: i32,
+    ) -> Result<Option<Map<String, Value>>, AlcedoError> {
+        Ok(self
+            .list_catalog(Query {
+                fields: vec!["*".to_string()],
+                limit: 1,
+                ..Query::eq("id", Value::from(id))
+            })
+            .await?
+            .into_iter()
+            .next())
+    }
+
     // --- deploy ----------------------------------------------------------
 
     pub async fn deploy(&self, input: DeployInput) -> Result<PluginRecord, AlcedoError> {
-        let slug = input.slug.clone();
+        let mut input = input;
+        let slug = normalize_slug_input(&mut input)?;
 
         let infos = self.app_version_infos().await?;
         let info = infos.get(&input.app_version_id).ok_or_else(|| {
@@ -589,6 +735,8 @@ impl PluginsService<'_> {
                 0,
             ));
         }
+        // A reference can arrive path-shaped (`/localhost:5000/app:1.0.0`).
+        let image = normalize_image_reference(&image);
 
         let Some(install_id) = install_id else {
             return Err(AlcedoError::SystemError(
@@ -596,6 +744,51 @@ impl PluginsService<'_> {
                 0,
             ));
         };
+
+        let install_id: i64 = install_id.into();
+
+        let plugin_root = plugin_dir(&self.app_state.config, install_id);
+        for (sub, sub_name) in [
+            (IMAGE_DOCS, "docs"),
+            (IMAGE_PAGES, "pages"),
+            (IMAGE_MIGRATIONS, "migrations"),
+            (IMAGE_PUBLIC, "public"),
+            // Lands at the install root, alongside the four subtrees.
+            (IMAGE_MANIFEST, ""),
+        ] {
+            let dest = if sub_name.is_empty() {
+                plugin_dir(&self.app_state.config, install_id)
+            } else {
+                plugin_subdir(&self.app_state.config, install_id, sub_name)
+            };
+
+            for root in IMAGE_ROOTS {
+                let src = image_candidate(root, sub);
+                match self
+                    .app_state
+                    .platform
+                    .extract_from_image(
+                        &image_reference(&image, &input.plugin_version),
+                        &input.plugin_version,
+                        &src,
+                        &dest,
+                    )
+                    .await
+                {
+                    Ok(true) => break,
+                    Ok(false) => continue,
+                    Err(e) => {
+                        tracing::warn!("[PLUGINS] Could not extract {} from {}: {}", src, image, e);
+                        break;
+                    }
+                }
+            }
+        }
+        tracing::info!(
+            "[PLUGINS] Plugin files for {} at {}",
+            input.slug,
+            plugin_root.display()
+        );
 
         let deployment_id = self
             .app_state
@@ -605,7 +798,7 @@ impl PluginsService<'_> {
                 &input.plugin_version,
                 &image,
                 plugin_env(&self.app_state.config, &input, install_id),
-                Some(install_id.into()),
+                Some(install_id),
             )
             .await?;
 
@@ -750,49 +943,460 @@ impl PluginsService<'_> {
         self.app_state.platform.instances(install_id).await
     }
 
+    pub async fn scale(
+        &self,
+        install_id: i64,
+        replicas: u32,
+        limits: Option<ResourceLimits>,
+    ) -> Result<Value, AlcedoError> {
+        let limits = limits.filter(|l| !l.is_empty());
+        self.app_state
+            .platform
+            .scale(install_id, replicas, limits)
+            .await?;
+        Ok(serde_json::json!({
+            "install_id": install_id,
+            "scaled_to": replicas,
+            "resource_limits": limits,
+        }))
+    }
+
+    pub async fn instance_stats(
+        &self,
+        install_id: i64,
+        task_id: &str,
+    ) -> Result<Value, AlcedoError> {
+        self.app_state
+            .platform
+            .instance_stats(install_id, task_id)
+            .await
+    }
+
+    pub async fn instance_detail(
+        &self,
+        install_id: i64,
+        task_id: &str,
+    ) -> Result<Value, AlcedoError> {
+        self.app_state
+            .platform
+            .instance_detail(install_id, task_id)
+            .await
+    }
+
+    pub async fn instance_logs(
+        &self,
+        install_id: i64,
+        task_id: &str,
+    ) -> Result<Value, AlcedoError> {
+        self.app_state
+            .platform
+            .instance_logs(install_id, task_id)
+            .await
+    }
+
+    pub async fn restart(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        self.app_state.platform.restart(install_id).await?;
+        Ok(serde_json::json!({
+            "install_id": install_id,
+            "restarted": true,
+        }))
+    }
+
+    pub async fn stop(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        self.app_state.platform.scale(install_id, 0, None).await?;
+        Ok(serde_json::json!({
+            "install_id": install_id,
+            "replicas": 0,
+            "stopped": true,
+        }))
+    }
+
     pub async fn request_logs(&self, _slug: &str) -> Result<Value, AlcedoError> {
         Ok(serde_json::json!({ "data": { "logs": [], "next_cursor": null } }))
     }
 
-    pub async fn versions(&self, _slug: &str) -> Result<Value, AlcedoError> {
-        Ok(serde_json::json!({ "data": { "versions": [] } }))
+    pub async fn versions(&self, slug: &str) -> Result<Value, AlcedoError> {
+        let Some(plugin) = self.get_plugin(slug).await? else {
+            return Err(AlcedoError::NotFound(
+                format!("Plugin not found: {}", slug),
+                0,
+            ));
+        };
+        let Some(image) = plugin
+            .image
+            .as_deref()
+            .map(str::trim)
+            .filter(|i| !i.is_empty())
+        else {
+            return Ok(serde_json::json!({ "versions": [] }));
+        };
+
+        let repository = image_repository(&normalize_image_reference(image));
+        if repository.is_empty() {
+            return Ok(serde_json::json!({ "versions": [] }));
+        }
+
+        let Some((base, auth)) = self
+            .registry_endpoint(plugin.registry_id, &normalize_image_reference(image))
+            .await?
+        else {
+            tracing::info!(
+                "[PLUGINS] No usable registry URL for {}; cannot list versions",
+                slug
+            );
+            return Ok(serde_json::json!({ "versions": [] }));
+        };
+
+        let client = registry_client::build_client();
+        let tags = match registry_client::list_tags(&client, &base, &repository, &auth).await {
+            Ok(tags) => tags,
+            Err(e) => {
+                tracing::warn!("[PLUGINS] Tag listing failed for {}: {}", image, e);
+                return Ok(serde_json::json!({ "versions": [] }));
+            }
+        };
+
+        let mut versions = Vec::with_capacity(tags.len());
+        for tag in tags {
+            let size = registry_client::manifest_size(&client, &base, &repository, &tag, &auth)
+                .await
+                .unwrap_or(0);
+            versions.push(serde_json::json!({ "tag": tag, "size": size }));
+        }
+
+        Ok(serde_json::json!({ "versions": versions }))
     }
 
-    pub async fn docs(&self, slug: &str) -> Result<Value, AlcedoError> {
-        Ok(serde_json::json!({ "data": { "plugin": slug, "docs": [] } }))
+    async fn registry_endpoint(
+        &self,
+        registry_id: i32,
+        image: &str,
+    ) -> Result<Option<(String, registry_client::RegistryAuth)>, AlcedoError> {
+        let rows = self
+            .read(
+                "alcedocore_registries",
+                Query {
+                    fields: vec!["*".to_string()],
+                    limit: 1,
+                    ..Query::eq("id", Value::from(registry_id))
+                },
+            )
+            .await?;
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+
+        let field = |key: &str| str_field(&row, key);
+        let password = field("password").map(|stored| match encryption::decrypt(&stored) {
+            Ok(plaintext) => plaintext,
+            Err(_) => {
+                tracing::warn!(
+                    "[PLUGINS] Stored registry password is not decryptable; using it verbatim"
+                );
+                stored
+            }
+        });
+        let auth = registry_client::RegistryAuth {
+            auth_type: field("auth_type").unwrap_or_else(|| "none".to_string()),
+            username: field("username"),
+            password,
+        };
+
+        let declared = field("url").unwrap_or_default();
+        let raw = if !declared.trim().is_empty() {
+            Some(declared)
+        } else {
+            image
+                .split_once("://")
+                .map(|(_, rest)| rest)
+                .unwrap_or(image)
+                .split_once('/')
+                .map(|(host, _)| host.to_string())
+                .filter(|host| host.contains(':') || host.contains('.'))
+        };
+
+        Ok(raw.map(|raw| (registry_client::normalize_registry_base(&raw), auth)))
+    }
+
+    pub async fn docs(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        let slug = self.slug_for_install(install_id).await?;
+        let root = plugin_subdir(&self.app_state.config, install_id, "docs");
+
+        let docs: Vec<Value> = list_files(&root)
+            .into_iter()
+            .map(|path| {
+                let size = std::fs::metadata(root.join(&path))
+                    .map(|m| m.len() as i64)
+                    .unwrap_or(0);
+                serde_json::json!({ "path": path, "size": size })
+            })
+            .collect();
+
+        Ok(serde_json::json!({ "plugin": slug, "docs": docs }))
+    }
+
+    pub fn read_doc(&self, install_id: i64, relative: &str) -> Option<String> {
+        let root = plugin_subdir(&self.app_state.config, install_id, "docs");
+        let trimmed = relative.trim_matches('/');
+
+        if trimmed.is_empty() {
+            return Some(render_dir_listing(&root, &root));
+        }
+
+        let target = safe_join(&root, trimmed)?;
+
+        if target.is_dir() {
+            return Some(render_dir_listing(&root, &target));
+        }
+
+        std::fs::read_to_string(target).ok()
+    }
+
+    pub async fn pages(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        let plugin_id = self.plugin_id_for_install(install_id).await?;
+
+        let declared = self
+            .list_catalog(Query {
+                fields: vec!["*".to_string()],
+                limit: 0,
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(|row| int_field(row, "id") == Some(plugin_id))
+            .and_then(|row| row.get("pages").cloned())
+            .filter(|pages| pages.is_array())
+            .unwrap_or_else(|| Value::Array(vec![]));
+
+        let pages = if declared.as_array().is_some_and(|a| !a.is_empty()) {
+            declared
+        } else {
+            let manifest = plugin_subdir(&self.app_state.config, install_id, "manifest.json");
+            std::fs::read_to_string(manifest)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                .and_then(|m| m.get("pages").cloned())
+                .filter(|p| p.is_array())
+                .unwrap_or_else(|| Value::Array(vec![]))
+        };
+
+        Ok(normalize_pages(&pages))
+    }
+
+    pub fn settings_schema(&self, install_id: i64) -> Option<Value> {
+        let manifest = plugin_subdir(&self.app_state.config, install_id, "manifest.json");
+        std::fs::read_to_string(manifest)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|m| m.get("settings_schema").cloned())
+            .filter(has_settings_properties)
+    }
+
+    pub async fn assets(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        let pages = plugin_subdir(&self.app_state.config, install_id, "pages");
+        let js_path = pages.join("dist/plugin-pages.js");
+        let css_path = pages.join("dist/main.css");
+        let js = read_lossy(&js_path);
+        let css = read_lossy(&css_path);
+        Ok(serde_json::json!({
+            "js": js,
+            "css": css,
+            "found": !js.is_empty() || !css.is_empty(),
+            "sources": {
+                "js": js_path.display().to_string(),
+                "css": css_path.display().to_string(),
+            },
+        }))
+    }
+
+    async fn install_row(&self, install_id: i64) -> Result<Map<String, Value>, AlcedoError> {
+        self.read(
+            INSTALLS,
+            Query {
+                fields: vec!["*".to_string()],
+                limit: 1,
+                ..Query::eq("id", Value::from(install_id))
+            },
+        )
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            AlcedoError::NotFound(format!("Plugin install not found: {}", install_id), 0)
+        })
+    }
+
+    async fn plugin_id_for_install(&self, install_id: i64) -> Result<i32, AlcedoError> {
+        Ok(int_field(&self.install_row(install_id).await?, "plugin_id").unwrap_or_default())
+    }
+
+    async fn slug_for_install(&self, install_id: i64) -> Result<String, AlcedoError> {
+        let plugin_id = self.plugin_id_for_install(install_id).await?;
+        self.get_catalog_by_id(plugin_id)
+            .await?
+            .and_then(|row| str_field(&row, "slug"))
+            .ok_or_else(|| AlcedoError::NotFound(format!("Plugin not found: {}", plugin_id), 0))
     }
 
     pub async fn schema(&self, slug: &str) -> Result<Value, AlcedoError> {
         Ok(serde_json::json!({ "plugin_name": slug, "schema_name": "", "tables": [] }))
     }
 
-    pub async fn migrations(&self, _slug: &str) -> Result<Value, AlcedoError> {
-        Ok(serde_json::json!([]))
+    pub async fn migrations(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        let dir = plugin_subdir(&self.app_state.config, install_id, "migrations");
+
+        let migrations: Vec<Value> = read_migration_files(&dir)
+            .into_iter()
+            .map(|m| {
+                serde_json::json!({
+                    "version": m.version,
+                    "name": m.name,
+                    "filename": m.filename,
+                    "status": "pending",
+                    "applied": false,
+                    "applied_at": Value::Null,
+                    "has_down": m.down_sql.is_some(),
+                    "sql": m.up_sql,
+                })
+            })
+            .collect();
+
+        Ok(Value::Array(migrations))
     }
 
-    pub async fn pages(&self, _slug: &str) -> Result<Value, AlcedoError> {
-        Ok(serde_json::json!({ "pages": [] }))
-    }
-
-    pub async fn assets(&self, _slug: &str) -> Result<Value, AlcedoError> {
-        Ok(serde_json::json!({ "js": "", "css": "" }))
-    }
-
-    /// Mock manifest preview (real preview needs the image, which is Docker-only).
     pub async fn preview(&self, image: &str) -> Result<Value, AlcedoError> {
+        // A reference can arrive path-shaped (`/localhost:5000/app:1.0.0`).
+        let image = &normalize_image_reference(image);
         let slug = slug_from_image(image);
+
+        let manifest = match self.app_state.platform.preview_manifest(image).await {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) => {
+                tracing::info!("[PLUGINS] No manifest in {}; reporting slug only", image);
+                serde_json::json!({})
+            }
+            Err(e) => {
+                tracing::warn!("[PLUGINS] Could not read manifest from {}: {}", image, e);
+                serde_json::json!({})
+            }
+        };
+
+        let field = |key: &str| {
+            manifest.get(key).cloned().unwrap_or_else(|| match key {
+                "scopes" | "endpoints" | "pages" | "events" => Value::Array(vec![]),
+                "settings_schema" => serde_json::json!({ "properties": {} }),
+                _ => Value::Null,
+            })
+        };
+
+        let pages = normalize_pages(&field("pages"));
+
         Ok(serde_json::json!({
-            "slug": slug,
-            "plugin_type": "dynamic",
-            "scopes": [
-                { "name": "kv.all", "description": "Read/write KV store entries" },
-                { "name": "items.read", "description": "Read collection items" },
-            ],
-            "endpoints": [],
-            "pages": [],
-            "settings_schema": { "properties": {} },
+            "slug": manifest
+                .get("slug")
+                .or_else(|| manifest.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or(&slug),
+            "name": manifest.get("name").cloned().unwrap_or(Value::Null),
+            "version": manifest.get("version").cloned().unwrap_or(Value::Null),
+            "plugin_type": manifest
+                .get("plugin_type")
+                .cloned()
+                .unwrap_or_else(|| Value::String("dynamic".to_string())),
+            "system_plugin": manifest
+                .get("system_plugin")
+                .cloned()
+                .unwrap_or_else(|| Value::Bool(false)),
+            "description": manifest.get("description").cloned().unwrap_or(Value::Null),
+            "scopes": field("scopes"),
+            "endpoints": field("endpoints"),
+            "events": field("events"),
+            "pages": pages.get("pages").cloned().unwrap_or(Value::Array(vec![])),
+            "settings_schema": field("settings_schema"),
+            "manifest_found": !matches!(manifest, Value::Object(ref m) if m.is_empty()),
         }))
     }
+}
+
+pub fn parse_migration_filename(filename: &str) -> Option<(String, String, &'static str)> {
+    let stem = filename.strip_suffix(".sql")?;
+    let (direction, rest) = match stem.strip_suffix(".up") {
+        Some(rest) => (".up", rest),
+        None => (".down", stem.strip_suffix(".down")?),
+    };
+
+    let underscore = rest.find('_')?;
+    let version = &rest[..underscore];
+    let name = &rest[underscore + 1..];
+    if version.is_empty() || name.is_empty() {
+        return None;
+    }
+
+    Some((version.to_string(), name.to_string(), direction))
+}
+
+pub fn read_migration_files(dir: &std::path::Path) -> Vec<MigrationFile> {
+    let target = if dir.join("migrations").is_dir() {
+        dir.join("migrations")
+    } else {
+        dir.to_path_buf()
+    };
+    if !target.is_dir() {
+        return Vec::new();
+    }
+
+    let mut ups: Vec<MigrationFile> = Vec::new();
+    let mut downs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    let Ok(entries) = std::fs::read_dir(&target) else {
+        return Vec::new();
+    };
+
+    for entry in entries.flatten() {
+        if !entry.path().is_file() {
+            continue;
+        }
+        let filename = entry.file_name().to_string_lossy().to_string();
+        let Some((version, name, direction)) = parse_migration_filename(&filename) else {
+            continue;
+        };
+        let content = std::fs::read_to_string(entry.path()).unwrap_or_default();
+
+        if direction == ".down" {
+            downs.insert(version, content);
+            continue;
+        }
+
+        ups.push(MigrationFile {
+            version,
+            name,
+            filename,
+            up_sql: content,
+            down_sql: None,
+        });
+    }
+
+    ups.sort_by(
+        |a, b| match (a.version.parse::<u64>(), b.version.parse::<u64>()) {
+            (Ok(x), Ok(y)) => x.cmp(&y),
+            _ => a.version.cmp(&b.version),
+        },
+    );
+    for migration in &mut ups {
+        migration.down_sql = downs.get(&migration.version).cloned();
+    }
+
+    ups
+}
+
+/// One `{version}_{name}.up.sql` migration, paired with its rollback if present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationFile {
+    pub version: String,
+    pub name: String,
+    pub filename: String,
+    pub up_sql: String,
+    pub down_sql: Option<String>,
 }
 
 /// An install plus the platform deployment it points at.
@@ -823,7 +1427,7 @@ impl ResolvedInstall {
 pub fn plugin_env(
     config: &Config,
     input: &DeployInput,
-    install_id: i32,
+    install_id: i64,
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("PORT".to_string(), config.plugin_port.to_string());
@@ -909,7 +1513,9 @@ pub async fn resolve_install(
         // The header path used to skip the `enabled` check, so a disabled
         // install still resolved and proxied when the headers were supplied.
         candidates.retain(|i| {
-            i.enabled && i.api_name.as_deref() == Some(app) && i.version_name.as_deref() == Some(version)
+            i.enabled
+                && i.api_name.as_deref() == Some(app)
+                && i.version_name.as_deref() == Some(version)
         });
         if candidates.is_empty() {
             return Err(AlcedoError::NotFound(
@@ -975,6 +1581,27 @@ pub async fn register_plugin_request(
     }
 }
 
+fn image_repository(image: &str) -> String {
+    let name = match image.rfind(':') {
+        Some(colon) if !image[colon..].contains('/') => &image[..colon],
+        _ => image,
+    };
+
+    // Drop a scheme, then a registry host, if the reference carries one.
+    let name = name.split_once("://").map_or(name, |(_, rest)| rest);
+    match name.split_once('/') {
+        Some((head, path)) if head.contains(':') || head.contains('.') => path.to_string(),
+        _ => name.to_string(),
+    }
+}
+
+fn has_settings_properties(schema: &Value) -> bool {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_some_and(|properties| !properties.is_empty())
+}
+
 /// `localhost:5000/hello-world:1.0.0` → `hello-world`.
 fn slug_from_image(image: &str) -> String {
     image
@@ -987,10 +1614,322 @@ fn slug_from_image(image: &str) -> String {
         .to_string()
 }
 
+fn normalize_slug_input(input: &mut DeployInput) -> Result<String, AlcedoError> {
+    let raw = input.slug.trim().to_string();
+    let slug = slug_from_image(&normalize_image_reference(&raw));
+    if slug.is_empty() {
+        return Err(AlcedoError::InvalidInput(
+            format!("Could not derive a plugin slug from '{raw}'"),
+            0,
+        ));
+    }
+
+    if (raw.contains('/') || raw.contains(':'))
+        && input.image.as_deref().unwrap_or("").trim().is_empty()
+    {
+        input.image = Some(normalize_image_reference(&raw));
+    }
+    input.slug = slug.clone();
+    Ok(slug)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn safe_join_stays_inside_the_root() {
+        let root = std::path::Path::new("/plugins/12/docs");
+
+        assert_eq!(
+            safe_join(root, "index.md"),
+            Some(std::path::PathBuf::from("/plugins/12/docs/index.md"))
+        );
+        assert_eq!(
+            safe_join(root, "api/v2.md"),
+            Some(std::path::PathBuf::from("/plugins/12/docs/api/v2.md"))
+        );
+    }
+
+    #[test]
+    fn safe_join_refuses_to_escape_the_root() {
+        let root = std::path::Path::new("/plugins/12/docs");
+
+        // A doc path comes straight from the URL, so every escape shape has to
+        // be rejected rather than normalised and then trusted.
+        for attempt in [
+            "../secret",
+            "../../etc/passwd",
+            "api/../../secret",
+            "/etc/passwd",
+        ] {
+            assert_eq!(safe_join(root, attempt), None, "must reject {attempt:?}");
+        }
+    }
+
+    #[test]
+    fn list_files_is_relative_and_sorted() {
+        let root = std::env::temp_dir().join(format!("alcedo-lf-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("js")).unwrap();
+        std::fs::write(root.join("z.md"), "z").unwrap();
+        std::fs::write(root.join("a.md"), "a").unwrap();
+        std::fs::write(root.join("js/app.js"), "x").unwrap();
+
+        assert_eq!(
+            list_files(&root),
+            vec![
+                "a.md".to_string(),
+                "js/app.js".to_string(),
+                "z.md".to_string()
+            ]
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn list_files_of_a_missing_root_is_empty_not_an_error() {
+        let missing = std::env::temp_dir().join(format!("alcedo-none-{}", uuid::Uuid::new_v4()));
+        assert!(list_files(&missing).is_empty());
+    }
+
+    #[test]
+    fn directory_listing_renders_markdown_with_a_trailing_slash_on_dirs() {
+        let root = std::env::temp_dir().join(format!("alcedo-dl-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("api")).unwrap();
+        std::fs::write(root.join("index.md"), "# Index").unwrap();
+        std::fs::write(root.join("api/v2.md"), "v2").unwrap();
+
+        let rendered = render_dir_listing(&root, &root);
+        assert!(rendered.starts_with("# docs\n"), "got {rendered:?}");
+        assert!(rendered.contains("- [api/](api/)"), "got {rendered:?}");
+        assert!(
+            rendered.contains("- [index.md](index.md)"),
+            "got {rendered:?}"
+        );
+
+        // A subdirectory is titled by its own path, not by "docs".
+        let nested = render_dir_listing(&root, &root.join("api"));
+        assert!(nested.starts_with("# api\n"), "got {nested:?}");
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn pages_are_normalised_to_label_and_path() {
+        let raw = json!([
+            { "name": "Settings", "path": "/settings", "icon": "cog" },
+            { "label": "Users", "path": "/users", "sidebar": true },
+            { "path": "/nameless" }
+        ]);
+
+        let normalized = normalize_pages(&raw);
+        let pages = normalized["pages"].as_array().unwrap();
+
+        assert_eq!(
+            pages[0]["label"],
+            json!("Settings"),
+            "`name` falls back to label"
+        );
+        assert_eq!(pages[0]["icon"], json!("cog"));
+        assert_eq!(pages[1]["label"], json!("Users"));
+        assert_eq!(pages[1]["sidebar"], json!(true));
+        assert_eq!(pages[2]["label"], json!(""), "missing label becomes empty");
+        assert_eq!(pages[2]["path"], json!("/nameless"));
+
+        // Keys the admin UI does not use are dropped rather than passed through.
+        assert!(pages[0].get("sidebar").is_none());
+    }
+
+    #[test]
+    fn pages_of_a_non_array_is_empty() {
+        assert_eq!(
+            normalize_pages(&json!({ "not": "an array" })),
+            json!({ "pages": [] })
+        );
+    }
+
+    /// Source path for one subtree: `/app/{sub}`, the only location a plugin
+    /// image keeps its files at.
+    fn candidates(sub: &str) -> Vec<String> {
+        IMAGE_ROOTS
+            .iter()
+            .map(|root| image_candidate(root, sub))
+            .collect()
+    }
+
+    #[test]
+    fn parses_up_and_down_migration_filenames() {
+        assert_eq!(
+            parse_migration_filename("001_create_items_table.up.sql"),
+            Some(("001".to_string(), "create_items_table".to_string(), ".up"))
+        );
+        assert_eq!(
+            parse_migration_filename("002_add_category_to_items.down.sql"),
+            Some((
+                "002".to_string(),
+                "add_category_to_items".to_string(),
+                ".down"
+            ))
+        );
+        // Only the first underscore separates version from name.
+        assert_eq!(
+            parse_migration_filename("003_a_b_c.up.sql"),
+            Some(("003".to_string(), "a_b_c".to_string(), ".up"))
+        );
+    }
+
+    #[test]
+    fn files_that_are_not_migrations_are_skipped() {
+        for name in [
+            "README.md",
+            "notes.sql",
+            "001_create.up.sqlx",
+            "001_create.up.txt",
+            // Empty version or empty name.
+            "_name.up.sql",
+            "001_.up.sql",
+            "",
+        ] {
+            assert_eq!(
+                parse_migration_filename(name),
+                None,
+                "should not be treated as a migration: {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_version_need_not_be_numeric() {
+        // Splits on the *first* underscore, so an unprefixed name is read as
+        // version=`create`. That matches v1, and tightening it would reject
+        // plugins whose versions are words or timestamps.
+        assert_eq!(
+            parse_migration_filename("create_items_table.up.sql"),
+            Some(("create".to_string(), "items_table".to_string(), ".up"))
+        );
+    }
+
+    #[test]
+    fn up_and_down_files_pair_up_by_version() {
+        let dir = std::env::temp_dir().join(format!("alcedo-mig-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, body) in [
+            (
+                "001_create_items_table.up.sql",
+                "CREATE TABLE items (id uuid);",
+            ),
+            ("001_create_items_table.down.sql", "DROP TABLE items;"),
+            (
+                "002_add_category.up.sql",
+                "ALTER TABLE items ADD category text;",
+            ),
+            // No `.down` counterpart — has_down must be false.
+            ("003_drop_old.up.sql", "DROP TABLE old;"),
+            ("README.md", "not a migration"),
+        ] {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+
+        let migrations = read_migration_files(&dir);
+        assert_eq!(migrations.len(), 3, "README and stray files are skipped");
+
+        assert_eq!(migrations[0].version, "001");
+        assert_eq!(migrations[0].name, "create_items_table");
+        assert!(migrations[0].down_sql.is_some(), "down file must be paired");
+        assert_eq!(migrations[0].down_sql.as_deref(), Some("DROP TABLE items;"));
+
+        assert_eq!(migrations[1].version, "002");
+        assert!(migrations[1].down_sql.is_none());
+
+        assert_eq!(migrations[2].version, "003");
+        assert!(migrations[2].down_sql.is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migrations_sort_numerically_past_nine() {
+        let dir = std::env::temp_dir().join(format!("alcedo-mig-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Written out of order, and `10` must land after `9` — a string sort
+        // would put "10" before "9".
+        for v in ["10", "9", "2", "1"] {
+            std::fs::write(dir.join(format!("{v}_step.up.sql")), "SELECT 1;").unwrap();
+        }
+
+        let versions: Vec<String> = read_migration_files(&dir)
+            .into_iter()
+            .map(|m| m.version)
+            .collect();
+        assert_eq!(versions, vec!["1", "2", "9", "10"]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_missing_or_wrapped_directory_is_still_read() {
+        // Extraction paths sometimes nest the contents; refusing those would
+        // silently hide a plugin's migrations.
+        let dir = std::env::temp_dir().join(format!("alcedo-mig-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("migrations")).unwrap();
+        std::fs::write(dir.join("migrations/001_nested.up.sql"), "SELECT 1;").unwrap();
+
+        let migrations = read_migration_files(&dir);
+        assert_eq!(migrations.len(), 1);
+        assert_eq!(migrations[0].version, "001");
+
+        // A directory that does not exist is empty, not an error.
+        assert!(read_migration_files(&dir.join("nope")).is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn candidate_paths_point_into_app() {
+        assert_eq!(candidates("docs"), vec!["/app/docs"]);
+        assert_eq!(candidates("manifest.json"), vec!["/app/manifest.json"]);
+        // No double slash in any candidate.
+        assert!(candidates("pages").iter().all(|c| !c.contains("//")));
+    }
+
+    #[test]
+    fn preview_falls_back_to_the_slug_when_an_image_declares_nothing() {
+        // The manifest-absence path has to still produce a renderable shape:
+        // the admin UI calls this before anything exists on disk.
+        let manifest = serde_json::json!({});
+        let field = |key: &str| {
+            manifest.get(key).cloned().unwrap_or_else(|| match key {
+                "scopes" | "endpoints" | "pages" | "events" => Value::Array(vec![]),
+                "settings_schema" => serde_json::json!({ "properties": {} }),
+                _ => Value::Null,
+            })
+        };
+
+        assert_eq!(field("scopes"), json!([]));
+        assert_eq!(field("endpoints"), json!([]));
+        assert_eq!(field("settings_schema"), json!({ "properties": {} }));
+        assert_eq!(field("description"), Value::Null);
+    }
+
+    #[test]
+    fn preview_prefers_manifest_values_over_defaults() {
+        let manifest = json!({
+            "name": "hello-world",
+            "plugin_type": "docker",
+            "scopes": [{ "name": "kv.all", "description": "KV" }],
+            "settings_schema": { "properties": { "counter": {} } }
+        });
+
+        assert_eq!(manifest["plugin_type"], json!("docker"));
+        assert_eq!(manifest["scopes"][0]["name"], json!("kv.all"));
+        assert!(
+            manifest["settings_schema"]["properties"]
+                .get("counter")
+                .is_some()
+        );
+    }
 
     #[test]
     fn install_record_resolves_app_and_version() {
@@ -1003,7 +1942,6 @@ mod tests {
         infos.insert(
             7,
             AppVersionInfo {
-                id: 7,
                 app_id: Some(1),
                 app_name: Some("Shop".to_string()),
                 api_name: Some("shop".to_string()),
@@ -1026,6 +1964,98 @@ mod tests {
             "hello-world"
         );
         assert_eq!(slug_from_image("nginx"), "nginx");
+    }
+
+    #[test]
+    fn the_repository_drops_host_and_tag_but_keeps_namespaces() {
+        assert_eq!(
+            image_repository("localhost:5000/hello-world:1.0.0"),
+            "hello-world"
+        );
+        assert_eq!(
+            image_repository("localhost:5000/team/app:1.2.3"),
+            "team/app"
+        );
+        assert_eq!(
+            image_repository("registry.example.com/team/app"),
+            "team/app"
+        );
+        // A bare first segment is a namespace, not a host.
+        assert_eq!(
+            image_repository("alcedocore/sp-admin-ui"),
+            "alcedocore/sp-admin-ui"
+        );
+        assert_eq!(image_repository("nginx"), "nginx");
+        assert_eq!(image_repository("nginx:1.25"), "nginx");
+    }
+
+    #[test]
+    fn a_settings_schema_only_counts_when_it_declares_properties() {
+        assert!(has_settings_properties(&json!({
+            "type": "object",
+            "properties": { "greeting": { "type": "string" } }
+        })));
+
+        // What `preview` substitutes for a manifest that declares no settings.
+        assert!(!has_settings_properties(&json!({ "properties": {} })));
+        assert!(!has_settings_properties(&json!({})));
+        assert!(!has_settings_properties(&json!({ "properties": null })));
+    }
+
+    /// The exact pair the admin UI used to send: the image reference in the
+    /// slug field too, which is what produced the `localhost:5000/hello-world`
+    /// "slug" in the catalog.
+    #[test]
+    fn a_slug_holding_an_image_ref_is_straightened_out() {
+        let mut input = DeployInput {
+            slug: "localhost:5000/hello-world".to_string(),
+            image: None,
+            ..env_fixture().1
+        };
+
+        assert_eq!(normalize_slug_input(&mut input).unwrap(), "hello-world");
+        assert_eq!(input.slug, "hello-world");
+        // The reference is kept as the image rather than discarded.
+        assert_eq!(input.image.as_deref(), Some("localhost:5000/hello-world"));
+    }
+
+    #[test]
+    fn a_real_slug_is_left_alone() {
+        let mut input = DeployInput {
+            slug: "  hello-world  ".to_string(),
+            image: None,
+            ..env_fixture().1
+        };
+
+        assert_eq!(normalize_slug_input(&mut input).unwrap(), "hello-world");
+        // Nothing to recover, so `image` stays unset rather than becoming the slug.
+        assert_eq!(input.image, None);
+    }
+
+    #[test]
+    fn an_explicit_image_survives_slug_normalisation() {
+        let mut input = DeployInput {
+            slug: "/localhost:5000/hello-world".to_string(),
+            image: Some("registry.example.com/team/hello-world".to_string()),
+            ..env_fixture().1
+        };
+
+        assert_eq!(normalize_slug_input(&mut input).unwrap(), "hello-world");
+        assert_eq!(
+            input.image.as_deref(),
+            Some("registry.example.com/team/hello-world")
+        );
+    }
+
+    #[test]
+    fn a_slug_that_is_only_a_separator_is_rejected() {
+        let mut input = DeployInput {
+            slug: "/".to_string(),
+            image: None,
+            ..env_fixture().1
+        };
+
+        assert!(normalize_slug_input(&mut input).is_err());
     }
 
     fn env_fixture() -> (Config, DeployInput) {

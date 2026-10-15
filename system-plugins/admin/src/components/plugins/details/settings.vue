@@ -33,9 +33,22 @@ async function loadSettings() {
                 );
             if (fetchedSchema) {
                 settingsSchema.value = fetchedSchema;
-                settingsFormValues.value = settings ? { ...settings } : {};
+
+                const defaults: Record<string, any> = {};
+                for (const [key, property] of Object.entries(
+                    fetchedSchema.properties ?? {},
+                )) {
+                    if (
+                        property &&
+                        typeof property === "object" &&
+                        "default" in property
+                    ) {
+                        defaults[key] = property.default;
+                    }
+                }
+                settingsFormValues.value = { ...defaults, ...(settings ?? {}) };
                 settingsOriginalValues.value = JSON.parse(
-                    JSON.stringify(settings || {}),
+                    JSON.stringify(settingsFormValues.value),
                 );
             } else {
                 settingsSchema.value = null;

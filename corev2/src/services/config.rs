@@ -38,6 +38,7 @@ pub struct Config {
     pub plugin_platform: String,
     pub docker_socket: String,
     pub plugin_network: String,
+    pub plugins_dir: String,
 }
 
 pub fn get_config() -> Config {
@@ -83,6 +84,7 @@ pub fn get_config() -> Config {
     let plugin_platform = env_str("PLUGIN_PLATFORM", "mock");
     let docker_socket = env_str("DOCKER_SOCKET", "/var/run/docker.sock");
     let plugin_network = env_str("PLUGIN_NETWORK", "alcedocore_plugins");
+    let plugins_dir = env_str("PLUGINS_DIR", "./plugins");
 
     if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
         eprintln!(
@@ -122,6 +124,7 @@ pub fn get_config() -> Config {
         plugin_platform,
         docker_socket,
         plugin_network,
+        plugins_dir,
     }
 }
 

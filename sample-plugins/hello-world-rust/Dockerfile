@@ -20,6 +20,7 @@ COPY --from=builder /build/sample-plugins/hello-world-rust/target/release/hello-
 
 # Copy runtime assets
 COPY sample-plugins/hello-world-rust/manifest.json /app/manifest.json
+COPY sample-plugins/hello-world-rust/docs/ /app/docs/
 COPY sample-plugins/hello-world-rust/migrations/ /app/migrations/
 COPY sample-plugins/hello-world-rust/pages/ ./pages/
 

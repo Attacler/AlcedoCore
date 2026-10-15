@@ -7,6 +7,7 @@ import Button from "primevue/button";
 const props = defineProps<{
     visible: boolean;
     pluginName: string;
+    installId?: number | null;
     taskId: string | null;
 }>();
 
@@ -36,12 +37,12 @@ watch(visible, (val) => {
 });
 
 async function loadData() {
-    if (!props.taskId || !props.pluginName) return;
+    if (!props.installId || !props.taskId) return;
     loading.value = true;
     error.value = null;
     try {
         lines.value = await store.fetchInstanceLogs(
-            props.pluginName,
+            props.installId,
             props.taskId,
         );
     } catch (e) {

@@ -72,14 +72,40 @@ export function createPluginsResource(ky: any) {
                     ...options,
                 })
                 .json(),
-
-        // Runtime detail and instances are keyed by install id, not slug: a slug
-        // can be installed on several app versions and each install is its own
-        // deployment, so the slug-keyed shape can no longer name one.
         runtimeInfo: (installId: number, options?: any) =>
             ky.get(installIdPath(installId, "/runtime"), options).json(),
         instances: (installId: number, options?: any) =>
             ky.get(installIdPath(installId, "/instances"), options).json(),
+        instanceDetail: (installId: number, taskId: string, options?: any) =>
+            ky
+                .get(
+                    installIdPath(
+                        installId,
+                        `/instances/${encodeURIComponent(taskId)}`,
+                    ),
+                    options,
+                )
+                .json(),
+        instanceStats: (installId: number, taskId: string, options?: any) =>
+            ky
+                .get(
+                    installIdPath(
+                        installId,
+                        `/instances/${encodeURIComponent(taskId)}/stats`,
+                    ),
+                    options,
+                )
+                .json(),
+        instanceLogs: (installId: number, taskId: string, options?: any) =>
+            ky
+                .get(
+                    installIdPath(
+                        installId,
+                        `/instances/${encodeURIComponent(taskId)}/logs`,
+                    ),
+                    options,
+                )
+                .json(),
         versions: (slug: string, options?: any) =>
             ky.get(slugPath(slug, "/versions"), options).json(),
         requestLogs: (slug: string, params?: URLSearchParams, options?: any) =>

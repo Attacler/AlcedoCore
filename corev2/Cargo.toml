@@ -43,6 +43,7 @@ cookie = "0.18"
 deadpool-redis = "0.23.1"
 argon2 = "0.6.0"
 bollard = { version = "0.20", optional = true }
+tar = { version = "0.4", optional = true }
 aes-gcm = "0.10.3"
 base64 = "0.22.1"
 hyper-rustls = { version = "0.27.7", default-features = false, features = ["http1", "webpki-roots", "ring", "tls12"] }
@@ -50,6 +51,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 
 [features]
 s3 = ["file-storage-s3"]
-# Docker Swarm deployment backend. Off by default: without it bollard is never
-# compiled and MockPlatform is always selected.
-docker = ["dep:bollard"]
+# Docker Swarm deployment backend. Off by default: without it bollard and tar are
+# never compiled and MockPlatform is always selected. `tar` unpacks the archives
+# `download_from_container` returns when extracting plugin files from an image.
+docker = ["dep:bollard", "dep:tar"]

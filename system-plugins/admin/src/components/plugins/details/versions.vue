@@ -43,8 +43,8 @@ async function loadDockerInfo() {
         dockerError,
         async () => {
             const result = await store.fetchPluginDockerInfo(props.installId!);
-            if (result?.data) {
-                dockerInfo.value = result.data;
+            if (result) {
+                dockerInfo.value = result;
             }
         },
         "Failed to load Docker info",
@@ -68,7 +68,7 @@ async function loadAvailableVersions() {
 }
 
 async function deployVersion(tag: string) {
-    if (props.plugin.value?.status === "enabled") {
+    if (props.plugin.status === "enabled") {
         pendingDeployTag.value = tag;
         showDeployDialog.value = true;
         return;
@@ -87,7 +87,15 @@ async function confirmDeployVersion() {
 async function doDeployVersion(tag: string) {
     deployingTag.value = tag;
     try {
-        await store.deployPluginVersion(route.params.name as string, tag);
+        const install = props.plugin.installations.find(
+            (i) => i.id === props.installId,
+        );
+        if (!install) throw new Error("Select a deployment to redeploy");
+        await store.deployPluginVersion(
+            route.params.name as string,
+            tag,
+            install.app_version_id,
+        );
         deployingTag.value = null;
         await loadDockerInfo();
         await loadAvailableVersions();

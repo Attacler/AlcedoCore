@@ -32,6 +32,22 @@ tower-http, Redis or in-memory cache, argon2 sessions.
   than a missing fixture.
 - `.cargo/config.toml` forces `clang` + `mold` on Linux. Without `mold` installed
   builds fail; override via `RUSTFLAGS` or remove that entry.
+- `PLUGINS_DIR` (default `./plugins`) is where plugin files are unpacked at deploy
+  time — `{PLUGINS_DIR}/{install_id}/{docs,pages,migrations,public,manifest.json}`.
+  Keyed by install id, not slug: one slug can be installed in several app
+  versions, each with its own files. Distinct from `FILES_DIR`, which is
+  user-uploaded storage. Extraction is Docker-only; `MockPlatform` just creates
+  the directory.
+- Doc paths come straight from the URL, so `read_doc` goes through `safe_join`,
+  which rejects absolute paths and any `..` component. `GET .../docs/{path}`
+  returns raw markdown, not the JSend envelope.
+- Swarm `update_service` needs care (`docker_platform.rs::apply_spec_update`):
+  `UpdateServiceOptions::version` is a compare-and-swap token, so
+  `Default::default()` sends `version=0` and is rejected with "update out of
+  sequence"; the current index from `inspect_service` must be echoed back. The
+  payload also has to be the full inspected spec — a minimal one carrying only
+  the changed mode is rejected at the transport layer. `probe_update_service_payload_shapes`
+  (`--ignored`, needs a live Swarm) documents both.
 
 ## Local setup gotchas
 

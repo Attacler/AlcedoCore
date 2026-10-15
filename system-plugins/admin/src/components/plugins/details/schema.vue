@@ -9,7 +9,7 @@ import { useRoute } from "vue-router";
 import { useToast } from "@/composables/useToast";
 import { usePluginsStore, type PluginStore } from "@/stores/plugins";
 
-const props = defineProps<{ plugin: PluginStore }>();
+const props = defineProps<{ plugin: PluginStore; installId?: number }>();
 
 const route = useRoute(),
     store = usePluginsStore(),
@@ -39,6 +39,7 @@ async function loadSchema() {
         async () => {
             schema.value = await store.fetchPluginSchema(
                 route.params.name as string,
+                props.installId,
             );
         },
         "Failed to load schema",
@@ -52,6 +53,7 @@ async function loadMigrations() {
         async () => {
             const res = await store.fetchPluginMigrations(
                 route.params.name as string,
+                props.installId,
             );
             migrations.value = res.migrations;
         },

@@ -1,6 +1,8 @@
 use axum::{
     Json, Router,
     extract::{Path, Query as AxumQuery, State},
+    http::header,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -14,7 +16,8 @@ use crate::{
     services::{
         errors::AlcedoError,
         items::query::Query,
-        plugins::{DeployInput, PluginFilter, PluginRecord, PluginsService},
+        plugin_platform::ResourceLimits,
+        plugins::{DeployInput, PluginFilter, PluginRecord, PluginsService, resolve_install},
         respond::{JSendResponse, success},
     },
 };
@@ -49,12 +52,25 @@ pub fn plugins_controller() -> Router<AppState> {
             get(get_install_scopes).post(set_install_scopes),
         )
         // Deployment / runtime surfaces. `runtime` and `instances` are served by the
-// platform; the rest stay mocked empties until Docker/K8s lands.
+        // platform; the rest stay mocked empties until Docker/K8s lands.
         .route("/installs/{install_id}/runtime", get(get_runtime))
         .route("/installs/{install_id}/instances", get(list_instances))
+        .route(
+            "/installs/{install_id}/instances/{task_id}",
+            get(instance_detail),
+        )
+        .route(
+            "/installs/{install_id}/instances/{task_id}/stats",
+            get(instance_stats),
+        )
+        .route(
+            "/installs/{install_id}/instances/{task_id}/logs",
+            get(instance_logs),
+        )
         .route("/{slug}/logs", get(list_logs))
         .route("/{slug}/versions", get(list_versions))
         .route("/{slug}/docs", get(list_docs))
+        .route("/{slug}/docs/{*path}", get(get_doc))
         .route("/{slug}/schema", get(get_schema))
         .route(
             "/{slug}/migrations",
@@ -409,7 +425,7 @@ async fn get_install_settings(
     let (_, install) = plugin_and_install(&service, &slug, app_version_id).await?;
     Ok(Json(success(SettingsResponse {
         settings: install.settings,
-        schema: None,
+        schema: service.settings_schema(i64::from(install.id)),
     })))
 }
 
@@ -435,7 +451,7 @@ async fn patch_install_settings(
     let (_, install) = plugin_and_install(&service, &slug, app_version_id).await?;
     Ok(Json(success(SettingsResponse {
         settings: install.settings,
-        schema: None,
+        schema: service.settings_schema(i64::from(install.id)),
     })))
 }
 
@@ -500,7 +516,9 @@ async fn get_runtime(
     Path(install_id): Path<i64>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).runtime_info(install_id).await?))
+    Ok(ok(PluginsService::new(&state)
+        .runtime_info(install_id)
+        .await?))
 }
 
 #[utoipa::path(get, path = "/api/platform/plugins/installs/{install_id}/instances", tag = "Plugins",
@@ -513,7 +531,9 @@ async fn list_instances(
     Path(install_id): Path<i64>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).instances(install_id).await?))
+    Ok(ok(PluginsService::new(&state)
+        .instances(install_id)
+        .await?))
 }
 
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/logs", tag = "Plugins",
@@ -542,17 +562,55 @@ async fn list_versions(
     Ok(ok(PluginsService::new(&state).versions(&slug).await?))
 }
 
+async fn resolve_file_install(
+    state: &AppState,
+    slug: &str,
+    q: &LifecycleQuery,
+) -> Result<i64, AlcedoError> {
+    if let Some(id) = install_id_from_query(q)? {
+        return Ok(id);
+    }
+    let resolved = resolve_install(state, slug, q.app.as_deref(), q.version.as_deref()).await?;
+    Ok(i64::from(resolved.install.id))
+}
+
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/docs", tag = "Plugins",
-    params(("slug" = String, Path)),
+    params(("slug" = String, Path), ("install_id" = Option<i64>, Query)),
     responses((status = OK, body = JSendResponse<Value>))
 )]
 async fn list_docs(
     State(state): State<AppState>,
     auth_level: AuthLevel,
     Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).docs(&slug).await?))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    Ok(ok(PluginsService::new(&state).docs(install_id).await?))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/{slug}/docs/{path}", tag = "Plugins",
+    params(("slug" = String, Path), ("path" = String, Path)),
+    responses((status = OK, content_type = "text/markdown", body = String))
+)]
+async fn get_doc(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((slug, path)): Path<(String, String)>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
+) -> Result<Response, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+
+    let Some(body) = PluginsService::new(&state).read_doc(install_id, &path) else {
+        return Err(AlcedoError::NotFound(format!("Doc not found: {}", path), 0));
+    };
+
+    Ok((
+        [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+        body,
+    )
+        .into_response())
 }
 
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/schema", tag = "Plugins",
@@ -576,9 +634,13 @@ async fn list_migrations(
     State(state): State<AppState>,
     auth_level: AuthLevel,
     Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).migrations(&slug).await?))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    Ok(ok(PluginsService::new(&state)
+        .migrations(install_id)
+        .await?))
 }
 
 #[utoipa::path(post, path = "/api/platform/plugins/{slug}/migrations", tag = "Plugins",
@@ -615,9 +677,11 @@ async fn list_pages(
     State(state): State<AppState>,
     auth_level: AuthLevel,
     Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).pages(&slug).await?))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    Ok(ok(PluginsService::new(&state).pages(install_id).await?))
 }
 
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/pages/assets", tag = "Plugins",
@@ -628,57 +692,128 @@ async fn get_assets(
     State(state): State<AppState>,
     auth_level: AuthLevel,
     Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).assets(&slug).await?))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    Ok(ok(PluginsService::new(&state).assets(install_id).await?))
+}
+
+fn install_id_from_query(q: &LifecycleQuery) -> Result<Option<i64>, AlcedoError> {
+    if q.app.is_some() != q.version.is_some() {
+        return Err(AlcedoError::InvalidInput(
+            "give both app and version, or neither".to_string(),
+            0,
+        ));
+    }
+    Ok(q.install_id)
+}
+
+#[derive(Debug, Deserialize, Default, ToSchema)]
+pub struct LifecycleQuery {
+    #[serde(default)]
+    pub install_id: Option<i64>,
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ScaleRequest {
+    pub replicas: u32,
+    #[serde(default)]
+    pub resource_limits: Option<ResourceLimits>,
 }
 
 #[utoipa::path(post, path = "/api/platform/plugins/{slug}/scale", tag = "Plugins",
-    params(("slug" = String, Path)),
-    responses((status = NOT_IMPLEMENTED, body = JSendResponse<String>))
+    params(("slug" = String, Path), ("install_id" = Option<i64>, Query)),
+    responses((status = OK, body = JSendResponse<Value>))
 )]
 async fn scale_plugin(
     State(state): State<AppState>,
     auth_level: AuthLevel,
-    Path(_slug): Path<String>,
+    Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
+    Json(body): Json<ScaleRequest>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Err(AlcedoError::NotImplemented(
-        "Scaling plugin instances is not wired to the runtime yet".to_string(),
-        0,
-    ))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    Ok(ok(PluginsService::new(&state)
+        .scale(install_id, body.replicas, body.resource_limits)
+        .await?))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/installs/{install_id}/instances/{task_id}/stats", tag = "Plugins",
+    params(("install_id" = i64, Path), ("task_id" = String, Path)),
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+async fn instance_stats(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((install_id, task_id)): Path<(i64, String)>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    Ok(ok(PluginsService::new(&state)
+        .instance_stats(install_id, &task_id)
+        .await?))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/installs/{install_id}/instances/{task_id}", tag = "Plugins",
+    params(("install_id" = i64, Path), ("task_id" = String, Path)),
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+async fn instance_detail(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((install_id, task_id)): Path<(i64, String)>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    Ok(ok(PluginsService::new(&state)
+        .instance_detail(install_id, &task_id)
+        .await?))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/installs/{install_id}/instances/{task_id}/logs", tag = "Plugins",
+    params(("install_id" = i64, Path), ("task_id" = String, Path)),
+    responses((status = OK, body = JSendResponse<Value>)))]
+async fn instance_logs(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((install_id, task_id)): Path<(i64, String)>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    Ok(ok(PluginsService::new(&state)
+        .instance_logs(install_id, &task_id)
+        .await?))
 }
 
 #[utoipa::path(post, path = "/api/platform/plugins/{slug}/restart", tag = "Plugins",
-    params(("slug" = String, Path)),
-    responses((status = NOT_IMPLEMENTED, body = JSendResponse<String>))
+    params(("slug" = String, Path), ("install_id" = Option<i64>, Query)),
+    responses((status = OK, body = JSendResponse<Value>))
 )]
 async fn restart_plugin(
     State(state): State<AppState>,
     auth_level: AuthLevel,
-    Path(_slug): Path<String>,
+    Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Err(AlcedoError::NotImplemented(
-        "Restarting a plugin is not wired to the runtime yet".to_string(),
-        0,
-    ))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    Ok(ok(PluginsService::new(&state).restart(install_id).await?))
 }
 
 #[utoipa::path(post, path = "/api/platform/plugins/{slug}/stop", tag = "Plugins",
-    params(("slug" = String, Path)),
-    responses((status = NOT_IMPLEMENTED, body = JSendResponse<String>))
+    params(("slug" = String, Path), ("install_id" = Option<i64>, Query)),
+    responses((status = OK, body = JSendResponse<Value>))
 )]
 async fn stop_plugin(
     State(state): State<AppState>,
     auth_level: AuthLevel,
-    Path(_slug): Path<String>,
+    Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Err(AlcedoError::NotImplemented(
-        "Stopping a plugin is not wired to the runtime yet; use DELETE \
-         /api/platform/plugins/{slug}/installs/{app_version_id} to uninstall it"
-            .to_string(),
-        0,
-    ))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    Ok(ok(PluginsService::new(&state).stop(install_id).await?))
 }

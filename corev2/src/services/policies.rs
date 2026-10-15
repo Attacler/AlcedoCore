@@ -9,6 +9,7 @@ use crate::{
         context::AppContext,
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
+        plugins::PluginsService,
     },
 };
 
@@ -27,6 +28,7 @@ pub struct PoliciesService<'a> {
     app_context: &'a AppContext,
     policies_table: String,
     permissions_table: String,
+    plugin_policies_table: String,
 }
 
 impl PoliciesService<'_> {
@@ -36,6 +38,7 @@ impl PoliciesService<'_> {
             app_context,
             policies_table: "alcedocore_policies".to_string(),
             permissions_table: "alcedocore_policy_permissions".to_string(),
+            plugin_policies_table: "alcedocore_plugin_policies".to_string(),
         }
     }
 
@@ -266,9 +269,7 @@ impl PoliciesService<'_> {
         let row = service
             .get_single_item_by_pk(Value::String(pk))
             .await?
-            .ok_or_else(|| {
-                AlcedoError::SystemError("Permission was not created".to_string(), 0)
-            })?;
+            .ok_or_else(|| AlcedoError::SystemError("Permission was not created".to_string(), 0))?;
         Ok(self.map_permission(row).await)
     }
 
@@ -365,5 +366,133 @@ impl PoliciesService<'_> {
             .delete_items_by_query(query, &mut None)
             .await?;
         Ok(deleted)
+    }
+
+    fn plugin_policies(&self) -> ItemsService<'_> {
+        ItemsService::new(
+            self.app_state,
+            self.app_context,
+            &self.plugin_policies_table,
+        )
+    }
+
+    async fn require_plugin(&self, slug: &str) -> Result<(), AlcedoError> {
+        let plugins = PluginsService::new(self.app_state);
+        if plugins.get_plugin(slug).await?.is_none() {
+            return Err(AlcedoError::NotFound(
+                format!("Plugin not found: {}", slug),
+                0,
+            ));
+        }
+        Ok(())
+    }
+
+    async fn require_policy(&self, policy_id: Uuid) -> Result<(), AlcedoError> {
+        if self.get_policy(policy_id).await?.is_none() {
+            return Err(AlcedoError::NotFound(
+                format!("Policy not found: {}", policy_id),
+                0,
+            ));
+        }
+        Ok(())
+    }
+
+    fn assignment_query(slug: &str) -> Query {
+        Query::eq("plugin_slug", json!(slug))
+    }
+
+    pub async fn list_plugin_policies(&self, slug: &str) -> Result<Vec<Value>, AlcedoError> {
+        let assignments = self
+            .plugin_policies()
+            .read_items_by_query(Query {
+                fields: vec!["policy_id".to_string()],
+                ..Self::assignment_query(slug)
+            })
+            .await?;
+
+        let mut policies = Vec::with_capacity(assignments.len());
+        for row in assignments {
+            let Some(raw) = row.get("policy_id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Ok(id) = Uuid::parse_str(raw) else {
+                continue;
+            };
+            if let Some(policy) = self.get_policy(id).await? {
+                policies.push(policy);
+            }
+        }
+        Ok(policies)
+    }
+
+    pub async fn list_policy_plugins(&self, policy_id: Uuid) -> Result<Vec<Value>, AlcedoError> {
+        let assignments = self
+            .plugin_policies()
+            .read_items_by_query(Query::eq("policy_id", json!(policy_id.to_string())))
+            .await?;
+
+        let mut out = Vec::with_capacity(assignments.len());
+        for row in assignments {
+            let Some(slug) = row.get("plugin_slug").and_then(Value::as_str) else {
+                continue;
+            };
+
+            out.push(json!({
+                "plugin_slug": slug,
+                "plugin_name": slug,
+                "policy_id": policy_id.to_string(),
+                "created_at": row.get("created_at").cloned().unwrap_or(Value::Null),
+            }));
+        }
+        Ok(out)
+    }
+
+    pub async fn assign_plugin_policy(
+        &self,
+        slug: &str,
+        policy_id: Uuid,
+    ) -> Result<Value, AlcedoError> {
+        self.require_plugin(slug).await?;
+        self.require_policy(policy_id).await?;
+
+        let existing = self
+            .plugin_policies()
+            .read_items_by_query(Query::eq_all(&[
+                ("plugin_slug", json!(slug)),
+                ("policy_id", json!(policy_id.to_string())),
+            ]))
+            .await?;
+
+        if existing.is_empty() {
+            let item = item_map! {
+                "id" => Uuid::new_v4().to_string(),
+                "plugin_slug" => slug,
+                "policy_id" => policy_id.to_string(),
+            };
+            let mut service = self.plugin_policies();
+            service.create_many(vec![item], &mut None).await?;
+        }
+
+        self.get_policy(policy_id)
+            .await?
+            .ok_or_else(|| AlcedoError::SystemError("Policy vanished after assignment".into(), 0))
+    }
+
+    pub async fn unassign_plugin_policy(
+        &self,
+        slug: &str,
+        policy_id: Uuid,
+    ) -> Result<bool, AlcedoError> {
+        let deleted = self
+            .plugin_policies()
+            .delete_items_by_query(
+                Query::eq_all(&[
+                    ("plugin_slug", json!(slug)),
+                    ("policy_id", json!(policy_id.to_string())),
+                ]),
+                &mut None,
+            )
+            .await?;
+        Ok(deleted > 0)
     }
 }

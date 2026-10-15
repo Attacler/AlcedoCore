@@ -7,12 +7,23 @@ use sqlx::{Pool, Postgres, Row};
 
 use crate::services::{config::Config, errors::AlcedoError};
 
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize, serde::Serialize, utoipa::ToSchema)]
+pub struct ResourceLimits {
+    #[serde(default)]
+    pub cpu_limit: Option<i64>,
+    #[serde(default)]
+    pub memory_limit: Option<i64>,
+}
+
+impl ResourceLimits {
+    pub fn is_empty(&self) -> bool {
+        self.cpu_limit.is_none() && self.memory_limit.is_none()
+    }
+}
+
 #[allow(dead_code)]
 #[async_trait]
 pub trait PluginPlatform: Send + Sync {
-    /// Creates (or updates) the deployment for an install and returns its id.
-    /// The id is persisted on the install row — it is what [`Self::get_address`]
-    /// and the proxy resolve against.
     async fn deploy(
         &self,
         slug: &str,
@@ -38,6 +49,33 @@ pub trait PluginPlatform: Send + Sync {
     async fn list_deployments(&self) -> Result<Vec<Value>, AlcedoError>;
 
     async fn health_check(&self) -> Result<(), AlcedoError>;
+
+    async fn preview_manifest(&self, image: &str) -> Result<Option<Value>, AlcedoError>;
+
+    async fn local_images(&self) -> Result<Vec<Value>, AlcedoError>;
+
+    async fn extract_from_image(
+        &self,
+        image: &str,
+        version: &str,
+        src: &str,
+        dest: &std::path::Path,
+    ) -> Result<bool, AlcedoError>;
+
+    async fn scale(
+        &self,
+        install_id: i64,
+        replicas: u32,
+        limits: Option<ResourceLimits>,
+    ) -> Result<(), AlcedoError>;
+
+    async fn instance_stats(&self, install_id: i64, task_id: &str) -> Result<Value, AlcedoError>;
+
+    async fn instance_detail(&self, install_id: i64, task_id: &str) -> Result<Value, AlcedoError>;
+
+    async fn instance_logs(&self, install_id: i64, task_id: &str) -> Result<Value, AlcedoError>;
+
+    async fn restart(&self, install_id: i64) -> Result<(), AlcedoError>;
 
     /// Best-effort teardown of the deployment backing one install. Deleting the
     /// install row without this orphans whatever is actually running.
@@ -160,7 +198,7 @@ impl PluginPlatform for MockPlatform {
 
         Ok(json!({
             "instances": [{
-                "id": deployed.unwrap_or_else(|| Self::deployment_id(Some(install_id))),
+                "task_id": deployed.unwrap_or_else(|| Self::deployment_id(Some(install_id))),
                 "install_id": install_id,
                 "address": format!("localhost:{}", self.port),
                 "status": "running",
@@ -195,6 +233,74 @@ impl PluginPlatform for MockPlatform {
     }
 
     async fn health_check(&self) -> Result<(), AlcedoError> {
+        Ok(())
+    }
+
+    async fn preview_manifest(&self, _image: &str) -> Result<Option<Value>, AlcedoError> {
+        // No image to inspect.
+        Ok(None)
+    }
+
+    async fn local_images(&self) -> Result<Vec<Value>, AlcedoError> {
+        // Nothing to enumerate without a daemon behind the seam.
+        Ok(Vec::new())
+    }
+
+    async fn extract_from_image(
+        &self,
+        _image: &str,
+        _version: &str,
+        _src: &str,
+        _dest: &std::path::Path,
+    ) -> Result<bool, AlcedoError> {
+        // No image to read from. Create the directory anyway so the serving
+        // endpoints see an existing-but-empty root rather than a missing one.
+        std::fs::create_dir_all(_dest).map_err(|e| {
+            AlcedoError::SystemError(format!("Could not create plugin dir: {}", e), 0)
+        })?;
+        Ok(false)
+    }
+
+    async fn scale(
+        &self,
+        _install_id: i64,
+        replicas: u32,
+        limits: Option<ResourceLimits>,
+    ) -> Result<(), AlcedoError> {
+        tracing::info!("[MOCK] scale to {} (no-op), limits {:?}", replicas, limits);
+        Ok(())
+    }
+
+    async fn instance_stats(&self, _install_id: i64, _task_id: &str) -> Result<Value, AlcedoError> {
+        // No daemon behind the seam, so report an idle task rather than an
+        // error: the drawer's chart expects a sample per poll.
+        Ok(json!({
+            "task_id": _task_id,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "cpu_percent": 0.0,
+            "memory_usage_bytes": 0,
+        }))
+    }
+
+    async fn instance_detail(&self, _install_id: i64, task_id: &str) -> Result<Value, AlcedoError> {
+        Ok(json!({
+            "task_id": task_id,
+            "slot": 0,
+            "status": "unknown",
+            "desired_state": "unknown",
+            "deployment_id": null,
+            "deployment": null,
+        }))
+    }
+
+    async fn instance_logs(&self, _install_id: i64, task_id: &str) -> Result<Value, AlcedoError> {
+        // There is no container behind the mock platform, so there are no
+        // container logs either.
+        Ok(json!({ "task_id": task_id, "logs": [] }))
+    }
+
+    async fn restart(&self, _install_id: i64) -> Result<(), AlcedoError> {
+        tracing::info!("[MOCK] restart (no-op)");
         Ok(())
     }
 

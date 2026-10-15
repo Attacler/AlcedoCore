@@ -33,6 +33,7 @@ import type { RelatedFieldOption } from "@/components/FilterBuilder.vue";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useAppContextStore } from "@/stores/appContext";
 import { useToast } from "@/composables/useToast";
+import type { RowAction } from "@/views/TableView";
 import { useAuthStore } from "@/stores/authStore";
 import QuickAddModal from "@/components/QuickAddModal.vue";
 import { Popover } from "primevue";
@@ -53,6 +54,7 @@ const props = withDefaults(
         };
         createAction?: { label: string; run: () => void };
         rowLinkTo?: (item: any) => string;
+        rowActions?: (item: any) => RowAction[];
         title?: string;
         defaultViewConfig?: {
             render_mode?: string;
@@ -903,6 +905,7 @@ onMounted(() => {
         :collection-fields="fields"
         :lazy="true"
         :row-link-to="rowLinkTo"
+        :row-actions="rowActions"
         :default-view-config="defaultViewConfig"
         @update:sort="onUpdateSort"
         @update:page="goToPage"

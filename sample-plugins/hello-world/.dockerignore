@@ -1,0 +1,5 @@
+# The Dockerfile needs `pages/` in the context so it can assert that the
+# compiled bundle is present before building an image with an empty one. Ship
+# only the bundle; the .vue/.ts sources have no business in the runtime image.
+pages/*
+!pages/dist

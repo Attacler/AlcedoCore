@@ -45,18 +45,36 @@ async function loadInstances() {
             const list = await store.fetchPluginInstances(props.installId!);
             instances.value = list;
             scaleReplicas.value = list.length;
-            await pollInstanceStats();
+            await Promise.all([pollInstanceStats(), loadDeploymentSpec()]);
         },
         "Failed to load instances",
     );
 }
 
+async function loadDeploymentSpec() {
+    if (!props.installId) return;
+    try {
+        const info = await store.fetchPluginDockerInfo(props.installId);
+
+        if (typeof info.replicas === "number") {
+            scaleReplicas.value = info.replicas;
+        }
+        const limits = info.service?.Spec?.TaskTemplate?.Resources?.Limits;
+        if (typeof limits?.NanoCPUs === "number" && limits.NanoCPUs > 0) {
+            scaleCpuCores.value = limits.NanoCPUs / 1e9;
+        }
+        if (typeof limits?.MemoryBytes === "number" && limits.MemoryBytes > 0) {
+            scaleRamMb.value = limits.MemoryBytes / (1024 * 1024);
+        }
+    } catch {}
+}
+
 async function pollInstanceStats() {
     for (const inst of instances.value) {
-        if (inst.status.includes("Up") && inst.task_id) {
+        if (inst.status === "running" && inst.task_id) {
             try {
                 const stats = await store.fetchInstanceStats(
-                    route.params.name as string,
+                    props.installId!,
                     inst.task_id,
                 );
                 instanceStats.value = {
@@ -103,6 +121,7 @@ async function applyScale() {
             route.params.name as string,
             scaleReplicas.value,
             resourceLimits,
+            props.installId,
         );
         scaleResult.value = `Scaled to ${scaleReplicas.value} replica(s)`;
         await loadInstances();
@@ -326,14 +345,16 @@ onBeforeUnmount(() => {
     <!-- Instance Detail Drawer -->
     <InstanceDetailDrawer
         v-model:visible="showInstanceDetail"
-        :pluginName="route.params.name as string"
-        :taskId="selectedInstanceId"
+        :plugin-name="route.params.name as string"
+        :install-id="installId"
+        :task-id="selectedInstanceId"
     />
 
     <!-- Instance Logs Drawer -->
     <InstanceLogsDrawer
         v-model:visible="showInstanceLogs"
-        :pluginName="route.params.name as string"
-        :taskId="selectedInstanceId"
+        :plugin-name="route.params.name as string"
+        :install-id="installId"
+        :task-id="selectedInstanceId"
     />
 </template>

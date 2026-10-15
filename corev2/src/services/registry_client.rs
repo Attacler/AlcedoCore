@@ -181,6 +181,7 @@ async fn fetch_token(
 
 async fn send_authenticated(
     client: &RegistryClient,
+    method: &str,
     url: &str,
     auth: &RegistryAuth,
     timeout: Duration,
@@ -194,7 +195,7 @@ async fn send_authenticated(
         None => "/".to_string(),
     };
 
-    let mut builder = Request::builder().method("GET").uri(url);
+    let mut builder = Request::builder().method(method).uri(url);
     if auth.auth_type.eq_ignore_ascii_case("basic")
         && let Some((username, password)) = auth.credentials()
     {
@@ -214,6 +215,7 @@ async fn send_authenticated(
         let (parts, body) = response.into_parts();
         return Ok(AuthedResponse {
             status: parts.status,
+            headers: parts.headers,
             body: Body::new(body),
         });
     }
@@ -235,7 +237,7 @@ async fn send_authenticated(
     .await?;
 
     let retry = Request::builder()
-        .method("GET")
+        .method(method)
         .uri(url)
         .header("authorization", format!("Bearer {token}"))
         .body(Body::empty())
@@ -247,12 +249,14 @@ async fn send_authenticated(
     let (parts, body) = response.into_parts();
     Ok(AuthedResponse {
         status: parts.status,
+        headers: parts.headers,
         body: Body::new(body),
     })
 }
 
 struct AuthedResponse {
     status: axum::http::StatusCode,
+    headers: axum::http::HeaderMap,
     body: Body,
 }
 
@@ -272,7 +276,7 @@ pub async fn get_json(
     url: &str,
     auth: &RegistryAuth,
 ) -> Result<serde_json::Value, String> {
-    let response = send_authenticated(client, url, auth, REQUEST_TIMEOUT).await?;
+    let response = send_authenticated(client, "GET", url, auth, REQUEST_TIMEOUT).await?;
     if !response.status.is_success() {
         return Err(format!("HTTP {}", response.status.as_u16()));
     }
@@ -282,12 +286,58 @@ pub async fn get_json(
     serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
+pub async fn list_tags(
+    client: &RegistryClient,
+    base: &str,
+    repository: &str,
+    auth: &RegistryAuth,
+) -> Result<Vec<String>, String> {
+    let url = format!("{}/v2/{}/tags/list", base, repository);
+    let body = get_json(client, &url, auth).await?;
+    let tags = body
+        .get("tags")
+        .and_then(|t| t.as_array())
+        .ok_or_else(|| "registry returned no tags array".to_string())?;
+    Ok(tags
+        .iter()
+        .filter_map(|t| t.as_str().map(str::to_string))
+        .collect())
+}
+
+pub async fn manifest_size(
+    client: &RegistryClient,
+    base: &str,
+    repository: &str,
+    tag: &str,
+    auth: &RegistryAuth,
+) -> Option<i64> {
+    let url = format!(
+        "{}/v2/{}/manifests/{}",
+        base.trim_end_matches('/'),
+        repository,
+        tag
+    );
+    let response = send_authenticated(client, "HEAD", &url, auth, REQUEST_TIMEOUT)
+        .await
+        .ok()?;
+    if !response.status.is_success() {
+        return None;
+    }
+    response
+        .headers
+        .get(axum::http::header::CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
+}
+
 pub async fn check_url(url: &str, auth: &RegistryAuth) -> HealthResult {
     let client = build_client();
 
     let target = normalize_registry_base(url);
 
-    match send_authenticated(&client, &target, auth, HEALTH_TIMEOUT).await {
+    match send_authenticated(&client, "GET", &target, auth, HEALTH_TIMEOUT).await {
         Err(e) => HealthResult {
             reachable: false,
             status: Some(e),

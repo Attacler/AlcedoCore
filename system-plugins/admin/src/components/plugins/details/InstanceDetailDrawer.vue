@@ -15,6 +15,7 @@ ChartJS.register(...registerables);
 const props = defineProps<{
     visible: boolean;
     pluginName: string;
+    installId?: number | null;
     taskId: string | null;
 }>();
 
@@ -59,12 +60,12 @@ onUnmounted(() => {
 });
 
 async function loadData() {
-    if (!props.taskId || !props.pluginName) return;
+    if (!props.installId || !props.taskId) return;
     loading.value = true;
     error.value = null;
     try {
         const [instanceDetail] = await Promise.all([
-            store.fetchInstanceDetail(props.pluginName, props.taskId),
+            store.fetchInstanceDetail(props.installId, props.taskId),
         ]);
         detail.value = instanceDetail;
     } catch (e) {
@@ -82,6 +83,7 @@ async function restartInstance() {
         await store.restartPlugin(
             props.pluginName,
             detail.value?.deployment_id || undefined,
+            props.installId,
         );
         await loadData();
     } catch (e) {
@@ -93,10 +95,10 @@ async function restartInstance() {
 }
 
 async function fetchStats() {
-    if (!props.taskId || !props.pluginName) return;
+    if (!props.installId || !props.taskId) return;
     try {
         const stats = await store.fetchInstanceStats(
-            props.pluginName,
+            props.installId,
             props.taskId,
         );
         statsHistory.value.push(stats);
