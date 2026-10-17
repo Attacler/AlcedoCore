@@ -3,19 +3,22 @@ import json
 import os
 from aiohttp import web
 
-from alcedo_sdk import AlcedoClient, KeyNotFoundError, KVStoreError
+from alcedo_sdk import AlcedoClient
+from alcedo_sdk.exceptions import AlcedoError
 
 
 CORE_URL = os.environ.get("CORE_URL", "http://core:8080")
 PORT = os.environ.get("PORT", "8080")
 
+
 async def _forward_items(method: str, path: str, body: any, query_params: dict | None = None, request_id: str | None = None) -> dict:
-    from alcedo_sdk.exceptions import AlcedoError
     try:
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
             items_path = path[len("/api/items/"):]
             if method == "GET":
                 data = await client.items.list(items_path, params=query_params)
+                items = data.get("data", []) if isinstance(data, dict) else data
+                return {"items": items}
             elif method == "POST":
                 data = await client.items.create(items_path, body)
             elif method == "PUT":
@@ -24,20 +27,28 @@ async def _forward_items(method: str, path: str, body: any, query_params: dict |
                 data = await client.items.delete(items_path, body)
             else:
                 return {"error": f"Unsupported method: {method}"}
-            return data
+            return data if isinstance(data, dict) else {"data": data}
     except AlcedoError as e:
-        return {"error": str(e), "status": getattr(e, 'status_code', 500)}
+        return {"error": str(e), "status": getattr(e, "http_status", None) or getattr(e, "status_code", 500)}
+
+
+def _kv_value(payload: any) -> any:
+    """kv.get answers with the API payload; the value lives under "value"."""
+    if isinstance(payload, dict):
+        return payload.get("value")
+    return payload
 
 
 async def get_counter(request_id: str | None = None) -> int:
     try:
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
-            val = await client.kv.get("counter")
+            val = _kv_value(await client.kv.get("counter"))
             if val is None:
                 return 0
             return int(val)
-    except KVStoreError as e:
-        print(f"[KV Error] get_counter: {e}")
+    except AlcedoError as e:
+        # A missing counter key reads as 0 — the counter starts there.
+        print(f"[KV] get_counter: {e}")
         return 0
 
 
@@ -47,7 +58,7 @@ async def decrement_counter(delta: int = 1, request_id: str | None = None) -> in
     try:
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
             await client.kv.set("counter",str(count))
-    except KVStoreError as e:
+    except AlcedoError as e:
         print(f"[KV Error] decrement_counter: {e}")
     return count
 
@@ -59,7 +70,7 @@ async def increment_counter(delta: int = 1, request_id: str | None = None) -> in
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
             res = await client.kv.set("counter",str(count))
             print(res)
-    except KVStoreError as e:
+    except AlcedoError as e:
         print(f"[KV Error] increment_counter: {e}")
     return count
 
@@ -75,18 +86,21 @@ async def ttl_demo(request_id: str | None = None) -> dict:
         demo_key = "ttl-demo"
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
             before = await client.kv.ttl(demo_key)
-            result["before_set"] = before
+            result["before_set"] = before.get("ttl") if isinstance(before, dict) else before
             await client.kv.set(demo_key, "This key will auto-expire", ttl=2)
             after_set = await client.kv.ttl(demo_key)
-            result["after_set"] = after_set
+            result["after_set"] = after_set.get("ttl") if isinstance(after_set, dict) else after_set
             val = await client.kv.get(demo_key)
-            result["after_set_value"] = val
+            result["after_set_value"] = _kv_value(val)
             await asyncio.sleep(3)
-            after_expiry = await client.kv.get(demo_key)
-            result["after_expiry_value"] = after_expiry
+            try:
+                after_expiry = await client.kv.get(demo_key)
+                result["after_expiry_value"] = _kv_value(after_expiry)
+            except AlcedoError:
+                result["after_expiry_value"] = None
             after_ttl = await client.kv.ttl(demo_key)
-            result["after_ttl"] = after_ttl
-    except KVStoreError as e:
+            result["after_ttl"] = after_ttl.get("ttl") if isinstance(after_ttl, dict) else after_ttl
+    except AlcedoError as e:
         result["status"] = "error"
         result["error"] = str(e)
     return result
@@ -95,12 +109,10 @@ async def ttl_demo(request_id: str | None = None) -> dict:
 async def fetch_kv(key: str, request_id: str | None = None) -> dict:
     try:
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
-            val = await client.kv.get(key)
+            val = _kv_value(await client.kv.get(key))
             return {"key": key, "value": val}
-    except KeyNotFoundError:
-        return {"key": key, "value": None, "error": "not_found"}
-    except KVStoreError as e:
-        return {"key": key, "error": str(e)}
+    except AlcedoError as e:
+        return {"key": key, "value": None, "error": "not_found" if "not found" in str(e).lower() else str(e)}
 
 
 async def change_counter(delta: int, request_id: str | None = None) -> dict:
@@ -108,7 +120,7 @@ async def change_counter(delta: int, request_id: str | None = None) -> dict:
     try:
         count = await func(abs(delta), request_id=request_id)
         return {"count": count}
-    except KVStoreError as e:
+    except AlcedoError as e:
         return {"error": str(e)}
 
 

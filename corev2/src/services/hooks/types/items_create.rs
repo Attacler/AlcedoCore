@@ -14,4 +14,5 @@ pub struct ItemsBeforeCreate {
 pub struct ItemsAfterCreate {
     pub items: Vec<serde_json::Map<String, Value>>,
     pub collection: String,
+    pub pk_name: String,
 }

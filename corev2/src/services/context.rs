@@ -1,10 +1,10 @@
 use axum::{extract::FromRequestParts, http::request::Parts};
 use serde::{Deserialize, Serialize};
 
+use crate::AppState;
 use crate::middelware::auth::AuthLevel;
 use crate::services::errors::AlcedoError;
 use crate::utils::slugify;
-use crate::AppState;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum RequestSource {
@@ -102,11 +102,23 @@ impl FromRequestParts<AppState> for ExtractContext {
             }
         }
 
-        let (Some(app_name), Some(version)) = (app, version) else {
-            return Err(AlcedoError::InvalidInput("No app provided".to_string(), 0));
-        };
-
         let identity = AuthLevel::from_request_parts(parts, state).await?;
+
+        let (app_name, version) = match (app, version) {
+            (Some(app_name), Some(version)) => (app_name, version),
+            (None, Some(version)) => {
+                let app_name = identity
+                    .plugin_app()
+                    .ok_or_else(|| AlcedoError::InvalidInput("No app provided".to_string(), 0))?;
+                (app_name, version)
+            }
+            (Some(_), None) | (None, None) => match identity.plugin_app_version() {
+                Some((app_name, version)) => (app_name, version),
+                None => {
+                    return Err(AlcedoError::InvalidInput("No app provided".to_string(), 0));
+                }
+            },
+        };
 
         let request_id = parts
             .headers

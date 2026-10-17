@@ -24,13 +24,16 @@ export function createItemsResource(ky: any) {
             name: string,
             data: { filter: any; update: any },
             options?: Record<string, any>,
-        ) =>
-            ky
-                .put(`app/items/${encodeURIComponent(name)}`, {
-                    json: data,
+        ) => {
+            const { filter, update, ...rest } = data;
+            return ky
+                .patch(`app/items/${encodeURIComponent(name)}`, {
+                    json: update ?? rest,
+                    searchParams: { filter: JSON.stringify(filter ?? {}) },
                     ...options,
                 })
-                .json(),
+                .json();
+        },
 
         delete: (
             name: string,

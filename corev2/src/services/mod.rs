@@ -11,6 +11,7 @@ pub mod encryption;
 pub mod errors;
 #[cfg(feature = "docker")]
 pub mod docker_platform;
+pub mod event_forwarder;
 pub mod files;
 pub mod hooks;
 pub mod items;

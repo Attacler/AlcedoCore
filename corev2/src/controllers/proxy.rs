@@ -10,7 +10,7 @@ use axum::{
 use crate::{
     AppState,
     services::{
-        plugins::{register_plugin_request, resolve_install_by_id},
+        plugins::{plugin_subdir, register_plugin_request, resolve_install_by_id, safe_join},
         registry_client::build_client,
     },
 };
@@ -56,6 +56,10 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
         Ok(install) => install,
         Err(e) => return e.into_response(),
     };
+
+    if let Some(response) = public_file_response(&state, install_id, &parts.uri).await {
+        return response;
+    }
 
     let Some(deployment_id) = install.install.deployment_id.clone() else {
         return (
@@ -148,9 +152,43 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
     Response::from_parts(upstream_parts, Body::new(upstream_body))
 }
 
-/// `/p/42/api/items/foo` → `42`; a non-numeric, empty or negative segment → `None`.
-/// Install ids are auto-increment, so 0 and below can never name an install —
-/// rejecting them here keeps a junk request from reaching the database.
+async fn public_file_response(state: &AppState, install_id: i64, uri: &Uri) -> Option<Response> {
+    let relative = public_path_of(uri)?;
+    if relative.is_empty() {
+        return None;
+    }
+
+    let root = plugin_subdir(&state.config, install_id, "public");
+    let path = safe_join(&root, &relative)?;
+    if !tokio::fs::metadata(&path).await.ok()?.is_file() {
+        return None;
+    }
+
+    let bytes = tokio::fs::read(&path).await.ok()?;
+    let mime = mime_guess::from_path(&path)
+        .first_or_octet_stream()
+        .to_string();
+    tracing::debug!(
+        "[PLUGIN-PUBLIC] serving {}/{} ({} bytes)",
+        install_id,
+        relative,
+        bytes.len()
+    );
+    Some(
+        (
+            [(axum::http::header::CONTENT_TYPE, mime)],
+            Body::from(bytes),
+        )
+            .into_response(),
+    )
+}
+
+fn public_path_of(uri: &Uri) -> Option<String> {
+    let rest = uri.path().strip_prefix("/p/")?;
+    let (_, tail) = rest.split_once('/')?;
+    Some(tail.to_string())
+}
+
 fn install_id_of(uri: &Uri) -> Option<i64> {
     let rest = uri.path().strip_prefix("/p/")?;
     let first = match rest.split_once('/') {
@@ -204,8 +242,12 @@ fn should_strip(name: &HeaderName) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{install_id_of, proxy_controller, should_strip, target_path};
+    use super::{
+        install_id_of, proxy_controller, public_file_response, public_path_of, should_strip,
+        target_path,
+    };
     use axum::body::Body;
+    use axum::body::to_bytes;
     use axum::http::{HeaderName, Request, StatusCode, Uri};
     use tower::ServiceExt;
 
@@ -331,10 +373,80 @@ mod tests {
     }
 
     #[test]
+    fn public_path_strips_the_install_segment() {
+        assert_eq!(
+            public_path_of(&Uri::from_static("/p/42/logo.png")),
+            Some("logo.png".to_string())
+        );
+        assert_eq!(
+            public_path_of(&Uri::from_static("/p/42/assets/logo.png?x=1")),
+            Some("assets/logo.png".to_string())
+        );
+        // The plugin root is always the plugin's, never a file. A bare
+        // trailing slash is an empty relative path, which the handler
+        // also treats as "not a file".
+        assert_eq!(public_path_of(&Uri::from_static("/p/42")), None);
+        assert_eq!(
+            public_path_of(&Uri::from_static("/p/42/")),
+            Some("".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn public_files_serve_from_the_install_public_dir() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        let install_id = 2147483000;
+
+        let public_dir = std::path::Path::new(&state.config.plugins_dir)
+            .join(install_id.to_string())
+            .join("public")
+            .join("assets");
+        std::fs::create_dir_all(&public_dir).unwrap();
+        std::fs::write(public_dir.join("logo.png"), b"png-bytes").unwrap();
+
+        let response = public_file_response(
+            &state,
+            install_id,
+            &Uri::from_static("/p/2147483000/assets/logo.png"),
+        )
+        .await
+        .expect("file should be served");
+        assert_eq!(response.headers()["content-type"], "image/png");
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(&bytes[..], b"png-bytes");
+
+        // A path that is not a file falls through to the proxy.
+        assert!(
+            public_file_response(
+                &state,
+                install_id,
+                &Uri::from_static("/p/2147483000/assets/missing.png")
+            )
+            .await
+            .is_none()
+        );
+
+        // Traversal stays inside the public dir.
+        assert!(
+            public_file_response(
+                &state,
+                install_id,
+                &Uri::from_static("/p/2147483000/../../../etc/passwd")
+            )
+            .await
+            .is_none()
+        );
+
+        std::fs::remove_dir_all(
+            std::path::Path::new(&state.config.plugins_dir).join(install_id.to_string()),
+        )
+        .ok();
+    }
+
+    #[test]
     fn targets_plugin_root() {
         assert_eq!(target_path(&Uri::from_static("/p/42")), "/");
     }
-
     #[test]
     fn targets_nested_plugin_path() {
         assert_eq!(

@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, inject } from "vue";
 
-const BASE = "/p/hello-world/api/items/orders";
+const plugin = inject<any>("alcedoPlugin", null);
+const BASE = computed(
+    () => `${plugin?.basePath || "/p/hello-world"}/api/items/orders`,
+);
 
 interface Item {
     id: number;
@@ -63,7 +66,7 @@ async function fetchItems() {
         const filter = buildFilterPayload();
         if (filter) params.set("filter", JSON.stringify(filter));
 
-        const r = await fetch(`${BASE}?${params.toString()}`, {
+        const r = await fetch(`${BASE.value}?${params.toString()}`, {
             method: "GET",
         });
         const data = await r.json();
@@ -92,7 +95,7 @@ async function addItem() {
     if (!addForm.value.description.trim()) return;
     error.value = "";
     try {
-        const r = await fetch(BASE, {
+        const r = await fetch(BASE.value, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -122,7 +125,7 @@ async function updateItem() {
     if (editId.value === null) return;
     error.value = "";
     try {
-        const r = await fetch(BASE, {
+        const r = await fetch(BASE.value, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -152,7 +155,7 @@ async function updateItem() {
 async function deleteItem(id: number) {
     error.value = "";
     try {
-        const r = await fetch(BASE, {
+        const r = await fetch(BASE.value, {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ pk_values: [id] }),

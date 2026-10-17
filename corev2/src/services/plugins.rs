@@ -366,6 +366,7 @@ impl PluginsService<'_> {
                 .ensure_absent(install_id as i64)
                 .await?;
         }
+        crate::services::event_forwarder::invalidate_all(self.app_state).await;
 
         Ok(deleted)
     }
@@ -383,6 +384,55 @@ impl PluginsService<'_> {
             },
         )
         .await
+    }
+
+    /// Enabled installs of one app × version, with the plugin's slug — the
+    /// event forwarder's recipient list. Disabled installs never hear events.
+    pub async fn enabled_installs_for_app_version(
+        &self,
+        app_version_id: i32,
+    ) -> Result<Vec<(String, InstallRecord)>, AlcedoError> {
+        let rows = self
+            .read(
+                INSTALLS,
+                Query {
+                    fields: vec!["*".to_string()],
+                    limit: 0,
+                    ..Query::eq_all(&[
+                        ("app_version_id", Value::from(app_version_id)),
+                        ("enabled", Value::Bool(true)),
+                    ])
+                },
+            )
+            .await?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // One catalog read covers every recipient row.
+        let mut slug_by_plugin: HashMap<i32, String> = HashMap::new();
+        for row in self
+            .list_catalog(Query {
+                fields: vec!["id".to_string(), "slug".to_string()],
+                limit: 0,
+                ..Default::default()
+            })
+            .await?
+        {
+            if let (Some(id), Some(slug)) = (int_field(&row, "id"), str_field(&row, "slug")) {
+                slug_by_plugin.insert(id, slug);
+            }
+        }
+
+        let infos = self.app_version_infos().await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let plugin_id = int_field(&row, "plugin_id")?;
+                let slug = slug_by_plugin.get(&plugin_id).cloned()?;
+                Some((slug, install_record(&row, &infos)))
+            })
+            .collect())
     }
 
     async fn registry_names(&self) -> Result<HashMap<i32, String>, AlcedoError> {
@@ -789,6 +839,13 @@ impl PluginsService<'_> {
             input.slug,
             plugin_root.display()
         );
+        crate::services::event_forwarder::invalidate_manifest_cache(self.app_state, install_id)
+            .await;
+        crate::services::event_forwarder::invalidate_subscribers(
+            self.app_state,
+            input.app_version_id,
+        )
+        .await;
 
         let deployment_id = self
             .app_state
@@ -918,6 +975,13 @@ impl PluginsService<'_> {
             .platform
             .ensure_absent(i64::from(install_id))
             .await?;
+        crate::services::event_forwarder::invalidate_subscribers(self.app_state, app_version_id)
+            .await;
+        crate::services::event_forwarder::invalidate_manifest_cache(
+            self.app_state,
+            i64::from(install_id),
+        )
+        .await;
         Ok(())
     }
 
@@ -930,7 +994,10 @@ impl PluginsService<'_> {
         let mut payload = Map::new();
         payload.insert("enabled".to_string(), Value::from(enabled));
         self.update_install(plugin_id, app_version_id, payload)
-            .await
+            .await?;
+        crate::services::event_forwarder::invalidate_subscribers(self.app_state, app_version_id)
+            .await;
+        Ok(())
     }
 
     // --- mocked deployment/runtime surfaces -----------------------------

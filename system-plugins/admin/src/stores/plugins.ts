@@ -386,6 +386,11 @@ export const usePluginsStore = defineStore("plugins", () => {
         if (!load?.default) return;
 
         registeredPlugins.add(plugin.slug);
+        const meta = {
+            installId: install.id,
+            app: install.api_name ?? install.app_name ?? null,
+            version: install.version_name ?? null,
+        };
         for (const page of load.default.pages || []) {
             extensionRegistry.registerNavItem({
                 component: page.component,
@@ -394,6 +399,37 @@ export const usePluginsStore = defineStore("plugins", () => {
                 pluginSlug: plugin.slug,
                 path: page.path,
                 sidebar: page.sidebar ?? true,
+                ...meta,
+            });
+        }
+        for (const input of load.default.inputs || []) {
+            extensionRegistry.registerInputWidget({
+                component: input.component,
+                label: input.label,
+                supportedFieldTypes: input.supportedFieldTypes || [],
+                preferredInputs: input.preferredInputs,
+                pluginSlug: plugin.slug,
+                type: input.name,
+                settingsComponent: input.settingsComponent,
+                group: input.group || "Custom",
+                icon: input.icon,
+                custom: true,
+                ...meta,
+            });
+        }
+        for (const display of load.default.displays || []) {
+            extensionRegistry.registerDisplayWidget({
+                component: display.component,
+                label: display.label,
+                supportedFieldTypes: display.supportedFieldTypes || [],
+                preferredInputs: display.preferredInputs,
+                pluginSlug: plugin.slug,
+                type: display.name,
+                settingsComponent: display.settingsComponent,
+                group: display.group || "Custom",
+                icon: display.icon,
+                custom: true,
+                ...meta,
             });
         }
     }

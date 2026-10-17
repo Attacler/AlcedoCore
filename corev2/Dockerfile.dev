@@ -1,0 +1,7 @@
+FROM debian:trixie-slim
+
+WORKDIR /app
+COPY backend-dist/backend /app/backend
+
+EXPOSE 8080
+CMD ["./backend"]

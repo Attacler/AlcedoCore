@@ -1,81 +1,110 @@
 import json
 from typing import Any, Optional
 
-from ..exceptions import NotFoundError, ValidationError
 from .base import BaseResource
 
 
 class KVResource(BaseResource):
-    """Key-Value store resource. Maps to /api/kv/* endpoints."""
+    """Key-Value store resource. Maps to /api/app/kv/* endpoints.
 
-    async def get(self, key: str) -> Optional[Any]:
-        """Get a value by key. Returns None if key doesn't exist."""
-        data = await self._request("GET", f"/api/kv/{key}")
-        return data.get("data") if data else None
+    App-scoped: requires X-App/X-Version headers (set via client defaults or
+    per-call ``app``/``version`` arguments).
+    """
 
-    async def set(self, key: str, value: Any, ttl: Optional[int] = None) -> Any:
-        """Set a key-value pair with optional TTL (seconds). Returns the stored value."""
-        payload: dict[str, Any] = {"value": value if isinstance(value, (str, bytes)) else json.dumps(value)}
+    async def get(self, key: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
+        """Get a value by key. Returns the API payload ({"key": ..., "value": ...})."""
+        return await self._request("GET", f"/api/app/kv/{key}", app=app, version=version)
+
+    async def set(
+        self,
+        key: str,
+        value: Any,
+        ttl: Optional[int] = None,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """Set a key-value pair with optional TTL (seconds).
+
+        Objects are JSON-encoded before sending (mirrors the node SDK).
+        Returns the API payload ({"key": ..., "value": ...}).
+        """
+        payload: dict[str, Any] = {
+            "value": value if isinstance(value, (str, bytes)) else json.dumps(value)
+        }
         params = {"ttl": str(ttl)} if ttl is not None else None
-        data = await self._request("PUT", f"/api/kv/{key}", json=payload, params=params)
-        return data.get("data") if data else None
+        return await self._request(
+            "PUT", f"/api/app/kv/{key}", json=payload, params=params, app=app, version=version
+        )
 
-    async def delete(self, key: str) -> bool:
-        """Delete a key. Returns True if deleted, False if key didn't exist."""
-        try:
-            await self._request("DELETE", f"/api/kv/{key}")
-            return True
-        except NotFoundError:
-            return False
+    async def delete(self, key: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
+        """Delete a key. Returns the API payload ({"key": ..., "deleted": true})."""
+        return await self._request("DELETE", f"/api/app/kv/{key}", app=app, version=version)
 
-    async def exists(self, key: str) -> bool:
-        """Check if a key exists."""
-        data = await self._request("GET", f"/api/kv/{key}/exists")
-        return data.get("exists", False) if data else False
+    async def exists(self, key: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
+        """Check if a key exists. Returns the API payload ({"key": ..., "exists": bool})."""
+        return await self._request("GET", f"/api/app/kv/{key}/exists", app=app, version=version)
 
-    async def ttl(self, key: str) -> Optional[int]:
-        """Get TTL for a key in seconds. Returns None if no TTL set."""
-        data = await self._request("GET", f"/api/kv/{key}/ttl")
-        if data is None:
-            return None
-        val = data.get("ttl")
-        return int(val) if val is not None else None
+    async def ttl(self, key: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
+        """Get TTL for a key in seconds. Returns the API payload ({"key": ..., "ttl": int|None})."""
+        return await self._request("GET", f"/api/app/kv/{key}/ttl", app=app, version=version)
 
-    async def list_keys(self, prefix: str = "") -> list[str]:
-        """List all keys, optionally filtered by prefix."""
-        params = {"prefix": prefix} if prefix else None
-        data = await self._request("GET", "/api/kv/", params=params)
-        return data.get("keys", []) if data else []
+    async def list(
+        self,
+        prefix: Optional[str] = None,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """List keys, optionally filtered by prefix. Returns {"keys": [...]}."""
+        params = {"prefix": prefix} if prefix is not None else None
+        return await self._request("GET", "/api/app/kv", params=params, app=app, version=version)
 
-    async def batch_get(self, keys: list[str]) -> dict[str, Optional[Any]]:
-        """Get multiple keys at once. Returns dict of key -> value (None for missing keys)."""
-        data = await self._request("POST", "/api/kv/batch/get", json={"keys": keys})
-        return data.get("values", {}) if data else {}
+    # Backward-compatible alias for the old Python SDK name.
+    list_keys = list
 
-    async def batch_set(self, pairs: list[dict[str, Any]]) -> None:
-        """Set multiple key-value pairs at once. Each pair: {"key": str, "value": any, "ttl": optional int}."""
-        items: list[dict[str, Any]] = []
-        for pair in pairs:
-            if "key" not in pair:
-                raise ValidationError(
-                    "Each pair must contain a 'key' field",
-                    details={"pair": pair},
-                )
-            if "value" not in pair:
-                raise ValidationError(
-                    "Each pair must contain a 'value' field",
-                    details={"pair": pair},
-                )
-            item: dict[str, Any] = {
-                "key": pair["key"],
-                "value": str(pair["value"]),
-            }
-            if "ttl" in pair:
-                item["ttl"] = pair["ttl"]
-            items.append(item)
-        await self._request("POST", "/api/kv/batch/set", json=items)
+    async def batch_get(
+        self,
+        keys: list,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """Get multiple keys at once. Returns {"values": {...}}."""
+        return await self._request(
+            "POST", "/api/app/kv/batch/get", json={"keys": keys}, app=app, version=version
+        )
 
-    async def batch_delete(self, keys: list[str]) -> int:
-        """Delete multiple keys at once. Returns count of deleted keys."""
-        data = await self._request("POST", "/api/kv/batch/delete", json={"keys": keys})
-        return data.get("deleted", 0) if data else 0
+    async def batch_set(
+        self,
+        pairs: list,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """Set multiple key-value pairs at once.
+
+        Each pair: {"key": str, "value": any, "ttl": optional int}.
+        """
+        return await self._request(
+            "POST", "/api/app/kv/batch/set", json=pairs, app=app, version=version
+        )
+
+    async def batch_delete(
+        self,
+        keys: list,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """Delete multiple keys at once. Returns {"deleted": count}."""
+        return await self._request(
+            "POST", "/api/app/kv/batch/delete", json={"keys": keys}, app=app, version=version
+        )
+
+    async def query(
+        self,
+        pattern: Optional[str] = None,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """Query keys by pattern. Returns {"status": "ok"} or matched keys."""
+        params = {"pattern": pattern} if pattern is not None else None
+        return await self._request(
+            "GET", "/api/app/kv/query", params=params, app=app, version=version
+        )

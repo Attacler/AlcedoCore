@@ -1,12 +1,36 @@
+from typing import Any, Optional
+
 from .base import BaseResource
 
 
 class AuthResource(BaseResource):
-    async def me(self) -> dict:
-        return await self._request("GET", "/api/auth/me")
+    """Platform auth resource. Maps to /api/platform/auth/*."""
 
-    async def login(self, email: str, password: str) -> dict:
-        return await self._request("POST", "/api/auth/login", json={"email": email, "password": password})
+    async def me(
+        self,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> dict:
+        return await self._request("GET", "/api/platform/auth/me", app=app, version=version)
 
-    async def logout(self) -> dict:
-        return await self._request("POST", "/api/auth/logout")
+    async def login(
+        self,
+        email: str,
+        password: str,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> dict:
+        return await self._request(
+            "POST",
+            "/api/platform/auth/login",
+            json={"email": email, "password": password},
+            app=app,
+            version=version,
+        )
+
+    async def logout(
+        self,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> dict:
+        return await self._request("POST", "/api/platform/auth/logout", app=app, version=version)

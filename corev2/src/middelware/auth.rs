@@ -33,6 +33,20 @@ impl AuthLevel {
             AuthLevel::Public => Err(AlcedoError::UnAuthenticated()),
         }
     }
+
+    pub fn plugin_app(&self) -> Option<String> {
+        match self {
+            AuthLevel::Plugin(identity) => identity.app.clone(),
+            _ => None,
+        }
+    }
+
+    pub fn plugin_app_version(&self) -> Option<(String, String)> {
+        match self {
+            AuthLevel::Plugin(identity) => Some((identity.app.clone()?, identity.version.clone()?)),
+            _ => None,
+        }
+    }
 }
 
 /// Reads the install identity the proxy registered for this request id.

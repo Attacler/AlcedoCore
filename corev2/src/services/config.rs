@@ -39,6 +39,7 @@ pub struct Config {
     pub docker_socket: String,
     pub plugin_network: String,
     pub plugins_dir: String,
+    pub event_forwarder_max_concurrent: usize,
 }
 
 pub fn get_config() -> Config {
@@ -85,6 +86,11 @@ pub fn get_config() -> Config {
     let docker_socket = env_str("DOCKER_SOCKET", "/var/run/docker.sock");
     let plugin_network = env_str("PLUGIN_NETWORK", "alcedocore_plugins");
     let plugins_dir = env_str("PLUGINS_DIR", "./plugins");
+    let event_forwarder_max_concurrent = env_or_msg(
+        "EVENT_FORWARDER_MAX_CONCURRENT",
+        50usize,
+        "must be a number",
+    );
 
     if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
         eprintln!(
@@ -125,6 +131,7 @@ pub fn get_config() -> Config {
         docker_socket,
         plugin_network,
         plugins_dir,
+        event_forwarder_max_concurrent,
     }
 }
 

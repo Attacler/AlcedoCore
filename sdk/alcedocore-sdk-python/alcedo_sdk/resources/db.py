@@ -9,9 +9,10 @@ class DBResource(BaseResource):
     async def query(
         self,
         sql: str,
-        params: Optional[list[Any]] = None,
+        params: Optional[list] = None,
         timeout_secs: int = 30,
         max_rows: int = 100,
+        slug: Optional[str] = None,
     ) -> dict:
         """Execute a read-only SQL query against the plugin's database schema.
 
@@ -24,6 +25,7 @@ class DBResource(BaseResource):
             params: Query parameters to safely substitute into the SQL
             timeout_secs: Database query execution timeout
             max_rows: Maximum number of rows to return
+            slug: Plugin slug; defaults to the client's plugin_slug.
 
         Returns:
             dict with keys: columns (list[str]), rows (list[list]), row_count (int),
@@ -31,9 +33,10 @@ class DBResource(BaseResource):
 
         The timeout applies to the database query execution, not the HTTP request.
         """
+        resolved_slug = slug if slug is not None else self._plugin_slug
         return await self._request(
             "POST",
-            f"/p/{self._plugin_slug}/db/query",
+            f"/p/{resolved_slug}/db/query",
             json={
                 "query": sql,
                 "params": params or [],

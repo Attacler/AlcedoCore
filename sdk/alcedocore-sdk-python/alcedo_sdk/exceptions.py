@@ -15,6 +15,27 @@ class AlcedoError(Exception):
         return self.message
 
 
+class AlcedoApiError(AlcedoError):
+    """Error raised when the core responds with a JSend ``fail``/``error`` envelope.
+
+    Mirrors ``AlcedoApiError`` from the node SDK: the JSend ``message``,
+    ``code`` and ``status`` ("fail" | "error") are preserved alongside the
+    HTTP status of the response.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: Optional[int] = None,
+        status: Optional[str] = None,
+        http_status: Optional[int] = None,
+    ):
+        super().__init__(message, status_code=http_status)
+        self.code = code
+        self.status = status
+        self.http_status = http_status
+
+
 class ConnectionFailedError(AlcedoError):
     """Network or connection failure (includes httpx TransportError).
 

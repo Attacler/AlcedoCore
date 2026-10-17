@@ -4,7 +4,9 @@ import {
     ref,
     shallowRef,
     computed,
+    reactive,
     watch,
+    provide,
     type Component,
 } from "vue";
 import { useRoute } from "vue-router";
@@ -29,6 +31,25 @@ const pluginName = computed(() => (route.params.plugin as string) || ""),
 
 const error = ref<string | null>(null),
     currentComponent = shallowRef(null as null | Component);
+
+const pluginContext = reactive({
+    installId: null as number | null,
+    slug: null as string | null,
+    basePath: null as string | null,
+    app: null as string | null,
+    version: null as string | null,
+});
+provide("alcedoPlugin", pluginContext);
+
+function setPluginContext(registration: any) {
+    pluginContext.installId = registration?.installId ?? null;
+    pluginContext.slug = registration?.pluginSlug ?? null;
+    pluginContext.basePath = registration?.installId
+        ? `/p/${registration.installId}`
+        : null;
+    pluginContext.app = registration?.app ?? null;
+    pluginContext.version = registration?.version ?? null;
+}
 
 // Loading and state tracking
 const loading = ref(false),
@@ -60,14 +81,17 @@ function fetchPageInfo() {
                 pagePath.value.startsWith(p.path + "/"),
             );
             if (parentPage) {
+                setPluginContext(parentPage);
                 pageLabel.value = parentPage.label || parentPage.path;
                 currentComponent.value = parentPage.component;
                 return true;
             }
             // Truly unknown page — show 404 but allow loadAssets to attempt anyway
+            setPluginContext(null);
             pageLabel.value = pagePath.value;
             return true;
         }
+        setPluginContext(page);
         pageLabel.value = page.label || page.path;
         currentComponent.value = page.component;
         loading.value = false;
@@ -86,6 +110,13 @@ watch(
     () => pluginsStore.pluginsReady,
     (ready) => {
         if (ready) fetchPageInfo();
+    },
+);
+
+watch(
+    () => [pluginName.value, pagePath.value],
+    () => {
+        if (pluginsStore.pluginsReady) fetchPageInfo();
     },
 );
 </script>

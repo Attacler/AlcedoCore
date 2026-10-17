@@ -18,6 +18,7 @@ use crate::services::postgres::pool::{
     execute_query, execute_query_transaction, pgrow_to_json, process_query_error_response,
 };
 use crate::{AppState, services::activity_logs, services::errors::AlcedoError};
+use crate::services::event_forwarder;
 use tokio::sync::OnceCell;
 
 pub struct ItemsService<'a> {
@@ -101,8 +102,16 @@ impl AfterCommitQueue {
                     context,
                     mut event,
                 } => {
+                    let item_events: Vec<event_forwarder::ItemEvent> = event
+                        .items
+                        .iter()
+                        .map(|item| event_forwarder::ItemEvent {
+                            item_id: item.get(&event.pk_name).cloned(),
+                            payload: Value::Object(item.clone()),
+                        })
+                        .collect();
                     let hook_context = HookContext {
-                        context,
+                        context: context.clone(),
                         state: state.clone(),
                         tx: None,
                     };
@@ -110,14 +119,30 @@ impl AfterCommitQueue {
                         .event_bus
                         .trigger(&key, &mut event, hook_context)
                         .await;
+                    event_forwarder::deliver_item_events(
+                        state,
+                        &context,
+                        event_forwarder::ITEM_CREATED,
+                        &event.collection,
+                        item_events,
+                    )
+                    .await;
                 }
                 PendingAfter::Update {
                     key,
                     context,
                     mut event,
                 } => {
+                    let item_events: Vec<event_forwarder::ItemEvent> = event
+                        .keys
+                        .iter()
+                        .map(|key| event_forwarder::ItemEvent {
+                            item_id: Some(Value::String(key.clone())),
+                            payload: Value::Object(event.payload.clone()),
+                        })
+                        .collect();
                     let hook_context = HookContext {
-                        context,
+                        context: context.clone(),
                         state: state.clone(),
                         tx: None,
                     };
@@ -125,14 +150,30 @@ impl AfterCommitQueue {
                         .event_bus
                         .trigger(&key, &mut event, hook_context)
                         .await;
+                    event_forwarder::deliver_item_events(
+                        state,
+                        &context,
+                        event_forwarder::ITEM_UPDATED,
+                        &event.collection,
+                        item_events,
+                    )
+                    .await;
                 }
                 PendingAfter::Delete {
                     key,
                     context,
                     mut event,
                 } => {
+                    let item_events: Vec<event_forwarder::ItemEvent> = event
+                        .keys
+                        .iter()
+                        .map(|key| event_forwarder::ItemEvent {
+                            item_id: Some(key.clone()),
+                            payload: Value::Null,
+                        })
+                        .collect();
                     let hook_context = HookContext {
-                        context,
+                        context: context.clone(),
                         state: state.clone(),
                         tx: None,
                     };
@@ -140,6 +181,14 @@ impl AfterCommitQueue {
                         .event_bus
                         .trigger(&key, &mut event, hook_context)
                         .await;
+                    event_forwarder::deliver_item_events(
+                        state,
+                        &context,
+                        event_forwarder::ITEM_DELETED,
+                        &event.collection,
+                        item_events,
+                    )
+                    .await;
                 }
                 PendingAfter::Log { entry } => {
                     if let Err(err) = activity_logs::record(
@@ -329,6 +378,7 @@ impl ItemsService<'_> {
             event: ItemsAfterCreate {
                 items,
                 collection: self.collection.clone(),
+                pk_name,
             },
         });
     }
