@@ -74,6 +74,18 @@ async fn main() -> Result<()> {
 
     state.refresh_schema().await;
 
+    // Plugin log retention: sweep hourly (first tick is immediate).
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60 * 60));
+            loop {
+                interval.tick().await;
+                services::plugin_logs::prune_plugin_logs(&state).await;
+            }
+        });
+    }
+
     SchemaService::refresh_all_meta(&state).await;
     VersionsService::new(&state).ensure_default().await?;
     services::registries::RegistriesService::new(&state)
@@ -113,6 +125,10 @@ async fn main() -> Result<()> {
         // .fallback_service(controllers::ui::ui_controller())
         .fallback(handler_404)
         .layer(middleware::from_fn(middelware::log::log_request))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            middelware::host_calls::record_host_calls,
+        ))
         .layer(middleware::from_fn(middelware::request_id::add_request_id))
         .layer(middleware::from_fn_with_state(
             state.clone(),

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use axum::{
     Router,
     body::Body,
@@ -10,9 +12,11 @@ use axum::{
 use crate::{
     AppState,
     services::{
+        plugin_logs::{log_plugin_request, should_log_request},
         plugins::{plugin_subdir, register_plugin_request, resolve_install_by_id, safe_join},
         registry_client::build_client,
     },
+    utils::slugify,
 };
 
 const REQUEST_ID_TTL_SECONDS: u64 = 60 * 15;
@@ -57,11 +61,36 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
         Err(e) => return e.into_response(),
     };
 
+    let schema = format!(
+        "{}010{}",
+        slugify(install.install.api_name.as_deref().unwrap_or("alcedocore")),
+        slugify(install.install.version_name.as_deref().unwrap_or("")),
+    );
+
     if let Some(response) = public_file_response(&state, install_id, &parts.uri).await {
         return response;
     }
 
+    let started = Instant::now();
+    let method = parts.method.as_str().to_string();
+    let inbound_path = parts.uri.path().to_string();
+    let should_log = should_log_request(&install.install.settings, &inbound_path);
+    let request_id = uuid::Uuid::new_v4().to_string();
+
     let Some(deployment_id) = install.install.deployment_id.clone() else {
+        if should_log {
+            log_plugin_request(
+                &state,
+                &schema,
+                install_id,
+                &install.slug,
+                &request_id,
+                &method,
+                &inbound_path,
+                503,
+                started,
+            );
+        }
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             format!("Plugin install {} is not deployed", install_id),
@@ -72,6 +101,19 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
     let address = match state.platform.get_address(&deployment_id).await {
         Ok(Some(address)) => address,
         Ok(None) => {
+            if should_log {
+                log_plugin_request(
+                    &state,
+                    &schema,
+                    install_id,
+                    &install.slug,
+                    &request_id,
+                    &method,
+                    &inbound_path,
+                    503,
+                    started,
+                );
+            }
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
                 format!("Plugin '{}' has no reachable address", install.slug),
@@ -87,9 +129,6 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
         Err(_) => return (StatusCode::BAD_GATEWAY, "Invalid plugin target").into_response(),
     };
 
-    // A fresh id per proxied request: the inbound one belongs to the caller, and
-    // the plugin must only ever see an id that maps to it in the cache.
-    let request_id = uuid::Uuid::new_v4().to_string();
     let Ok(header_value) = HeaderValue::from_str(&request_id) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "Invalid request id").into_response();
     };
@@ -134,9 +173,37 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
 
     let client = build_client();
     let upstream = match client.request(Request::from_parts(parts, body)).await {
-        Ok(response) => response,
+        Ok(response) => {
+            if should_log {
+                log_plugin_request(
+                    &state,
+                    &schema,
+                    install_id,
+                    &install.slug,
+                    &request_id,
+                    &method,
+                    &inbound_path,
+                    response.status().as_u16(),
+                    started,
+                );
+            }
+            response
+        }
         Err(e) => {
             tracing::error!("[PLUGIN-PROXY] upstream error: {}", e);
+            if should_log {
+                log_plugin_request(
+                    &state,
+                    &schema,
+                    install_id,
+                    &install.slug,
+                    &request_id,
+                    &method,
+                    &inbound_path,
+                    502,
+                    started,
+                );
+            }
             return (
                 StatusCode::BAD_GATEWAY,
                 format!("Plugin proxy error: {}", e),

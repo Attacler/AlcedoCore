@@ -58,6 +58,18 @@ export function createPluginsResource(ky: any) {
                     ...options,
                 })
                 .json(),
+        updateSystemSettings: (
+            slug: string,
+            appVersionId: number,
+            data: any,
+            options?: any,
+        ) =>
+            ky
+                .patch(installPath(slug, appVersionId, "/settings/system"), {
+                    json: data,
+                    ...options,
+                })
+                .json(),
         getScopes: (slug: string, appVersionId: number, options?: any) =>
             ky.get(installPath(slug, appVersionId, "/scopes"), options).json(),
         updateScopes: (
@@ -114,6 +126,17 @@ export function createPluginsResource(ky: any) {
                     searchParams: params as any,
                     ...options,
                 })
+                .json(),
+        requestLogDetail: (
+            slug: string,
+            requestId: string,
+            options?: any,
+        ) =>
+            ky
+                .get(
+                    slugPath(slug, `/logs/${encodeURIComponent(requestId)}`),
+                    options,
+                )
                 .json(),
         docs: (slug: string, options?: any) =>
             ky.get(slugPath(slug, "/docs"), options).json(),

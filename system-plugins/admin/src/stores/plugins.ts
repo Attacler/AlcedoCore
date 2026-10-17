@@ -570,6 +570,7 @@ export const usePluginsStore = defineStore("plugins", () => {
     async function fetchPluginSettings(slug: string, appVersionId: number) {
         return (await client.plugins.getSettings(slug, appVersionId)) as {
             settings: Record<string, unknown>;
+            system_settings: Record<string, unknown>;
             schema: Record<string, unknown> | null;
         };
     }
@@ -580,6 +581,18 @@ export const usePluginsStore = defineStore("plugins", () => {
         settings: Record<string, unknown>,
     ): Promise<void> {
         await client.plugins.updateSettings(slug, appVersionId, settings);
+    }
+
+    async function savePluginSystemSettings(
+        slug: string,
+        appVersionId: number,
+        systemSettings: Record<string, unknown>,
+    ): Promise<void> {
+        await client.plugins.updateSystemSettings(
+            slug,
+            appVersionId,
+            systemSettings,
+        );
     }
 
     async function fetchPluginScopes(
@@ -685,10 +698,15 @@ export const usePluginsStore = defineStore("plugins", () => {
     }
 
     async function fetchPluginLogDetail(
-        _slug: string,
-        _requestId: string,
+        slug: string,
+        requestId: string,
     ): Promise<LogDetailResponse> {
-        return { request: null as unknown as RequestLogEntry, host_calls: [] };
+        const json: any = await client.plugins.requestLogDetail(
+            slug,
+            requestId,
+        );
+        const detail = json?.request ? json : json?.data;
+        return detail ?? { request: null as unknown as RequestLogEntry, host_calls: [] };
     }
 
     async function scalePlugin(
@@ -763,6 +781,7 @@ export const usePluginsStore = defineStore("plugins", () => {
         pluginPagesMap,
         fetchPluginSettings,
         savePluginSettings,
+        savePluginSystemSettings,
         fetchPluginScopes,
         updatePluginScopes,
         fetchPluginDocs,

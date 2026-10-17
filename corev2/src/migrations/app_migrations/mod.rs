@@ -28,6 +28,7 @@ pub(crate) mod m0016_files;
 pub(crate) mod m0017_activity_logs;
 pub(crate) mod m0018_collection_logs_actor_id;
 pub(crate) mod m0019_plugin_policies;
+pub(crate) mod m0020_plugin_logging;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -86,6 +87,9 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
             app_context: app_context.clone()
         },
         m0019_plugin_policies::M0019Migration {
+            app_context: app_context.clone()
+        },
+        m0020_plugin_logging::M0020Migration {
             app_context: app_context.clone()
         }
     ]

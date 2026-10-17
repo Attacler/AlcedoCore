@@ -6,7 +6,7 @@ use axum::{
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use utoipa::ToSchema;
 
 use crate::{
@@ -16,10 +16,16 @@ use crate::{
     services::{
         errors::AlcedoError,
         items::query::Query,
+        plugin_logs,
+        plugin_migrations::{self, PluginMigrationEngine},
         plugin_platform::ResourceLimits,
-        plugins::{DeployInput, PluginFilter, PluginRecord, PluginsService, resolve_install},
+        plugins::{
+            DeployInput, PluginFilter, PluginRecord, PluginsService, SYSTEM_SETTINGS_KEY,
+            merge_system_settings, plugin_subdir, resolve_install, split_settings,
+        },
         respond::{JSendResponse, success},
     },
+    utils::slugify,
 };
 
 pub fn plugins_controller() -> Router<AppState> {
@@ -48,11 +54,15 @@ pub fn plugins_controller() -> Router<AppState> {
             get(get_install_settings).patch(patch_install_settings),
         )
         .route(
+            "/{slug}/installs/{app_version_id}/settings/system",
+            get(get_system_settings).patch(patch_system_settings),
+        )
+        .route(
             "/{slug}/installs/{app_version_id}/scopes",
             get(get_install_scopes).post(set_install_scopes),
         )
-        // Deployment / runtime surfaces. `runtime` and `instances` are served by the
-        // platform; the rest stay mocked empties until Docker/K8s lands.
+        // Deployment / runtime surfaces: `runtime` and `instances` are served
+        // by the platform; logs / schema / migrations read their own tables.
         .route("/installs/{install_id}/runtime", get(get_runtime))
         .route("/installs/{install_id}/instances", get(list_instances))
         .route(
@@ -68,6 +78,7 @@ pub fn plugins_controller() -> Router<AppState> {
             get(instance_logs),
         )
         .route("/{slug}/logs", get(list_logs))
+        .route("/{slug}/logs/{request_id}", get(get_log_detail))
         .route("/{slug}/versions", get(list_versions))
         .route("/{slug}/docs", get(list_docs))
         .route("/{slug}/docs/{*path}", get(get_doc))
@@ -130,7 +141,11 @@ pub struct ScopesResponse {
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SettingsResponse {
+    /// Plugin's own settings (manifest-schema keys), without the core's
+    /// reserved `alcedo_system` key.
     pub settings: Value,
+    /// Core-managed settings (log ignore paths, retention).
+    pub system_settings: Value,
     pub schema: Option<Value>,
 }
 
@@ -423,8 +438,10 @@ async fn get_install_settings(
     require_admin(&state, auth_level).await?;
     let service = PluginsService::new(&state);
     let (_, install) = plugin_and_install(&service, &slug, app_version_id).await?;
+    let (settings, system_settings) = split_settings(&install.settings);
     Ok(Json(success(SettingsResponse {
-        settings: install.settings,
+        settings,
+        system_settings,
         schema: service.settings_schema(i64::from(install.id)),
     })))
 }
@@ -438,21 +455,74 @@ async fn patch_install_settings(
     State(state): State<AppState>,
     auth_level: AuthLevel,
     Path((slug, app_version_id)): Path<(String, i32)>,
-    Json(payload): Json<Map<String, Value>>,
+    mut payload: Json<Map<String, Value>>,
 ) -> Result<Json<JSendResponse<SettingsResponse>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
     let service = PluginsService::new(&state);
-    let (plugin, _) = plugin_and_install(&service, &slug, app_version_id).await?;
+    let (plugin, install) = plugin_and_install(&service, &slug, app_version_id).await?;
+    // Plugin keys only: the reserved core key is ignored here and the
+    // existing system settings survive the replace untouched.
+    payload.remove(SYSTEM_SETTINGS_KEY);
+    let (_, system_settings) = split_settings(&install.settings);
     let mut map = Map::new();
-    map.insert("settings".to_string(), Value::Object(payload));
+    map.insert(
+        "settings".to_string(),
+        merge_system_settings(Value::Object(payload.0), system_settings),
+    );
     service
         .update_install(plugin.id, app_version_id, map)
         .await?;
     let (_, install) = plugin_and_install(&service, &slug, app_version_id).await?;
+    let (settings, system_settings) = split_settings(&install.settings);
     Ok(Json(success(SettingsResponse {
-        settings: install.settings,
+        settings,
+        system_settings,
         schema: service.settings_schema(i64::from(install.id)),
     })))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/{slug}/installs/{app_version_id}/settings/system", tag = "Plugins",
+    params(("slug" = String, Path), ("app_version_id" = i32, Path)),
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+async fn get_system_settings(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((slug, app_version_id)): Path<(String, i32)>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let service = PluginsService::new(&state);
+    let (_, install) = plugin_and_install(&service, &slug, app_version_id).await?;
+    let (_, system_settings) = split_settings(&install.settings);
+    Ok(ok(json!({ "system_settings": system_settings })))
+}
+
+#[utoipa::path(patch, path = "/api/platform/plugins/{slug}/installs/{app_version_id}/settings/system", tag = "Plugins",
+    params(("slug" = String, Path), ("app_version_id" = i32, Path)),
+    request_body = std::collections::HashMap<String, Value>,
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+async fn patch_system_settings(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((slug, app_version_id)): Path<(String, i32)>,
+    Json(payload): Json<Map<String, Value>>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let service = PluginsService::new(&state);
+    let (plugin, install) = plugin_and_install(&service, &slug, app_version_id).await?;
+    let (plugin_settings, _) = split_settings(&install.settings);
+    let mut map = Map::new();
+    map.insert(
+        "settings".to_string(),
+        merge_system_settings(plugin_settings, Value::Object(payload)),
+    );
+    service
+        .update_install(plugin.id, app_version_id, map)
+        .await?;
+    let (_, install) = plugin_and_install(&service, &slug, app_version_id).await?;
+    let (_, system_settings) = split_settings(&install.settings);
+    Ok(ok(json!({ "system_settings": system_settings })))
 }
 
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/installs/{app_version_id}/scopes", tag = "Plugins",
@@ -536,6 +606,21 @@ async fn list_instances(
         .await?))
 }
 
+async fn resolve_log_schema(
+    state: &AppState,
+    slug: &str,
+    app: Option<&str>,
+    version: Option<&str>,
+) -> Result<String, AlcedoError> {
+    let resolved = resolve_install(state, slug, app, version).await?;
+    let schema = format!(
+        "{}010{}",
+        slugify(resolved.install.api_name.as_deref().unwrap_or("alcedocore")),
+        slugify(resolved.install.version_name.as_deref().unwrap_or("")),
+    );
+    Ok(schema)
+}
+
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/logs", tag = "Plugins",
     params(("slug" = String, Path)),
     responses((status = OK, body = JSendResponse<Value>))
@@ -544,9 +629,43 @@ async fn list_logs(
     State(state): State<AppState>,
     auth_level: AuthLevel,
     Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LogsQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).request_logs(&slug).await?))
+    let schema = resolve_log_schema(&state, &slug, q.app.as_deref(), q.version.as_deref()).await?;
+    Ok(ok(plugin_logs::list_request_logs(
+        &state.database_pool,
+        &schema,
+        &slug,
+        q.limit.unwrap_or(50),
+        q.cursor.and_then(|c| c.parse::<i64>().ok()),
+        q.status_code,
+        q.path.as_deref(),
+    )
+    .await?))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/{slug}/logs/{request_id}", tag = "Plugins",
+    params(("slug" = String, Path), ("request_id" = String, Path)),
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+async fn get_log_detail(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((slug, request_id)): Path<(String, String)>,
+    AxumQuery(q): AxumQuery<LogsQuery>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let schema = resolve_log_schema(&state, &slug, q.app.as_deref(), q.version.as_deref()).await?;
+    let detail =
+        plugin_logs::request_log_detail(&state.database_pool, &schema, &slug, &request_id).await?;
+    match detail {
+        Some(detail) => Ok(ok(detail)),
+        None => Err(AlcedoError::NotFound(
+            format!("Request log not found: {request_id}"),
+            0,
+        )),
+    }
 }
 
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/versions", tag = "Plugins",
@@ -621,9 +740,16 @@ async fn get_schema(
     State(state): State<AppState>,
     auth_level: AuthLevel,
     Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(PluginsService::new(&state).schema(&slug).await?))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    Ok(ok(plugin_migrations::plugin_schema(
+        &state.database_pool,
+        &slug,
+        &plugin_migrations::plugin_schema_name(install_id),
+    )
+    .await?))
 }
 
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/migrations", tag = "Plugins",
@@ -650,10 +776,40 @@ async fn list_migrations(
 async fn run_migration(
     State(state): State<AppState>,
     auth_level: AuthLevel,
-    Path(_slug): Path<String>,
+    Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(Value::Null))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    let dir = plugin_subdir(&state.config, install_id, "migrations");
+    if !dir.is_dir() {
+        return Err(AlcedoError::NotFound(
+            format!("No migrations directory found for plugin {slug}"),
+            0,
+        ));
+    }
+
+    let ran = PluginMigrationEngine::new(&state, install_id, dir)
+        .run()
+        .await?;
+    let message = if !ran.errors.is_empty() {
+        format!(
+            "Applied {} migration(s), then failed: {}",
+            ran.applied.len(),
+            ran.errors[0]
+        )
+    } else if ran.applied.is_empty() {
+        "No pending migrations to apply".to_string()
+    } else {
+        format!("Applied {} migration(s)", ran.applied.len())
+    };
+
+    Ok(ok(json!({
+        "success": ran.errors.is_empty(),
+        "applied": ran.applied,
+        "errors": ran.errors,
+        "message": message,
+    })))
 }
 
 #[utoipa::path(post, path = "/api/platform/plugins/{slug}/rollback/{version}", tag = "Plugins",
@@ -663,10 +819,33 @@ async fn run_migration(
 async fn rollback_migration(
     State(state): State<AppState>,
     auth_level: AuthLevel,
-    Path((_slug, _version)): Path<(String, String)>,
+    Path((slug, version)): Path<(String, String)>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
-    Ok(ok(Value::Null))
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    let dir = plugin_subdir(&state.config, install_id, "migrations");
+    if !dir.is_dir() {
+        return Err(AlcedoError::NotFound(
+            format!("No migrations directory found for plugin {slug}"),
+            0,
+        ));
+    }
+
+    let engine = PluginMigrationEngine::new(&state, install_id, dir);
+    let rolled_back = engine.rollback_to(&version).await?;
+
+    Ok(ok(json!({
+        "success": true,
+        "rolled_back_versions": rolled_back,
+        "message": if rolled_back.is_empty() {
+            "Already at target version".to_string()
+        } else {
+            format!("Rolled back {} migration(s) to version {}", rolled_back.len(), version)
+        },
+        "target_version": version,
+        "schema": engine.schema_name(),
+    })))
 }
 
 #[utoipa::path(get, path = "/api/platform/plugins/{slug}/pages", tag = "Plugins",
@@ -713,6 +892,23 @@ fn install_id_from_query(q: &LifecycleQuery) -> Result<Option<i64>, AlcedoError>
 pub struct LifecycleQuery {
     #[serde(default)]
     pub install_id: Option<i64>,
+    #[serde(default)]
+    pub app: Option<String>,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LogsQuery {
+    #[serde(default)]
+    pub limit: Option<i64>,
+    /// Keyset cursor: the last row's id from a previous page.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub status_code: Option<i32>,
+    #[serde(default)]
+    pub path: Option<String>,
     #[serde(default)]
     pub app: Option<String>,
     #[serde(default)]

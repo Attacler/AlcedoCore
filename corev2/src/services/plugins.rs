@@ -14,6 +14,7 @@ use crate::{
         encryption,
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
+        plugin_migrations::PluginMigrationEngine,
         plugin_platform::ResourceLimits,
         registry_client,
     },
@@ -23,6 +24,37 @@ use crate::{
 pub const CATALOG: &str = "alcedocore_plugins";
 pub const INSTALLS: &str = "alcedocore_plugins_installs";
 pub const SYSTEM_REGISTRY_ID: i32 = 0;
+pub const SYSTEM_SETTINGS_KEY: &str = "alcedo_system";
+
+pub fn split_settings(settings: &Value) -> (Value, Value) {
+    let mut plugin = settings.clone();
+    let system = plugin
+        .get(SYSTEM_SETTINGS_KEY)
+        .cloned()
+        .filter(|s| s.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(map) = plugin.as_object_mut() {
+        map.remove(SYSTEM_SETTINGS_KEY);
+    }
+    (plugin, system)
+}
+
+pub fn merge_system_settings(mut plugin: Value, system: Value) -> Value {
+    if !plugin.is_object() {
+        plugin = serde_json::json!({});
+    }
+    if let Some(map) = plugin.as_object_mut() {
+        map.insert(
+            SYSTEM_SETTINGS_KEY.to_string(),
+            if system.is_object() {
+                system
+            } else {
+                serde_json::json!({})
+            },
+        );
+    }
+    plugin
+}
 
 pub const IMAGE_DOCS: &str = "docs";
 pub const IMAGE_PAGES: &str = "pages";
@@ -1078,10 +1110,6 @@ impl PluginsService<'_> {
         }))
     }
 
-    pub async fn request_logs(&self, _slug: &str) -> Result<Value, AlcedoError> {
-        Ok(serde_json::json!({ "data": { "logs": [], "next_cursor": null } }))
-    }
-
     pub async fn versions(&self, slug: &str) -> Result<Value, AlcedoError> {
         let Some(plugin) = self.get_plugin(slug).await? else {
             return Err(AlcedoError::NotFound(
@@ -1305,23 +1333,23 @@ impl PluginsService<'_> {
             .ok_or_else(|| AlcedoError::NotFound(format!("Plugin not found: {}", plugin_id), 0))
     }
 
-    pub async fn schema(&self, slug: &str) -> Result<Value, AlcedoError> {
-        Ok(serde_json::json!({ "plugin_name": slug, "schema_name": "", "tables": [] }))
-    }
-
     pub async fn migrations(&self, install_id: i64) -> Result<Value, AlcedoError> {
         let dir = plugin_subdir(&self.app_state.config, install_id, "migrations");
+        let applied = PluginMigrationEngine::new(self.app_state, install_id, dir.clone())
+            .applied()
+            .await?;
 
         let migrations: Vec<Value> = read_migration_files(&dir)
             .into_iter()
             .map(|m| {
+                let record = applied.get(&m.version);
                 serde_json::json!({
                     "version": m.version,
                     "name": m.name,
                     "filename": m.filename,
-                    "status": "pending",
-                    "applied": false,
-                    "applied_at": Value::Null,
+                    "status": if record.is_some() { "applied" } else { "pending" },
+                    "applied": record.is_some(),
+                    "applied_at": record.map(|t| t.to_rfc3339()),
                     "has_down": m.down_sql.is_some(),
                     "sql": m.up_sql,
                 })

@@ -50,7 +50,7 @@ impl AuthLevel {
 }
 
 /// Reads the install identity the proxy registered for this request id.
-async fn lookup_plugin_identity(
+pub(crate) async fn lookup_plugin_identity(
     state: &AppState,
     request_id: &str,
 ) -> Option<PluginRequestIdentity> {

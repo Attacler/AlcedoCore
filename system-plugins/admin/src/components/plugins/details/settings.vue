@@ -17,6 +17,31 @@ const settingsSchema = ref<Record<string, any> | null>(null),
     settingsSaving = ref(false),
     settingsError = ref<string | null>(null);
 
+const DEFAULT_LOG_IGNORE_PATHS = [".css", ".js"];
+const logIgnorePaths = ref(DEFAULT_LOG_IGNORE_PATHS.join(", "));
+const DEFAULT_LOG_RETENTION_DAYS = 30;
+const logRetentionDays = ref<number>(DEFAULT_LOG_RETENTION_DAYS);
+const systemSettingsOriginal = ref<Record<string, unknown>>({});
+
+function toIgnoreString(list: unknown): string {
+    return Array.isArray(list) && list.every((x) => typeof x === "string")
+        ? (list as string[]).join(", ")
+        : DEFAULT_LOG_IGNORE_PATHS.join(", ");
+}
+
+function parseIgnoreList(value: string): string[] {
+    return value
+        .split(",")
+        .map((fragment) => fragment.trim())
+        .filter(Boolean);
+}
+
+function toRetentionDays(value: unknown): number {
+    return typeof value === "number" && Number.isFinite(value)
+        ? Math.trunc(value)
+        : DEFAULT_LOG_RETENTION_DAYS;
+}
+
 onMounted(() => {
     loadSettings();
 });
@@ -26,11 +51,21 @@ async function loadSettings() {
         settingsLoading,
         settingsError,
         async () => {
-            const { settings, schema: fetchedSchema } =
-                await store.fetchPluginSettings(
-                    props.plugin.name,
-                    props.appVersionId,
-                );
+            const {
+                settings,
+                system_settings: systemSettings,
+                schema: fetchedSchema,
+            } = await store.fetchPluginSettings(
+                props.plugin.name,
+                props.appVersionId,
+            );
+            systemSettingsOriginal.value = { ...(systemSettings ?? {}) };
+            logIgnorePaths.value = toIgnoreString(
+                systemSettings?.log_ignore_paths,
+            );
+            logRetentionDays.value = toRetentionDays(
+                systemSettings?.log_retention_days,
+            );
             if (fetchedSchema) {
                 settingsSchema.value = fetchedSchema;
 
@@ -67,8 +102,26 @@ async function saveSettings() {
             props.appVersionId,
             settingsFormValues.value,
         );
+        await store.savePluginSystemSettings(
+            props.plugin.name,
+            props.appVersionId,
+            {
+                log_ignore_paths: parseIgnoreList(logIgnorePaths.value),
+                log_retention_days: logRetentionDays.value,
+            },
+        );
+        const { settings, system_settings: systemSettings } =
+            await store.fetchPluginSettings(
+                props.plugin.name,
+                props.appVersionId,
+            );
         settingsOriginalValues.value = JSON.parse(
-            JSON.stringify(settingsFormValues.value),
+            JSON.stringify(settings ?? {}),
+        );
+        systemSettingsOriginal.value = { ...(systemSettings ?? {}) };
+        logIgnorePaths.value = toIgnoreString(systemSettings?.log_ignore_paths);
+        logRetentionDays.value = toRetentionDays(
+            systemSettings?.log_retention_days,
         );
         toast.show("Settings saved successfully", "success");
     } catch (e) {
@@ -87,6 +140,12 @@ function resetSettings() {
     settingsFormValues.value = JSON.parse(
         JSON.stringify(settingsOriginalValues.value),
     );
+    logIgnorePaths.value = toIgnoreString(
+        systemSettingsOriginal.value.log_ignore_paths,
+    );
+    logRetentionDays.value = toRetentionDays(
+        systemSettingsOriginal.value.log_retention_days,
+    );
 }
 </script>
 
@@ -98,12 +157,14 @@ function resetSettings() {
     >
         {{ settingsError }}
     </div>
-    <form
-        v-else-if="settingsSchema"
-        @submit.prevent="saveSettings"
-        class="space-y-6"
-    >
-        <div class="space-y-4">
+    <form v-else @submit.prevent="saveSettings" class="space-y-6">
+        <h3
+            v-if="settingsSchema"
+            class="text-sm font-semibold text-gray-700 uppercase tracking-wide"
+        >
+            Plugin settings
+        </h3>
+        <div class="space-y-4" v-if="settingsSchema">
             <div
                 v-for="(property, fieldName) in settingsSchema.properties"
                 :key="fieldName"
@@ -143,6 +204,48 @@ function resetSettings() {
                 >
             </div>
         </div>
+
+        <h3
+            class="text-sm font-semibold text-gray-700 uppercase tracking-wide pt-4 border-t border-gray-200"
+        >
+            System settings
+        </h3>
+
+        <div class="flex flex-col gap-1">
+            <label class="text-sm font-medium text-gray-700">
+                Ignored log paths
+                <span class="block text-xs font-normal text-gray-500">
+                    Requests whose URL contains any of these text fragments are
+                    not written to the request logs. Separate multiple fragments
+                    with commas. Case is ignored. Leave empty to record every
+                    request.
+                </span>
+            </label>
+            <InputText
+                v-model="logIgnorePaths"
+                type="text"
+                class="w-full"
+                fluid
+            />
+        </div>
+
+        <div class="flex flex-col gap-1">
+            <label class="text-sm font-medium text-gray-700">
+                Log retention (days)
+                <span class="block text-xs font-normal text-gray-500">
+                    Requests older than this many days are deleted from the
+                    request logs, once per hour. Set 0 to keep logs forever.
+                </span>
+            </label>
+            <InputNumber
+                v-model="logRetentionDays"
+                :min="0"
+                :max="3650"
+                class="w-full"
+                fluid
+            />
+        </div>
+
         <div class="flex gap-3 pt-4 border-t border-gray-200">
             <Button
                 label="Save Settings"
@@ -159,7 +262,4 @@ function resetSettings() {
             />
         </div>
     </form>
-    <div v-else class="text-gray-400 italic">
-        This plugin does not have configurable settings.
-    </div>
 </template>
