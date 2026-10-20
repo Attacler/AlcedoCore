@@ -21,6 +21,7 @@ import { createFilesResource } from "./files.js";
 import { createRegistriesResource } from "./registries.js";
 import { createActivityLogsResource } from "./activityLogs.js";
 import { createAppSettingsResource } from "./appSettings.js";
+import { createRouteMappingsResource } from "./routeMappings.js";
 import { createDeveloperApiKeysResource } from "./developerApiKeys.js";
 import { createMenusResource } from "./menus.js";
 import { AlcedoApiError, type JSendResponse } from "./types/jsend.js";
@@ -158,6 +159,7 @@ export function createClient(baseUrl: string, options: ClientOptions = {}) {
         health: createHealthResource(kyInstance),
         activityLogs: createActivityLogsResource(kyInstance),
         appSettings: createAppSettingsResource(kyInstance),
+        routeMappings: createRouteMappingsResource(kyInstance),
         developerApiKeys: createDeveloperApiKeysResource(kyInstance),
         menus: createMenusResource(kyInstance),
         registries: createRegistriesResource(kyInstance),

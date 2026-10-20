@@ -11,6 +11,7 @@ use axum::{
 
 use crate::{
     AppState,
+    middelware::route_alias::AliasContext,
     services::{
         plugin_logs::{log_plugin_request, should_log_request},
         plugins::{plugin_subdir, register_plugin_request, resolve_install_by_id, safe_join},
@@ -123,7 +124,13 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
         Err(e) => return e.into_response(),
     };
 
-    let target = format!("http://{}{}", address, target_path(&parts.uri));
+    let alias_ctx = parts.extensions.get::<AliasContext>().cloned();
+
+    let target = format!(
+        "http://{}{}",
+        address,
+        target_path(&parts.uri, alias_ctx.as_ref())
+    );
     parts.uri = match target.parse::<Uri>() {
         Ok(uri) => uri,
         Err(_) => return (StatusCode::BAD_GATEWAY, "Invalid plugin target").into_response(),
@@ -216,6 +223,7 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
     upstream_parts
         .headers
         .insert(HeaderName::from_static("x-request-id"), header_value);
+
     Response::from_parts(upstream_parts, Body::new(upstream_body))
 }
 
@@ -267,21 +275,30 @@ fn install_id_of(uri: &Uri) -> Option<i64> {
 
 /// `/p/{install_id}/api/items/foo` proxied to a plugin becomes `/api/items/foo`;
 /// `/p/{install_id}` becomes `/`.
-fn target_path(uri: &Uri) -> String {
-    let rest = uri
-        .path()
-        .strip_prefix("/p/")
-        .and_then(|rest| rest.split_once('/').map(|(_, tail)| tail))
-        .unwrap_or("");
-
-    let path = if rest.is_empty() {
-        "/".to_string()
+///
+/// When an [`AliasContext`] is present (request came through a route alias),
+/// the original alias path is forwarded instead, so plugins built with a
+/// matching baseURL (e.g. Nuxt's `app.baseURL`) receive the path they expect.
+fn target_path(uri: &Uri, alias_ctx: Option<&AliasContext>) -> String {
+    let path = if let Some(ctx) = alias_ctx {
+        // Forward the original alias path (e.g. /nuxt-test/settings).
+        ctx.original_path.clone()
     } else {
-        format!("/{}", rest)
+        let rest = uri
+            .path()
+            .strip_prefix("/p/")
+            .and_then(|rest| rest.split_once('/').map(|(_, tail)| tail))
+            .unwrap_or("");
+
+        if rest.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", rest)
+        }
     };
     match uri.query() {
         Some(query) => format!("{}?{}", path, query),
-        None => path.to_string(),
+        None => path,
     }
 }
 
@@ -313,6 +330,7 @@ mod tests {
         install_id_of, proxy_controller, public_file_response, public_path_of, should_strip,
         target_path,
     };
+    use crate::middelware::route_alias::AliasContext;
     use axum::body::Body;
     use axum::body::to_bytes;
     use axum::http::{HeaderName, Request, StatusCode, Uri};
@@ -512,12 +530,12 @@ mod tests {
 
     #[test]
     fn targets_plugin_root() {
-        assert_eq!(target_path(&Uri::from_static("/p/42")), "/");
+        assert_eq!(target_path(&Uri::from_static("/p/42"), None), "/");
     }
     #[test]
     fn targets_nested_plugin_path() {
         assert_eq!(
-            target_path(&Uri::from_static("/p/42/api/items/foo")),
+            target_path(&Uri::from_static("/p/42/api/items/foo"), None),
             "/api/items/foo"
         );
     }
@@ -525,10 +543,43 @@ mod tests {
     #[test]
     fn keeps_query_string() {
         assert_eq!(
-            target_path(&Uri::from_static("/p/42/api/x?limit=5")),
+            target_path(&Uri::from_static("/p/42/api/x?limit=5"), None),
             "/api/x?limit=5"
         );
-        assert_eq!(target_path(&Uri::from_static("/p/42?limit=5")), "/?limit=5");
+        assert_eq!(
+            target_path(&Uri::from_static("/p/42?limit=5"), None),
+            "/?limit=5"
+        );
+    }
+
+    #[test]
+    fn alias_context_forwards_original_path() {
+        let ctx = AliasContext {
+            original_host: None,
+            original_path: "/nuxt-test/settings".to_string(),
+            alias_domain: None,
+            alias_prefix: Some("/nuxt-test".to_string()),
+            install_id: 42,
+        };
+        assert_eq!(
+            target_path(&Uri::from_static("/p/42/settings"), Some(&ctx)),
+            "/nuxt-test/settings"
+        );
+    }
+
+    #[test]
+    fn alias_context_forwards_root_with_query() {
+        let ctx = AliasContext {
+            original_host: None,
+            original_path: "/nuxt-test/".to_string(),
+            alias_domain: None,
+            alias_prefix: Some("/nuxt-test".to_string()),
+            install_id: 42,
+        };
+        assert_eq!(
+            target_path(&Uri::from_static("/p/42/?foo=bar"), Some(&ctx)),
+            "/nuxt-test/?foo=bar"
+        );
     }
 
     #[test]

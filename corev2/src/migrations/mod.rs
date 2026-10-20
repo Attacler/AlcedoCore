@@ -40,5 +40,6 @@ pub async fn generate_app_state_for_migrations() -> AppState {
         file_storage,
         schema_cache_gen: Arc::new(Mutex::new(String::new())),
         platform,
+        route_map: Arc::new(RwLock::new(services::app_state::RouteMapState::default())),
     }
 }

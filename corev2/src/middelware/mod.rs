@@ -2,4 +2,5 @@ pub mod auth;
 pub mod host_calls;
 pub mod log;
 pub mod request_id;
+pub mod route_alias;
 pub mod schema_cache;

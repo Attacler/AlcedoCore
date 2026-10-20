@@ -25,15 +25,15 @@ export default defineConfig({
         port: 3000,
         proxy: {
             "/plugins": {
-                target: "http://localhost:8080",
+                target: "http://localhost",
                 changeOrigin: true,
             },
             "/api": {
-                target: "http://localhost:8080",
+                target: "http://localhost",
                 changeOrigin: true,
             },
             "/p": {
-                target: "http://localhost:8080",
+                target: "http://localhost",
                 changeOrigin: true,
             },
         },

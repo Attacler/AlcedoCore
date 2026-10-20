@@ -21,6 +21,10 @@ pub fn platform_controller() -> Router<AppState> {
                 .put(controllers::apps::set_user_app_access),
         )
         .nest("/settings", controllers::settings::settings_controller())
+        .nest(
+            "/settings/route-mappings",
+            controllers::route_mappings::route_mappings_controller(),
+        )
         .nest("/logs", controllers::logs::logs_platform_controller())
         .nest(
             "/registries",

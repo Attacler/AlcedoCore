@@ -1309,6 +1309,159 @@ impl PluginPlatform for DockerPlatform {
             }
         }
     }
+
+    async fn watch_events(&self) {
+        self.watch_events_loop().await;
+    }
+}
+
+impl DockerPlatform {
+    async fn watch_events_loop(&self) {
+        use bollard::query_parameters::EventsOptionsBuilder;
+        use std::collections::HashMap as StdHashMap;
+
+        loop {
+            tracing::info!("[RECOVERY] Starting Docker event watcher");
+
+            let mut filters = StdHashMap::new();
+            filters.insert("label".to_string(), vec![LABEL_PLUGIN.to_string()]);
+            let options = EventsOptionsBuilder::default().filters(&filters).build();
+
+            let mut stream = self.docker.events(Some(options));
+
+            while let Some(event) = stream.next().await {
+                let msg = match event {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::error!(
+                            "[RECOVERY] Docker event stream error (reconnecting in 5s): {}",
+                            e
+                        );
+                        break;
+                    }
+                };
+                self.handle_plugin_event(msg).await;
+            }
+
+            tracing::info!("[RECOVERY] Docker event stream ended, reconnecting in 5s");
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    }
+
+    async fn handle_plugin_event(&self, msg: bollard::models::EventMessage) {
+        use crate::services::plugin_recovery;
+
+        let action = match msg.action.as_deref() {
+            Some(a) => a,
+            None => return,
+        };
+
+        // The install id is in the event actor's attributes (service label).
+        let install_id: Option<i64> = msg
+            .actor
+            .as_ref()
+            .and_then(|a| a.attributes.as_ref())
+            .and_then(|attrs| attrs.get(LABEL_INSTALL_ID))
+            .and_then(|v| v.parse::<i64>().ok());
+
+        let Some(install_id) = install_id else {
+            return;
+        };
+
+        match action {
+            "start" => {
+                tracing::info!(install_id = %install_id, "[RECOVERY] Plugin container started");
+                if let Err(e) = plugin_recovery::clear_restart(&self.pool, install_id).await {
+                    tracing::warn!(
+                        "[RECOVERY] Could not clear restart state for {}: {}",
+                        install_id,
+                        e
+                    );
+                }
+            }
+            "die" => {
+                let exit_code = msg
+                    .actor
+                    .as_ref()
+                    .and_then(|a| a.attributes.as_ref())
+                    .and_then(|attrs| attrs.get("exitCode"))
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .unwrap_or(-1);
+
+                tracing::info!(
+                    install_id = %install_id,
+                    exit_code = %exit_code,
+                    "[RECOVERY] Plugin container died"
+                );
+
+                // Only restart on non-zero exit (crash), not on clean stop.
+                if exit_code == 0 {
+                    return;
+                }
+
+                let max_attempts = plugin_recovery::DEFAULT_MAX_RESTART_ATTEMPTS;
+                match plugin_recovery::should_restart(&self.pool, install_id, max_attempts).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tracing::warn!(
+                            install_id = %install_id,
+                            "[RECOVERY] Plugin exceeded {} restart attempts, entering failed state",
+                            max_attempts
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[RECOVERY] Could not check restart eligibility for {}: {}",
+                            install_id,
+                            e
+                        );
+                        return;
+                    }
+                }
+
+                // Record the attempt and compute backoff.
+                let error_msg = format!("Container exited with code {}", exit_code);
+                if let Err(e) =
+                    plugin_recovery::record_restart(&self.pool, install_id, Some(&error_msg)).await
+                {
+                    tracing::warn!(
+                        "[RECOVERY] Could not record restart for {}: {}",
+                        install_id,
+                        e
+                    );
+                }
+
+                // Look up current restart count for backoff delay.
+                let count = plugin_recovery::get_restart_count(&self.pool, install_id)
+                    .await
+                    .unwrap_or(0);
+                let backoff = plugin_recovery::get_backoff_delay(count as u8);
+
+                tracing::info!(
+                    install_id = %install_id,
+                    backoff_secs = %backoff.as_secs(),
+                    "[RECOVERY] Restarting plugin after backoff"
+                );
+
+                tokio::time::sleep(backoff).await;
+
+                // Restart: scale to 1 if replicated, otherwise force-update.
+                let result = if self.is_replicated_service(&format!("plugin_{}", install_id)) {
+                    self.scale(install_id, 1, None).await
+                } else {
+                    self.restart(install_id).await
+                };
+
+                if let Err(e) = result {
+                    tracing::error!("[RECOVERY] Failed to restart plugin {}: {}", install_id, e);
+                } else {
+                    tracing::info!(install_id = %install_id, "[RECOVERY] Plugin restarted");
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]

@@ -4,7 +4,7 @@ mod services;
 mod utils;
 
 use anyhow::Result;
-use axum::{Router, http::StatusCode, middleware, response::IntoResponse};
+use axum::{Router, middleware};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, RwLock};
@@ -70,9 +70,19 @@ async fn main() -> Result<()> {
         file_storage,
         schema_cache_gen: Arc::new(Mutex::new(String::new())),
         platform,
+        route_map: Arc::new(RwLock::new(services::app_state::RouteMapState::default())),
     };
 
     state.refresh_schema().await;
+
+    // Seed the route map cache from the DB so the first request doesn't wait
+    // for the staleness window.
+    {
+        let service = services::route_mappings::RouteMappingsService::new(&state);
+        if let Err(e) = service.sync_cache().await {
+            tracing::warn!("[ROUTEMAP] Initial cache sync failed: {}", e);
+        }
+    }
 
     // Plugin log retention: sweep hourly (first tick is immediate).
     {
@@ -83,6 +93,16 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 services::plugin_logs::prune_plugin_logs(&state).await;
             }
+        });
+    }
+
+    // Plugin crash recovery: watch platform events and restart crashed
+    // containers with exponential backoff. The platform decides whether
+    // it has an event stream (Docker does, Mock does not).
+    {
+        let platform = state.platform.clone();
+        tokio::spawn(async move {
+            platform.watch_events().await;
         });
     }
 
@@ -115,15 +135,24 @@ async fn main() -> Result<()> {
 
     let listen_address = format!("{}:{}", state.config.listen_ip, state.config.listen_port);
 
+    // Build the proxy router separately so the route-alias fallback can
+    // re-dispatch rewritten requests to it. We need two copies: one merged
+    // into the main router (with state) and one state-resolved copy for the
+    // fallback to call via oneshot.
+    let proxy_router = controllers::proxy::proxy_controller();
+    let proxy_router_for_fallback = proxy_router.clone().with_state(state.clone());
+
     let app = Router::new()
         .nest("/api/app", app_controller())
         .nest("/api/platform", platform_controller())
         .nest("/api/dev", controllers::dev::dev_controller())
         .nest("/api/docs", controllers::docs::docs_controller())
         .merge(controllers::registry_proxy::registry_proxy_controller())
-        .merge(controllers::proxy::proxy_controller())
-        // .fallback_service(controllers::ui::ui_controller())
-        .fallback(handler_404)
+        .merge(proxy_router)
+        .fallback(middelware::route_alias::route_alias_fallback(
+            state.clone(),
+            proxy_router_for_fallback,
+        ))
         .layer(middleware::from_fn(middelware::log::log_request))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -142,8 +171,4 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await.unwrap();
 
     Ok(())
-}
-
-async fn handler_404() -> impl IntoResponse {
-    (StatusCode::NOT_FOUND, "404 Not Found")
 }

@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use file_storage::FileStorage;
 use futures::future::BoxFuture;
@@ -8,9 +9,13 @@ use tokio::sync::{Mutex, RwLock};
 use crate::services::{
     cache::SystemCache, config, errors::AlcedoError, hooks::MultiEventBus,
     plugin_platform::PluginPlatform, postgres::inspector::DatabaseSchema,
+    route_mappings::matcher::RouteMap,
 };
 const SCHEMA_CACHE_KEY: &str = "system_schema_cache";
 const SCHEMA_CACHE_GEN_KEY: &str = "system_schema_cache_gen";
+
+/// How often a replica re-checks the shared cache version key.
+const ROUTEMAP_STALENESS_SECS: u64 = 3;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -23,6 +28,26 @@ pub struct AppState {
     pub file_storage: Arc<dyn FileStorage>,
     pub schema_cache_gen: Arc<Mutex<String>>,
     pub platform: Arc<dyn PluginPlatform>,
+    /// Per-replica route map cache: the parsed mapping set plus the version
+    /// it was loaded at and the instant of the last version check.
+    pub route_map: Arc<RwLock<RouteMapState>>,
+}
+
+#[derive(Default)]
+pub struct RouteMapState {
+    pub map: RouteMap,
+    pub version: i64,
+    pub last_check: Option<Instant>,
+}
+
+impl RouteMapState {
+    /// Returns true if the staleness window has elapsed since the last check.
+    pub fn is_stale(&self) -> bool {
+        match self.last_check {
+            Some(t) => t.elapsed().as_secs() >= ROUTEMAP_STALENESS_SECS,
+            None => true,
+        }
+    }
 }
 impl AppState {
     pub async fn refresh_schema(&self) {
@@ -110,6 +135,54 @@ impl AppState {
     pub async fn load_cached_schema(&self) -> Option<DatabaseSchema> {
         let raw = self.cache.get(SCHEMA_CACHE_KEY).await.ok()??;
         serde_json::from_str(&raw).ok()
+    }
+
+    /// Check the shared cache for route map changes and reload if the version
+    /// has advanced. Follows the same staleness-window pattern as the schema
+    /// cache: at most one lightweight version GET per replica per window.
+    /// Returns `true` if the local map was refreshed.
+    pub async fn refresh_route_map_if_stale(&self) -> bool {
+        let mut state = self.route_map.write().await;
+        if !state.is_stale() {
+            return false;
+        }
+        state.last_check = Some(Instant::now());
+
+        // Read the version from the shared cache. If Redis is unavailable,
+        // keep serving with the last known set (graceful degradation).
+        let remote_version: Option<i64> = self
+            .cache
+            .get("alcedocore:routemap:version")
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<i64>().ok());
+
+        let Some(remote_version) = remote_version else {
+            return false;
+        };
+
+        if remote_version == state.version {
+            return false;
+        }
+
+        // Version changed — reload the data.
+        let raw = match self.cache.get("alcedocore:routemap:data").await {
+            Ok(Some(raw)) => raw,
+            _ => return false,
+        };
+
+        match serde_json::from_str::<Vec<crate::services::route_mappings::matcher::RouteMapping>>(&raw) {
+            Ok(mappings) => {
+                state.map = RouteMap::from_mappings(mappings);
+                state.version = remote_version;
+                true
+            }
+            Err(e) => {
+                tracing::warn!("[ROUTEMAP] Failed to parse cached route mappings: {}", e);
+                false
+            }
+        }
     }
 }
 

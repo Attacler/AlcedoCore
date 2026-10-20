@@ -5,7 +5,7 @@ use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
 use crate::controllers::{
     apps, auth, collections, dev, developer_keys, files, items, kv, logs, menus, plugins, policies,
-    registries, roles, sessions, settings, users, versions,
+    registries, roles, route_mappings, sessions, settings, users, versions,
 };
 use crate::services::menus::{MenuItemInput, MenuSectionInput};
 
@@ -50,6 +50,11 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         settings::get_app_settings,
         settings::update_app_setting,
         settings::batch_update_app_settings,
+        // Route mappings
+        route_mappings::list_route_mappings,
+        route_mappings::create_route_mapping,
+        route_mappings::update_route_mapping,
+        route_mappings::delete_route_mapping,
         // Menus
         menus::list_menus,
         menus::create_menu,
@@ -131,6 +136,7 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         plugins::get_schema,
         plugins::list_migrations,
         plugins::run_migration,
+        plugins::list_event_subscriptions,
         plugins::rollback_migration,
         plugins::list_pages,
         plugins::get_assets,
@@ -270,6 +276,11 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
             settings::UpdatePlatformSettingsRequest,
             settings::UpdateAppSettingRequest,
             settings::BatchUpdateAppSettingsRequest,
+            route_mappings::ListRouteMappingsResponse,
+            route_mappings::DeleteRouteMappingResponse,
+            crate::services::route_mappings::RouteMappingResponse,
+            crate::services::route_mappings::CreateRouteMappingRequest,
+            crate::services::route_mappings::UpdateRouteMappingRequest,
             kv::KvPutBody,
             kv::KvBatchGetBody,
             kv::KvBatchDeleteBody,

@@ -32,6 +32,7 @@ import Development from "@/pages/Development.vue";
 import CollectionBuilder from "@/pages/CollectionBuilder.vue";
 import SettingsSession from "@/pages/Settings/SettingsSession.vue";
 import GlobalSettings from "@/pages/GlobalSettings.vue";
+import RouteMappings from "@/pages/RouteMappings.vue";
 
 const APP_DASHBOARD_ROUTE = "AppDashboard";
 
@@ -63,6 +64,11 @@ const routes: RouteRecordRaw[] = [
         path: "/settings",
         name: "GlobalSettings",
         component: GlobalSettings,
+    },
+    {
+        path: "/settings/routing",
+        name: "RouteMappings",
+        component: RouteMappings,
     },
     {
         path: "/development",

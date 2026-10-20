@@ -107,7 +107,7 @@ pub async fn invalidate_all(state: &AppState) {
     bump_generation(state).await;
 }
 
-fn manifest_events(state: &AppState, install_id: i64) -> Arc<Vec<String>> {
+pub fn manifest_events(state: &AppState, install_id: i64) -> Arc<Vec<String>> {
     if let Some(events) = manifest_events_cache().get(&install_id) {
         return Arc::clone(events.value());
     }

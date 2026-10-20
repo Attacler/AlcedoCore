@@ -4,13 +4,9 @@ const name = ref('World')
 
 onMounted(async () => {
   try {
-    const slug = window.location.pathname.split('/')[1]
-    const res = await fetch(`/p/${slug}/api/settings`)
-    if (res.ok) {
-      const data = await res.json()
-      if (data?.settings?.greeting) {
-        greeting.value = data.settings.greeting
-      }
+    const data = await pluginFetch<{ settings?: { greeting?: string } }>('/settings')
+    if (data?.settings?.greeting) {
+      greeting.value = data.settings.greeting
     }
   } catch {
     // use default

@@ -15,6 +15,7 @@ pub mod proxy;
 pub mod registries;
 pub mod registry_proxy;
 pub mod roles;
+pub mod route_mappings;
 pub mod sessions;
 pub mod settings;
 pub mod users;

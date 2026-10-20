@@ -87,6 +87,7 @@ pub fn plugins_controller() -> Router<AppState> {
             "/{slug}/migrations",
             get(list_migrations).post(run_migration),
         )
+        .route("/{slug}/events", get(list_event_subscriptions))
         .route("/{slug}/rollback/{version}", post(rollback_migration))
         .route("/{slug}/pages", get(list_pages))
         .route("/{slug}/pages/assets", get(get_assets))
@@ -810,6 +811,23 @@ async fn run_migration(
         "errors": ran.errors,
         "message": message,
     })))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/{slug}/events", tag = "Plugins",
+    params(("slug" = String, Path), ("install_id" = Option<i64>, Query), ("app" = Option<String>, Query), ("version" = Option<String>, Query)),
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+async fn list_event_subscriptions(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(slug): Path<String>,
+    AxumQuery(q): AxumQuery<LifecycleQuery>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let install_id = resolve_file_install(&state, &slug, &q).await?;
+    Ok(ok(PluginsService::new(&state)
+        .event_subscriptions(install_id)
+        .await?))
 }
 
 #[utoipa::path(post, path = "/api/platform/plugins/{slug}/rollback/{version}", tag = "Plugins",

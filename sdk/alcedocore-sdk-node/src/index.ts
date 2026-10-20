@@ -35,6 +35,8 @@ export { createFilesResource } from "./files";
 export { createRegistriesResource } from "./registries";
 export { createActivityLogsResource } from "./activityLogs";
 export { createAppSettingsResource } from "./appSettings";
+export { createRouteMappingsResource } from "./routeMappings";
+export type { RouteMapping, CreateRouteMappingRequest, UpdateRouteMappingRequest } from "./routeMappings";
 export { createDeveloperApiKeysResource } from "./developerApiKeys";
 export { createMenusResource } from "./menus";
 export type { Menu, MenuItem, MenuSection, MenuListEntry } from "./menus";

@@ -45,6 +45,9 @@ pub async fn get_app_state() -> AppState {
         ),
         schema_cache_gen: Arc::new(Mutex::new(String::new())),
         platform,
+        route_map: Arc::new(RwLock::new(
+            crate::services::app_state::RouteMapState::default(),
+        )),
     };
 
     ENV_READY

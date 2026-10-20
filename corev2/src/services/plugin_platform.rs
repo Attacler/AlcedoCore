@@ -81,6 +81,13 @@ pub trait PluginPlatform: Send + Sync {
     /// install row without this orphans whatever is actually running.
     /// Implementations ignore "not found"; the mock platform has nothing to do.
     async fn ensure_absent(&self, install_id: i64) -> Result<(), AlcedoError>;
+
+    /// Watch platform events (container crashes, starts, etc.) and apply
+    /// recovery logic. Runs forever; spawn it as a background task.
+    /// Default is a no-op for platforms without event streams.
+    async fn watch_events(&self) {
+        // No-op by default.
+    }
 }
 
 pub async fn build_platform(

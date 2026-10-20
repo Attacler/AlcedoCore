@@ -871,6 +871,36 @@ impl PluginsService<'_> {
             input.slug,
             plugin_root.display()
         );
+
+        let migrations_dir = plugin_subdir(&self.app_state.config, install_id, "migrations");
+        if migrations_dir.exists() && !read_migration_files(&migrations_dir).is_empty() {
+            tracing::info!(
+                "[PLUGINS] Running migrations for {} from {}",
+                input.slug,
+                migrations_dir.display()
+            );
+            let engine = PluginMigrationEngine::new(self.app_state, install_id, migrations_dir);
+            let result = engine.run().await?;
+            if !result.errors.is_empty() {
+                for err in &result.errors {
+                    tracing::error!("[PLUGINS] Migration error for {}: {}", input.slug, err);
+                }
+                return Err(AlcedoError::SystemError(
+                    format!(
+                        "Plugin migrations failed for {}: {}",
+                        input.slug,
+                        result.errors.join("; ")
+                    ),
+                    0,
+                ));
+            }
+            tracing::info!(
+                "[PLUGINS] Applied {} migration(s) for {}",
+                result.applied.len(),
+                input.slug
+            );
+        }
+
         crate::services::event_forwarder::invalidate_manifest_cache(self.app_state, install_id)
             .await;
         crate::services::event_forwarder::invalidate_subscribers(
@@ -1023,10 +1053,45 @@ impl PluginsService<'_> {
         app_version_id: i32,
         enabled: bool,
     ) -> Result<(), AlcedoError> {
+        let install = self.require_install(plugin_id, app_version_id).await?;
+        let install_id = int_field(&install, "id").unwrap_or_default();
+        let deployment_id: Option<String> = str_field(&install, "deployment_id");
+
         let mut payload = Map::new();
         payload.insert("enabled".to_string(), Value::from(enabled));
         self.update_install(plugin_id, app_version_id, payload)
             .await?;
+
+        if let Some(deployment_id) = deployment_id {
+            let result = if enabled {
+                if self
+                    .app_state
+                    .platform
+                    .is_replicated_service(&deployment_id)
+                {
+                    self.app_state
+                        .platform
+                        .scale(i64::from(install_id), 1, None)
+                        .await
+                } else {
+                    self.app_state.platform.restart(i64::from(install_id)).await
+                }
+            } else {
+                self.app_state
+                    .platform
+                    .scale(i64::from(install_id), 0, None)
+                    .await
+            };
+            if let Err(e) = result {
+                tracing::warn!(
+                    "[PLUGINS] Could not {} container for install {}: {}",
+                    if enabled { "start" } else { "stop" },
+                    install_id,
+                    e
+                );
+            }
+        }
+
         crate::services::event_forwarder::invalidate_subscribers(self.app_state, app_version_id)
             .await;
         Ok(())
@@ -1331,6 +1396,39 @@ impl PluginsService<'_> {
             .await?
             .and_then(|row| str_field(&row, "slug"))
             .ok_or_else(|| AlcedoError::NotFound(format!("Plugin not found: {}", plugin_id), 0))
+    }
+
+    /// List event subscriptions for an install, read from the manifest on disk
+    /// (same source the event forwarder uses). Each subscription includes the
+    /// callback URL the forwarder would POST to.
+    pub async fn event_subscriptions(&self, install_id: i64) -> Result<Value, AlcedoError> {
+        let slug = self.slug_for_install(install_id).await?;
+        let events = crate::services::event_forwarder::manifest_events(self.app_state, install_id);
+
+        let install = self.install_row(install_id).await?;
+        let deployment_id = str_field(&install, "deployment_id");
+
+        let callback_url = match &deployment_id {
+            Some(did) => match self.app_state.platform.get_address(did).await {
+                Ok(Some(addr)) => format!("http://{}/__events__", addr),
+                _ => format!("http://{}/__events__", did),
+            },
+            None => String::new(),
+        };
+
+        let subscriptions: Vec<Value> = events
+            .iter()
+            .map(|event_type| {
+                serde_json::json!({
+                    "plugin_slug": slug,
+                    "install_id": install_id,
+                    "event_type": event_type,
+                    "callback_url": callback_url,
+                })
+            })
+            .collect();
+
+        Ok(Value::Array(subscriptions))
     }
 
     pub async fn migrations(&self, install_id: i64) -> Result<Value, AlcedoError> {

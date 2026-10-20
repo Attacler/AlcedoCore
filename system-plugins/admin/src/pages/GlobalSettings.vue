@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
+import { useRouter } from "vue-router";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useToast } from "@/composables/useToast";
 
 const store = useSettingsStore(),
-    toast = useToast();
+    toast = useToast(),
+    router = useRouter();
 
 const platformName = ref(""),
     saving = ref(false);
@@ -77,6 +79,34 @@ async function save() {
                             store.platformSettings.platform_name
                     "
                     @click="save"
+                />
+            </div>
+        </div>
+
+        <div
+            class="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden max-w-2xl"
+        >
+            <div class="px-4 py-3">
+                <div class="text-sm font-medium text-gray-900">
+                    Route Mappings
+                </div>
+                <div class="text-xs text-gray-500 mt-0.5">
+                    Map custom domains and path prefixes to plugin installs.
+                    Alias URLs serve the plugin directly — no redirect.
+                </div>
+            </div>
+            <div
+                class="flex items-center gap-3 px-4 py-3 border-t border-gray-100"
+            >
+                <span class="flex-1 text-sm text-gray-600">
+                    Configure vanity routes for plugin installs.
+                </span>
+                <Button
+                    label="Manage"
+                    icon="pi pi-arrow-right"
+                    icon-pos="right"
+                    text
+                    @click="router.push('/settings/routing')"
                 />
             </div>
         </div>
