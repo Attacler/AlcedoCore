@@ -238,7 +238,7 @@ pub async fn deliver_item_events(
                 slug: subscriber.slug.clone(),
                 app: subscriber.install.api_name.clone(),
                 version: subscriber.install.version_name.clone(),
-                app_version_id: Some(subscriber.install.app_version_id),
+                app_version_id: subscriber.install.app_version_id,
                 version_id: subscriber.install.version_id,
                 install_id: Some(subscriber.install.id as i64),
             };

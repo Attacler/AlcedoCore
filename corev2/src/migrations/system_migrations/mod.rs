@@ -20,6 +20,7 @@ pub(crate) mod m00010_plugin_image;
 pub(crate) mod m00011_install_deployment_id;
 pub(crate) mod m00012_route_mappings;
 pub(crate) mod m00013_plugin_recovery;
+pub(crate) mod m00014_install_scope;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -56,6 +57,7 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
             app_context: app_context.clone()
         },
         m00013_plugin_recovery::M0013Migration,
+        m00014_install_scope::M0014Migration,
     ]
 }
 

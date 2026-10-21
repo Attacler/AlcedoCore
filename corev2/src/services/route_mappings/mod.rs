@@ -290,7 +290,7 @@ impl<'a> RouteMappingsService<'a> {
             "SELECT i.id, p.slug, a.api_name, v.version_name \
              FROM alcedocore.alcedocore_plugins_installs i \
              JOIN alcedocore.alcedocore_plugins p ON p.id = i.plugin_id \
-             JOIN alcedocore.alcedocore_apps_versions av ON av.id = i.app_version_id \
+             LEFT JOIN alcedocore.alcedocore_apps_versions av ON av.id = i.app_version_id \
              LEFT JOIN alcedocore.alcedocore_apps a ON a.id = av.app_id \
              LEFT JOIN alcedocore.alcedocore_versions v ON v.id = av.version_id \
              WHERE i.id = ANY($1)",

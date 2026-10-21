@@ -61,6 +61,20 @@ pub fn plugins_controller() -> Router<AppState> {
             "/{slug}/installs/{app_version_id}/scopes",
             get(get_install_scopes).post(set_install_scopes),
         )
+        .route(
+            "/installs/{install_id}",
+            axum::routing::delete(uninstall_plugin_by_id),
+        )
+        .route("/installs/{install_id}/enable", post(enable_plugin_by_id))
+        .route("/installs/{install_id}/disable", post(disable_plugin_by_id))
+        .route(
+            "/installs/{install_id}/settings",
+            get(get_install_settings_by_id).patch(patch_install_settings_by_id),
+        )
+        .route(
+            "/installs/{install_id}/scopes",
+            get(get_install_scopes_by_id).post(set_install_scopes_by_id),
+        )
         // Deployment / runtime surfaces: `runtime` and `instances` are served
         // by the platform; logs / schema / migrations read their own tables.
         .route("/installs/{install_id}/runtime", get(get_runtime))
@@ -175,7 +189,7 @@ async fn plugin_and_install(
     let install = plugin
         .installations
         .iter()
-        .find(|i| i.app_version_id == app_version_id)
+        .find(|i| i.app_version_id == Some(app_version_id))
         .cloned()
         .ok_or_else(|| {
             AlcedoError::NotFound(
@@ -567,6 +581,201 @@ async fn set_install_scopes(
         .update_install(plugin.id, app_version_id, map)
         .await?;
     let (_, install) = plugin_and_install(&service, &slug, app_version_id).await?;
+    Ok(Json(success(ScopesResponse {
+        requested_scopes: plugin.requested_scopes,
+        granted_scopes: install.granted_scopes,
+    })))
+}
+
+// --- install-id-keyed handlers (work for both global and app scope) ------
+
+async fn install_by_id(
+    service: &PluginsService<'_>,
+    install_id: i64,
+) -> Result<(PluginRecord, crate::services::plugins::InstallRecord), AlcedoError> {
+    let install_row = service
+        .read(
+            "alcedocore_plugins_installs",
+            Query {
+                fields: vec!["*".to_string()],
+                limit: 1,
+                ..Query::eq("id", Value::from(install_id))
+            },
+        )
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            AlcedoError::NotFound(format!("Plugin install not found: {}", install_id), 0)
+        })?;
+    let plugin_id = install_row
+        .get("plugin_id")
+        .and_then(Value::as_i64)
+        .unwrap_or(0) as i32;
+    let plugin = service
+        .get_catalog_by_id(plugin_id)
+        .await?
+        .ok_or_else(|| AlcedoError::NotFound(format!("Plugin not found: {}", plugin_id), 0))?;
+    let slug = plugin
+        .get("slug")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let plugin = service
+        .get_plugin(&slug)
+        .await?
+        .ok_or_else(|| AlcedoError::NotFound(format!("Plugin not found: {}", slug), 0))?;
+    let install = plugin
+        .installations
+        .iter()
+        .find(|i| i64::from(i.id) == install_id)
+        .cloned()
+        .ok_or_else(|| {
+            AlcedoError::NotFound(
+                format!("Install {} not found on plugin {}", install_id, slug),
+                0,
+            )
+        })?;
+    Ok((plugin, install))
+}
+
+#[utoipa::path(delete, path = "/api/platform/plugins/installs/{install_id}", tag = "Plugins",
+    params(("install_id" = i64, Path)),
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+async fn uninstall_plugin_by_id(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(install_id): Path<i64>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let service = PluginsService::new(&state);
+    service.delete_install_by_id(install_id).await?;
+    Ok(Json(success(serde_json::json!({ "uninstalled": true }))))
+}
+
+#[utoipa::path(post, path = "/api/platform/plugins/installs/{install_id}/enable", tag = "Plugins",
+    params(("install_id" = i64, Path)),
+    responses((status = OK, body = JSendResponse<PluginRecord>))
+)]
+async fn enable_plugin_by_id(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(install_id): Path<i64>,
+) -> Result<Json<JSendResponse<PluginRecord>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let service = PluginsService::new(&state);
+    let (plugin, _) = install_by_id(&service, install_id).await?;
+    service.set_install_enabled_by_id(install_id, true).await?;
+    Ok(Json(success(plugin_or_404(&service, &plugin.slug).await?)))
+}
+
+#[utoipa::path(post, path = "/api/platform/plugins/installs/{install_id}/disable", tag = "Plugins",
+    params(("install_id" = i64, Path)),
+    responses((status = OK, body = JSendResponse<PluginRecord>))
+)]
+async fn disable_plugin_by_id(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(install_id): Path<i64>,
+) -> Result<Json<JSendResponse<PluginRecord>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let service = PluginsService::new(&state);
+    let (plugin, _) = install_by_id(&service, install_id).await?;
+    service.set_install_enabled_by_id(install_id, false).await?;
+    Ok(Json(success(plugin_or_404(&service, &plugin.slug).await?)))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/installs/{install_id}/settings", tag = "Plugins",
+    params(("install_id" = i64, Path)),
+    responses((status = OK, body = JSendResponse<SettingsResponse>))
+)]
+async fn get_install_settings_by_id(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(install_id): Path<i64>,
+) -> Result<Json<JSendResponse<SettingsResponse>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let service = PluginsService::new(&state);
+    let (_, install) = install_by_id(&service, install_id).await?;
+    let (settings, system_settings) = split_settings(&install.settings);
+    Ok(Json(success(SettingsResponse {
+        settings,
+        system_settings,
+        schema: service.settings_schema(install_id),
+    })))
+}
+
+#[utoipa::path(patch, path = "/api/platform/plugins/installs/{install_id}/settings", tag = "Plugins",
+    params(("install_id" = i64, Path)),
+    request_body = std::collections::HashMap<String, Value>,
+    responses((status = OK, body = JSendResponse<SettingsResponse>))
+)]
+async fn patch_install_settings_by_id(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(install_id): Path<i64>,
+    mut payload: Json<Map<String, Value>>,
+) -> Result<Json<JSendResponse<SettingsResponse>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let service = PluginsService::new(&state);
+    let (_, install) = install_by_id(&service, install_id).await?;
+    payload.remove(SYSTEM_SETTINGS_KEY);
+    let (_, system_settings) = split_settings(&install.settings);
+    let mut map = Map::new();
+    map.insert(
+        "settings".to_string(),
+        merge_system_settings(Value::Object(payload.0), system_settings),
+    );
+    service.update_install_by_id(install_id, map).await?;
+    let (_, install) = install_by_id(&service, install_id).await?;
+    let (settings, system_settings) = split_settings(&install.settings);
+    Ok(Json(success(SettingsResponse {
+        settings,
+        system_settings,
+        schema: service.settings_schema(install_id),
+    })))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/installs/{install_id}/scopes", tag = "Plugins",
+    params(("install_id" = i64, Path)),
+    responses((status = OK, body = JSendResponse<ScopesResponse>))
+)]
+async fn get_install_scopes_by_id(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(install_id): Path<i64>,
+) -> Result<Json<JSendResponse<ScopesResponse>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let service = PluginsService::new(&state);
+    let (plugin, install) = install_by_id(&service, install_id).await?;
+    Ok(Json(success(ScopesResponse {
+        requested_scopes: plugin.requested_scopes,
+        granted_scopes: install.granted_scopes,
+    })))
+}
+
+#[utoipa::path(post, path = "/api/platform/plugins/installs/{install_id}/scopes", tag = "Plugins",
+    params(("install_id" = i64, Path)),
+    request_body = SetScopesRequest,
+    responses((status = OK, body = JSendResponse<ScopesResponse>))
+)]
+async fn set_install_scopes_by_id(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(install_id): Path<i64>,
+    Json(payload): Json<SetScopesRequest>,
+) -> Result<Json<JSendResponse<ScopesResponse>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let service = PluginsService::new(&state);
+    let (plugin, _) = install_by_id(&service, install_id).await?;
+    let mut map = Map::new();
+    map.insert(
+        "granted_scopes".to_string(),
+        Value::Array(payload.scopes.into_iter().map(Value::String).collect()),
+    );
+    service.update_install_by_id(install_id, map).await?;
+    let (_, install) = install_by_id(&service, install_id).await?;
     Ok(Json(success(ScopesResponse {
         requested_scopes: plugin.requested_scopes,
         granted_scopes: install.granted_scopes,

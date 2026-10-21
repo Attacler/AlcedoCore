@@ -211,7 +211,8 @@ pub struct PluginRequestIdentity {
 #[derive(Debug, Serialize, Deserialize, Clone, ToSchema)]
 pub struct InstallRecord {
     pub id: i32,
-    pub app_version_id: i32,
+    pub app_version_id: Option<i32>,
+    pub scope: String,
     pub app_id: Option<i32>,
     pub app_name: Option<String>,
     pub api_name: Option<String>,
@@ -249,7 +250,11 @@ pub struct DeployInput {
     pub plugin_version: String,
     pub registry_id: Option<i32>,
     pub image: Option<String>,
-    pub app_version_id: i32,
+    /// Required when `scope` is `"app"` (default). Ignored when `scope` is `"global"`.
+    pub app_version_id: Option<i32>,
+    /// `"global"` (no app binding) or `"app"` (bound to `app_version_id`). Default `"app"`.
+    #[serde(default)]
+    pub scope: Option<String>,
     pub plugin_type: Option<String>,
     pub description: Option<String>,
     pub endpoints: Option<Value>,
@@ -287,11 +292,20 @@ fn now() -> String {
 }
 
 fn install_record(row: &Map<String, Value>, infos: &HashMap<i32, AppVersionInfo>) -> InstallRecord {
-    let app_version_id = int_field(row, "app_version_id").unwrap_or(0);
-    let info = infos.get(&app_version_id).cloned().unwrap_or_default();
+    let app_version_id = int_field(row, "app_version_id");
+    let info = app_version_id
+        .and_then(|id| infos.get(&id))
+        .cloned()
+        .unwrap_or_default();
+    let scope = if app_version_id.is_some() {
+        "app"
+    } else {
+        "global"
+    };
     InstallRecord {
         id: int_field(row, "id").unwrap_or(0),
         app_version_id,
+        scope: scope.to_string(),
         app_id: info.app_id,
         app_name: info.app_name,
         api_name: info.api_name,
@@ -320,7 +334,7 @@ impl PluginsService<'_> {
         AppContext::system(RequestSource::API)
     }
 
-    async fn read(
+    pub(crate) async fn read(
         &self,
         collection: &str,
         query: Query,
@@ -411,32 +425,39 @@ impl PluginsService<'_> {
             Query {
                 fields: vec!["*".to_string()],
                 limit: 0,
-                sort: vec!["app_version_id".to_string()],
+                // NULLS LAST so global installs sort after app-scoped ones.
+                sort: vec!["app_version_id ASC NULLS LAST".to_string()],
                 ..Query::eq("plugin_id", Value::from(plugin_id))
             },
         )
         .await
     }
 
-    /// Enabled installs of one app × version, with the plugin's slug — the
-    /// event forwarder's recipient list. Disabled installs never hear events.
+    /// Enabled installs for one app × version plus all enabled global installs,
+    /// with each plugin's slug — the event forwarder's recipient list.
+    /// Disabled installs never hear events.
     pub async fn enabled_installs_for_app_version(
         &self,
         app_version_id: i32,
     ) -> Result<Vec<(String, InstallRecord)>, AlcedoError> {
+        // App-scoped installs for this app×version, plus global installs.
         let rows = self
             .read(
                 INSTALLS,
                 Query {
                     fields: vec!["*".to_string()],
                     limit: 0,
-                    ..Query::eq_all(&[
-                        ("app_version_id", Value::from(app_version_id)),
-                        ("enabled", Value::Bool(true)),
-                    ])
+                    ..Query::eq("enabled", Value::Bool(true))
                 },
             )
             .await?;
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|row| {
+                let av = int_field(row, "app_version_id");
+                av == Some(app_version_id) || av.is_none()
+            })
+            .collect();
         if rows.is_empty() {
             return Ok(Vec::new());
         }
@@ -568,7 +589,8 @@ impl PluginsService<'_> {
                 .map(|i| install_record(i, &infos))
                 .filter(matches)
                 .collect();
-            installations.sort_by_key(|i| i.app_version_id);
+            // Global installs (app_version_id = None) sort last.
+            installations.sort_by_key(|i| i.app_version_id.unwrap_or(i32::MAX));
 
             if filter.is_some() && installations.is_empty() {
                 continue;
@@ -631,36 +653,53 @@ impl PluginsService<'_> {
         let mut input = input;
         let slug = normalize_slug_input(&mut input)?;
 
-        let infos = self.app_version_infos().await?;
-        let info = infos.get(&input.app_version_id).ok_or_else(|| {
-            AlcedoError::NotFound(
-                format!("App version not found: {}", input.app_version_id),
-                0,
-            )
-        })?;
-        let api_name = info
-            .api_name
-            .clone()
-            .ok_or_else(|| AlcedoError::SystemError("App version has no app".to_string(), 0))?;
-        let version_name = info.version_name.clone().unwrap_or_default();
+        let scope = input.scope.as_deref().unwrap_or("app");
+        let is_global = scope == "global";
 
-        let ctx = AppContext {
-            app_name: api_name.clone(),
-            version: version_name.clone(),
-            request_source: RequestSource::API,
-            identity: None,
-            request_id: None,
-        };
-        let wanted_schema = ctx.schema_name();
-        {
-            let schema = self.app_state.database_schema.read().await;
-            if !schema.tables.iter().any(|t| t.schema == wanted_schema) {
-                return Err(AlcedoError::InvalidInput(
-                    format!("Schema not ready for app/version: {}", wanted_schema),
+        // For app-scoped deploys, resolve the app×version and check the schema.
+        // Global deploys skip both — no app context needed.
+        let (api_name, version_name, ctx) = if is_global {
+            (
+                String::new(),
+                String::new(),
+                AppContext::system(RequestSource::API),
+            )
+        } else {
+            let app_version_id = input.app_version_id.ok_or_else(|| {
+                AlcedoError::InvalidInput(
+                    "app_version_id is required when scope is \"app\"".to_string(),
                     0,
-                ));
+                )
+            })?;
+            let infos = self.app_version_infos().await?;
+            let info = infos.get(&app_version_id).ok_or_else(|| {
+                AlcedoError::NotFound(format!("App version not found: {}", app_version_id), 0)
+            })?;
+            let api_name = info
+                .api_name
+                .clone()
+                .ok_or_else(|| AlcedoError::SystemError("App version has no app".to_string(), 0))?;
+            let version_name = info.version_name.clone().unwrap_or_default();
+
+            let ctx = AppContext {
+                app_name: api_name.clone(),
+                version: version_name.clone(),
+                request_source: RequestSource::API,
+                identity: None,
+                request_id: None,
+            };
+            let wanted_schema = ctx.schema_name();
+            {
+                let schema = self.app_state.database_schema.read().await;
+                if !schema.tables.iter().any(|t| t.schema == wanted_schema) {
+                    return Err(AlcedoError::InvalidInput(
+                        format!("Schema not ready for app/version: {}", wanted_schema),
+                        0,
+                    ));
+                }
             }
-        }
+            (api_name, version_name, ctx)
+        };
 
         let registry_id = input.registry_id.unwrap_or(SYSTEM_REGISTRY_ID);
         let context = Self::system_context();
@@ -744,20 +783,37 @@ impl PluginsService<'_> {
             }
         };
 
-        // Upsert install (plugin × app-version).
-        let existing = self
-            .read(
+        // Upsert install (plugin × app-version for app scope, plugin-only for global).
+        let existing = if is_global {
+            self.read(
                 INSTALLS,
                 Query {
                     fields: vec!["id".to_string()],
                     limit: 0,
                     ..Query::eq_all(&[
                         ("plugin_id", Value::from(plugin_id)),
-                        ("app_version_id", Value::from(input.app_version_id)),
+                        ("app_version_id", Value::Null),
                     ])
                 },
             )
-            .await?;
+            .await?
+        } else {
+            self.read(
+                INSTALLS,
+                Query {
+                    fields: vec!["id".to_string()],
+                    limit: 0,
+                    ..Query::eq_all(&[
+                        ("plugin_id", Value::from(plugin_id)),
+                        (
+                            "app_version_id",
+                            Value::from(input.app_version_id.unwrap_or(0)),
+                        ),
+                    ])
+                },
+            )
+            .await?
+        };
         let mut install_id = existing.first().and_then(|row| int_field(row, "id"));
 
         let mut install_map = Map::new();
@@ -778,10 +834,14 @@ impl PluginsService<'_> {
 
         if existing.is_empty() {
             install_map.insert("plugin_id".to_string(), Value::from(plugin_id));
-            install_map.insert(
-                "app_version_id".to_string(),
-                Value::from(input.app_version_id),
-            );
+            if is_global {
+                install_map.insert("app_version_id".to_string(), Value::Null);
+            } else {
+                install_map.insert(
+                    "app_version_id".to_string(),
+                    Value::from(input.app_version_id.unwrap_or(0)),
+                );
+            }
             install_map.insert(
                 "enabled".to_string(),
                 Value::from(input.enabled.unwrap_or(false)),
@@ -794,10 +854,20 @@ impl PluginsService<'_> {
                 .and_then(|pk| pk.parse::<i32>().ok());
         } else {
             let mut service = ItemsService::new(self.app_state, &context, &installs_collection);
-            let mut query = Query::eq_all(&[
-                ("plugin_id", Value::from(plugin_id)),
-                ("app_version_id", Value::from(input.app_version_id)),
-            ]);
+            let mut query = if is_global {
+                Query::eq_all(&[
+                    ("plugin_id", Value::from(plugin_id)),
+                    ("app_version_id", Value::Null),
+                ])
+            } else {
+                Query::eq_all(&[
+                    ("plugin_id", Value::from(plugin_id)),
+                    (
+                        "app_version_id",
+                        Value::from(input.app_version_id.unwrap_or(0)),
+                    ),
+                ])
+            };
             service
                 .update_items_by_query(&mut query, install_map, &mut None)
                 .await?;
@@ -903,11 +973,13 @@ impl PluginsService<'_> {
 
         crate::services::event_forwarder::invalidate_manifest_cache(self.app_state, install_id)
             .await;
-        crate::services::event_forwarder::invalidate_subscribers(
-            self.app_state,
-            input.app_version_id,
-        )
-        .await;
+        // Global installs: invalidate all subscriber caches (every app×version
+        // may now include this plugin). App-scoped: just the one.
+        if is_global {
+            crate::services::event_forwarder::invalidate_all(self.app_state).await;
+        } else if let Some(av) = input.app_version_id {
+            crate::services::event_forwarder::invalidate_subscribers(self.app_state, av).await;
+        }
 
         let deployment_id = self
             .app_state
@@ -922,10 +994,20 @@ impl PluginsService<'_> {
             .await?;
 
         let mut service = ItemsService::new(self.app_state, &context, &installs_collection);
-        let mut query = Query::eq_all(&[
-            ("plugin_id", Value::from(plugin_id)),
-            ("app_version_id", Value::from(input.app_version_id)),
-        ]);
+        let mut query = if is_global {
+            Query::eq_all(&[
+                ("plugin_id", Value::from(plugin_id)),
+                ("app_version_id", Value::Null),
+            ])
+        } else {
+            Query::eq_all(&[
+                ("plugin_id", Value::from(plugin_id)),
+                (
+                    "app_version_id",
+                    Value::from(input.app_version_id.unwrap_or(0)),
+                ),
+            ])
+        };
         service
             .update_items_by_query(
                 &mut query,
@@ -934,24 +1016,33 @@ impl PluginsService<'_> {
             )
             .await?;
 
-        // System log in the target app×version schema.
+        // System log in the target app×version schema (app scope) or system schema (global).
         let metadata = serde_json::json!({
             "plugin": input.slug,
             "plugin_version": input.plugin_version,
             "app_version_id": input.app_version_id,
+            "scope": scope,
             "app": api_name,
             "version": version_name,
             "registry_id": registry_id,
         });
+        let deploy_msg = if is_global {
+            format!(
+                "Deployed {} ({}) globally",
+                input.slug, input.plugin_version
+            )
+        } else {
+            format!(
+                "Deployed {} ({}) to {}/{}",
+                input.slug, input.plugin_version, api_name, version_name
+            )
+        };
         activity_logs::record(
             self.app_state,
             &ctx,
             "plugin_deployed",
             &input.slug,
-            Some(format!(
-                "Deployed {} ({}) to {}/{}",
-                input.slug, input.plugin_version, api_name, version_name
-            )),
+            Some(deploy_msg),
             metadata,
             None,
             None,
@@ -1094,6 +1185,115 @@ impl PluginsService<'_> {
 
         crate::services::event_forwarder::invalidate_subscribers(self.app_state, app_version_id)
             .await;
+        Ok(())
+    }
+
+    // --- install-id-keyed mutations (work for both global and app scope) --
+
+    async fn require_install_by_id(
+        &self,
+        install_id: i64,
+    ) -> Result<Map<String, Value>, AlcedoError> {
+        self.read(
+            INSTALLS,
+            Query {
+                fields: vec!["*".to_string()],
+                limit: 1,
+                ..Query::eq("id", Value::from(install_id))
+            },
+        )
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            AlcedoError::NotFound(format!("Plugin install not found: {}", install_id), 0)
+        })
+    }
+
+    pub async fn update_install_by_id(
+        &self,
+        install_id: i64,
+        mut payload: Map<String, Value>,
+    ) -> Result<(), AlcedoError> {
+        let _ = self.require_install_by_id(install_id).await?;
+        payload.insert("updated_at".to_string(), Value::String(now()));
+        let context = Self::system_context();
+        let collection = INSTALLS.to_string();
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
+        service
+            .update_items_by_query(
+                &mut Query::eq("id", Value::from(install_id)),
+                payload,
+                &mut None,
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_install_by_id(&self, install_id: i64) -> Result<(), AlcedoError> {
+        let install = self.require_install_by_id(install_id).await?;
+        let app_version_id = int_field(&install, "app_version_id");
+        let context = Self::system_context();
+        let collection = INSTALLS.to_string();
+        let mut service = ItemsService::new(self.app_state, &context, &collection);
+        service
+            .delete_items_by_query(Query::eq("id", Value::from(install_id)), &mut None)
+            .await?;
+        self.app_state.platform.ensure_absent(install_id).await?;
+        // Invalidate subscriber cache: app-scoped → just that app×version;
+        // global → all caches.
+        if let Some(av) = app_version_id {
+            crate::services::event_forwarder::invalidate_subscribers(self.app_state, av).await;
+        } else {
+            crate::services::event_forwarder::invalidate_all(self.app_state).await;
+        }
+        crate::services::event_forwarder::invalidate_manifest_cache(self.app_state, install_id)
+            .await;
+        Ok(())
+    }
+
+    pub async fn set_install_enabled_by_id(
+        &self,
+        install_id: i64,
+        enabled: bool,
+    ) -> Result<(), AlcedoError> {
+        let install = self.require_install_by_id(install_id).await?;
+        let app_version_id = int_field(&install, "app_version_id");
+        let deployment_id: Option<String> = str_field(&install, "deployment_id");
+
+        let mut payload = Map::new();
+        payload.insert("enabled".to_string(), Value::from(enabled));
+        self.update_install_by_id(install_id, payload).await?;
+
+        if let Some(deployment_id) = deployment_id {
+            let result = if enabled {
+                if self
+                    .app_state
+                    .platform
+                    .is_replicated_service(&deployment_id)
+                {
+                    self.app_state.platform.scale(install_id, 1, None).await
+                } else {
+                    self.app_state.platform.restart(install_id).await
+                }
+            } else {
+                self.app_state.platform.scale(install_id, 0, None).await
+            };
+            if let Err(e) = result {
+                tracing::warn!(
+                    "[PLUGINS] Could not {} container for install {}: {}",
+                    if enabled { "start" } else { "stop" },
+                    install_id,
+                    e
+                );
+            }
+        }
+
+        if let Some(av) = app_version_id {
+            crate::services::event_forwarder::invalidate_subscribers(self.app_state, av).await;
+        } else {
+            crate::services::event_forwarder::invalidate_all(self.app_state).await;
+        }
         Ok(())
     }
 
@@ -1606,7 +1806,7 @@ impl ResolvedInstall {
             slug: self.slug.clone(),
             app: self.install.api_name.clone(),
             version: self.install.version_name.clone(),
-            app_version_id: Some(self.install.app_version_id),
+            app_version_id: self.install.app_version_id,
             version_id: self.install.version_id,
             install_id: Some(self.install.id as i64),
         }
@@ -1703,18 +1903,28 @@ pub async fn resolve_install(
 
     let mut candidates: Vec<InstallRecord> = plugin.installations;
     if let (Some(app), Some(version)) = (app, version) {
-        // The header path used to skip the `enabled` check, so a disabled
-        // install still resolved and proxied when the headers were supplied.
-        candidates.retain(|i| {
-            i.enabled
-                && i.api_name.as_deref() == Some(app)
-                && i.version_name.as_deref() == Some(version)
-        });
-        if candidates.is_empty() {
-            return Err(AlcedoError::NotFound(
-                format!("Plugin '{}' is not installed on {}/{}", slug, app, version),
-                0,
-            ));
+        // Most-specific-wins: app install first, then global fallback.
+        let app_match: Vec<_> = candidates
+            .iter()
+            .filter(|i| {
+                i.enabled
+                    && i.scope == "app"
+                    && i.api_name.as_deref() == Some(app)
+                    && i.version_name.as_deref() == Some(version)
+            })
+            .cloned()
+            .collect();
+        if !app_match.is_empty() {
+            candidates = app_match;
+        } else {
+            // Fall back to global install.
+            candidates.retain(|i| i.enabled && i.scope == "global");
+            if candidates.is_empty() {
+                return Err(AlcedoError::NotFound(
+                    format!("Plugin '{}' is not installed on {}/{}", slug, app, version),
+                    0,
+                ));
+            }
         }
     } else {
         candidates.retain(|i| i.enabled);
@@ -2257,7 +2467,8 @@ mod tests {
             plugin_version: "1.0.0".to_string(),
             registry_id: None,
             image: None,
-            app_version_id: 1,
+            app_version_id: Some(1),
+            scope: None,
             plugin_type: None,
             description: None,
             endpoints: None,
