@@ -5,6 +5,7 @@ pub mod dev;
 pub mod developer_keys;
 pub mod docs;
 pub mod files;
+pub mod health;
 pub mod items;
 pub mod kv;
 pub mod logs;

@@ -4,14 +4,17 @@ use utoipa::OpenApi;
 use crate::AppState;
 use crate::controllers::items::DocsItemFilter;
 use crate::controllers::{
-    apps, auth, collections, dev, developer_keys, files, items, kv, logs, menus, plugins, policies,
-    registries, roles, route_mappings, sessions, settings, users, versions,
+    apps, auth, collections, dev, developer_keys, files, health, items, kv, logs, menus, plugins,
+    policies, registries, roles, route_mappings, sessions, settings, users, versions,
 };
 use crate::services::menus::{MenuItemInput, MenuSectionInput};
 
 #[derive(OpenApi)]
 #[openapi(
     paths(
+        // System
+        health::health_check,
+
         // Items
         items::get_items,
         items::get_item,

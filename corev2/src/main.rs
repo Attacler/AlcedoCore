@@ -143,6 +143,7 @@ async fn main() -> Result<()> {
     let proxy_router_for_fallback = proxy_router.clone().with_state(state.clone());
 
     let app = Router::new()
+        .nest("/health", controllers::health::health_controller())
         .nest("/api/app", app_controller())
         .nest("/api/platform", platform_controller())
         .nest("/api/dev", controllers::dev::dev_controller())
