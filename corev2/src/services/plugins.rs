@@ -411,6 +411,7 @@ impl PluginsService<'_> {
                 .platform
                 .ensure_absent(install_id as i64)
                 .await?;
+            invalidate_install_cache(self.app_state, install_id as i64).await;
         }
         crate::services::event_forwarder::invalidate_all(self.app_state).await;
 
@@ -1016,6 +1017,8 @@ impl PluginsService<'_> {
             )
             .await?;
 
+        invalidate_install_cache(self.app_state, install_id).await;
+
         // System log in the target app×version schema (app scope) or system schema (global).
         let metadata = serde_json::json!({
             "plugin": input.slug,
@@ -1088,7 +1091,8 @@ impl PluginsService<'_> {
         app_version_id: i32,
         mut payload: Map<String, Value>,
     ) -> Result<(), AlcedoError> {
-        let _ = self.require_install(plugin_id, app_version_id).await?;
+        let install = self.require_install(plugin_id, app_version_id).await?;
+        let install_id = int_field(&install, "id").unwrap_or_default();
         payload.insert("updated_at".to_string(), Value::String(now()));
         let context = Self::system_context();
         let collection = INSTALLS.to_string();
@@ -1100,6 +1104,7 @@ impl PluginsService<'_> {
         service
             .update_items_by_query(&mut query, payload, &mut None)
             .await?;
+        invalidate_install_cache(self.app_state, i64::from(install_id)).await;
         Ok(())
     }
 
@@ -1128,6 +1133,7 @@ impl PluginsService<'_> {
             .platform
             .ensure_absent(i64::from(install_id))
             .await?;
+        invalidate_install_cache(self.app_state, i64::from(install_id)).await;
         crate::services::event_forwarder::invalidate_subscribers(self.app_state, app_version_id)
             .await;
         crate::services::event_forwarder::invalidate_manifest_cache(
@@ -1227,6 +1233,7 @@ impl PluginsService<'_> {
                 &mut None,
             )
             .await?;
+        invalidate_install_cache(self.app_state, install_id).await;
         Ok(())
     }
 
@@ -1240,6 +1247,7 @@ impl PluginsService<'_> {
             .delete_items_by_query(Query::eq("id", Value::from(install_id)), &mut None)
             .await?;
         self.app_state.platform.ensure_absent(install_id).await?;
+        invalidate_install_cache(self.app_state, install_id).await;
         // Invalidate subscriber cache: app-scoped → just that app×version;
         // global → all caches.
         if let Some(av) = app_version_id {
@@ -1793,6 +1801,7 @@ pub struct MigrationFile {
 }
 
 /// An install plus the platform deployment it points at.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedInstall {
     pub install: InstallRecord,
     pub slug: String,
@@ -1837,12 +1846,39 @@ pub fn plugin_env(
     env
 }
 
+const INSTALL_CACHE_TTL_SECS: u64 = 60;
+
+fn install_cache_key(install_id: i64) -> String {
+    format!("plugin_install:{}", install_id)
+}
+
+/// Drops the cached `ResolvedInstall` for an install. Called on every mutation
+/// (deploy, enable/disable, settings, scopes, delete) so the next proxy request
+/// re-reads from the DB.
+pub async fn invalidate_install_cache(state: &AppState, install_id: i64) {
+    let _ = state.cache.del(&install_cache_key(install_id)).await;
+}
+
 /// Resolves an install by its own id — the routing key for the proxy and the
 /// only address that needs no `X-App`/`X-Version` disambiguation.
+///
+/// Hot path: checks the cache first (60s TTL), falls through to 3 DB queries
+/// on miss. The cache is invalidated on every install mutation.
 pub async fn resolve_install_by_id(
     state: &AppState,
     install_id: i64,
 ) -> Result<ResolvedInstall, AlcedoError> {
+    // Cache hit — no DB queries.
+    if let Ok(Some(cached)) = state.cache.get(&install_cache_key(install_id)).await {
+        if let Ok(resolved) = serde_json::from_str::<ResolvedInstall>(&cached) {
+            if resolved.install.enabled {
+                return Ok(resolved);
+            }
+            // Cached but disabled — fall through to DB to confirm (the cache
+            // may be stale if the disable happened on another replica).
+        }
+    }
+
     let service = PluginsService::new(state);
 
     let row = service
@@ -1882,7 +1918,21 @@ pub async fn resolve_install_by_id(
         .ok_or_else(|| AlcedoError::NotFound(format!("Plugin not found: {}", plugin_id), 0))?;
 
     let install = install_record(&row, &service.app_version_infos().await?);
-    Ok(ResolvedInstall { install, slug })
+    let resolved = ResolvedInstall { install, slug };
+
+    // Populate cache (best-effort — a cache write failure is not fatal).
+    if let Ok(json) = serde_json::to_string(&resolved) {
+        let _ = state
+            .cache
+            .set_ttl(
+                install_cache_key(install_id),
+                json,
+                std::time::Duration::from_secs(INSTALL_CACHE_TTL_SECS),
+            )
+            .await;
+    }
+
+    Ok(resolved)
 }
 
 /// Resolves which install a slug-keyed caller means. `/api/dev/request-id` is
