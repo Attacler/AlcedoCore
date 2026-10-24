@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use sea_query::{Alias, Condition, Expr, Order, PostgresQueryBuilder};
 use serde_json::{Value, json};
 use sqlx::{Pool, Postgres, Row};
 
@@ -243,60 +244,49 @@ pub async fn list_request_logs(
     to: Option<&str>,
 ) -> Result<Value, AlcedoError> {
     let limit = limit.clamp(1, 500);
-    let schema_q = qschema(schema);
 
-    let mut sql = format!(
-        "SELECT id, request_id, plugin_slug, method, path, status_code, duration_ms, created_at \
-         FROM {schema_q}.plugin_request_logs WHERE plugin_slug = $1",
-    );
-    let mut bind_idx = 2i32;
-    if status_code.is_some() {
-        sql.push_str(&format!(" AND status_code = ${}", bind_idx));
-        bind_idx += 1;
-    }
-    if path.is_some() {
-        sql.push_str(&format!(" AND path LIKE ${}", bind_idx));
-        bind_idx += 1;
-    }
-    if method.is_some() {
-        sql.push_str(&format!(" AND method = ${}", bind_idx));
-        bind_idx += 1;
-    }
-    if from.is_some() {
-        sql.push_str(&format!(" AND created_at >= ${}", bind_idx));
-        bind_idx += 1;
-    }
-    if to.is_some() {
-        sql.push_str(&format!(" AND created_at <= ${}", bind_idx));
-        bind_idx += 1;
-    }
-    if cursor.is_some() {
-        sql.push_str(&format!(" AND id < ${}", bind_idx));
-    }
-    sql.push_str(" ORDER BY id DESC LIMIT ");
-    sql.push_str(&limit.to_string());
-
-    let mut query = sqlx::query(&sql).bind(slug);
+    let mut condition = Condition::all().add(Expr::col(Alias::new("plugin_slug")).eq(slug));
     if let Some(code) = status_code {
-        query = query.bind(code);
+        condition = condition.add(Expr::col(Alias::new("status_code")).eq(code));
     }
     if let Some(path) = path {
-        query = query.bind(format!("%{path}%"));
+        condition = condition.add(Expr::col(Alias::new("path")).like(format!("%{path}%")));
     }
     if let Some(method) = method {
-        query = query.bind(method);
+        condition = condition.add(Expr::col(Alias::new("method")).eq(method));
     }
     if let Some(from) = from {
-        query = query.bind(from);
+        condition = condition.add(
+            Expr::col(Alias::new("created_at"))
+                .gte(Expr::value(from).cast_as(Alias::new("timestamptz"))),
+        );
     }
     if let Some(to) = to {
-        query = query.bind(to);
+        condition = condition.add(
+            Expr::col(Alias::new("created_at"))
+                .lte(Expr::value(to).cast_as(Alias::new("timestamptz"))),
+        );
     }
     if let Some(cursor) = cursor {
-        query = query.bind(cursor);
+        condition = condition.add(Expr::col(Alias::new("id")).lt(cursor));
     }
 
-    let rows = query.fetch_all(pool).await?;
+    let mut stmt = sea_query::Query::select();
+    stmt.from((Alias::new(schema), Alias::new("plugin_request_logs")))
+        .column(Alias::new("id"))
+        .column(Alias::new("request_id"))
+        .column(Alias::new("plugin_slug"))
+        .column(Alias::new("method"))
+        .column(Alias::new("path"))
+        .column(Alias::new("status_code"))
+        .column(Alias::new("duration_ms"))
+        .column(Alias::new("created_at"))
+        .cond_where(condition)
+        .order_by(Alias::new("id"), Order::Desc)
+        .limit(limit as u64);
+    let sql = stmt.to_string(PostgresQueryBuilder);
+
+    let rows = sqlx::query(&sql).fetch_all(pool).await?;
     let next_cursor = if rows.len() as i64 == limit {
         rows.last()
             .and_then(|row| row.try_get::<i64, _>("id").ok())
