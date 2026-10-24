@@ -238,6 +238,9 @@ pub async fn list_request_logs(
     cursor: Option<i64>,
     status_code: Option<i32>,
     path: Option<&str>,
+    method: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
 ) -> Result<Value, AlcedoError> {
     let limit = limit.clamp(1, 500);
     let schema_q = qschema(schema);
@@ -246,14 +249,29 @@ pub async fn list_request_logs(
         "SELECT id, request_id, plugin_slug, method, path, status_code, duration_ms, created_at \
          FROM {schema_q}.plugin_request_logs WHERE plugin_slug = $1",
     );
+    let mut bind_idx = 2i32;
     if status_code.is_some() {
-        sql.push_str(" AND status_code = $2");
+        sql.push_str(&format!(" AND status_code = ${}", bind_idx));
+        bind_idx += 1;
     }
     if path.is_some() {
-        sql.push_str(" AND path LIKE $3");
+        sql.push_str(&format!(" AND path LIKE ${}", bind_idx));
+        bind_idx += 1;
+    }
+    if method.is_some() {
+        sql.push_str(&format!(" AND method = ${}", bind_idx));
+        bind_idx += 1;
+    }
+    if from.is_some() {
+        sql.push_str(&format!(" AND created_at >= ${}", bind_idx));
+        bind_idx += 1;
+    }
+    if to.is_some() {
+        sql.push_str(&format!(" AND created_at <= ${}", bind_idx));
+        bind_idx += 1;
     }
     if cursor.is_some() {
-        sql.push_str(" AND id < $4");
+        sql.push_str(&format!(" AND id < ${}", bind_idx));
     }
     sql.push_str(" ORDER BY id DESC LIMIT ");
     sql.push_str(&limit.to_string());
@@ -264,6 +282,15 @@ pub async fn list_request_logs(
     }
     if let Some(path) = path {
         query = query.bind(format!("%{path}%"));
+    }
+    if let Some(method) = method {
+        query = query.bind(method);
+    }
+    if let Some(from) = from {
+        query = query.bind(from);
+    }
+    if let Some(to) = to {
+        query = query.bind(to);
     }
     if let Some(cursor) = cursor {
         query = query.bind(cursor);

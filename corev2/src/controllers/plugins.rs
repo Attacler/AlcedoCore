@@ -91,6 +91,7 @@ pub fn plugins_controller() -> Router<AppState> {
             "/installs/{install_id}/instances/{task_id}/logs",
             get(instance_logs),
         )
+        .route("/installs/{install_id}/versions", get(list_install_versions))
         .route("/{slug}/logs", get(list_logs))
         .route("/{slug}/logs/{request_id}", get(get_log_detail))
         .route("/{slug}/versions", get(list_versions))
@@ -851,6 +852,9 @@ async fn list_logs(
         q.cursor.and_then(|c| c.parse::<i64>().ok()),
         q.status_code,
         q.path.as_deref(),
+        q.method.as_deref(),
+        q.from.as_deref(),
+        q.to.as_deref(),
     )
     .await?))
 }
@@ -889,6 +893,22 @@ async fn list_versions(
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
     Ok(ok(PluginsService::new(&state).versions(&slug).await?))
+}
+
+#[utoipa::path(get, path = "/api/platform/plugins/installs/{install_id}/versions", tag = "Plugins",
+    params(("install_id" = i64, Path)),
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+async fn list_install_versions(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path(install_id): Path<i64>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let versions = PluginsService::new(&state)
+        .list_install_versions(install_id)
+        .await?;
+    Ok(ok(serde_json::json!({ "versions": versions })))
 }
 
 async fn resolve_file_install(
@@ -1136,6 +1156,15 @@ pub struct LogsQuery {
     pub status_code: Option<i32>,
     #[serde(default)]
     pub path: Option<String>,
+    /// Filter by HTTP method (GET, POST, etc.).
+    #[serde(default)]
+    pub method: Option<String>,
+    /// RFC3339 start of date range (inclusive).
+    #[serde(default)]
+    pub from: Option<String>,
+    /// RFC3339 end of date range (inclusive).
+    #[serde(default)]
+    pub to: Option<String>,
     #[serde(default)]
     pub app: Option<String>,
     #[serde(default)]

@@ -1019,6 +1019,19 @@ impl PluginsService<'_> {
 
         invalidate_install_cache(self.app_state, install_id).await;
 
+        // Record the deployed version in the version history table.
+        if let Err(e) = self
+            .record_version(install_id, &input.plugin_version, &deployment_id)
+            .await
+        {
+            tracing::warn!(
+                "[PLUGINS] Could not record version history for {} v{}: {}",
+                input.slug,
+                input.plugin_version,
+                e
+            );
+        }
+
         // System log in the target app×version schema (app scope) or system schema (global).
         let metadata = serde_json::json!({
             "plugin": input.slug,
@@ -1189,6 +1202,19 @@ impl PluginsService<'_> {
             }
         }
 
+        // Update version history status.
+        let status = if enabled { "running" } else { "stopped" };
+        if let Err(e) = self
+            .set_active_version_status(i64::from(install_id), status)
+            .await
+        {
+            tracing::warn!(
+                "[PLUGINS] Could not update version status for install {}: {}",
+                install_id,
+                e
+            );
+        }
+
         crate::services::event_forwarder::invalidate_subscribers(self.app_state, app_version_id)
             .await;
         Ok(())
@@ -1295,6 +1321,16 @@ impl PluginsService<'_> {
                     e
                 );
             }
+        }
+
+        // Update version history status.
+        let status = if enabled { "running" } else { "stopped" };
+        if let Err(e) = self.set_active_version_status(install_id, status).await {
+            tracing::warn!(
+                "[PLUGINS] Could not update version status for install {}: {}",
+                install_id,
+                e
+            );
         }
 
         if let Some(av) = app_version_id {
@@ -1715,6 +1751,151 @@ impl PluginsService<'_> {
             "pages": pages.get("pages").cloned().unwrap_or(Value::Array(vec![])),
             "settings_schema": field("settings_schema"),
             "manifest_found": !matches!(manifest, Value::Object(ref m) if m.is_empty()),
+        }))
+    }
+
+    // --- version history (alcedocore_plugin_versions) -------------------
+
+    /// Record a newly deployed version for an install. Marks the previous
+    /// active version as inactive and the new one as active + running.
+    pub async fn record_version(
+        &self,
+        install_id: i64,
+        version: &str,
+        deployment_id: &str,
+    ) -> Result<(), AlcedoError> {
+        let pool = &*self.app_state.database_pool;
+        // Deactivate any previously active version for this install.
+        sqlx::query(
+            "UPDATE alcedocore.alcedocore_plugin_versions \
+             SET is_active = FALSE \
+             WHERE install_id = $1 AND is_active = TRUE",
+        )
+        .bind(install_id)
+        .execute(pool)
+        .await?;
+        // Upsert the new version row.
+        sqlx::query(
+            "INSERT INTO alcedocore.alcedocore_plugin_versions \
+             (install_id, version, deployment_id, status, is_active, deployed_at) \
+             VALUES ($1, $2, $3, 'running', TRUE, NOW()) \
+             ON CONFLICT (install_id, version) DO UPDATE SET \
+                 deployment_id = EXCLUDED.deployment_id, \
+                 status = 'running', \
+                 is_active = TRUE, \
+                 deployed_at = NOW()",
+        )
+        .bind(install_id)
+        .bind(version)
+        .bind(deployment_id)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update the status of a specific version (e.g. stopped / running / draining).
+    pub async fn set_version_status(
+        &self,
+        install_id: i64,
+        version: &str,
+        status: &str,
+    ) -> Result<(), AlcedoError> {
+        let pool = &*self.app_state.database_pool;
+        sqlx::query(
+            "UPDATE alcedocore.alcedocore_plugin_versions \
+             SET status = $3 \
+             WHERE install_id = $1 AND version = $2",
+        )
+        .bind(install_id)
+        .bind(version)
+        .bind(status)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Update the status of the currently active version for an install.
+    pub async fn set_active_version_status(
+        &self,
+        install_id: i64,
+        status: &str,
+    ) -> Result<(), AlcedoError> {
+        let pool = &*self.app_state.database_pool;
+        sqlx::query(
+            "UPDATE alcedocore.alcedocore_plugin_versions \
+             SET status = $2 \
+             WHERE install_id = $1 AND is_active = TRUE",
+        )
+        .bind(install_id)
+        .bind(status)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// List all deployed versions for an install, newest first.
+    pub async fn list_install_versions(
+        &self,
+        install_id: i64,
+    ) -> Result<Vec<serde_json::Value>, AlcedoError> {
+        let pool = &*self.app_state.database_pool;
+        let rows = sqlx::query(
+            "SELECT id, install_id, version, deployment_id, status, is_active, \
+                    deployed_at, created_at \
+             FROM alcedocore.alcedocore_plugin_versions \
+             WHERE install_id = $1 \
+             ORDER BY deployed_at DESC",
+        )
+        .bind(install_id)
+        .fetch_all(pool)
+        .await?;
+        let versions = rows
+            .into_iter()
+            .map(|row| {
+                use sqlx::Row;
+                serde_json::json!({
+                    "id": row.try_get::<i64, _>("id").unwrap_or(0),
+                    "install_id": row.try_get::<i64, _>("install_id").unwrap_or(0),
+                    "version": row.try_get::<String, _>("version").unwrap_or_default(),
+                    "deployment_id": row.try_get::<Option<String>, _>("deployment_id").unwrap_or(None),
+                    "status": row.try_get::<String, _>("status").unwrap_or_default(),
+                    "is_active": row.try_get::<bool, _>("is_active").unwrap_or(false),
+                    "deployed_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("deployed_at").ok(),
+                    "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+                })
+            })
+            .collect();
+        Ok(versions)
+    }
+
+    /// Get the currently active version for an install, if any.
+    pub async fn get_active_version(
+        &self,
+        install_id: i64,
+    ) -> Result<Option<serde_json::Value>, AlcedoError> {
+        let pool = &*self.app_state.database_pool;
+        let row = sqlx::query(
+            "SELECT id, install_id, version, deployment_id, status, is_active, \
+                    deployed_at, created_at \
+             FROM alcedocore.alcedocore_plugin_versions \
+             WHERE install_id = $1 AND is_active = TRUE \
+             LIMIT 1",
+        )
+        .bind(install_id)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(|row| {
+            use sqlx::Row;
+            serde_json::json!({
+                "id": row.try_get::<i64, _>("id").unwrap_or(0),
+                "install_id": row.try_get::<i64, _>("install_id").unwrap_or(0),
+                "version": row.try_get::<String, _>("version").unwrap_or_default(),
+                "deployment_id": row.try_get::<Option<String>, _>("deployment_id").unwrap_or(None),
+                "status": row.try_get::<String, _>("status").unwrap_or_default(),
+                "is_active": row.try_get::<bool, _>("is_active").unwrap_or(false),
+                "deployed_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("deployed_at").ok(),
+                "created_at": row.try_get::<chrono::DateTime<chrono::Utc>, _>("created_at").ok(),
+            })
         }))
     }
 }

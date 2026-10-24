@@ -637,6 +637,9 @@ export const usePluginsStore = defineStore("plugins", () => {
             cursor?: string;
             status_code?: number;
             path?: string;
+            method?: string;
+            from?: string;
+            to?: string;
         },
     ) {
         const params = new URLSearchParams();
@@ -645,6 +648,9 @@ export const usePluginsStore = defineStore("plugins", () => {
         if (options?.status_code)
             params.set("status_code", String(options.status_code));
         if (options?.path) params.set("path", options.path);
+        if (options?.method) params.set("method", options.method);
+        if (options?.from) params.set("from", options.from);
+        if (options?.to) params.set("to", options.to);
         const response: any = await client.plugins.requestLogs(slug, params);
         return response.data || { logs: [], next_cursor: null };
     }
