@@ -6,7 +6,8 @@
             "version": "0.0.1",
             "min_core_version": "0.0.1",
             "env": {},
-            "plugin_type": "static"
+            "plugin_type": "static",
+            "accessable_url": "/admin"
         }
     ]
 }
