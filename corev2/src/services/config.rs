@@ -40,6 +40,7 @@ pub struct Config {
     pub plugin_network: String,
     pub plugins_dir: String,
     pub event_forwarder_max_concurrent: usize,
+    pub system_plugins_url: Option<String>,
 }
 
 pub fn get_config() -> Config {
@@ -91,6 +92,7 @@ pub fn get_config() -> Config {
         50usize,
         "must be a number",
     );
+    let system_plugins_url = env_opt("SYSTEM_PLUGINS_URL");
 
     if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
         eprintln!(
@@ -132,6 +134,7 @@ pub fn get_config() -> Config {
         plugin_network,
         plugins_dir,
         event_forwarder_max_concurrent,
+        system_plugins_url,
     }
 }
 

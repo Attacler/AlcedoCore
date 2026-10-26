@@ -228,10 +228,13 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
 }
 
 async fn public_file_response(state: &AppState, install_id: i64, uri: &Uri) -> Option<Response> {
-    let relative = public_path_of(uri)?;
-    if relative.is_empty() {
-        return None;
-    }
+    let relative = public_path_of(uri).unwrap_or_default();
+    // Empty path or "/" → serve index.html (SPA entry point).
+    let relative = if relative.is_empty() || relative == "/" {
+        "index.html".to_string()
+    } else {
+        relative
+    };
 
     let root = plugin_subdir(&state.config, install_id, "public");
     let path = safe_join(&root, &relative)?;
@@ -260,8 +263,10 @@ async fn public_file_response(state: &AppState, install_id: i64, uri: &Uri) -> O
 
 fn public_path_of(uri: &Uri) -> Option<String> {
     let rest = uri.path().strip_prefix("/p/")?;
-    let (_, tail) = rest.split_once('/')?;
-    Some(tail.to_string())
+    match rest.split_once('/') {
+        Some((_, tail)) => Some(tail.to_string()),
+        None => Some(String::new()),
+    }
 }
 
 fn install_id_of(uri: &Uri) -> Option<i64> {
@@ -467,10 +472,12 @@ mod tests {
             public_path_of(&Uri::from_static("/p/42/assets/logo.png?x=1")),
             Some("assets/logo.png".to_string())
         );
-        // The plugin root is always the plugin's, never a file. A bare
-        // trailing slash is an empty relative path, which the handler
-        // also treats as "not a file".
-        assert_eq!(public_path_of(&Uri::from_static("/p/42")), None);
+        // The plugin root maps to an empty relative path, which the handler
+        // resolves to index.html (SPA entry point).
+        assert_eq!(
+            public_path_of(&Uri::from_static("/p/42")),
+            Some("".to_string())
+        );
         assert_eq!(
             public_path_of(&Uri::from_static("/p/42/")),
             Some("".to_string())

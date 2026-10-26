@@ -32,6 +32,7 @@ pub mod respond;
 pub mod roles;
 pub mod route_mappings;
 pub mod scopes;
+pub mod system_plugins;
 pub mod sessions;
 pub mod users;
 pub mod versions;

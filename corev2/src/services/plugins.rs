@@ -239,6 +239,7 @@ pub struct PluginRecord {
     pub endpoints: Value,
     pub documentation: Value,
     pub requested_scopes: Value,
+    pub system_plugin: bool,
     pub installations: Vec<InstallRecord>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -263,6 +264,9 @@ pub struct DeployInput {
     pub settings: Option<Value>,
     pub enabled: Option<bool>,
     pub env: Option<HashMap<String, String>>,
+    /// Whether this is a system plugin (auto-deployed, managed by the core).
+    #[serde(default)]
+    pub system_plugin: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -609,6 +613,7 @@ impl PluginsService<'_> {
                 endpoints: json_field(row, "endpoints"),
                 documentation: json_field(row, "documentation"),
                 requested_scopes: json_field(row, "requested_scopes"),
+                system_plugin: bool_field(row, "system_plugin"),
                 installations,
                 created_at: str_field(row, "created_at"),
                 updated_at: str_field(row, "updated_at"),
@@ -736,6 +741,9 @@ impl PluginsService<'_> {
                 if let Some(scopes) = &input.requested_scopes {
                     updates.insert("requested_scopes".to_string(), scopes.clone());
                 }
+                if let Some(sp) = input.system_plugin {
+                    updates.insert("system_plugin".to_string(), Value::from(sp));
+                }
                 updates.insert("updated_at".to_string(), Value::String(now()));
                 let mut service = ItemsService::new(self.app_state, &context, &catalog_collection);
                 let mut query = Query::eq("slug", Value::String(slug.clone()));
@@ -772,6 +780,10 @@ impl PluginsService<'_> {
                 if let Some(scopes) = &input.requested_scopes {
                     map.insert("requested_scopes".to_string(), scopes.clone());
                 }
+                map.insert(
+                    "system_plugin".to_string(),
+                    Value::from(input.system_plugin.unwrap_or(false)),
+                );
                 let mut service = ItemsService::new(self.app_state, &context, &catalog_collection);
                 service
                     .create_many(vec![map], &mut None)
@@ -2708,6 +2720,7 @@ mod tests {
             settings: None,
             enabled: None,
             env: None,
+            system_plugin: None,
         };
         let mut config = crate::services::config::get_config();
         config.plugin_port = 8080;

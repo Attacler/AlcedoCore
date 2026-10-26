@@ -22,6 +22,7 @@ pub(crate) mod m00012_route_mappings;
 pub(crate) mod m00013_plugin_recovery;
 pub(crate) mod m00014_install_scope;
 pub(crate) mod m00015_plugin_versions;
+pub(crate) mod m00016_system_plugin_flag;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -60,6 +61,7 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
         m00013_plugin_recovery::M0013Migration,
         m00014_install_scope::M0014Migration,
         m00015_plugin_versions::M0015Migration,
+        m00016_system_plugin_flag::M0016Migration,
     ]
 }
 

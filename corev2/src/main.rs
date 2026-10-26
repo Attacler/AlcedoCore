@@ -111,6 +111,9 @@ async fn main() -> Result<()> {
     services::registries::RegistriesService::new(&state)
         .ensure_default()
         .await?;
+
+    services::system_plugins::bootstrap(&state).await;
+
     AuthService::new(&state, &AppContext::system(RequestSource::API))
         .ensure_root_developer_token()
         .await?;
