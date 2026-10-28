@@ -47,6 +47,11 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         collections::update_section,
         collections::delete_section,
         collections::reorder_sections,
+        collections::list_views,
+        collections::create_view,
+        collections::update_view,
+        collections::delete_view,
+        collections::set_default_view,
         // Settings
         settings::get_settings,
         settings::update_settings,
@@ -296,6 +301,11 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
             menus::CopyMenuRequest,
             MenuSectionInput,
             MenuItemInput,
+            crate::services::saved_views::SavedViewResponse,
+            crate::services::saved_views::CreateSavedViewRequest,
+            crate::services::saved_views::UpdateSavedViewRequest,
+            collections::ListSavedViewsResponse,
+            collections::DeleteSavedViewResponse,
         )
     )
 )]

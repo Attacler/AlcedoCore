@@ -31,6 +31,7 @@ pub mod registry_client;
 pub mod respond;
 pub mod roles;
 pub mod route_mappings;
+pub mod saved_views;
 pub mod scopes;
 pub mod system_plugins;
 pub mod sessions;

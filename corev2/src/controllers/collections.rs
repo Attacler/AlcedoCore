@@ -5,7 +5,10 @@ use axum::{
     response::IntoResponse,
     routing::{get, post, put},
 };
+use serde::Serialize;
 use serde_json::Value;
+use utoipa::ToSchema;
+use uuid::Uuid;
 
 use crate::{
     AppState,
@@ -20,9 +23,22 @@ use crate::{
         errors::AlcedoError,
         postgres::{columntypetots::column_type_to_ts, inspector::DatabaseSchema},
         respond::{JSendResponse, success},
+        saved_views::{
+            CreateSavedViewRequest, SavedViewsService, SavedViewResponse, UpdateSavedViewRequest,
+        },
         scopes::require_scope,
     },
 };
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ListSavedViewsResponse {
+    pub views: Vec<SavedViewResponse>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DeleteSavedViewResponse {
+    pub deleted: bool,
+}
 
 pub fn tables_controller() -> Router<AppState> {
     Router::new()
@@ -58,6 +74,10 @@ pub fn tables_controller() -> Router<AppState> {
             "/{name}/layouts/{layout_id}/sections/{section_id}",
             put(update_section).delete(delete_section),
         )
+        // Saved views
+        .route("/{name}/views", get(list_views).post(create_view))
+        .route("/{name}/views/{id}", put(update_view).delete(delete_view))
+        .route("/{name}/views/{id}/default", put(set_default_view))
 }
 
 #[utoipa::path(get, path = "/api/app/collections/schema",
@@ -560,4 +580,121 @@ async fn reorder_sections(
     let result =
         collections_service::reorder_sections(&state, &context, &name, &layout_id, &body).await?;
     Ok(Json(success(result)))
+}
+
+// ---------------------------------------------------------------------------
+// Saved views
+// ---------------------------------------------------------------------------
+
+#[utoipa::path(get, path = "/api/app/collections/{name}/views",
+    params(
+        ("name" = String, Path, description = "Collection name."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    responses((status = OK, body = JSendResponse<ListSavedViewsResponse>))
+)]
+async fn list_views(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
+) -> Result<Json<JSendResponse<ListSavedViewsResponse>>, AlcedoError> {
+    require_scope(&state, &auth_level, &context, "collections.read").await?;
+    let service = SavedViewsService::new(&state, &context);
+    let views = service.list_views(&name).await?;
+    Ok(Json(success(ListSavedViewsResponse { views })))
+}
+
+#[utoipa::path(post, path = "/api/app/collections/{name}/views",
+    params(
+        ("name" = String, Path, description = "Collection name."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    request_body = CreateSavedViewRequest,
+    responses((status = OK, body = JSendResponse<SavedViewResponse>))
+)]
+async fn create_view(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
+    Json(req): Json<CreateSavedViewRequest>,
+) -> Result<Json<JSendResponse<SavedViewResponse>>, AlcedoError> {
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
+    let service = SavedViewsService::new(&state, &context);
+    let view = service.create_view(&name, &req).await?;
+    Ok(Json(success(view)))
+}
+
+#[utoipa::path(put, path = "/api/app/collections/{name}/views/{id}",
+    params(
+        ("name" = String, Path, description = "Collection name."),
+        ("id" = String, Path, description = "Saved view id."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    request_body = UpdateSavedViewRequest,
+    responses((status = OK, body = JSendResponse<SavedViewResponse>))
+)]
+async fn update_view(
+    State(state): State<AppState>,
+    Path((name, id)): Path<(String, String)>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
+    Json(req): Json<UpdateSavedViewRequest>,
+) -> Result<Json<JSendResponse<SavedViewResponse>>, AlcedoError> {
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
+    let view_id = Uuid::parse_str(&id)
+        .map_err(|_| AlcedoError::InvalidInput(format!("Invalid view id: {}", id), 0))?;
+    let service = SavedViewsService::new(&state, &context);
+    let view = service.update_view(&view_id, &req).await?;
+    Ok(Json(success(view)))
+}
+
+#[utoipa::path(delete, path = "/api/app/collections/{name}/views/{id}",
+    params(
+        ("name" = String, Path, description = "Collection name."),
+        ("id" = String, Path, description = "Saved view id."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    responses((status = OK, body = JSendResponse<DeleteSavedViewResponse>))
+)]
+async fn delete_view(
+    State(state): State<AppState>,
+    Path((_name, id)): Path<(String, String)>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
+) -> Result<Json<JSendResponse<DeleteSavedViewResponse>>, AlcedoError> {
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
+    let view_id = Uuid::parse_str(&id)
+        .map_err(|_| AlcedoError::InvalidInput(format!("Invalid view id: {}", id), 0))?;
+    let service = SavedViewsService::new(&state, &context);
+    service.delete_view(&view_id).await?;
+    Ok(Json(success(DeleteSavedViewResponse { deleted: true })))
+}
+
+#[utoipa::path(put, path = "/api/app/collections/{name}/views/{id}/default",
+    params(
+        ("name" = String, Path, description = "Collection name."),
+        ("id" = String, Path, description = "Saved view id."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    responses((status = OK, body = JSendResponse<SavedViewResponse>))
+)]
+async fn set_default_view(
+    State(state): State<AppState>,
+    Path((_name, id)): Path<(String, String)>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
+) -> Result<Json<JSendResponse<SavedViewResponse>>, AlcedoError> {
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
+    let view_id = Uuid::parse_str(&id)
+        .map_err(|_| AlcedoError::InvalidInput(format!("Invalid view id: {}", id), 0))?;
+    let service = SavedViewsService::new(&state, &context);
+    let view = service.set_default_view(&view_id).await?;
+    Ok(Json(success(view)))
 }
