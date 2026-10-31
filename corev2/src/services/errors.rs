@@ -70,18 +70,34 @@ impl From<bollard::errors::Error> for AlcedoError {
 
 impl AlcedoError {
     pub fn to_json_response<T>(&self) -> Json<JSendResponse<T>> {
+        // 5xx-class variants may carry internal details (SQL errors, file paths,
+        // Docker internals). Log the full error server-side, but only emit a
+        // generic message to the client so nothing internal leaks.
+        const GENERIC_500: &str = "Internal server error";
         let jsend_response: JSendResponse<T> = match self {
             AlcedoError::NotFound(msg, code) => respond::error(msg, Some(*code), None),
             AlcedoError::InvalidInput(msg, code) => respond::error(msg, Some(*code), None),
-            AlcedoError::Other(msg, code) => respond::error(msg, Some(*code), None),
-            AlcedoError::SystemError(msg, code) => respond::error(msg, Some(*code), None),
             AlcedoError::Forbidden(msg, code) => respond::error(msg, Some(*code), None),
             AlcedoError::NotImplemented(msg, code) => respond::error(msg, Some(*code), None),
-            AlcedoError::Sqlx(error) => respond::error(error.to_string(), Some(0), None),
-            AlcedoError::Io(error) => respond::error(error.to_string(), Some(0), None),
+            AlcedoError::Unauthorized(error, code) => respond::error(error, Some(*code), None),
             AlcedoError::UnAuthenticated() => respond::error("Unauthenticated", Some(0), None),
             AlcedoError::TooManyRequests() => respond::error("Too many requests", Some(0), None),
-            AlcedoError::Unauthorized(error, code) => respond::error(error, Some(*code), None),
+            AlcedoError::Other(msg, code) => {
+                tracing::error!("[ERROR] Other({}): {}", code, msg);
+                respond::error(GENERIC_500, Some(*code), None)
+            }
+            AlcedoError::SystemError(msg, code) => {
+                tracing::error!("[ERROR] SystemError({}): {}", code, msg);
+                respond::error(GENERIC_500, Some(*code), None)
+            }
+            AlcedoError::Sqlx(error) => {
+                tracing::error!("[ERROR] Sqlx: {}", error);
+                respond::error(GENERIC_500, Some(0), None)
+            }
+            AlcedoError::Io(error) => {
+                tracing::error!("[ERROR] Io: {}", error);
+                respond::error(GENERIC_500, Some(0), None)
+            }
         };
 
         Json(jsend_response)

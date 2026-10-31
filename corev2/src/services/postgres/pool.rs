@@ -83,12 +83,14 @@ pub fn process_query_error_response(e: Error, query: &str) -> AlcedoError {
         let code = code.unwrap();
 
         if code == "42P01" {
-            // Table not found
-            return AlcedoError::NotFound(e.message().to_string(), 10002);
+            // Table not found — log full PG message, return generic to client
+            tracing::error!("[PG] 42P01: {}", e.message());
+            return AlcedoError::NotFound("Resource not found".to_string(), 10002);
         }
         if code == "42601" {
-            // Query syntax error
-            return AlcedoError::InvalidInput(e.message().to_string(), 10004);
+            // Query syntax error — log full PG message, return generic to client
+            tracing::error!("[PG] 42601: {}", e.message());
+            return AlcedoError::InvalidInput("Invalid query".to_string(), 10004);
         }
         if code == "42883" {
             return AlcedoError::InvalidInput(

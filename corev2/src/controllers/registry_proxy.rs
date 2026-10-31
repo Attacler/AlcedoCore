@@ -139,11 +139,7 @@ pub async fn proxy_registry_request(
         Ok(response) => response,
         Err(e) => {
             tracing::error!("[REGISTRY-PROXY] upstream error: {}", e);
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("Registry proxy error: {}", e),
-            )
-                .into_response();
+            return (StatusCode::BAD_GATEWAY, "Registry proxy error").into_response();
         }
     };
 

@@ -110,9 +110,10 @@ impl PluginMigrationEngine {
             let mut tx = self.pool.begin().await?;
             if let Err(e) = run_script(&mut tx, &script).await {
                 tx.rollback().await?;
+                tracing::error!("[MIGRATION] {} {} failed: {}", file.version, file.name, e);
                 result
                     .errors
-                    .push(format!("{} {}: {e}", file.version, file.name));
+                    .push(format!("{} {}: migration failed", file.version, file.name));
                 break;
             }
             let recorded = sqlx::query(&format!(
@@ -125,9 +126,10 @@ impl PluginMigrationEngine {
             .await;
             if let Err(e) = recorded {
                 tx.rollback().await?;
+                tracing::error!("[MIGRATION] {} {} record failed: {}", file.version, file.name, e);
                 result
                     .errors
-                    .push(format!("{} {}: {e}", file.version, file.name));
+                    .push(format!("{} {}: migration failed", file.version, file.name));
                 break;
             }
             tx.commit().await?;

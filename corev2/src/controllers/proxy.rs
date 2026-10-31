@@ -211,11 +211,7 @@ async fn proxy_plugin(State(state): State<AppState>, req: Request) -> Response {
                     started,
                 );
             }
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("Plugin proxy error: {}", e),
-            )
-                .into_response();
+            return (StatusCode::BAD_GATEWAY, "Plugin proxy error").into_response();
         }
     };
 

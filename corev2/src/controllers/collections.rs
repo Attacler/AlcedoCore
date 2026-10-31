@@ -112,10 +112,11 @@ async fn get_ts_schema(
 ) -> impl IntoResponse {
     match require_admin(&state, auth_level).await {
         Err(e) => {
+            tracing::error!("[TS-SCHEMA] admin check failed: {}", e);
             return (
                 StatusCode::BAD_REQUEST,
                 [(header::CONTENT_TYPE, "text/text")],
-                e.to_string(),
+                "Admin access required".to_string(),
             );
         }
         Ok(_) => (),

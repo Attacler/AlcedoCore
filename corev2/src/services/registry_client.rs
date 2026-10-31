@@ -338,10 +338,13 @@ pub async fn check_url(url: &str, auth: &RegistryAuth) -> HealthResult {
     let target = normalize_registry_base(url);
 
     match send_authenticated(&client, "GET", &target, auth, HEALTH_TIMEOUT).await {
-        Err(e) => HealthResult {
-            reachable: false,
-            status: Some(e),
-        },
+        Err(e) => {
+            tracing::error!("[REGISTRY-HEALTH] {} unreachable: {}", target, e);
+            HealthResult {
+                reachable: false,
+                status: Some("Registry unreachable".to_string()),
+            }
+        }
         Ok(response) => HealthResult {
             reachable: response.status.is_success() || response.status.is_redirection(),
             status: Some(status_text(response.status)),
