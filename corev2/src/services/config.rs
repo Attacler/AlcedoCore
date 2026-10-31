@@ -5,6 +5,17 @@ use std::str::FromStr;
 use dotenvy::dotenv;
 
 #[derive(Clone, Debug)]
+pub struct SecurityHeadersConfig {
+    pub hsts: String,
+    pub x_frame_options: String,
+    pub x_content_type_options: String,
+    pub referrer_policy: String,
+    pub permissions_policy: String,
+    pub content_security_policy: String,
+    pub cors_origins: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct Config {
     pub listen_port: u16,
     pub listen_ip: String,
@@ -41,6 +52,11 @@ pub struct Config {
     pub plugins_dir: String,
     pub event_forwarder_max_concurrent: usize,
     pub system_plugins_url: Option<String>,
+    pub rate_limit_auth_requests: u32,
+    pub rate_limit_auth_window: u64,
+    pub rate_limit_api_requests: u32,
+    pub rate_limit_api_window: u64,
+    pub security_headers: SecurityHeadersConfig,
 }
 
 pub fn get_config() -> Config {
@@ -93,6 +109,31 @@ pub fn get_config() -> Config {
         "must be a number",
     );
     let system_plugins_url = env_opt("SYSTEM_PLUGINS_URL");
+    let rate_limit_auth_requests = env_or_msg("RATE_LIMIT_AUTH_REQUESTS", 10u32, "must be a number");
+    let rate_limit_auth_window = env_or_msg("RATE_LIMIT_AUTH_WINDOW", 60u64, "must be a number");
+    let rate_limit_api_requests = env_or_msg("RATE_LIMIT_API_REQUESTS", 100u32, "must be a number");
+    let rate_limit_api_window = env_or_msg("RATE_LIMIT_API_WINDOW", 60u64, "must be a number");
+
+    let security_headers = SecurityHeadersConfig {
+        hsts: env_str(
+            "SECURITY_HSTS",
+            "max-age=63072000; includeSubDomains; preload",
+        ),
+        x_frame_options: env_str("SECURITY_X_FRAME_OPTIONS", "DENY"),
+        x_content_type_options: env_str("SECURITY_X_CONTENT_TYPE_OPTIONS", "nosniff"),
+        referrer_policy: env_str("SECURITY_REFERRER_POLICY", "strict-origin-when-cross-origin"),
+        permissions_policy: env_str(
+            "SECURITY_PERMISSIONS_POLICY",
+            "geolocation=(), microphone=(), camera=()",
+        ),
+        content_security_policy: env_str(
+            "CONTENT_SECURITY_POLICY",
+            "default-src 'self'; script-src 'self' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' blob:",
+        ),
+        cors_origins: env::var("CORS_ORIGINS")
+            .or_else(|_| env::var("SECURITY_CORS_ORIGINS"))
+            .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+    };
 
     if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
         eprintln!(
@@ -135,6 +176,11 @@ pub fn get_config() -> Config {
         plugins_dir,
         event_forwarder_max_concurrent,
         system_plugins_url,
+        rate_limit_auth_requests,
+        rate_limit_auth_window,
+        rate_limit_api_requests,
+        rate_limit_api_window,
+        security_headers,
     }
 }
 

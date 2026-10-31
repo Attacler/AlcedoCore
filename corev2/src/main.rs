@@ -145,6 +145,41 @@ async fn main() -> Result<()> {
     let proxy_router = controllers::proxy::proxy_controller();
     let proxy_router_for_fallback = proxy_router.clone().with_state(state.clone());
 
+    let cors_origins = &state.config.security_headers.cors_origins;
+    let cors = if cors_origins == "*" {
+        tower_http::cors::CorsLayer::permissive()
+    } else {
+        let origins: Vec<axum::http::HeaderValue> = cors_origins
+            .as_str()
+            .split(',')
+            .filter_map(|o| {
+                let trimmed = o.trim();
+                if trimmed.is_empty() || trimmed == "null" || trimmed == "undefined" {
+                    None
+                } else {
+                    trimmed.parse::<axum::http::HeaderValue>().ok()
+                }
+            })
+            .collect();
+        tower_http::cors::CorsLayer::new()
+            .allow_origin(origins)
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::PATCH,
+                axum::http::Method::DELETE,
+                axum::http::Method::OPTIONS,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::HeaderName::from_static("x-request-id"),
+                axum::http::header::HeaderName::from_static("x-app"),
+                axum::http::header::HeaderName::from_static("x-version"),
+            ])
+    };
+
     let app = Router::new()
         .nest("/health", controllers::health::health_controller())
         .nest("/api/app", app_controller())
@@ -157,12 +192,21 @@ async fn main() -> Result<()> {
             state.clone(),
             proxy_router_for_fallback,
         ))
+        .layer(cors)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            middelware::security_headers::security_headers_middleware,
+        ))
         .layer(middleware::from_fn(middelware::log::log_request))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             middelware::host_calls::record_host_calls,
         ))
         .layer(middleware::from_fn(middelware::request_id::add_request_id))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            middelware::rate_limit::rate_limit_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             middelware::schema_cache::load_schema,
