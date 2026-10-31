@@ -32,6 +32,43 @@ impl AppsService<'_> {
         Ok(!rows.is_empty())
     }
 
+    /// Resolve (app_id, version_id) → (api_name, version_name, app_name).
+    pub async fn resolve_app_version_ref(
+        &self,
+        app_id: i32,
+        version_id: i32,
+    ) -> Result<(String, String, String), AlcedoError> {
+        let rows = self.list_app_version_rows().await?;
+        for row in &rows {
+            let Some(app) = row.get("app_id") else { continue };
+            let Some(version) = row.get("version_id") else { continue };
+            let Some(row_app_id) = app.get("id").and_then(Value::as_i64) else { continue };
+            let Some(row_version_id) = version.get("id").and_then(Value::as_i64) else { continue };
+            if row_app_id == app_id as i64 && row_version_id == version_id as i64 {
+                let api_name = app
+                    .get("api_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let app_name = app
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let version_name = version
+                    .get("version_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                return Ok((api_name, version_name, app_name));
+            }
+        }
+        Err(AlcedoError::NotFound(
+            "App/version not found".to_string(),
+            0,
+        ))
+    }
+
     pub async fn list_app_version_rows(&self) -> Result<Vec<Map<String, Value>>, AlcedoError> {
         let context = AppContext::system(RequestSource::API);
         let collection = "alcedocore_apps_versions".to_string();

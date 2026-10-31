@@ -184,6 +184,9 @@ use crate::services::menus::{MenuItemInput, MenuSectionInput};
         // App access
         apps::get_user_app_access,
         apps::set_user_app_access,
+        apps::get_app_version_access,
+        apps::set_app_version_access,
+        apps::revoke_app_version_access,
         // Files
         files::list_files,
         files::upload_file,

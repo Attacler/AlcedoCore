@@ -33,6 +33,14 @@ pub fn apps_controller() -> Router<AppState> {
     Router::new()
         .route("/", get(list_apps).post(create_app))
         .route("/{id}", get(get_app).put(update_app).delete(delete_app))
+        .route(
+            "/{app_id}/versions/{version_id}/access",
+            get(get_app_version_access).put(set_app_version_access),
+        )
+        .route(
+            "/{app_id}/versions/{version_id}/access/{user_id}",
+            axum::routing::delete(revoke_app_version_access),
+        )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -467,6 +475,194 @@ pub async fn set_user_app_access(
     let service = RolesService::new(&state, &context);
     service
         .set_user_app_access(user_id, &payload.app, &payload.version, &payload.role_ids)
+        .await?;
+    Ok(Json(success(serde_json::json!({ "success": true }))))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct SetAppVersionAccessRequest {
+    pub user_id: Uuid,
+    pub role_ids: Vec<Uuid>,
+}
+
+/// List all roles and users-with-roles on a specific app×version.
+#[utoipa::path(get, path = "/api/platform/apps/{app_id}/versions/{version_id}/access", tag = "Apps",
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+pub async fn get_app_version_access(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((app_id, version_id)): Path<(i32, i32)>,
+    headers: HeaderMap,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let (api_name, version_name, app_name) =
+        AppsService::new(&state)
+            .resolve_app_version_ref(app_id, version_id)
+            .await?;
+
+    let ctx = AppContext {
+        app_name: api_name.clone(),
+        version: version_name.clone(),
+        request_source: RequestSource::API,
+        identity: None,
+        request_id: None,
+    };
+
+    // All roles in this app-version schema
+    let roles_table = "alcedocore_roles".to_string();
+    let roles_service = ItemsService::new(&state, &ctx, &roles_table);
+    let mut roles_query = Query::default();
+    roles_query.limit = 0;
+    roles_query.fields = vec!["id".to_string(), "name".to_string(), "description".to_string()];
+    let roles = roles_service.read_items_by_query(roles_query).await?;
+
+    // All user_roles links in this schema
+    let user_roles_table = "alcedocore_user_roles".to_string();
+    let ur_service = ItemsService::new(&state, &ctx, &user_roles_table);
+    let mut ur_query = Query::default();
+    ur_query.limit = 0;
+    ur_query.fields = vec!["user_id".to_string(), "role_id".to_string()];
+    let user_roles = ur_service.read_items_by_query(ur_query).await?;
+
+    // All users (system schema)
+    let system_ctx = AppContext::system_request(RequestSource::API, &headers);
+    let users_table = "alcedocore_users".to_string();
+    let users_service = ItemsService::new(&state, &system_ctx, &users_table);
+    let mut users_query = Query::default();
+    users_query.limit = 0;
+    users_query.fields = vec![
+        "id".to_string(),
+        "email".to_string(),
+        "display_name".to_string(),
+    ];
+    let users = users_service.read_items_by_query(users_query).await?;
+
+    // Build user → roles map
+    let role_map: std::collections::HashMap<String, Value> = roles
+        .iter()
+        .filter_map(|r| {
+            let id = r.get("id")?.as_str()?.to_string();
+            Some((id, Value::Object(r.clone())))
+        })
+        .collect();
+
+    let mut users_out: Vec<Value> = Vec::new();
+    for user in &users {
+        let Some(uid) = user.get("id").and_then(Value::as_str) else { continue };
+        let role_ids: Vec<String> = user_roles
+            .iter()
+            .filter_map(|ur| {
+                let ur_uid = ur.get("user_id")?.as_str()?;
+                if ur_uid == uid {
+                    ur.get("role_id")?.as_str().map(str::to_string)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if role_ids.is_empty() {
+            continue;
+        }
+        let role_names: Vec<String> = role_ids
+            .iter()
+            .filter_map(|rid| {
+                role_map
+                    .get(rid)
+                    .and_then(|r| r.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        users_out.push(serde_json::json!({
+            "user_id": uid,
+            "email": user.get("email").cloned().unwrap_or(Value::Null),
+            "display_name": user.get("display_name").cloned().unwrap_or(Value::Null),
+            "role_ids": role_ids,
+            "role_names": role_names,
+        }));
+    }
+
+    Ok(Json(success(serde_json::json!({
+        "app": { "id": app_id, "name": app_name, "api_name": api_name },
+        "version": { "id": version_id, "version_name": version_name },
+        "roles": roles,
+        "users": users_out,
+    }))))
+}
+
+/// Replace a user's role set on a specific app×version.
+#[utoipa::path(put, path = "/api/platform/apps/{app_id}/versions/{version_id}/access", tag = "Apps",
+    request_body = SetAppVersionAccessRequest,
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+pub async fn set_app_version_access(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((app_id, version_id)): Path<(i32, i32)>,
+    headers: HeaderMap,
+    Json(payload): Json<SetAppVersionAccessRequest>,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let (api_name, version_name, _) =
+        AppsService::new(&state)
+            .resolve_app_version_ref(app_id, version_id)
+            .await?;
+
+    // Validate user exists
+    let system_ctx = AppContext::system_request(RequestSource::API, &headers);
+    let users_table = "alcedocore_users".to_string();
+    let users_service = ItemsService::new(&state, &system_ctx, &users_table);
+    let user_missing = users_service
+        .read_items_by_query(Query::eq(
+            "id",
+            Value::String(payload.user_id.to_string()),
+        ))
+        .await?
+        .is_empty();
+    if user_missing {
+        return Err(AlcedoError::NotFound("User not found".to_string(), 0));
+    }
+
+    let context = AppContext::system_request(RequestSource::API, &headers);
+    let service = RolesService::new(&state, &context);
+    service
+        .set_user_app_access(payload.user_id, &api_name, &version_name, &payload.role_ids)
+        .await?;
+    Ok(Json(success(serde_json::json!({ "success": true }))))
+}
+
+/// Revoke a user's access entirely from a specific app×version.
+#[utoipa::path(delete, path = "/api/platform/apps/{app_id}/versions/{version_id}/access/{user_id}", tag = "Apps",
+    responses((status = OK, body = JSendResponse<Value>))
+)]
+pub async fn revoke_app_version_access(
+    State(state): State<AppState>,
+    auth_level: AuthLevel,
+    Path((app_id, version_id, user_id)): Path<(i32, i32, String)>,
+    headers: HeaderMap,
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
+    require_admin(&state, auth_level).await?;
+    let user_id = parse_uuid_named(&user_id, "user id")?;
+    let (api_name, version_name, _) =
+        AppsService::new(&state)
+            .resolve_app_version_ref(app_id, version_id)
+            .await?;
+
+    let ctx = AppContext {
+        app_name: api_name,
+        version: version_name,
+        request_source: RequestSource::API,
+        identity: None,
+        request_id: None,
+    };
+    let user_roles_table = "alcedocore_user_roles".to_string();
+    let mut service = ItemsService::new(&state, &ctx, &user_roles_table);
+    service
+        .delete_items_by_query(
+            Query::eq("user_id", serde_json::json!(user_id.to_string())),
+            &mut None,
+        )
         .await?;
     Ok(Json(success(serde_json::json!({ "success": true }))))
 }
