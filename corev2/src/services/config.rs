@@ -56,6 +56,8 @@ pub struct Config {
     pub rate_limit_auth_window: u64,
     pub rate_limit_api_requests: u32,
     pub rate_limit_api_window: u64,
+    pub max_request_body_size: usize,
+    pub max_proxy_body_size: usize,
     pub security_headers: SecurityHeadersConfig,
 }
 
@@ -113,6 +115,16 @@ pub fn get_config() -> Config {
     let rate_limit_auth_window = env_or_msg("RATE_LIMIT_AUTH_WINDOW", 60u64, "must be a number");
     let rate_limit_api_requests = env_or_msg("RATE_LIMIT_API_REQUESTS", 100u32, "must be a number");
     let rate_limit_api_window = env_or_msg("RATE_LIMIT_API_WINDOW", 60u64, "must be a number");
+    let max_request_body_size = env_or_msg(
+        "MAX_REQUEST_BODY_SIZE",
+        10 * 1024 * 1024usize,
+        "must be a number",
+    );
+    let max_proxy_body_size = env_or_msg(
+        "MAX_PROXY_BODY_SIZE",
+        max_request_body_size,
+        "must be a number",
+    );
 
     let security_headers = SecurityHeadersConfig {
         hsts: env_str(
@@ -180,6 +192,8 @@ pub fn get_config() -> Config {
         rate_limit_auth_window,
         rate_limit_api_requests,
         rate_limit_api_window,
+        max_request_body_size,
+        max_proxy_body_size,
         security_headers,
     }
 }

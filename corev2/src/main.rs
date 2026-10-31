@@ -143,7 +143,12 @@ async fn main() -> Result<()> {
     // into the main router (with state) and one state-resolved copy for the
     // fallback to call via oneshot.
     let proxy_router = controllers::proxy::proxy_controller();
-    let proxy_router_for_fallback = proxy_router.clone().with_state(state.clone());
+    let proxy_router_for_fallback = proxy_router
+        .clone()
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            state.config.max_proxy_body_size,
+        ))
+        .with_state(state.clone());
 
     let cors_origins = &state.config.security_headers.cors_origins;
     let cors = if cors_origins == "*" {
@@ -179,13 +184,22 @@ async fn main() -> Result<()> {
                 axum::http::header::HeaderName::from_static("x-version"),
             ])
     };
-
-    let app = Router::new()
+    let api_router = Router::new()
         .nest("/health", controllers::health::health_controller())
         .nest("/api/app", app_controller())
         .nest("/api/platform", platform_controller())
         .nest("/api/dev", controllers::dev::dev_controller())
         .nest("/api/docs", controllers::docs::docs_controller())
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(
+            state.config.max_request_body_size,
+        ));
+
+    let proxy_router = proxy_router.layer(tower_http::limit::RequestBodyLimitLayer::new(
+        state.config.max_proxy_body_size,
+    ));
+
+    let app = Router::new()
+        .merge(api_router)
         .merge(controllers::registry_proxy::registry_proxy_controller())
         .merge(proxy_router)
         .fallback(middelware::route_alias::route_alias_fallback(

@@ -33,7 +33,7 @@ sqlx_migrator = { version = "0.18.0", features = ["postgres"] }
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "fs"] }
 url = "2.5.4"
 tower = { version = "0.5.2", features = ["util"] }
-tower-http = { version = "0.6.6", features = ["trace", "cors"] }
+tower-http = { version = "0.6.6", features = ["trace", "cors", "limit"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 utoipa = { version = "5.4.0", features = ["uuid"] }
