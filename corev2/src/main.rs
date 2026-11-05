@@ -60,6 +60,28 @@ async fn main() -> Result<()> {
 
     let platform = plugin_platform::build_platform(Arc::clone(&database_pool), &config).await?;
 
+    // Activity-log async channel: hooks send entries here, a background writer
+    // batch-inserts them. On a full channel, entries spill to a file.
+    let (log_tx, log_rx) = tokio::sync::mpsc::channel::<services::activity_logs::ActivityLogEntry>(1024);
+    let spill_path = std::path::Path::new("./activity-log-spill.jsonl");
+    let spill_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(spill_path)
+        .unwrap_or_else(|e| {
+            tracing::warn!("could not open activity-log spill file {}: {}", spill_path.display(), e);
+            // Fall back to a sink file in /tmp so the channel still works
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/alcedo-activity-log-spill.jsonl")
+                .expect("cannot open spill file")
+        });
+    let activity_log_tx = services::activity_logs::ActivityLogChannel::new(
+        log_tx,
+        Arc::new(Mutex::new(spill_file)),
+    );
+
     let state = AppState {
         database_pool,
         database_schema: Arc::new(RwLock::new(DatabaseSchema::new())),
@@ -71,7 +93,15 @@ async fn main() -> Result<()> {
         schema_cache_gen: Arc::new(Mutex::new(String::new())),
         platform,
         route_map: Arc::new(RwLock::new(services::app_state::RouteMapState::default())),
+        activity_log_tx,
     };
+
+    services::activity_logs::spawn_log_writer(
+        state.clone(),
+        log_rx,
+        100,
+        std::time::Duration::from_secs(5),
+    );
 
     state.refresh_schema().await;
 

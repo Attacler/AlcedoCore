@@ -7,9 +7,9 @@ use sqlx::{Pool, Postgres, Transaction};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::services::{
-    cache::SystemCache, config, errors::AlcedoError, hooks::MultiEventBus,
-    plugin_platform::PluginPlatform, postgres::inspector::DatabaseSchema,
-    route_mappings::matcher::RouteMap,
+    activity_logs::ActivityLogChannel, cache::SystemCache, config, errors::AlcedoError,
+    hooks::MultiEventBus, plugin_platform::PluginPlatform,
+    postgres::inspector::DatabaseSchema, route_mappings::matcher::RouteMap,
 };
 const SCHEMA_CACHE_KEY: &str = "system_schema_cache";
 const SCHEMA_CACHE_GEN_KEY: &str = "system_schema_cache_gen";
@@ -31,6 +31,9 @@ pub struct AppState {
     /// Per-replica route map cache: the parsed mapping set plus the version
     /// it was loaded at and the instant of the last version check.
     pub route_map: Arc<RwLock<RouteMapState>>,
+    /// Async channel for activity-log writes. Hooks send entries here; a
+    /// background writer drains them into the DB.
+    pub activity_log_tx: ActivityLogChannel,
 }
 
 #[derive(Default)]

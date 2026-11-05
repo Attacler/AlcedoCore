@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::services::{
+    collections::schema::SchemaService,
     hooks::{
         MultiEventBus,
         types::{items_create::ItemsAfterCreate, items_update::ItemsAfterUpdate},
     },
-    collections::schema::SchemaService,
 };
 
 pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {

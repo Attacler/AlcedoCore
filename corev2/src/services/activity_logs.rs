@@ -220,3 +220,125 @@ fn redact_metadata(target: &str, metadata: &mut Value) {
         map.remove(field);
     }
 }
+
+/// One queued activity-log entry, sent through the channel to the background
+/// writer. Carries its own context so cross-app writes log to the right schema.
+#[derive(Clone)]
+pub struct ActivityLogEntry {
+    pub context: AppContext,
+    pub action: String,
+    pub target: String,
+    pub description: Option<String>,
+    pub metadata: Value,
+    pub diff: Option<Value>,
+    pub collection_name: Option<String>,
+    pub item_id: Option<Value>,
+}
+
+/// Bounded channel sender for activity-log entries. When the channel is full
+/// (background writer can't keep up), the entry is appended to a spill file
+/// instead of being dropped, so no audit data is lost.
+#[derive(Clone)]
+pub struct ActivityLogChannel {
+    tx: tokio::sync::mpsc::Sender<ActivityLogEntry>,
+    spill: std::sync::Arc<tokio::sync::Mutex<std::fs::File>>,
+}
+
+impl ActivityLogChannel {
+    pub fn new(
+        tx: tokio::sync::mpsc::Sender<ActivityLogEntry>,
+        spill: std::sync::Arc<tokio::sync::Mutex<std::fs::File>>,
+    ) -> Self {
+        Self { tx, spill }
+    }
+
+    /// Non-blocking send. On a full channel, spills the entry as a JSON line to
+    /// the fallback file.
+    pub fn try_send(&self, entry: ActivityLogEntry) {
+        if let Err(e) = self.tx.try_send(entry) {
+            let entry = e.into_inner();
+            let line = match serde_json::to_string(&serde_json::json!({
+                "action": entry.action,
+                "target": entry.target,
+                "description": entry.description,
+                "metadata": entry.metadata,
+                "diff": entry.diff,
+                "collection_name": entry.collection_name,
+                "item_id": entry.item_id,
+                "app": entry.context.app_name,
+                "version": entry.context.version,
+            })) {
+                Ok(l) => l,
+                Err(_) => return,
+            };
+            let spill = self.spill.clone();
+            tokio::spawn(async move {
+                use std::io::Write;
+                let mut file = spill.lock().await;
+                let _ = writeln!(file, "{}", line);
+                let _ = file.flush();
+            });
+            tracing::warn!("activity log channel full, spilled entry to file");
+        }
+    }
+}
+
+/// Spawns the background writer that drains the channel and batch-inserts
+/// activity-log rows. Flushes when the buffer reaches `batch_size` or every
+/// `flush_interval`.
+pub fn spawn_log_writer(
+    state: AppState,
+    mut rx: tokio::sync::mpsc::Receiver<ActivityLogEntry>,
+    batch_size: usize,
+    flush_interval: std::time::Duration,
+) {
+    tokio::spawn(async move {
+        let mut buffer: Vec<ActivityLogEntry> = Vec::with_capacity(batch_size);
+        let mut interval = tokio::time::interval(flush_interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                Some(entry) = rx.recv() => {
+                    buffer.push(entry);
+                    if buffer.len() >= batch_size {
+                        flush(&state, &mut buffer).await;
+                    }
+                }
+                _ = interval.tick() => {
+                    if !buffer.is_empty() {
+                        flush(&state, &mut buffer).await;
+                    }
+                }
+                else => break,
+            }
+        }
+        // Drain remaining on shutdown
+        while let Ok(entry) = rx.try_recv() {
+            buffer.push(entry);
+        }
+        if !buffer.is_empty() {
+            flush(&state, &mut buffer).await;
+        }
+    });
+}
+
+async fn flush(state: &AppState, buffer: &mut Vec<ActivityLogEntry>) {
+    for entry in buffer.drain(..) {
+        if let Err(err) = record(
+            state,
+            &entry.context,
+            &entry.action,
+            &entry.target,
+            entry.description.clone(),
+            entry.metadata.clone(),
+            entry.diff.clone(),
+            entry.collection_name.as_deref(),
+            entry.item_id.clone(),
+            None,
+        )
+        .await
+        {
+            tracing::error!("activity log write failed: {}", err);
+        }
+    }
+}

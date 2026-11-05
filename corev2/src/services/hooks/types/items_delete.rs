@@ -11,4 +11,6 @@ pub struct ItemsBeforeDelete {
 pub struct ItemsAfterDelete {
     pub keys: Vec<Value>,
     pub collection: String,
+    /// Pre-delete row snapshots, used by the activity-log hook to build diffs.
+    pub old_rows: Vec<serde_json::Map<String, Value>>,
 }

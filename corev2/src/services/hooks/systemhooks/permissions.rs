@@ -43,43 +43,43 @@ const RULE_COLLECTIONS: &[&str] = &[
 const USER_ROLES_COLLECTION: &str = "alcedocore_user_roles";
 
 pub async fn setup_permission_hooks(bus: &Arc<MultiEventBus>) {
-    for collection in RULE_COLLECTIONS {
-        register(bus, collection, false).await;
+    // Collection-scoped keys: the queue fires both the unsuffixed key and
+    // `after.items.*.{collection}`, so register one hook per rule collection
+    // and let the key do the filtering.
+    let collections = RULE_COLLECTIONS
+        .iter()
+        .copied()
+        .chain(std::iter::once(USER_ROLES_COLLECTION));
+    for collection in collections {
+        let sessions_only = collection == USER_ROLES_COLLECTION;
+        bus.on::<ItemsAfterCreate, _>(
+            &format!("after.items.create.{collection}"),
+            move |_, context, state, _| {
+                Box::pin(async move {
+                    invalidate(&state, &context.schema_name(), sessions_only).await;
+                })
+            },
+        )
+        .await;
+        bus.on::<ItemsAfterUpdate, _>(
+            &format!("after.items.update.{collection}"),
+            move |_, context, state, _| {
+                Box::pin(async move {
+                    invalidate(&state, &context.schema_name(), sessions_only).await;
+                })
+            },
+        )
+        .await;
+        bus.on::<ItemsAfterDelete, _>(
+            &format!("after.items.delete.{collection}"),
+            move |_, context, state, _| {
+                Box::pin(async move {
+                    invalidate(&state, &context.schema_name(), sessions_only).await;
+                })
+            },
+        )
+        .await;
     }
-    register(bus, USER_ROLES_COLLECTION, true).await;
-}
-
-/// Registers the create/update/delete after-hooks for `collection`. When
-/// `sessions_only` is set the purge is limited to the caller layer; otherwise
-/// both layers for the schema are dropped.
-async fn register(bus: &Arc<MultiEventBus>, collection: &str, sessions_only: bool) {
-    bus.on::<ItemsAfterCreate, _>(
-        &format!("after.items.create.{collection}"),
-        move |_, context, state, _| {
-            Box::pin(async move {
-                invalidate(&state, &context.schema_name(), sessions_only).await;
-            })
-        },
-    )
-    .await;
-    bus.on::<ItemsAfterUpdate, _>(
-        &format!("after.items.update.{collection}"),
-        move |_, context, state, _| {
-            Box::pin(async move {
-                invalidate(&state, &context.schema_name(), sessions_only).await;
-            })
-        },
-    )
-    .await;
-    bus.on::<ItemsAfterDelete, _>(
-        &format!("after.items.delete.{collection}"),
-        move |_, context, state, _| {
-            Box::pin(async move {
-                invalidate(&state, &context.schema_name(), sessions_only).await;
-            })
-        },
-    )
-    .await;
 }
 
 async fn invalidate(state: &AppState, schema: &str, sessions_only: bool) {

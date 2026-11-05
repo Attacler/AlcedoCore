@@ -17,7 +17,7 @@ use crate::services::postgres::jsonvalue_simpleexpr::parse_value;
 use crate::services::postgres::pool::{
     execute_query, execute_query_transaction, pgrow_to_json, process_query_error_response,
 };
-use crate::{AppState, services::activity_logs, services::errors::AlcedoError};
+use crate::{AppState, services::errors::AlcedoError};
 use crate::services::event_forwarder;
 use tokio::sync::OnceCell;
 
@@ -56,23 +56,6 @@ pub enum PendingAfter {
         context: AppContext,
         event: ItemsAfterDelete,
     },
-    /// A deferred activity-log row, written at the same post-commit boundary as
-    /// the `after` hooks so it observes (and never precedes) the committed
-    /// write. Carries its own context like the hook variants.
-    Log { entry: ActivityLogEntry },
-}
-
-/// One pending activity-log insert. Built while the write data is still in
-/// hand, then flushed by [`AfterCommitQueue::run`].
-pub struct ActivityLogEntry {
-    pub context: AppContext,
-    pub action: String,
-    pub target: String,
-    pub description: Option<String>,
-    pub metadata: Value,
-    pub diff: Option<Value>,
-    pub collection_name: Option<String>,
-    pub item_id: Option<Value>,
 }
 
 /// Collects the `after`-write hooks deferred by writes made inside a
@@ -119,6 +102,21 @@ impl AfterCommitQueue {
                         .event_bus
                         .trigger(&key, &mut event, hook_context)
                         .await;
+                    // Also fire the collection-scoped key so hooks registered on
+                    // `after.items.*.{collection}` only run for their collection.
+                    let scoped_key = format!("{}.{}", key, event.collection);
+                    state
+                        .event_bus
+                        .trigger(
+                            &scoped_key,
+                            &mut event,
+                            HookContext {
+                                context: context.clone(),
+                                state: state.clone(),
+                                tx: None,
+                            },
+                        )
+                        .await;
                     event_forwarder::deliver_item_events(
                         state,
                         &context,
@@ -149,6 +147,21 @@ impl AfterCommitQueue {
                     state
                         .event_bus
                         .trigger(&key, &mut event, hook_context)
+                        .await;
+                    // Also fire the collection-scoped key so hooks registered on
+                    // `after.items.*.{collection}` only run for their collection.
+                    let scoped_key = format!("{}.{}", key, event.collection);
+                    state
+                        .event_bus
+                        .trigger(
+                            &scoped_key,
+                            &mut event,
+                            HookContext {
+                                context: context.clone(),
+                                state: state.clone(),
+                                tx: None,
+                            },
+                        )
                         .await;
                     event_forwarder::deliver_item_events(
                         state,
@@ -181,6 +194,21 @@ impl AfterCommitQueue {
                         .event_bus
                         .trigger(&key, &mut event, hook_context)
                         .await;
+                    // Also fire the collection-scoped key so hooks registered on
+                    // `after.items.*.{collection}` only run for their collection.
+                    let scoped_key = format!("{}.{}", key, event.collection);
+                    state
+                        .event_bus
+                        .trigger(
+                            &scoped_key,
+                            &mut event,
+                            HookContext {
+                                context: context.clone(),
+                                state: state.clone(),
+                                tx: None,
+                            },
+                        )
+                        .await;
                     event_forwarder::deliver_item_events(
                         state,
                         &context,
@@ -189,26 +217,6 @@ impl AfterCommitQueue {
                         item_events,
                     )
                     .await;
-                }
-                PendingAfter::Log { entry } => {
-                    if let Err(err) = activity_logs::record(
-                        state,
-                        &entry.context,
-                        &entry.action,
-                        &entry.target,
-                        entry.description.clone(),
-                        entry.metadata.clone(),
-                        entry.diff.clone(),
-                        entry.collection_name.as_deref(),
-                        entry.item_id.clone(),
-                        None,
-                    )
-                    .await
-                    {
-                        // Verification/audit failures must never fail the write
-                        // they describe; surface the problem and move on.
-                        eprintln!("activity log write failed: {}", err);
-                    }
                 }
             }
         }
@@ -284,39 +292,6 @@ fn pk_value_to_string(v: &Value) -> Result<String, AlcedoError> {
     }
 }
 
-/// Builds a field-level diff between an old row and the update payload:
-/// `{ "<field>": { "old": <old>, "new": <payload> } }` for every payload field
-/// whose value actually changed. An empty object means nothing changed.
-fn build_diff(old_item: &Map<String, Value>, payload: &Map<String, Value>) -> Value {
-    let mut diff = Map::new();
-    for (field, new) in payload {
-        let changed = old_item.get(field) != Some(new);
-        if changed {
-            let mut change = Map::new();
-            change.insert(
-                "old".to_string(),
-                old_item.get(field).cloned().unwrap_or(Value::Null),
-            );
-            change.insert("new".to_string(), new.clone());
-            diff.insert(field.clone(), Value::Object(change));
-        }
-    }
-    Value::Object(diff)
-}
-
-/// Builds the diff for a deleted item: every field's prior value, with `new`
-/// set to `null` since the row no longer exists.
-fn build_delete_diff(old_item: &Map<String, Value>) -> Value {
-    let mut diff = Map::new();
-    for (field, old) in old_item {
-        let mut change = Map::new();
-        change.insert("old".to_string(), old.clone());
-        change.insert("new".to_string(), Value::Null);
-        diff.insert(field.clone(), Value::Object(change));
-    }
-    Value::Object(diff)
-}
-
 impl ItemsService<'_> {
     pub fn new<'a>(
         app_state: &'a AppState,
@@ -349,31 +324,15 @@ impl ItemsService<'_> {
         std::mem::take(&mut self.pending_after)
     }
 
-    /// Defers an `after.items.create.<collection>` hook to the commit boundary,
-    /// plus one activity-log row per created item.
+    /// Defers an `after.items.create` hook to the commit boundary. The
+    /// activity-log system hook observes this event and queues log rows via
+    /// the async channel.
     ///
     /// `pk_name` is the primary-key column: `create_items_with_tx` injects it
-    /// into each item, so the log can carry the item id.
+    /// into each item, so hooks can carry the item id.
     fn defer_after_create(&mut self, items: Vec<Map<String, Value>>, pk_name: String) {
-        let action = activity_logs::action_for(self.collection, "created");
-        let collection_name = self.log_collection_name();
-        for item in &items {
-            let item_id = item.get(&pk_name).cloned();
-            self.pending_after.push(PendingAfter::Log {
-                entry: ActivityLogEntry {
-                    context: self.app_context.clone(),
-                    action: action.clone(),
-                    target: self.collection.clone(),
-                    description: None,
-                    metadata: Value::Object(item.clone()),
-                    diff: None,
-                    collection_name: collection_name.clone(),
-                    item_id,
-                },
-            });
-        }
         self.pending_after.push(PendingAfter::Create {
-            key: format!("after.items.create.{}", self.collection),
+            key: "after.items.create".to_string(),
             context: self.app_context.clone(),
             event: ItemsAfterCreate {
                 items,
@@ -383,93 +342,39 @@ impl ItemsService<'_> {
         });
     }
 
-    /// Defers an `after.items.update.<collection>` hook to the commit boundary,
-    /// plus one activity-log row per updated item carrying a field-level diff.
+    /// Defers an `after.items.update` hook to the commit boundary. The
+    /// activity-log system hook builds field-level diffs from `old_items`.
     fn defer_after_update(
         &mut self,
         keys: Vec<String>,
         payload: Map<String, Value>,
         old_items: Vec<Map<String, Value>>,
-        pk_name: String,
+        _pk_name: String,
     ) {
-        let action = activity_logs::action_for(self.collection, "updated");
-        let collection_name = self.log_collection_name();
-        for item in &old_items {
-            let item_id = item.get(&pk_name).cloned();
-            let diff = build_diff(item, &payload);
-            self.pending_after.push(PendingAfter::Log {
-                entry: ActivityLogEntry {
-                    context: self.app_context.clone(),
-                    action: action.clone(),
-                    target: self.collection.clone(),
-                    description: None,
-                    metadata: Value::Object(item.clone()),
-                    diff: Some(diff),
-                    collection_name: collection_name.clone(),
-                    item_id,
-                },
-            });
-        }
         self.pending_after.push(PendingAfter::Update {
-            key: format!("after.items.update.{}", self.collection),
+            key: "after.items.update".to_string(),
             context: self.app_context.clone(),
             event: ItemsAfterUpdate {
                 keys,
                 payload,
                 collection: self.collection.clone(),
+                old_items,
             },
         });
     }
 
-    /// Defers an `after.items.delete.<collection>` hook to the commit boundary,
-    /// plus one activity-log row per deleted item carrying the item's values as
-    /// a `{ field: { old: <value>, new: null } }` diff.
+    /// Defers an `after.items.delete` hook to the commit boundary. The
+    /// activity-log system hook builds delete diffs from `old_rows`.
     fn defer_after_delete(&mut self, keys: Vec<Value>, old_rows: Vec<Map<String, Value>>) {
-        let action = activity_logs::action_for(self.collection, "deleted");
-        let collection_name = self.log_collection_name();
-        for key in &keys {
-            // Match the old row by primary key when available; fall back to
-            // whatever was read.
-            let old_row = old_rows
-                .iter()
-                .find(|row| row.values().any(|v| v == key))
-                .or_else(|| old_rows.first());
-            let item_id = key.clone();
-            let metadata = old_row
-                .map(|row| Value::Object(row.clone()))
-                .unwrap_or(Value::Null);
-            let diff = old_row.map(build_delete_diff);
-            self.pending_after.push(PendingAfter::Log {
-                entry: ActivityLogEntry {
-                    context: self.app_context.clone(),
-                    action: action.clone(),
-                    target: self.collection.clone(),
-                    description: None,
-                    metadata,
-                    diff,
-                    collection_name: collection_name.clone(),
-                    item_id: Some(item_id),
-                },
-            });
-        }
         self.pending_after.push(PendingAfter::Delete {
-            key: format!("after.items.delete.{}", self.collection),
+            key: "after.items.delete".to_string(),
             context: self.app_context.clone(),
             event: ItemsAfterDelete {
                 keys,
                 collection: self.collection.clone(),
+                old_rows,
             },
         });
-    }
-
-    /// `Some(collection)` for a normal user collection (logged as a collection
-    /// log), `None` for a system collection (logged as an app system log).
-    fn log_collection_name(&self) -> Option<String> {
-        if activity_logs::is_system_collection_name(self.collection) {
-            None
-        } else {
-            Some(self.collection.clone())
-        }
     }
 
     /// Resolves (and caches) the caller's record-level read access for this

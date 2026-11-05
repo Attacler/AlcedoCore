@@ -21,6 +21,17 @@ pub async fn generate_app_state_for_migrations() -> AppState {
         config.mock_plugin_port,
     ));
 
+    // Dummy activity-log channel for migration-time AppState: the receiver is
+    // leaked so sends never block; migrations don't trigger item hooks anyway.
+    let (log_tx, log_rx) =
+        tokio::sync::mpsc::channel::<services::activity_logs::ActivityLogEntry>(1);
+    std::mem::forget(log_rx);
+    let spill = std::fs::File::create("/dev/null").expect("cannot open /dev/null");
+    let activity_log_tx = services::activity_logs::ActivityLogChannel::new(
+        log_tx,
+        Arc::new(Mutex::new(spill)),
+    );
+
     AppState {
         database_pool,
         database_schema: Arc::new(RwLock::new(DatabaseSchema {
@@ -41,5 +52,6 @@ pub async fn generate_app_state_for_migrations() -> AppState {
         schema_cache_gen: Arc::new(Mutex::new(String::new())),
         platform,
         route_map: Arc::new(RwLock::new(services::app_state::RouteMapState::default())),
+        activity_log_tx,
     }
 }

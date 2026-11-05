@@ -28,6 +28,14 @@ pub async fn get_app_state() -> AppState {
         Arc::clone(&pool),
         config.mock_plugin_port,
     ));
+    let (log_tx, log_rx) =
+        tokio::sync::mpsc::channel::<crate::services::activity_logs::ActivityLogEntry>(1);
+    std::mem::forget(log_rx);
+    let spill = std::fs::File::create("/dev/null").expect("cannot open /dev/null");
+    let activity_log_tx = crate::services::activity_logs::ActivityLogChannel::new(
+        log_tx,
+        Arc::new(Mutex::new(spill)),
+    );
     let state = AppState {
         database_pool: pool,
         database_schema: Arc::new(RwLock::new(DatabaseSchema::new())),
@@ -48,6 +56,7 @@ pub async fn get_app_state() -> AppState {
         route_map: Arc::new(RwLock::new(
             crate::services::app_state::RouteMapState::default(),
         )),
+        activity_log_tx,
     };
 
     ENV_READY
