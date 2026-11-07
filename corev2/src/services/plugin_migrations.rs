@@ -41,6 +41,12 @@ impl PluginMigrationEngine {
             .execute(&mut *tx)
             .await?;
         sqlx::query(&format!(
+            "REVOKE ALL ON SCHEMA \"{}\" FROM PUBLIC",
+            self.schema
+        ))
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(&format!(
             "CREATE TABLE IF NOT EXISTS \"{}\".schema_migrations (\
              version varchar PRIMARY KEY,\
              name varchar NOT NULL,\

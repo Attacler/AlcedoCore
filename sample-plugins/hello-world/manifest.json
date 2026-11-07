@@ -57,6 +57,11 @@
     },
     {
       "method": "GET",
+      "path": "/api/db",
+      "description": "Query the plugin's own schema via the scoped DATABASE_URL"
+    },
+    {
+      "method": "GET",
       "path": "/api/hello",
       "description": "Returns greeting message"
     },

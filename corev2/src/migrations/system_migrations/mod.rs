@@ -23,6 +23,7 @@ pub(crate) mod m00013_plugin_recovery;
 pub(crate) mod m00014_install_scope;
 pub(crate) mod m00015_plugin_versions;
 pub(crate) mod m00016_system_plugin_flag;
+pub(crate) mod m00017_plugin_db_access;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -62,6 +63,7 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
         m00014_install_scope::M0014Migration,
         m00015_plugin_versions::M0015Migration,
         m00016_system_plugin_flag::M0016Migration,
+        m00017_plugin_db_access::M0017Migration,
     ]
 }
 
@@ -71,6 +73,17 @@ pub async fn run_system_migrations(database_pool: &Pool<Postgres>) {
 
     sqlx::query(&format!(
         "CREATE SCHEMA IF NOT EXISTS {}",
+        app_context.schema_name()
+    ))
+    .execute(database_pool)
+    .await
+    .unwrap();
+
+    // CREATE SCHEMA grants USAGE+CREATE to PUBLIC by default; the global schema
+    // holds users and password hashes, so lock it down. The core connects as a
+    // superuser and is unaffected.
+    sqlx::query(&format!(
+        "REVOKE ALL ON SCHEMA {} FROM PUBLIC",
         app_context.schema_name()
     ))
     .execute(database_pool)

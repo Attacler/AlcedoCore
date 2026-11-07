@@ -18,6 +18,7 @@ pub mod items;
 pub mod kv;
 pub mod menus;
 pub mod permissions;
+pub mod plugin_db_access;
 pub mod plugin_logs;
 pub mod plugin_migrations;
 pub mod plugin_platform;

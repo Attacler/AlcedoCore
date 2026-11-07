@@ -156,6 +156,17 @@ pub async fn run_app_migrations(database_pool: &Pool<Postgres>) {
         .await
         .unwrap();
 
+        // CREATE SCHEMA grants USAGE+CREATE to PUBLIC by default; app schemas
+        // are reachable only by the core (superuser) and per-install plugin
+        // roles, never by PUBLIC.
+        sqlx::query(&format!(
+            "REVOKE ALL ON SCHEMA {} FROM PUBLIC",
+            app_context.schema_name()
+        ))
+        .execute(database_pool)
+        .await
+        .unwrap();
+
         let mut migrator = Migrator::default()
             .set_schema(app_context.schema_name())
             .unwrap();

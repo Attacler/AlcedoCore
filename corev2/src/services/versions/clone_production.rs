@@ -18,6 +18,10 @@ pub async fn clone_schema_batched(
     sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS {}", target_schema))
         .execute(&pool)
         .await?;
+    // CREATE SCHEMA grants USAGE+CREATE to PUBLIC by default; lock it down.
+    sqlx::query(&format!("REVOKE ALL ON SCHEMA {} FROM PUBLIC", target_schema))
+        .execute(&pool)
+        .await?;
 
     // Fetch all tables in the source schema
     let tables: Vec<(String,)> = sqlx::query_as(

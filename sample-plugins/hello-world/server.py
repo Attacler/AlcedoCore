@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import psycopg
 from aiohttp import web
 
 from alcedo_sdk import AlcedoClient
@@ -9,6 +10,9 @@ from alcedo_sdk.exceptions import AlcedoError
 
 CORE_URL = os.environ.get("CORE_URL", "http://core:8080")
 PORT = os.environ.get("PORT", "8080")
+# Injected by the core at deploy time: a connection string whose Postgres role
+# is scoped to this install's own schema (plugin_install_<id>).
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
 async def _forward_items(method: str, path: str, body: any, query_params: dict | None = None, request_id: str | None = None) -> dict:
@@ -143,6 +147,23 @@ async def handle_health(request: web.Request) -> web.Response:
     return _json_response({"status": "healthy"})
 
 
+async def handle_db(request: web.Request) -> web.Response:
+    """Direct DB access through the scoped DATABASE_URL.
+
+    The role behind that URL can only reach this install's own schema, so the
+    `items` table below is the one created by the plugin's migrations.
+    """
+    if not DATABASE_URL:
+        return _json_response({"error": "DATABASE_URL not set"}, status=500)
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            user, schema = conn.execute("SELECT current_user, current_schema()").fetchone()
+            items = conn.execute("SELECT count(*) FROM items").fetchone()[0]
+        return _json_response({"user": user, "schema": schema, "items": items})
+    except Exception as e:
+        return _json_response({"error": str(e)}, status=500)
+
+
 async def handle_hello(request: web.Request) -> web.Response:
     return _json_response({
         "status": "ok",
@@ -268,6 +289,7 @@ def make_app() -> web.Application:
     app = web.Application()
 
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/api/db", handle_db)
     app.router.add_get("/api/hello", handle_hello)
     app.router.add_get("/api/version", handle_version)
     app.router.add_get("/api/counter/value", handle_counter_value)

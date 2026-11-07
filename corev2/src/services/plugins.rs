@@ -415,6 +415,18 @@ impl PluginsService<'_> {
                 .platform
                 .ensure_absent(install_id as i64)
                 .await?;
+            if let Err(e) = crate::services::plugin_db_access::drop_install_db_access(
+                &self.app_state.database_pool,
+                install_id as i64,
+            )
+            .await
+            {
+                tracing::warn!(
+                    "[PLUGINS] Could not drop DB access for install {}: {}",
+                    install_id,
+                    e
+                );
+            }
             invalidate_install_cache(self.app_state, install_id as i64).await;
         }
         crate::services::event_forwarder::invalidate_all(self.app_state).await;
@@ -430,8 +442,9 @@ impl PluginsService<'_> {
             Query {
                 fields: vec!["*".to_string()],
                 limit: 0,
-                // NULLS LAST so global installs sort after app-scoped ones.
-                sort: vec!["app_version_id ASC NULLS LAST".to_string()],
+                // "+" = ASC, which is NULLS LAST by default in Postgres, so
+                // global installs (NULL app_version_id) sort after app-scoped ones.
+                sort: vec!["+app_version_id".to_string()],
                 ..Query::eq("plugin_id", Value::from(plugin_id))
             },
         )
@@ -912,6 +925,23 @@ impl PluginsService<'_> {
 
         let install_id: i64 = install_id.into();
 
+        // Per-install DB role + schema, so the plugin's DATABASE_URL is scoped
+        // to its own plugin_install_{id} schema instead of the core's
+        // full-privilege URL. Best-effort: without it the env injection below
+        // strips DATABASE_URL entirely, which is safe but degraded.
+        if let Err(e) = crate::services::plugin_db_access::ensure_install_db_access(
+            &self.app_state.database_pool,
+            install_id,
+        )
+        .await
+        {
+            tracing::warn!(
+                "[PLUGINS] Could not provision DB access for install {}: {}",
+                install_id,
+                e
+            );
+        }
+
         let plugin_root = plugin_dir(&self.app_state.config, install_id);
         for (sub, sub_name) in [
             (IMAGE_DOCS, "docs"),
@@ -994,6 +1024,15 @@ impl PluginsService<'_> {
             crate::services::event_forwarder::invalidate_subscribers(self.app_state, av).await;
         }
 
+        let mut env = plugin_env(&self.app_state.config, &input, install_id);
+        // Scoped after the payload's own env merge, so a deploy payload can
+        // never override it with the core's full-privilege DATABASE_URL.
+        crate::services::plugin_db_access::apply_scoped_database_url(
+            self.app_state,
+            &mut env,
+            install_id,
+        )
+        .await;
         let deployment_id = self
             .app_state
             .platform
@@ -1001,7 +1040,7 @@ impl PluginsService<'_> {
                 &input.slug,
                 &input.plugin_version,
                 &image,
-                plugin_env(&self.app_state.config, &input, install_id),
+                env,
                 Some(install_id),
             )
             .await?;
@@ -1158,6 +1197,18 @@ impl PluginsService<'_> {
             .platform
             .ensure_absent(i64::from(install_id))
             .await?;
+        if let Err(e) = crate::services::plugin_db_access::drop_install_db_access(
+            &self.app_state.database_pool,
+            i64::from(install_id),
+        )
+        .await
+        {
+            tracing::warn!(
+                "[PLUGINS] Could not drop DB access for install {}: {}",
+                install_id,
+                e
+            );
+        }
         invalidate_install_cache(self.app_state, i64::from(install_id)).await;
         crate::services::event_forwarder::invalidate_subscribers(self.app_state, app_version_id)
             .await;
@@ -1285,6 +1336,18 @@ impl PluginsService<'_> {
             .delete_items_by_query(Query::eq("id", Value::from(install_id)), &mut None)
             .await?;
         self.app_state.platform.ensure_absent(install_id).await?;
+        if let Err(e) = crate::services::plugin_db_access::drop_install_db_access(
+            &self.app_state.database_pool,
+            install_id,
+        )
+        .await
+        {
+            tracing::warn!(
+                "[PLUGINS] Could not drop DB access for install {}: {}",
+                install_id,
+                e
+            );
+        }
         invalidate_install_cache(self.app_state, install_id).await;
         // Invalidate subscriber cache: app-scoped → just that app×version;
         // global → all caches.
