@@ -8,15 +8,10 @@ use crate::services::{
     app_state::AppState,
     encryption,
     errors::AlcedoError,
-    plugin_migrations::plugin_schema_name,
+    plugin_migrations::{plugin_role_name, plugin_schema_name},
 };
 
 pub const DB_ACCESS_TABLE: &str = "alcedocore.alcedocore_plugin_db_access";
-
-/// The Postgres LOGIN role scoped to one plugin install.
-pub fn plugin_role_name(install_id: i64) -> String {
-    format!("alcedo_p{install_id}")
-}
 
 #[derive(Debug, Clone)]
 pub struct InstallDbAccess {
@@ -63,8 +58,7 @@ pub async fn ensure_install_db_access(
     let mut password_bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut password_bytes);
     let password = BASE64.encode(password_bytes);
-    let password_enc =
-        encryption::encrypt_with(&password, encryption::get_plugin_access_key()?)?;
+    let password_enc = encryption::encrypt_with(&password, encryption::get_plugin_access_key()?)?;
 
     let mut tx = pool.begin().await?;
     sqlx::query(&format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""))
@@ -83,9 +77,11 @@ pub async fn ensure_install_db_access(
     .await?;
     // Re-set the password unconditionally: if the role outlived a previous
     // access row, the stored credential must match the role.
-    sqlx::query(&format!("ALTER ROLE \"{role}\" LOGIN PASSWORD '{password}'"))
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(&format!(
+        "ALTER ROLE \"{role}\" LOGIN PASSWORD '{password}'"
+    ))
+    .execute(&mut *tx)
+    .await?;
     // ALL = USAGE + CREATE: the plugin creates its own tables at runtime.
     sqlx::query(&format!("GRANT ALL ON SCHEMA \"{schema}\" TO \"{role}\""))
         .execute(&mut *tx)
@@ -227,6 +223,7 @@ mod tests {
     use crate::services::{
         context::{AppContext, RequestSource},
         items::service::ItemsService,
+        plugin_migrations::PluginMigrationEngine,
     };
     use serde_json::Value;
 
@@ -381,7 +378,10 @@ mod tests {
         assert!(!password.is_empty());
 
         // Connect as the role through the scoped URL.
-        let scoped = scoped_database_url(&state, install_id).await.unwrap().unwrap();
+        let scoped = scoped_database_url(&state, install_id)
+            .await
+            .unwrap()
+            .unwrap();
         let scoped_pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
             .connect(&scoped)
@@ -437,18 +437,112 @@ mod tests {
         .await
         .unwrap();
         assert!(schema_gone);
-        let role_gone: bool = sqlx::query_scalar(
-            "SELECT NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)",
-        )
-        .bind(&role)
-        .fetch_one(pool)
-        .await
-        .unwrap();
+        let role_gone: bool =
+            sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)")
+                .bind(&role)
+                .fetch_one(pool)
+                .await
+                .unwrap();
         assert!(role_gone);
 
         cleanup_install(&state, registry_id, plugin_id, install_id).await;
         // The access row cascaded with the install row.
-        assert!(get_install_db_access(pool, install_id).await.unwrap().is_none());
+        assert!(
+            get_install_db_access(pool, install_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn migrations_run_in_install_schema_and_role_can_use_them() {
+        set_plugin_key();
+        let state = crate::utils::test_utils::get_app_state().await;
+        let pool = &*state.database_pool;
+
+        let (registry_id, plugin_id, install_id) = create_install(&state).await;
+        ensure_install_db_access(pool, install_id).await.unwrap();
+        let schema = plugin_schema_name(install_id);
+
+        let dir = std::env::temp_dir().join(format!("alcedo-mig-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("001_init.up.sql"),
+            "CREATE TABLE mig_probe (id serial PRIMARY KEY, v text); \
+             INSERT INTO mig_probe (v) VALUES ('a'), ('b');",
+        )
+        .unwrap();
+        std::fs::write(dir.join("001_init.down.sql"), "DROP TABLE mig_probe;").unwrap();
+
+        let engine = PluginMigrationEngine::new(&state, install_id, dir.clone());
+        let result = engine.run().await.unwrap();
+        assert!(result.errors.is_empty());
+        assert_eq!(result.applied, vec!["001".to_string()]);
+        // ensure_schema is idempotent: a second run applies nothing, no error.
+        let again = engine.run().await.unwrap();
+        assert!(again.applied.is_empty() && again.errors.is_empty());
+
+        // The table landed in the install schema, not public.
+        let in_schema: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = $1 AND table_name = 'mig_probe')",
+        )
+        .bind(&schema)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert!(in_schema);
+
+        // The role can read/write the migration-created table via the scoped URL.
+        let scoped = scoped_database_url(&state, install_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let scoped_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&scoped)
+            .await
+            .unwrap();
+        let n: i64 = sqlx::query_scalar("SELECT count(*) FROM mig_probe")
+            .fetch_one(&scoped_pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 2);
+        sqlx::query("INSERT INTO mig_probe (v) VALUES ('c')")
+            .execute(&scoped_pool)
+            .await
+            .unwrap();
+        let denied = sqlx::query("SELECT * FROM alcedocore.alcedocore_users LIMIT 1")
+            .fetch_one(&scoped_pool)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(denied.contains("permission denied"), "got: {denied}");
+        scoped_pool.close().await;
+
+        // Rollback drops the table and removes the schema_migrations row.
+        let rolled = engine.rollback_to("0").await.unwrap();
+        assert_eq!(rolled, vec!["001".to_string()]);
+        let gone: bool = sqlx::query_scalar(
+            "SELECT NOT EXISTS(SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = $1 AND table_name = 'mig_probe')",
+        )
+        .bind(&schema)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert!(gone);
+        let remaining: i64 = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM \"{schema}\".schema_migrations"
+        ))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
+
+        std::fs::remove_dir_all(&dir).ok();
+        cleanup_install(&state, registry_id, plugin_id, install_id).await;
     }
 
     /// The env injection overrides a payload-provided DATABASE_URL when an
