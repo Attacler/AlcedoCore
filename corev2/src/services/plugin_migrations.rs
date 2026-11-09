@@ -10,6 +10,10 @@ pub fn plugin_schema_name(install_id: i64) -> String {
     format!("plugin_install_{install_id}")
 }
 
+pub fn plugin_role_name(install_id: i64) -> String {
+    format!("alcedo_p{install_id}")
+}
+
 #[derive(Debug)]
 pub struct MigrationResult {
     pub applied: Vec<String>,
@@ -18,6 +22,7 @@ pub struct MigrationResult {
 
 pub struct PluginMigrationEngine {
     pool: sqlx::Pool<Postgres>,
+    install_id: i64,
     schema: String,
     dir: PathBuf,
 }
@@ -26,6 +31,7 @@ impl PluginMigrationEngine {
     pub fn new(state: &AppState, install_id: i64, dir: PathBuf) -> Self {
         Self {
             pool: state.database_pool.as_ref().clone(),
+            install_id,
             schema: plugin_schema_name(install_id),
             dir,
         }
@@ -46,6 +52,46 @@ impl PluginMigrationEngine {
         ))
         .execute(&mut *tx)
         .await?;
+        // If the install's role exists (plan 06), (re-)apply its grants —
+        // idempotent, and covers schemas that were dropped and recreated.
+        let role = plugin_role_name(self.install_id);
+        let role_exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)")
+                .bind(&role)
+                .fetch_one(&mut *tx)
+                .await?;
+        if role_exists {
+            sqlx::query(&format!(
+                "GRANT ALL ON SCHEMA \"{}\" TO \"{role}\"",
+                self.schema
+            ))
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(&format!(
+                "GRANT ALL ON ALL TABLES IN SCHEMA \"{}\" TO \"{role}\"",
+                self.schema
+            ))
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(&format!(
+                "GRANT ALL ON ALL SEQUENCES IN SCHEMA \"{}\" TO \"{role}\"",
+                self.schema
+            ))
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(&format!(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA \"{}\" GRANT ALL ON TABLES TO \"{role}\"",
+                self.schema
+            ))
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(&format!(
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA \"{}\" GRANT ALL ON SEQUENCES TO \"{role}\"",
+                self.schema
+            ))
+            .execute(&mut *tx)
+            .await?;
+        }
         sqlx::query(&format!(
             "CREATE TABLE IF NOT EXISTS \"{}\".schema_migrations (\
              version varchar PRIMARY KEY,\
@@ -132,7 +178,12 @@ impl PluginMigrationEngine {
             .await;
             if let Err(e) = recorded {
                 tx.rollback().await?;
-                tracing::error!("[MIGRATION] {} {} record failed: {}", file.version, file.name, e);
+                tracing::error!(
+                    "[MIGRATION] {} {} record failed: {}",
+                    file.version,
+                    file.name,
+                    e
+                );
                 result
                     .errors
                     .push(format!("{} {}: migration failed", file.version, file.name));
