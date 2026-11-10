@@ -51,6 +51,138 @@ fn has_unrestricted_rule(rules: &[ReadRule]) -> bool {
         .any(|rule| rule.fields.is_none() && rule.conditions.is_empty())
 }
 
+/// Whitelisted aggregate functions for `aggregate[fn]=field`.
+const AGGREGATE_FNS: &[&str] = &[
+    "count",
+    "countAll",
+    "countDistinct",
+    "sum",
+    "sumDistinct",
+    "avg",
+    "avgDistinct",
+    "min",
+    "max",
+];
+
+/// Whitelisted date-part functions for `groupBy[]=fn(field)`.
+const GROUP_FNS: &[&str] = &[
+    "year", "month", "day", "hour", "minute", "second", "quarter", "week", "dow", "doy", "date",
+];
+
+/// Quotes a column identifier for raw SQL fragments. Callers must have
+/// validated the name against `DatabaseSchema.columns` first.
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', ""))
+}
+
+/// Parses one `groupBy` entry into `(field, sql_expr, alias)`. Plain fields
+/// select the column itself; `fn(field)` wraps it in `EXTRACT`/`DATE_TRUNC`.
+fn parse_group_expr(entry: &str) -> Result<(String, String, String), AlcedoError> {
+    let entry = entry.trim();
+    if let Some(open) = entry.find('(') {
+        if open == 0 || !entry.ends_with(')') {
+            return Err(AlcedoError::InvalidInput(
+                format!("Invalid groupBy expression '{entry}'"),
+                0,
+            ));
+        }
+        let fn_name = &entry[..open];
+        let field = entry[open + 1..entry.len() - 1].trim().to_string();
+        if !GROUP_FNS.contains(&fn_name) {
+            return Err(AlcedoError::InvalidInput(
+                format!("Unknown groupBy function '{fn_name}'"),
+                0,
+            ));
+        }
+        if field.is_empty() || field == "*" {
+            return Err(AlcedoError::InvalidInput(
+                format!("Invalid groupBy expression '{entry}'"),
+                0,
+            ));
+        }
+        let col = quote_ident(&field);
+        // EXTRACT returns NUMERIC, which the row decoder cannot map to JSON;
+        // cast to a supported type (`second` can be fractional).
+        let sql = if fn_name == "date" {
+            format!("DATE_TRUNC('day', {col})")
+        } else if fn_name == "second" {
+            format!("EXTRACT(SECOND FROM {col})::float8")
+        } else {
+            format!("EXTRACT({} FROM {col})::int8", fn_name.to_uppercase())
+        };
+        Ok((field.clone(), sql, format!("{fn_name}_{field}")))
+    } else {
+        if entry.is_empty() || entry == "*" {
+            return Err(AlcedoError::InvalidInput(
+                format!("Invalid groupBy expression '{entry}'"),
+                0,
+            ));
+        }
+        Ok((entry.to_string(), quote_ident(entry), entry.to_string()))
+    }
+}
+
+/// A list of fields that accepts either a single (possibly comma-joined)
+/// string — `aggregate[count]=a,b` — or a sequence — `aggregate[count][]=a`.
+/// serde_qs hands the bare form to the value deserializer as a plain string.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FieldList(pub Vec<String>);
+
+impl<'de> Deserialize<'de> for FieldList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum StringOrVec {
+            One(String),
+            Many(Vec<String>),
+        }
+        Ok(match StringOrVec::deserialize(deserializer)? {
+            StringOrVec::One(s) => FieldList(vec![s]),
+            StringOrVec::Many(v) => FieldList(v),
+        })
+    }
+}
+
+/// Parses one `aggregate[fn]=field` pair into `(field, sql_expr, alias)`.
+/// `*` is only meaningful for `count`/`countAll` and maps to `COUNT(*)`.
+fn parse_aggregate_expr(
+    fn_name: &str,
+    field: &str,
+) -> Result<(String, String, String), AlcedoError> {
+    if !AGGREGATE_FNS.contains(&fn_name) {
+        return Err(AlcedoError::InvalidInput(
+            format!("Unknown aggregate function '{fn_name}'"),
+            0,
+        ));
+    }
+    if field == "*" && !matches!(fn_name, "count" | "countAll") {
+        return Err(AlcedoError::InvalidInput(
+            format!("Aggregate function '{fn_name}' does not support '*'"),
+            0,
+        ));
+    }
+    let alias = format!("{fn_name}_{field}");
+    // SUM/AVG over numeric columns return NUMERIC, which the row decoder
+    // cannot map to JSON; cast to float8 (COUNT returns INT8 already).
+    let sql = match fn_name {
+        "countAll" => "COUNT(*)".to_string(),
+        "count" if field == "*" => "COUNT(*)".to_string(),
+        "count" => format!("COUNT({})", quote_ident(field)),
+        "countDistinct" => format!("COUNT(DISTINCT {})", quote_ident(field)),
+        "sum" => format!("SUM({})::float8", quote_ident(field)),
+        "sumDistinct" => format!("SUM(DISTINCT {})::float8", quote_ident(field)),
+        "avg" => format!("AVG({})::float8", quote_ident(field)),
+        "avgDistinct" => format!("AVG(DISTINCT {})::float8", quote_ident(field)),
+        "min" => format!("MIN({})", quote_ident(field)),
+        "max" => format!("MAX({})", quote_ident(field)),
+        _ => unreachable!("fn whitelist checked above"),
+    };
+    Ok((field.to_string(), sql, alias))
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Query {
     #[serde(default)]
@@ -73,6 +205,14 @@ pub struct Query {
     pub per_page: Option<u64>,
     #[serde(default, rename = "includeCount")]
     pub include_count: bool,
+    /// Directus-style aggregation: `aggregate[fn]=field[,field...]`.
+    /// serde_qs does not split comma-joined values, so `to_sql` normalizes
+    /// them into one entry per field via `normalize_aggregate`.
+    #[serde(default)]
+    pub aggregate: HashMap<String, FieldList>,
+    /// Directus-style grouping: `groupBy[]=field` or `groupBy[]=fn(field)`.
+    #[serde(default, rename = "groupBy")]
+    pub group_by: Vec<String>,
     /// Virtual 1:M relation hops referenced by `filter`, resolved just before
     /// the SQL is built. Not part of the wire format.
     #[serde(skip)]
@@ -96,6 +236,114 @@ impl Query {
                 self.offset = (page - 1) * per_page;
             }
         }
+    }
+
+    /// Splits comma-joined aggregate values (`aggregate[count]=a,b`) into
+    /// one entry per field. serde_qs does not split commas itself.
+    pub fn normalize_aggregate(&mut self) {
+        if self.aggregate.is_empty() {
+            return;
+        }
+        let mut normalized: HashMap<String, FieldList> = HashMap::new();
+        for (fn_name, FieldList(values)) in std::mem::take(&mut self.aggregate) {
+            let mut fields = Vec::new();
+            for value in values {
+                for part in value.split(',') {
+                    let part = part.trim();
+                    if !part.is_empty() {
+                        fields.push(part.to_string());
+                    }
+                }
+            }
+            normalized.insert(fn_name, FieldList(fields));
+        }
+        self.aggregate = normalized;
+    }
+
+    /// Validates a group/aggregate field against the table's columns.
+    /// `*` is allowed (only `count`/`countAll` accept it, checked by the
+    /// parser); dotted relation fields are rejected.
+    fn validate_agg_field(
+        &self,
+        table: &str,
+        schema: &DatabaseSchema,
+        context: &AppContext,
+        field: &str,
+    ) -> Result<(), AlcedoError> {
+        if field == "*" {
+            return Ok(());
+        }
+        if field.is_empty() || field.contains('.') {
+            return Err(AlcedoError::InvalidInput(
+                format!("Invalid field '{field}' in aggregate/groupBy"),
+                0,
+            ));
+        }
+        let exists = schema
+            .columns
+            .iter()
+            .any(|c| c.table == table && c.schema == context.schema_name() && c.name == field);
+        if !exists {
+            return Err(AlcedoError::InvalidInput(
+                format!("Field '{field}' does not exist on collection '{table}'"),
+                0,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Under `Restricted` access, every aggregated/grouped field must be
+    /// granted by some rule; `*` additionally requires an unrestricted rule.
+    fn validate_agg_access(&self, field: &str) -> Result<(), AlcedoError> {
+        if let ReadAccess::Restricted { rules } = &self.access {
+            if field == "*" {
+                if !has_unrestricted_rule(rules) {
+                    return Err(AlcedoError::Forbidden(
+                        "No access to aggregate over all fields".to_string(),
+                        0,
+                    ));
+                }
+            } else if !has_unrestricted_rule(rules) && field_rule_indices(rules, field).is_empty() {
+                return Err(AlcedoError::Forbidden(
+                    format!("No access to field '{field}'"),
+                    0,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Builds the group/aggregate select expressions for `to_sql`, returning
+    /// `(group_exprs, aggregate_exprs)` as `(sql, alias)` pairs. Aggregate
+    /// exprs are sorted by alias so the generated SQL is deterministic.
+    fn build_aggregation(
+        &mut self,
+        table: &str,
+        schema: &DatabaseSchema,
+        context: &AppContext,
+    ) -> Result<(Vec<(String, String)>, Vec<(String, String)>), AlcedoError> {
+        self.normalize_aggregate();
+
+        let mut group_exprs: Vec<(String, String)> = Vec::new();
+        for entry in &self.group_by {
+            let (field, sql, alias) = parse_group_expr(entry)?;
+            self.validate_agg_field(table, schema, context, &field)?;
+            self.validate_agg_access(&field)?;
+            group_exprs.push((sql, alias));
+        }
+
+        let mut agg_exprs: Vec<(String, String)> = Vec::new();
+        for (fn_name, FieldList(fields)) in &self.aggregate {
+            for field in fields {
+                let (field, sql, alias) = parse_aggregate_expr(fn_name, field)?;
+                self.validate_agg_field(table, schema, context, &field)?;
+                self.validate_agg_access(&field)?;
+                agg_exprs.push((sql, alias));
+            }
+        }
+        agg_exprs.sort_by(|a, b| a.1.cmp(&b.1));
+
+        Ok((group_exprs, agg_exprs))
     }
 
     /// Injects the resolved record-level read access into `filter._and`.
@@ -356,8 +604,26 @@ impl Query {
         if self.offset != 0 {
             stmt.offset(self.offset);
         }
+
+        // when `aggregate` or `groupBy` is present, the select list is built from group/aggregate
+        // expressions instead of plain columns. Filters, sort, limit and
+        // offset below still apply, and `count_items_by_query` wrapping this
+        // select in COUNT(*) yields the group count for `includeCount`.
+        let aggregating = !self.aggregate.is_empty() || !self.group_by.is_empty();
+        if aggregating {
+            let (group_exprs, agg_exprs) = self.build_aggregation(table, schema, context)?;
+            for (expr, alias) in &group_exprs {
+                stmt.expr_as(Expr::cust(expr.clone()), Alias::new(alias.clone()));
+            }
+            for (expr, alias) in &agg_exprs {
+                stmt.expr_as(Expr::cust(expr.clone()), Alias::new(alias.clone()));
+            }
+            stmt.add_group_by(group_exprs.iter().map(|(expr, _)| Expr::cust(expr.clone())));
+            self.fields = vec![];
+        }
+
         // if there are no fields give, we assume that all values will need to be returned
-        if self.fields.is_empty() {
+        if self.fields.is_empty() && !aggregating {
             let table_fields = schema
                 .columns
                 .iter()
@@ -365,7 +631,7 @@ impl Query {
                 .map(|f| format!("{}", f.name))
                 .collect();
             self.fields = table_fields;
-        } else {
+        } else if !aggregating {
             let mut fields = self.fields.clone();
 
             // if there is a * provided, we will need to make sure that all fields are returned
@@ -1673,5 +1939,336 @@ mod tests {
             nulled, non_acme,
             "contacts pointing at hidden customers are NULL"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // aggregate / groupBy
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parses_aggregate_and_groupby_query_string() {
+        let mut q: Query = serde_qs::from_str(
+            "aggregate[count]=views,comments&aggregate[sum]=views&groupBy[]=author&groupBy[]=year(publish_date)&limit=5",
+        )
+        .unwrap();
+        assert_eq!(
+            q.group_by,
+            vec!["author".to_string(), "year(publish_date)".to_string()]
+        );
+        assert_eq!(q.limit, 5);
+        q.normalize_aggregate();
+        assert_eq!(
+            q.aggregate.get("count").unwrap().0,
+            vec!["views".to_string(), "comments".to_string()]
+        );
+        assert_eq!(q.aggregate.get("sum").unwrap().0, vec!["views".to_string()]);
+    }
+
+    #[test]
+    fn aggregate_expr_sql_mapping() {
+        assert_eq!(
+            parse_aggregate_expr("count", "*").unwrap().1,
+            "COUNT(*)".to_string()
+        );
+        assert_eq!(
+            parse_aggregate_expr("countAll", "id").unwrap().1,
+            "COUNT(*)".to_string()
+        );
+        assert_eq!(
+            parse_aggregate_expr("count", "views").unwrap(),
+            (
+                "views".to_string(),
+                "COUNT(\"views\")".to_string(),
+                "count_views".to_string()
+            )
+        );
+        assert_eq!(
+            parse_aggregate_expr("countDistinct", "views").unwrap().1,
+            "COUNT(DISTINCT \"views\")".to_string()
+        );
+        assert_eq!(
+            parse_aggregate_expr("sum", "views").unwrap().1,
+            "SUM(\"views\")::float8".to_string()
+        );
+        assert_eq!(
+            parse_aggregate_expr("avgDistinct", "views").unwrap().1,
+            "AVG(DISTINCT \"views\")::float8".to_string()
+        );
+        assert_eq!(
+            parse_aggregate_expr("min", "title").unwrap().1,
+            "MIN(\"title\")".to_string()
+        );
+        assert!(parse_aggregate_expr("bogus", "views").is_err());
+        assert!(parse_aggregate_expr("sum", "*").is_err());
+    }
+
+    #[test]
+    fn group_expr_sql_mapping() {
+        assert_eq!(
+            parse_group_expr("state").unwrap(),
+            (
+                "state".to_string(),
+                "\"state\"".to_string(),
+                "state".to_string()
+            )
+        );
+        assert_eq!(
+            parse_group_expr("year(created_at)").unwrap(),
+            (
+                "created_at".to_string(),
+                "EXTRACT(YEAR FROM \"created_at\")::int8".to_string(),
+                "year_created_at".to_string()
+            )
+        );
+        assert_eq!(
+            parse_group_expr("date(created_at)").unwrap().1,
+            "DATE_TRUNC('day', \"created_at\")".to_string()
+        );
+        assert_eq!(
+            parse_group_expr("dow(created_at)").unwrap().1,
+            "EXTRACT(DOW FROM \"created_at\")::int8".to_string()
+        );
+        assert!(parse_group_expr("bogus(x)").is_err());
+        assert!(parse_group_expr("year(").is_err());
+        assert!(parse_group_expr("*").is_err());
+        assert!(parse_group_expr("year(*)").is_err());
+    }
+
+    const TEST_SCHEMA: &str = "testing010production";
+
+    fn testing_ctx() -> AppContext {
+        AppContext {
+            app_name: "testing".to_string(),
+            version: "production".to_string(),
+            request_source: RequestSource::SystemTest,
+            identity: None,
+            request_id: None,
+        }
+    }
+
+    async fn testing_schema_seeded(state: &AppState) -> bool {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = $1 AND table_name = 'cases')",
+        )
+        .bind(TEST_SCHEMA)
+        .fetch_one(&*state.database_pool)
+        .await
+        .unwrap_or(false)
+    }
+
+    /// Client-side filter scoping a query to the seeded rows (matched by
+    /// their unique `agg-<id>` titles), so leftover rows from other tests
+    /// cannot skew aggregate counts.
+    fn ids_filter(ids: &[String]) -> LogicOp {
+        let titles: Vec<String> = ids.iter().map(|id| format!("agg-{id}")).collect();
+        let mut map: HashMap<String, FieldValue> = HashMap::new();
+        map.insert(
+            "title".to_string(),
+            FieldValue::Comparison(Comparison {
+                _in: Some(json!(titles)),
+                ..Default::default()
+            }),
+        );
+        LogicOp {
+            _and: Some(vec![Filter::Field(FieldFilter { fields: map })]),
+            _or: None,
+        }
+    }
+
+    /// Seeds three cases (two `open`, one `closed`) and returns their ids.
+    async fn seed_cases(state: &AppState) -> Vec<String> {
+        use crate::item_map;
+        use crate::services::items::service::ItemsService;
+
+        let ctx = testing_ctx();
+        let collection = "cases".to_string();
+        let mut service = ItemsService::new(state, &ctx, &collection);
+        let ids: Vec<String> = (0..3).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        let states = ["open", "open", "closed"];
+        service
+            .create_many(
+                ids.iter()
+                    .zip(states.iter())
+                    .map(|(id, state)| {
+                        item_map! {
+                            "id" => id.clone(),
+                            "title" => format!("agg-{id}"),
+                            "state" => *state,
+                        }
+                    })
+                    .collect(),
+                &mut None,
+            )
+            .await
+            .unwrap();
+        ids
+    }
+
+    async fn cleanup_cases(state: &AppState, ids: &[String]) {
+        for id in ids {
+            sqlx::query(&format!(
+                "DELETE FROM \"{TEST_SCHEMA}\".cases WHERE id = $1"
+            ))
+            .bind(uuid::Uuid::parse_str(id).unwrap())
+            .execute(&*state.database_pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn aggregate_groupby_counts_per_group() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        if !testing_schema_seeded(&state).await {
+            eprintln!("skipping: {TEST_SCHEMA} not seeded");
+            return;
+        }
+        let ids = seed_cases(&state).await;
+
+        let mut query = Query {
+            group_by: vec!["state".to_string()],
+            aggregate: HashMap::from([("count".to_string(), FieldList(vec!["*".to_string()]))]),
+            filter: ids_filter(&ids),
+            ..Default::default()
+        };
+        let rows = query
+            .execute_query(&testing_ctx(), &state, &"cases".to_string())
+            .await
+            .unwrap();
+
+        let mut counts: HashMap<String, i64> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.get("state")
+                        .and_then(Value::as_str)
+                        .unwrap()
+                        .to_string(),
+                    row.get("count_*").and_then(Value::as_i64).unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(counts.remove("open"), Some(2));
+        assert_eq!(counts.remove("closed"), Some(1));
+        assert!(counts.is_empty(), "only the seeded groups: {counts:?}");
+
+        // date-part grouping + field aggregate + sort on the alias
+        let mut query = Query {
+            group_by: vec!["year(created_at)".to_string()],
+            aggregate: HashMap::from([("count".to_string(), FieldList(vec!["title".to_string()]))]),
+            sort: vec!["-count_title".to_string()],
+            filter: ids_filter(&ids),
+            ..Default::default()
+        };
+        let rows = query
+            .execute_query(&testing_ctx(), &state, &"cases".to_string())
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "all seeded rows share one created_at year");
+        assert_eq!(rows[0].get("count_title").and_then(Value::as_i64), Some(3));
+        assert!(rows[0].contains_key("year_created_at"));
+
+        cleanup_cases(&state, &ids).await;
+    }
+
+    #[tokio::test]
+    async fn aggregate_rejects_unknown_fields_and_injection() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        if !testing_schema_seeded(&state).await {
+            eprintln!("skipping: {TEST_SCHEMA} not seeded");
+            return;
+        }
+        let ctx = testing_ctx();
+        let table = "cases".to_string();
+
+        let mut q = Query {
+            aggregate: HashMap::from([("count".to_string(), FieldList(vec!["nope".to_string()]))]),
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::InvalidInput(_, _)), "{err}");
+
+        let mut q = Query {
+            group_by: vec!["id;DROP TABLE cases".to_string()],
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::InvalidInput(_, _)), "{err}");
+
+        let mut q = Query {
+            group_by: vec!["customer.name".to_string()],
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::InvalidInput(_, _)), "{err}");
+
+        // the table must still be there
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.tables \
+             WHERE table_schema = $1 AND table_name = 'cases')",
+        )
+        .bind(TEST_SCHEMA)
+        .fetch_one(&*state.database_pool)
+        .await
+        .unwrap();
+        assert!(exists);
+    }
+
+    #[tokio::test]
+    async fn aggregate_respects_restricted_field_access_and_row_filters() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        if !testing_schema_seeded(&state).await {
+            eprintln!("skipping: {TEST_SCHEMA} not seeded");
+            return;
+        }
+        let ids = seed_cases(&state).await;
+        let ctx = testing_ctx();
+        let table = "cases".to_string();
+
+        // rule grants only `title`: aggregating `state` is forbidden
+        let mut q = Query {
+            group_by: vec!["state".to_string()],
+            aggregate: HashMap::from([("count".to_string(), FieldList(vec!["*".to_string()]))]),
+            access: ReadAccess::Restricted {
+                rules: vec![rule(Some(&["title"]))],
+            },
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "{err}");
+
+        // `*` under a restricted rule set without an unrestricted rule is forbidden
+        let mut q = Query {
+            aggregate: HashMap::from([("count".to_string(), FieldList(vec!["*".to_string()]))]),
+            access: ReadAccess::Restricted {
+                rules: vec![rule(Some(&["title"]))],
+            },
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::Forbidden(_, _)), "{err}");
+
+        // granted field + row condition: only `open` rows are counted
+        let mut open_rule = rule(Some(&["title", "state"]));
+        open_rule.conditions = conditions_from_json(&json!([
+            { "field": "state", "operator": "eq", "value": "open" }
+        ]))
+        .unwrap();
+        let mut q = Query {
+            group_by: vec!["state".to_string()],
+            aggregate: HashMap::from([("count".to_string(), FieldList(vec!["title".to_string()]))]),
+            filter: ids_filter(&ids),
+            access: ReadAccess::Restricted {
+                rules: vec![open_rule],
+            },
+            ..Default::default()
+        };
+        let rows = q.execute_query(&ctx, &state, &table).await.unwrap();
+        assert_eq!(rows.len(), 1, "row filter limits the groups");
+        assert_eq!(rows[0].get("state").and_then(Value::as_str), Some("open"));
+        assert_eq!(rows[0].get("count_title").and_then(Value::as_i64), Some(2));
+
+        cleanup_cases(&state, &ids).await;
     }
 }
