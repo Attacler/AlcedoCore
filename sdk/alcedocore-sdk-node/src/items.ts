@@ -2,7 +2,7 @@ export function createItemsResource(ky: any) {
     return {
         list: (
             name: string,
-            params?: Record<string, string>,
+            params?: Record<string, string> | URLSearchParams | string,
             options?: Record<string, any>,
         ) =>
             ky
@@ -79,6 +79,18 @@ export function createItemsResource(ky: any) {
             if (data.limit) params.set("limit", String(data.limit));
             if (data.offset) params.set("offset", String(data.offset));
             if (data.fields) params.set("fields", data.fields.join(","));
+            if (data.groupBy) {
+                for (const field of [data.groupBy].flat()) {
+                    params.append("groupBy[]", String(field));
+                }
+            }
+            if (data.aggregate) {
+                for (const [fn, fields] of Object.entries(data.aggregate)) {
+                    for (const field of [fields].flat()) {
+                        params.append(`aggregate[${fn}]`, String(field));
+                    }
+                }
+            }
             if (data.sort && data.sort.length > 0) {
                 params.set("sort", data.sort[0].field);
                 if (data.sort[0].order || data.sort[0].direction) {
@@ -95,14 +107,6 @@ export function createItemsResource(ky: any) {
                 })
                 .json();
         },
-
-        grouped: (name: string, data: any, options?: Record<string, any>) =>
-            ky
-                .post(`app/items/${encodeURIComponent(name)}/grouped`, {
-                    json: data,
-                    ...options,
-                })
-                .json(),
 
         references: (name: string, id: string, options?: Record<string, any>) =>
             ky

@@ -5,7 +5,11 @@ import {
     type FieldDefinition,
 } from "@/stores/collections";
 import type { FilterRule, OperatorMeta } from "@/types/filters";
-import { OPERATORS_BY_TYPE } from "@/types/filters";
+import {
+    OPERATORS_BY_TYPE,
+    COUNT_OPERATORS,
+    AGGREGATE_OPERATORS,
+} from "@/types/filters";
 import { useAppContextStore } from "@/stores/appContext";
 import Select from "primevue/select";
 import TreeSelect from "primevue/treeselect";
@@ -49,6 +53,7 @@ interface CollectionRef {
 }
 
 const keyTypeMap = new Map<string, string>(),
+    keyOneToManyMap = new Map<string, boolean>(),
     keyCollectionMap = new Map<string, CollectionRef>(),
     fieldTree = ref<FieldTreeNode[]>([]),
     treeReady = ref(false),
@@ -124,7 +129,11 @@ watch(
         if (!field || field === dottedPath.value) return;
         const clone = getClone();
         clone.path = field.split(".");
-        clone.operator = "eq";
+        // A direct one-to-many field (e.g. `contacts`) gets count operators
+        clone.operator =
+            field.indexOf(".") === -1 && keyOneToManyMap.get(field)
+                ? "count_gt"
+                : "eq";
         clone.value = "";
         emitUpdate(clone);
     },
@@ -173,6 +182,9 @@ async function buildFullTree(
         }
 
         if (!f.related_collection) continue;
+
+        keyTypeMap.set(f.name, f.type);
+        keyOneToManyMap.set(f.name, f.relationship_type === "one_to_many");
 
         // Guard against bidirectional relations (e.g. orders.items ->
         // order_items.order -> orders) which would recurse forever.
@@ -253,6 +265,7 @@ let buildToken = 0;
 async function rebuildTree() {
     const token = ++buildToken;
     keyTypeMap.clear();
+    keyOneToManyMap.clear();
     keyCollectionMap.clear();
     if (!props.fields || props.fields.length === 0) {
         fieldTree.value = [];
@@ -291,9 +304,35 @@ const selectedFieldType = computed<string>(() => {
     return keyTypeMap.get(fieldName) || "string";
 });
 
+/** True when the selected path is a direct one-to-many relation field */
+const isOneToManyField = computed(() => {
+    const path = props.condition.path || [];
+    return path.length === 1 && keyOneToManyMap.get(path[0]) === true;
+});
+
+/** True when the selected path is a child field of a one-to-many relation
+ * (e.g. `lines.total` on `invoices`) */
+const isOneToManyChildField = computed(() => {
+    const path = props.condition.path || [];
+    return path.length === 2 && keyOneToManyMap.get(path[0]) === true;
+});
+
+/** True when the current operator is a relation aggregate comparison
+ * (count or sum/avg/min/max over the related rows) */
+const isAggValueOp = computed(() =>
+    /^(count_|sum|avg|min|max)/.test(props.condition.operator),
+);
+
 const availableOperators = computed<OperatorMeta[]>(() => {
+    if (isOneToManyField.value) return COUNT_OPERATORS;
     const type = selectedFieldType.value;
-    return OPERATORS_BY_TYPE[type] || OPERATORS_BY_TYPE.string;
+    const base = OPERATORS_BY_TYPE[type] || OPERATORS_BY_TYPE.string;
+    // Aggregate operators only make sense on numeric child fields of a
+    // one-to-many relation; plain operators keep their EXISTS semantics.
+    if (isOneToManyChildField.value && (type === "int" || type === "float")) {
+        return [...base, ...AGGREGATE_OPERATORS];
+    }
+    return base;
 });
 
 const requiresValue = computed(() => {
@@ -324,6 +363,11 @@ function onValueChange(newValue: unknown) {
     const clone = getClone();
     clone.value = newValue;
     emitUpdate(clone);
+}
+
+function onCountInput(event: Event) {
+    const n = (event.target as HTMLInputElement).valueAsNumber;
+    onValueChange(isNaN(n) ? "" : n);
 }
 
 function getCollectionInfo(key: string): CollectionRef {
@@ -390,8 +434,15 @@ function getCollectionInfo(key: string): CollectionRef {
                 Value
             </label>
             <div class="flex items-center mb-1 gap-2">
+                <input
+                    v-if="isAggValueOp"
+                    type="number"
+                    :value="condition.value"
+                    class="grow px-2 py-1.5 text-sm border border-gray-300 rounded-md"
+                    @input="onCountInput"
+                />
                 <FormFieldRenderer
-                    v-if="!rawValue"
+                    v-else-if="!rawValue"
                     :collectionName="getCollectionInfo(currentKey).collection"
                     :fieldName="currentKey.split('.').reverse()[0]"
                     :targetApp="getCollectionInfo(currentKey).app"

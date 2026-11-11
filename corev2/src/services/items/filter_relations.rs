@@ -68,15 +68,23 @@ pub(crate) async fn resolve_filter_relation_hops(
 
     while let Some((cur_ctx, cur_coll, logic)) = queue.pop() {
         // Collect nested values first. Field metadata is only loaded when a
-        // nested value is present, so metadata queries (which use plain
-        // comparisons) never re-enter the collections service.
-        let mut nested_values: Vec<(String, FieldFilter)> = Vec::new();
+        // nested value or a `_count_*` comparison is present, so metadata
+        // queries (which use plain comparisons) never re-enter the
+        // collections service. `None` marks a count-only reference (no
+        // descent into the related collection needed).
+        let mut nested_values: Vec<(String, Option<FieldFilter>)> = Vec::new();
         for item in iter_filters(&logic) {
             match item {
                 Filter::Field(field_filter) => {
                     for (field_name, value) in &field_filter.fields {
-                        if let FieldValue::Nested(nested) = value {
-                            nested_values.push((field_name.clone(), nested.clone()));
+                        match value {
+                            FieldValue::Nested(nested) => {
+                                nested_values.push((field_name.clone(), Some(nested.clone())));
+                            }
+                            FieldValue::Comparison(c) if c.has_count_ops() => {
+                                nested_values.push((field_name.clone(), None));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -118,6 +126,8 @@ pub(crate) async fn resolve_filter_relation_hops(
                     );
                 }
             }
+
+            let Some(nested) = nested else { continue };
 
             // Descend into the related collection so 1:M hops nested behind
             // this relation are resolved too.

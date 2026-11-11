@@ -43,6 +43,26 @@ describe("toShortForm", () => {
             ],
         });
     });
+
+    it("maps count and aggregate operators to their short forms", () => {
+        expect(
+            toShortForm({ path: ["contacts"], operator: "count_gt", value: 5 }),
+        ).toEqual({ contacts: { _count_gt: 5 } });
+        expect(
+            toShortForm({
+                path: ["lines", "total"],
+                operator: "sum_gt",
+                value: 1000,
+            }),
+        ).toEqual({ lines: { total: { _sum_gt: 1000 } } });
+        expect(
+            toShortForm({
+                path: ["lines", "total"],
+                operator: "avg_distinct_lte",
+                value: 100,
+            }),
+        ).toEqual({ lines: { total: { _avg_distinct_lte: 100 } } });
+    });
 });
 
 describe("normalizeFilterCondition", () => {

@@ -1,7 +1,7 @@
 use rand::{Rng, distr::Alphanumeric};
 use sea_query::{
-    Alias, Condition, Expr, JoinType, Order, PostgresQueryBuilder, SelectStatement, SimpleExpr,
-    extension::postgres::PgExpr,
+    Alias, Condition, Expr, ExprTrait, JoinType, Order, PostgresQueryBuilder, SelectStatement,
+    SimpleExpr, extension::postgres::PgExpr,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -75,6 +75,30 @@ fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', ""))
 }
 
+/// Coerces a string filter value to a numeric literal. Aggregate comparisons
+/// (`_count_*`, `_sum_*`, ...) compare against a SQL aggregate with no column
+/// to coerce against, so a non-numeric string would surface as a Postgres type
+/// error instead of a clean 400.
+fn numeric_literal(val: &Value, what: &str) -> Result<Value, AlcedoError> {
+    match val {
+        Value::String(s) => match s.parse::<i64>() {
+            Ok(n) => Ok(Value::from(n)),
+            Err(_) => match s.parse::<f64>() {
+                Ok(f) => serde_json::Number::from_f64(f)
+                    .map(Value::Number)
+                    .ok_or_else(|| {
+                        AlcedoError::InvalidInput(format!("Invalid {what} value '{s}'"), 0)
+                    }),
+                Err(_) => Err(AlcedoError::InvalidInput(
+                    format!("Invalid {what} value '{s}'"),
+                    0,
+                )),
+            },
+        },
+        other => Ok(other.clone()),
+    }
+}
+
 /// Parses one `groupBy` entry into `(field, sql_expr, alias)`. Plain fields
 /// select the column itself; `fn(field)` wraps it in `EXTRACT`/`DATE_TRUNC`.
 fn parse_group_expr(entry: &str) -> Result<(String, String, String), AlcedoError> {
@@ -124,7 +148,7 @@ fn parse_group_expr(entry: &str) -> Result<(String, String, String), AlcedoError
 
 /// A list of fields that accepts either a single (possibly comma-joined)
 /// string — `aggregate[count]=a,b` — or a sequence — `aggregate[count][]=a`.
-/// serde_qs hands the bare form to the value deserializer as a plain string.
+/// The bare form arrives at the deserializer as a plain string.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct FieldList(pub Vec<String>);
 
@@ -206,8 +230,8 @@ pub struct Query {
     #[serde(default, rename = "includeCount")]
     pub include_count: bool,
     /// Directus-style aggregation: `aggregate[fn]=field[,field...]`.
-    /// serde_qs does not split comma-joined values, so `to_sql` normalizes
-    /// them into one entry per field via `normalize_aggregate`.
+    /// The query parser does not split comma-joined values, so `to_sql`
+    /// normalizes them into one entry per field via `normalize_aggregate`.
     #[serde(default)]
     pub aggregate: HashMap<String, FieldList>,
     /// Directus-style grouping: `groupBy[]=field` or `groupBy[]=fn(field)`.
@@ -227,6 +251,15 @@ pub struct Query {
 }
 
 impl Query {
+    /// Ensures the primary key is among the selected fields, so update/delete
+    /// by query can address the matched rows by pk even when the caller asked
+    /// for a restricted `fields` list.
+    pub fn ensure_pk_selected(&mut self, pk_name: &str) {
+        if !self.fields.is_empty() && !self.fields.iter().any(|f| f == "*" || f == pk_name) {
+            self.fields.push(pk_name.to_string());
+        }
+    }
+
     /// Translates `page` + `per_page` into `limit` / `offset`. A direct `limit`/`offset` still wins if `per_page` is absent.
     pub fn normalize_pagination(&mut self) {
         if let Some(per_page) = self.per_page {
@@ -239,7 +272,7 @@ impl Query {
     }
 
     /// Splits comma-joined aggregate values (`aggregate[count]=a,b`) into
-    /// one entry per field. serde_qs does not split commas itself.
+    /// one entry per field. The query parser does not split commas itself.
     pub fn normalize_aggregate(&mut self) {
         if self.aggregate.is_empty() {
             return;
@@ -1029,6 +1062,33 @@ impl Query {
         path: &Vec<&str>,
     ) -> Result<Condition, AlcedoError> {
         for (field, value) in &field_filter.fields {
+            // One-to-many count comparisons (`{"contacts": {"_count_gt": 5}}`)
+            // become a COUNT(*) subquery against the child table, not a column
+            // comparison — the 1:M field has no column on the parent.
+            if let FieldValue::Comparison(comparison) = value {
+                if comparison.has_count_ops() {
+                    condition = self.add_count_filter(
+                        schema,
+                        condition,
+                        field,
+                        comparison,
+                        current_schema,
+                        current_table,
+                    )?;
+                    continue;
+                }
+                // Aggregate comparisons only make sense nested under a 1:M
+                // relation field; on a plain column there is nothing to
+                // aggregate over.
+                if !comparison.agg_ops().is_empty() {
+                    return Err(AlcedoError::InvalidInput(
+                        format!(
+                            "Aggregate filter on '{field}' requires a one-to-many relation field"
+                        ),
+                        0,
+                    ));
+                }
+            }
             match value {
                 FieldValue::Comparison(comparison) => {
                     let col = Expr::col((
@@ -1215,6 +1275,42 @@ impl Query {
                     }
                 }
                 FieldValue::Nested(nested_filter) => {
+                    // Aggregate comparisons on child fields of a virtual 1:M
+                    // field (`{"lines": {"total": {"_sum_gt": 1000}}}`) become
+                    // a `(SELECT SUM(child.col) FROM child WHERE child.fk =
+                    // parent.pk) OP n` subquery, not an EXISTS.
+                    if has_agg_ops(nested_filter) {
+                        let lookup_table = self
+                            .joins
+                            .iter()
+                            .find(|j| j.id == current_table)
+                            .map(|j| j.target_table.clone())
+                            .unwrap_or_else(|| current_table.to_string());
+                        let hop_key = (
+                            current_schema.to_string(),
+                            lookup_table.clone(),
+                            field.to_string(),
+                        );
+                        let Some(hop) = self.relation_hops.get(&hop_key).cloned() else {
+                            return Err(AlcedoError::InvalidInput(
+                                format!(
+                                    "Aggregate filter on '{field}' requires a one-to-many relation field"
+                                ),
+                                0,
+                            ));
+                        };
+                        condition = self.add_aggregate_filter(
+                            schema,
+                            condition,
+                            nested_filter,
+                            current_table,
+                            &lookup_table,
+                            current_schema,
+                            &hop,
+                        )?;
+                        continue;
+                    }
+
                     let mut current_table = current_table.to_string();
                     let mut current_schema = current_schema.to_string();
                     let mut path = path.clone();
@@ -1368,6 +1464,157 @@ impl Query {
         );
 
         Ok(condition.add(Expr::exists(sub)))
+    }
+
+    /// Builds a `(SELECT COUNT(*) FROM child WHERE child.fk = parent.pk) OP n`
+    /// condition for a `_count_*` comparison on a virtual one-to-many field.
+    /// The hop (child table + back-FK column) comes from `relation_hops`,
+    /// resolved by `resolve_filter_relation_hops`.
+    fn add_count_filter(
+        &mut self,
+        schema: &DatabaseSchema,
+        mut condition: Condition,
+        field: &str,
+        comparison: &Comparison,
+        current_schema: &str,
+        current_table: &str,
+    ) -> Result<Condition, AlcedoError> {
+        let hop_key = (
+            current_schema.to_string(),
+            current_table.to_string(),
+            field.to_string(),
+        );
+        let Some(hop) = self.relation_hops.get(&hop_key).cloned() else {
+            return Err(AlcedoError::InvalidInput(
+                format!("Count filter on '{field}' requires a one-to-many relation field"),
+                0,
+            ));
+        };
+
+        let parent_pk = schema
+            .columns
+            .iter()
+            .find(|c| c.schema == current_schema && c.table == current_table && c.is_primary_key)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "id".to_string());
+
+        let mut sub = sea_query::Query::select();
+        sub.expr(Expr::cust("COUNT(*)"));
+        sub.from((Alias::new(&hop.child_schema), Alias::new(&hop.child_table)));
+        sub.and_where(
+            Expr::col((Alias::new(&hop.child_table), Alias::new(&hop.fk_column)))
+                .equals((Alias::new(current_table), Alias::new(&parent_pk))),
+        );
+        let count_expr = Expr::cust(format!("({})", sub.to_string(PostgresQueryBuilder)));
+
+        let comparisons: Vec<(
+            &Option<Value>,
+            Box<dyn Fn(SimpleExpr, SimpleExpr) -> SimpleExpr>,
+        )> = vec![
+            (&comparison._count_eq, Box::new(|c, v| c.eq(v))),
+            (&comparison._count_neq, Box::new(|c, v| c.ne(v))),
+            (&comparison._count_gt, Box::new(|c, v| c.gt(v))),
+            (&comparison._count_gte, Box::new(|c, v| c.gte(v))),
+            (&comparison._count_lt, Box::new(|c, v| c.lt(v))),
+            (&comparison._count_lte, Box::new(|c, v| c.lte(v))),
+        ];
+        for (opt_val, op) in comparisons {
+            if let Some(val) = opt_val {
+                // COUNT(*) is bigint; the literal needs no column to coerce
+                // against, but a string value must be numeric or it would
+                // fail as a Postgres type error instead of a clean 400.
+                let lit = numeric_literal(val, "count")?;
+                condition = condition.add(op(
+                    count_expr.clone(),
+                    SimpleExpr::Value(lit.into()),
+                ));
+            }
+        }
+        Ok(condition)
+    }
+
+    /// Builds `(SELECT FN([DISTINCT] child.col) FROM child WHERE child.fk =
+    /// parent.pk) OP n` conditions for aggregate comparisons (`_sum_gt`,
+    /// `_avg_lte`, ...) nested under a virtual one-to-many field. The hop
+    /// (child table + back-FK column) comes from `relation_hops`.
+    #[allow(clippy::too_many_arguments)]
+    fn add_aggregate_filter(
+        &mut self,
+        schema: &DatabaseSchema,
+        mut condition: Condition,
+        nested_filter: &FieldFilter,
+        parent_alias: &str,
+        parent_table: &str,
+        parent_schema: &str,
+        hop: &OneToManyHop,
+    ) -> Result<Condition, AlcedoError> {
+        let parent_pk = schema
+            .columns
+            .iter()
+            .find(|c| c.schema == parent_schema && c.table == parent_table && c.is_primary_key)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "id".to_string());
+
+        for (child_field, value) in &nested_filter.fields {
+            let FieldValue::Comparison(comparison) = value else {
+                return Err(AlcedoError::InvalidInput(
+                    "Cannot mix aggregate and plain conditions on a one-to-many relation field"
+                        .to_string(),
+                    0,
+                ));
+            };
+            let ops = comparison.agg_ops();
+            if ops.is_empty() {
+                return Err(AlcedoError::InvalidInput(
+                    "Cannot mix aggregate and plain conditions on a one-to-many relation field"
+                        .to_string(),
+                    0,
+                ));
+            }
+            // The child field must be a real column on the child table; this
+            // also keeps the identifier in the subquery limited to
+            // introspected column names.
+            let col_exists = schema.columns.iter().any(|c| {
+                c.schema == hop.child_schema && c.table == hop.child_table && c.name == *child_field
+            });
+            if !col_exists {
+                return Err(AlcedoError::InvalidInput(
+                    format!(
+                        "Unknown field '{child_field}' on relation '{}'",
+                        hop.child_table
+                    ),
+                    0,
+                ));
+            }
+
+            for op in ops {
+                let mut sub = sea_query::Query::select();
+                sub.expr(Expr::cust(format!(
+                    "{}({}{})",
+                    op.fn_sql,
+                    if op.distinct { "DISTINCT " } else { "" },
+                    quote_ident(child_field)
+                )));
+                sub.from((Alias::new(&hop.child_schema), Alias::new(&hop.child_table)));
+                sub.and_where(
+                    Expr::col((Alias::new(&hop.child_table), Alias::new(&hop.fk_column)))
+                        .equals((Alias::new(parent_alias), Alias::new(&parent_pk))),
+                );
+                let agg_expr = Expr::cust(format!("({})", sub.to_string(PostgresQueryBuilder)));
+                let lit = numeric_literal(op.value, "aggregate")?;
+                let cmp = match op.op {
+                    "eq" => agg_expr.eq(SimpleExpr::Value(lit.into())),
+                    "neq" => agg_expr.ne(SimpleExpr::Value(lit.into())),
+                    "gt" => agg_expr.gt(SimpleExpr::Value(lit.into())),
+                    "gte" => agg_expr.gte(SimpleExpr::Value(lit.into())),
+                    "lt" => agg_expr.lt(SimpleExpr::Value(lit.into())),
+                    "lte" => agg_expr.lte(SimpleExpr::Value(lit.into())),
+                    _ => unreachable!("agg_ops only yields known comparison ops"),
+                };
+                condition = condition.add(cmp);
+            }
+        }
+        Ok(condition)
     }
 
     /// Converts the value into a Vec<SimpleExpr>
@@ -1563,6 +1810,116 @@ pub struct Comparison {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub _nbetween: Option<(Value, Value)>, //@TODO _intersects,_nintersects,_intersects_bbox,_nintersects_bbox,_regex,_some,_none
+
+    // Count comparisons on virtual one-to-many relation fields, e.g.
+    // `{"contacts": {"_count_gt": 5}}` — "parents with more than 5 contacts".
+    // Resolved as `(SELECT COUNT(*) FROM child WHERE child.fk = parent.pk) OP n`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _count_eq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _count_neq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _count_gt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _count_gte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _count_lt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _count_lte: Option<Value>,
+
+    // Aggregate comparisons on a child field of a virtual one-to-many
+    // relation, e.g. `{"lines": {"total": {"_sum_gt": 1000}}}` — "parents
+    // whose related rows sum to more than 1000". Resolved as
+    // `(SELECT SUM(child.col) FROM child WHERE child.fk = parent.pk) OP n`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_eq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_neq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_gt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_gte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_lt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_lte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_distinct_eq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_distinct_neq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_distinct_gt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_distinct_gte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_distinct_lt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _sum_distinct_lte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_eq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_neq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_gt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_gte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_lt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_lte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_distinct_eq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_distinct_neq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_distinct_gt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_distinct_gte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_distinct_lt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _avg_distinct_lte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _min_eq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _min_neq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _min_gt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _min_gte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _min_lt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _min_lte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _max_eq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _max_neq: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _max_gt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _max_gte: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _max_lt: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub _max_lte: Option<Value>,
+}
+
+/// One set non-count aggregate comparison: which SQL function, whether
+/// DISTINCT, which comparison operator, and the value.
+pub struct AggCmp<'a> {
+    pub fn_sql: &'static str,
+    pub distinct: bool,
+    pub op: &'static str,
+    pub value: &'a Value,
+}
+
+/// True when any field in the filter carries a non-count aggregate comparison.
+fn has_agg_ops(filter: &FieldFilter) -> bool {
+    filter
+        .fields
+        .values()
+        .any(|v| matches!(v, FieldValue::Comparison(c) if !c.agg_ops().is_empty()))
 }
 
 impl Comparison {
@@ -1572,6 +1929,42 @@ impl Comparison {
             _eq: Some(value),
             ..Default::default()
         }
+    }
+
+    /// True when any one-to-many `_count_*` comparison is set.
+    pub fn has_count_ops(&self) -> bool {
+        self._count_eq.is_some()
+            || self._count_neq.is_some()
+            || self._count_gt.is_some()
+            || self._count_gte.is_some()
+            || self._count_lt.is_some()
+            || self._count_lte.is_some()
+    }
+
+    /// All set non-count aggregate comparisons (`_sum_gt`, `_avg_lte`, ...).
+    pub fn agg_ops(&self) -> Vec<AggCmp<'_>> {
+        let mut out = Vec::new();
+        macro_rules! collect {
+            ($fn_sql:literal, $distinct:expr, $($op:literal => $field:ident),* $(,)?) => {
+                $(
+                    if let Some(v) = &self.$field {
+                        out.push(AggCmp {
+                            fn_sql: $fn_sql,
+                            distinct: $distinct,
+                            op: $op,
+                            value: v,
+                        });
+                    }
+                )*
+            };
+        }
+        collect!("SUM", false, "eq" => _sum_eq, "neq" => _sum_neq, "gt" => _sum_gt, "gte" => _sum_gte, "lt" => _sum_lt, "lte" => _sum_lte);
+        collect!("SUM", true, "eq" => _sum_distinct_eq, "neq" => _sum_distinct_neq, "gt" => _sum_distinct_gt, "gte" => _sum_distinct_gte, "lt" => _sum_distinct_lt, "lte" => _sum_distinct_lte);
+        collect!("AVG", false, "eq" => _avg_eq, "neq" => _avg_neq, "gt" => _avg_gt, "gte" => _avg_gte, "lt" => _avg_lt, "lte" => _avg_lte);
+        collect!("AVG", true, "eq" => _avg_distinct_eq, "neq" => _avg_distinct_neq, "gt" => _avg_distinct_gt, "gte" => _avg_distinct_gte, "lt" => _avg_distinct_lt, "lte" => _avg_distinct_lte);
+        collect!("MIN", false, "eq" => _min_eq, "neq" => _min_neq, "gt" => _min_gt, "gte" => _min_gte, "lt" => _min_lt, "lte" => _min_lte);
+        collect!("MAX", false, "eq" => _max_eq, "neq" => _max_neq, "gt" => _max_gt, "gte" => _max_gte, "lt" => _max_lt, "lte" => _max_lte);
+        out
     }
 }
 
@@ -1947,7 +2340,7 @@ mod tests {
 
     #[test]
     fn parses_aggregate_and_groupby_query_string() {
-        let mut q: Query = serde_qs::from_str(
+        let mut q: Query = crate::services::query_parse::parse_query_string(
             "aggregate[count]=views,comments&aggregate[sum]=views&groupBy[]=author&groupBy[]=year(publish_date)&limit=5",
         )
         .unwrap();
@@ -2270,5 +2663,419 @@ mod tests {
         assert_eq!(rows[0].get("count_title").and_then(Value::as_i64), Some(2));
 
         cleanup_cases(&state, &ids).await;
+    }
+
+    // ------------------------------------------------------------------
+    // one-to-many count filters (`{"contacts": {"_count_gt": 5}}`)
+    // ------------------------------------------------------------------
+
+    fn count_filter(field: &str, op: &str, n: i64) -> LogicOp {
+        let mut comparison = Comparison::default();
+        match op {
+            "_count_eq" => comparison._count_eq = Some(json!(n)),
+            "_count_neq" => comparison._count_neq = Some(json!(n)),
+            "_count_gt" => comparison._count_gt = Some(json!(n)),
+            "_count_gte" => comparison._count_gte = Some(json!(n)),
+            "_count_lt" => comparison._count_lt = Some(json!(n)),
+            "_count_lte" => comparison._count_lte = Some(json!(n)),
+            _ => panic!("bad op"),
+        }
+        let mut map: HashMap<String, FieldValue> = HashMap::new();
+        map.insert(
+            field.to_string(),
+            FieldValue::Comparison(comparison),
+        );
+        LogicOp {
+            _and: Some(vec![Filter::Field(FieldFilter { fields: map })]),
+            _or: None,
+        }
+    }
+
+    /// Seeds two customers (`cnt-A` with 3 contacts, `cnt-B` with 1) and
+    /// returns their ids.
+    async fn seed_count_customers(state: &AppState) -> Vec<String> {
+        use crate::item_map;
+        use crate::services::items::service::ItemsService;
+
+        let ctx = crm_system_ctx();
+        let ids: Vec<String> = (0..2).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        let customers = "customers".to_string();
+        let mut service = ItemsService::new(state, &ctx, &customers);
+        service
+            .create_many(
+                vec![
+                    item_map! { "id" => ids[0].clone(), "name" => "cnt-A", "email" => "cnt-a@x.test" },
+                    item_map! { "id" => ids[1].clone(), "name" => "cnt-B", "email" => "cnt-b@x.test" },
+                ],
+                &mut None,
+            )
+            .await
+            .unwrap();
+
+        let contacts_coll = "contacts".to_string();
+        let mut contacts = ItemsService::new(state, &ctx, &contacts_coll);
+        let mut rows = Vec::new();
+        for i in 0..3 {
+            rows.push(item_map! {
+                "id" => uuid::Uuid::new_v4().to_string(),
+                "first_name" => format!("cnt-a-{i}"),
+                "full_name" => format!("cnt-a-{i}"),
+                "customer" => ids[0].clone(),
+            });
+        }
+        rows.push(item_map! {
+            "id" => uuid::Uuid::new_v4().to_string(),
+            "first_name" => "cnt-b-0".to_string(),
+            "full_name" => "cnt-b-0".to_string(),
+            "customer" => ids[1].clone(),
+        });
+        contacts.create_many(rows, &mut None).await.unwrap();
+        ids
+    }
+
+    async fn cleanup_count_customers(state: &AppState, ids: &[String]) {
+        for id in ids {
+            let pk = uuid::Uuid::parse_str(id).unwrap();
+            sqlx::query("DELETE FROM crm010production.contacts WHERE customer = $1")
+                .bind(pk)
+                .execute(&*state.database_pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM crm010production.customers WHERE id = $1")
+                .bind(pk)
+                .execute(&*state.database_pool)
+                .await
+                .unwrap();
+        }
+    }
+
+    fn customer_names_filter(ids: &[String]) -> LogicOp {
+        let names: Vec<String> = ids.iter().map(|id| {
+            if id == &ids[0] { "cnt-A".to_string() } else { "cnt-B".to_string() }
+        }).collect();
+        let mut map: HashMap<String, FieldValue> = HashMap::new();
+        map.insert(
+            "name".to_string(),
+            FieldValue::Comparison(Comparison {
+                _in: Some(json!(names)),
+                ..Default::default()
+            }),
+        );
+        LogicOp {
+            _and: Some(vec![Filter::Field(FieldFilter { fields: map })]),
+            _or: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn one_to_many_count_filter_selects_parents_by_child_count() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        let ids = seed_count_customers(&state).await;
+        let ctx = crm_system_ctx();
+        let table = "customers".to_string();
+
+        // combine with a plain filter so only the seeded rows are considered
+        let base = customer_names_filter(&ids);
+        let mut and = base._and.clone().unwrap();
+        let count = count_filter("contacts", "_count_gt", 1);
+        and.extend(count._and.clone().unwrap());
+        let mut q = Query {
+            filter: LogicOp { _and: Some(and), _or: None },
+            ..Default::default()
+        };
+        let rows = q.execute_query(&ctx, &state, &table).await.unwrap();
+        assert_eq!(rows.len(), 1, "only cnt-A has more than 1 contact");
+        assert_eq!(rows[0].get("name").and_then(Value::as_str), Some("cnt-A"));
+
+        // count = 1 keeps only cnt-B
+        let mut and = base._and.clone().unwrap();
+        let count = count_filter("contacts", "_count_eq", 1);
+        and.extend(count._and.clone().unwrap());
+        let mut q = Query {
+            filter: LogicOp { _and: Some(and), _or: None },
+            ..Default::default()
+        };
+        let rows = q.execute_query(&ctx, &state, &table).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("name").and_then(Value::as_str), Some("cnt-B"));
+
+        cleanup_count_customers(&state, &ids).await;
+    }
+
+    #[tokio::test]
+    async fn count_filter_rejects_non_relation_fields() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        let ctx = crm_system_ctx();
+        let table = "customers".to_string();
+
+        // `name` is a plain column, not a 1:M relation -> 400
+        let mut q = Query {
+            filter: count_filter("name", "_count_gt", 1),
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::InvalidInput(_, _)), "{err}");
+    }
+
+    // ------------------------------------------------------------------
+    // one-to-many aggregate filters (`{"contacts": {"score": {"_sum_gt": 50}}}`)
+    // ------------------------------------------------------------------
+
+    /// `{"<rel>": {"<child>": <cmp>}}` as a LogicOp.
+    fn agg_filter(rel: &str, child: &str, cmp: Value) -> LogicOp {
+        let comparison: Comparison = serde_json::from_value(cmp).unwrap();
+        let mut inner: HashMap<String, FieldValue> = HashMap::new();
+        inner.insert(child.to_string(), FieldValue::Comparison(comparison));
+        let mut outer: HashMap<String, FieldValue> = HashMap::new();
+        outer.insert(
+            rel.to_string(),
+            FieldValue::Nested(FieldFilter { fields: inner }),
+        );
+        LogicOp {
+            _and: Some(vec![Filter::Field(FieldFilter { fields: outer })]),
+            _or: None,
+        }
+    }
+
+    fn names_filter(names: &[&str]) -> LogicOp {
+        let mut map: HashMap<String, FieldValue> = HashMap::new();
+        map.insert(
+            "name".to_string(),
+            FieldValue::Comparison(Comparison {
+                _in: Some(json!(names)),
+                ..Default::default()
+            }),
+        );
+        LogicOp {
+            _and: Some(vec![Filter::Field(FieldFilter { fields: map })]),
+            _or: None,
+        }
+    }
+
+    fn and_filters(a: LogicOp, b: LogicOp) -> LogicOp {
+        let mut and = a._and.clone().unwrap();
+        and.extend(b._and.clone().unwrap());
+        LogicOp {
+            _and: Some(and),
+            _or: None,
+        }
+    }
+
+    async fn ensure_score_field(state: &AppState) {
+        use crate::services::collections::{
+            FieldDefinition, UpdateCollectionRequest, schema::SchemaService, update_collection,
+        };
+        let ctx = crm_system_ctx();
+        update_collection(
+            state,
+            &ctx,
+            "contacts",
+            UpdateCollectionRequest {
+                fields: vec![FieldDefinition {
+                    name: "score".to_string(),
+                    field_type: "float".to_string(),
+                    ..Default::default()
+                }],
+                removed_fields: vec![],
+                display_name: None,
+            },
+        )
+        .await
+        .unwrap();
+        SchemaService::refresh_schema_and_meta(state).await;
+    }
+
+    async fn drop_score_field(state: &AppState) {
+        use crate::services::collections::{
+            UpdateCollectionRequest, schema::SchemaService, update_collection,
+        };
+        let ctx = crm_system_ctx();
+        update_collection(
+            state,
+            &ctx,
+            "contacts",
+            UpdateCollectionRequest {
+                fields: vec![],
+                removed_fields: vec!["score".to_string()],
+                display_name: None,
+            },
+        )
+        .await
+        .unwrap();
+        SchemaService::refresh_schema_and_meta(state).await;
+    }
+
+    /// Seeds two customers — `sum-A` with contact scores 10/20/30 (sum 60,
+    /// avg 20, min 10, max 30) and `sum-B` with a single score 5 — and
+    /// returns their ids.
+    async fn seed_sum_customers(state: &AppState) -> Vec<String> {
+        use crate::item_map;
+        use crate::services::items::service::ItemsService;
+
+        ensure_score_field(state).await;
+
+        let ctx = crm_system_ctx();
+        let ids: Vec<String> = (0..2).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+        let customers = "customers".to_string();
+        let mut service = ItemsService::new(state, &ctx, &customers);
+        service
+            .create_many(
+                vec![
+                    item_map! { "id" => ids[0].clone(), "name" => "sum-A", "email" => "sum-a@x.test" },
+                    item_map! { "id" => ids[1].clone(), "name" => "sum-B", "email" => "sum-b@x.test" },
+                ],
+                &mut None,
+            )
+            .await
+            .unwrap();
+
+        let contacts_coll = "contacts".to_string();
+        let mut contacts = ItemsService::new(state, &ctx, &contacts_coll);
+        let mut rows = Vec::new();
+        for (i, score) in [10.0_f64, 20.0, 30.0].iter().enumerate() {
+            rows.push(item_map! {
+                "id" => uuid::Uuid::new_v4().to_string(),
+                "first_name" => format!("sum-a-{i}"),
+                "full_name" => format!("sum-a-{i}"),
+                "customer" => ids[0].clone(),
+                "score" => *score,
+            });
+        }
+        rows.push(item_map! {
+            "id" => uuid::Uuid::new_v4().to_string(),
+            "first_name" => "sum-b-0".to_string(),
+            "full_name" => "sum-b-0".to_string(),
+            "customer" => ids[1].clone(),
+            "score" => 5.0_f64,
+        });
+        contacts.create_many(rows, &mut None).await.unwrap();
+        ids
+    }
+
+    async fn cleanup_sum_customers(state: &AppState, ids: &[String]) {
+        for id in ids {
+            let pk = uuid::Uuid::parse_str(id).unwrap();
+            sqlx::query("DELETE FROM crm010production.contacts WHERE customer = $1")
+                .bind(pk)
+                .execute(&*state.database_pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM crm010production.customers WHERE id = $1")
+                .bind(pk)
+                .execute(&*state.database_pool)
+                .await
+                .unwrap();
+        }
+        drop_score_field(state).await;
+    }
+
+    #[tokio::test]
+    async fn one_to_many_aggregate_filters_select_parents_by_child_aggregate() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        let ids = seed_sum_customers(&state).await;
+        let ctx = crm_system_ctx();
+        let table = "customers".to_string();
+        let base = names_filter(&["sum-A", "sum-B"]);
+
+        // sum-A: sum 60, avg 20, min 10, max 30 — sum-B: all 5
+        let cases: Vec<(Value, &str)> = vec![
+            (json!({"_sum_gt": 50}), "sum-A"),
+            (json!({"_sum_lte": 5}), "sum-B"),
+            (json!({"_sum_gte": "60"}), "sum-A"), // string value coerced
+            (json!({"_sum_distinct_gt": 50}), "sum-A"),
+            (json!({"_avg_gte": 20}), "sum-A"),
+            (json!({"_avg_lt": 10}), "sum-B"),
+            (json!({"_min_lt": 10}), "sum-B"),
+            (json!({"_max_gt": 25}), "sum-A"),
+            (json!({"_max_eq": 5}), "sum-B"),
+        ];
+        for (cmp, expected) in cases {
+            let mut q = Query {
+                filter: and_filters(base.clone(), agg_filter("contacts", "score", cmp.clone())),
+                ..Default::default()
+            };
+            let rows = q.execute_query(&ctx, &state, &table).await.unwrap();
+            assert_eq!(rows.len(), 1, "cmp {cmp}");
+            assert_eq!(
+                rows[0].get("name").and_then(Value::as_str),
+                Some(expected),
+                "cmp {cmp}"
+            );
+        }
+
+        cleanup_sum_customers(&state, &ids).await;
+    }
+
+    #[tokio::test]
+    async fn aggregate_filter_rejects_invalid_targets() {
+        let state = crate::utils::test_utils::get_app_state().await;
+        let ctx = crm_system_ctx();
+        let table = "customers".to_string();
+
+        // aggregate comparison directly on a plain column -> 400
+        let mut map: HashMap<String, FieldValue> = HashMap::new();
+        map.insert(
+            "name".to_string(),
+            FieldValue::Comparison(serde_json::from_value(json!({"_sum_gt": 5})).unwrap()),
+        );
+        let mut q = Query {
+            filter: LogicOp {
+                _and: Some(vec![Filter::Field(FieldFilter { fields: map })]),
+                _or: None,
+            },
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::InvalidInput(_, _)), "{err}");
+
+        // unknown child field on the relation -> 400
+        let mut q = Query {
+            filter: agg_filter("contacts", "nonexistent", json!({"_sum_gt": 5})),
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::InvalidInput(_, _)), "{err}");
+
+        // non-numeric string value -> 400
+        let mut q = Query {
+            filter: agg_filter("contacts", "first_name", json!({"_sum_gt": "abc"})),
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::InvalidInput(_, _)), "{err}");
+
+        // aggregate nested under a many-to-one relation -> 400
+        let contacts = "contacts".to_string();
+        let mut q = Query {
+            filter: agg_filter("customer", "name", json!({"_sum_gt": 5})),
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &contacts).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::InvalidInput(_, _)), "{err}");
+
+        // mixing aggregate and plain conditions on the same relation -> 400
+        let mut inner: HashMap<String, FieldValue> = HashMap::new();
+        inner.insert(
+            "first_name".to_string(),
+            FieldValue::Comparison(Comparison::eq(json!("x"))),
+        );
+        inner.insert(
+            "score".to_string(),
+            FieldValue::Comparison(serde_json::from_value(json!({"_sum_gt": 5})).unwrap()),
+        );
+        let mut outer: HashMap<String, FieldValue> = HashMap::new();
+        outer.insert(
+            "contacts".to_string(),
+            FieldValue::Nested(FieldFilter { fields: inner }),
+        );
+        let mut q = Query {
+            filter: LogicOp {
+                _and: Some(vec![Filter::Field(FieldFilter { fields: outer })]),
+                _or: None,
+            },
+            ..Default::default()
+        };
+        let err = q.execute_query(&ctx, &state, &table).await.unwrap_err();
+        assert!(matches!(err, AlcedoError::InvalidInput(_, _)), "{err}");
     }
 }

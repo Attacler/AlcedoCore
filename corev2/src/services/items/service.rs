@@ -628,6 +628,7 @@ impl ItemsService<'_> {
         // Read the affected rows in full (not just their pk) so the activity log
         // can diff old vs new. `ItemsBeforeUpdate.keys` filters on `pk_name`
         // below, so the extra columns are harmless to the hook.
+        query.ensure_pk_selected(&pk_name);
         let get_pks = query
             .execute_query(self.app_context, self.app_state, self.collection)
             .await?;
@@ -923,6 +924,7 @@ impl ItemsService<'_> {
 
         // Keep the full old rows (not just the pk) so the activity log can
         // record a field-level diff for each deleted item.
+        query.ensure_pk_selected(&pk_name);
         let old_rows = query
             .execute_query(self.app_context, self.app_state, self.collection)
             .await?;
