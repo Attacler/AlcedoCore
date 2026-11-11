@@ -18,7 +18,6 @@ use crate::services::postgres::pool::{
     execute_query, execute_query_transaction, pgrow_to_json, process_query_error_response,
 };
 use crate::{AppState, services::errors::AlcedoError};
-use crate::services::event_forwarder;
 use tokio::sync::OnceCell;
 
 pub struct ItemsService<'a> {
@@ -85,14 +84,6 @@ impl AfterCommitQueue {
                     context,
                     mut event,
                 } => {
-                    let item_events: Vec<event_forwarder::ItemEvent> = event
-                        .items
-                        .iter()
-                        .map(|item| event_forwarder::ItemEvent {
-                            item_id: item.get(&event.pk_name).cloned(),
-                            payload: Value::Object(item.clone()),
-                        })
-                        .collect();
                     let hook_context = HookContext {
                         context: context.clone(),
                         state: state.clone(),
@@ -117,28 +108,12 @@ impl AfterCommitQueue {
                             },
                         )
                         .await;
-                    event_forwarder::deliver_item_events(
-                        state,
-                        &context,
-                        event_forwarder::ITEM_CREATED,
-                        &event.collection,
-                        item_events,
-                    )
-                    .await;
                 }
                 PendingAfter::Update {
                     key,
                     context,
                     mut event,
                 } => {
-                    let item_events: Vec<event_forwarder::ItemEvent> = event
-                        .keys
-                        .iter()
-                        .map(|key| event_forwarder::ItemEvent {
-                            item_id: Some(Value::String(key.clone())),
-                            payload: Value::Object(event.payload.clone()),
-                        })
-                        .collect();
                     let hook_context = HookContext {
                         context: context.clone(),
                         state: state.clone(),
@@ -163,28 +138,12 @@ impl AfterCommitQueue {
                             },
                         )
                         .await;
-                    event_forwarder::deliver_item_events(
-                        state,
-                        &context,
-                        event_forwarder::ITEM_UPDATED,
-                        &event.collection,
-                        item_events,
-                    )
-                    .await;
                 }
                 PendingAfter::Delete {
                     key,
                     context,
                     mut event,
                 } => {
-                    let item_events: Vec<event_forwarder::ItemEvent> = event
-                        .keys
-                        .iter()
-                        .map(|key| event_forwarder::ItemEvent {
-                            item_id: Some(key.clone()),
-                            payload: Value::Null,
-                        })
-                        .collect();
                     let hook_context = HookContext {
                         context: context.clone(),
                         state: state.clone(),
@@ -209,14 +168,6 @@ impl AfterCommitQueue {
                             },
                         )
                         .await;
-                    event_forwarder::deliver_item_events(
-                        state,
-                        &context,
-                        event_forwarder::ITEM_DELETED,
-                        &event.collection,
-                        item_events,
-                    )
-                    .await;
                 }
             }
         }
@@ -258,9 +209,28 @@ impl<'c> TxGuard<'c> {
         self.after.append(pending);
     }
 
-    /// Commits, then dispatches the deferred `after` hooks. Consumes the guard,
-    /// so the events fire at most once.
+    /// Commits, then dispatches the deferred `after` hooks in a background
+    /// task, so a slow `after` hook cannot block the response. Consumes the
+    /// guard, so the events fire at most once. Use [`Self::commit_sync`] where
+    /// the caller must wait for the hooks (tests).
+    ///
+    /// Note: cache-invalidation hooks (permissions, schema) therefore run a
+    /// few ms after the response — a concurrent request can briefly serve a
+    /// stale cached permission entry. Accepted trade-off for not blocking on
+    /// arbitrary hook work.
     pub async fn commit(self, state: &AppState) -> Result<(), AlcedoError> {
+        let TxGuard { tx, after } = self;
+        tx.commit().await?;
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut after = after;
+            after.run(&state).await;
+        });
+        Ok(())
+    }
+
+    /// Commits, then awaits the deferred `after` hooks inline.
+    pub async fn commit_sync(self, state: &AppState) -> Result<(), AlcedoError> {
         let TxGuard { tx, mut after } = self;
         tx.commit().await?;
         after.run(state).await;
@@ -309,9 +279,22 @@ impl ItemsService<'_> {
     }
 
     /// Triggers every `after`-write hook deferred by an external-transaction
-    /// write. The caller must call this **after committing its transaction**,
-    /// so the hooks observe the committed rows.
+    /// write, in a background task so a slow hook cannot block the caller. The
+    /// caller must call this **after committing its transaction**, so the
+    /// hooks observe the committed rows. Use [`Self::run_after_commit_sync`]
+    /// where the caller must wait for the hooks (tests).
     pub async fn run_after_commit(&mut self) {
+        let mut queue = AfterCommitQueue {
+            pending: std::mem::take(&mut self.pending_after),
+        };
+        let state = self.app_state.clone();
+        tokio::spawn(async move {
+            queue.run(&state).await;
+        });
+    }
+
+    /// Awaits every deferred `after`-write hook inline.
+    pub async fn run_after_commit_sync(&mut self) {
         let mut queue = AfterCommitQueue {
             pending: std::mem::take(&mut self.pending_after),
         };
@@ -1314,7 +1297,7 @@ mod after_commit_tests {
         );
 
         tx.commit().await.unwrap();
-        service.run_after_commit().await;
+        service.run_after_commit_sync().await;
 
         let captured = captured.lock().unwrap();
         assert_eq!(captured.len(), 1, "the deferred hook fires exactly once");

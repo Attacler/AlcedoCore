@@ -960,7 +960,7 @@ mod integration_tests {
             create_recursive(state, ctx, &mut guard, collection.to_string(), payload).await;
         match result {
             Ok(id) => {
-                guard.commit(state).await.unwrap();
+                guard.commit_sync(state).await.unwrap();
                 Ok(id)
             }
             // Dropping `guard` rolls the transaction back.
@@ -980,7 +980,7 @@ mod integration_tests {
             update_recursive(state, ctx, &mut guard, collection.to_string(), id, body).await;
         match result {
             Ok(()) => {
-                guard.commit(state).await.unwrap();
+                guard.commit_sync(state).await.unwrap();
                 Ok(())
             }
             // Dropping `guard` rolls the transaction back.

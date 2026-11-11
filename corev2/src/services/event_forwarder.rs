@@ -18,11 +18,15 @@ const SUBSCRIBER_TTL: Duration = Duration::from_secs(30);
 const APP_VERSION_TTL: Duration = Duration::from_secs(60);
 const SUBSCRIPTIONS_GEN_KEY: &str = "system_event_subscriptions_gen";
 
+#[cfg(test)]
 pub const ITEM_CREATED: &str = "ItemCreated";
+#[cfg(test)]
 pub const ITEM_UPDATED: &str = "ItemUpdated";
+#[cfg(test)]
 pub const ITEM_DELETED: &str = "ItemDeleted";
 
 /// One item an event is about.
+#[cfg(test)]
 pub struct ItemEvent {
     pub item_id: Option<Value>,
     pub payload: Value,
@@ -41,12 +45,29 @@ static SUBSCRIBERS: OnceLock<dashmap::DashMap<i32, (Instant, Arc<Vec<Subscriber>
     OnceLock::new();
 static CONCURRENCY: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static LOCAL_GEN: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+static APP_VERSION_LIST: OnceLock<std::sync::Mutex<Option<(Vec<i32>, Instant)>>> =
+    OnceLock::new();
 
 fn local_gen() -> &'static std::sync::Mutex<String> {
     LOCAL_GEN.get_or_init(|| std::sync::Mutex::new(String::new()))
 }
 
+static LAST_GEN_CHECK: OnceLock<std::sync::Mutex<Option<Instant>>> = OnceLock::new();
+
 async fn refresh_if_stale(state: &AppState) {
+    // Throttle the shared-generation lookup to one cache read per second:
+    // bulk item writes call this once per item, and the read would otherwise
+    // be a Redis round-trip on the request's commit path for every row.
+    {
+        let last = LAST_GEN_CHECK.get_or_init(|| std::sync::Mutex::new(None));
+        let mut guard = last.lock().unwrap();
+        if let Some(t) = *guard {
+            if t.elapsed() < Duration::from_secs(1) {
+                return;
+            }
+        }
+        *guard = Some(Instant::now());
+    }
     let Ok(Some(token)) = state.cache.get(SUBSCRIPTIONS_GEN_KEY).await else {
         return;
     };
@@ -58,6 +79,7 @@ async fn refresh_if_stale(state: &AppState) {
         subscriber_cache().clear();
         app_version_id_cache().clear();
         manifest_events_cache().clear();
+        *APP_VERSION_LIST.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap() = None;
         *local_gen().lock().unwrap() = token;
     }
 }
@@ -104,6 +126,7 @@ pub async fn invalidate_all(state: &AppState) {
     subscriber_cache().clear();
     app_version_id_cache().clear();
     manifest_events_cache().clear();
+    *APP_VERSION_LIST.get_or_init(|| std::sync::Mutex::new(None)).lock().unwrap() = None;
     bump_generation(state).await;
 }
 
@@ -112,6 +135,9 @@ pub fn manifest_events(state: &AppState, install_id: i64) -> Arc<Vec<String>> {
         return Arc::clone(events.value());
     }
 
+    // If the generation changes while the manifest is being read, the
+    // invalidation already happened — don't cache the stale read.
+    let gen_before = local_gen().lock().unwrap().clone();
     let manifest =
         std::fs::read_to_string(plugin_dir(&state.config, install_id).join(IMAGE_MANIFEST))
             .ok()
@@ -131,6 +157,9 @@ pub fn manifest_events(state: &AppState, install_id: i64) -> Arc<Vec<String>> {
 
     let events = Arc::new(events);
     manifest_events_cache().insert(install_id, Arc::clone(&events));
+    if *local_gen().lock().unwrap() != gen_before {
+        manifest_events_cache().remove(&install_id);
+    }
     events
 }
 
@@ -163,6 +192,9 @@ async fn subscribers(state: &AppState, app_version_id: i32) -> Option<Arc<Vec<Su
         }
     }
 
+    // If the generation changes while the recipients are being read, the
+    // invalidation already happened — don't cache the stale list.
+    let gen_before = local_gen().lock().unwrap().clone();
     let service = PluginsService::new(state);
     let recipients = service
         .enabled_installs_for_app_version(app_version_id)
@@ -189,25 +221,69 @@ async fn subscribers(state: &AppState, app_version_id: i32) -> Option<Arc<Vec<Su
 
     let list = Arc::new(list);
     subscriber_cache().insert(app_version_id, (Instant::now(), Arc::clone(&list)));
+    if *local_gen().lock().unwrap() != gen_before {
+        subscriber_cache().remove(&app_version_id);
+    }
     Some(list)
 }
 
-pub async fn deliver_item_events(
-    state: &AppState,
-    context: &AppContext,
-    event_type: &str,
-    collection: &str,
-    events: Vec<ItemEvent>,
-) {
-    if events.is_empty() {
+/// All app version ids, cached for `APP_VERSION_TTL` so the system-context
+/// broadcast doesn't hit the DB on every event.
+async fn all_app_version_ids(state: &AppState) -> Vec<i32> {
+    {
+        let guard = APP_VERSION_LIST
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap();
+        if let Some((ids, loaded_at)) = &*guard {
+            if loaded_at.elapsed() < APP_VERSION_TTL {
+                return ids.clone();
+            }
+        }
+    }
+    let Ok(infos) = PluginsService::new(state).app_version_infos().await else {
+        return Vec::new();
+    };
+    let ids: Vec<i32> = infos.into_iter().map(|(id, _)| id).collect();
+    *APP_VERSION_LIST
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = Some((ids.clone(), Instant::now()));
+    ids
+}
+
+/// Delivers one event to every subscriber of `event_type`. With an app
+/// context, only that app version's installs receive it; with the system
+/// context (global entities like users), it broadcasts to all app versions,
+/// matching v1's global subscription matching.
+pub async fn deliver_event(state: &AppState, context: &AppContext, event_type: &str, payload: Value) {
+    refresh_if_stale(state).await;
+
+    if context.app_name == "alcedocore" {
+        for app_version_id in all_app_version_ids(state).await {
+            deliver_event_to_app_version(state, app_version_id, event_type, payload.clone()).await;
+        }
         return;
     }
 
-    refresh_if_stale(state).await;
-
     let Some(app_version_id) = resolve_app_version_id(state, context).await else {
+        tracing::debug!(
+            "[EVENTS] no app version for {}/{}; dropping {event_type}",
+            context.app_name,
+            context.version
+        );
         return;
     };
+    deliver_event_to_app_version(state, app_version_id, event_type, payload).await;
+}
+
+/// Delivers one event to the subscribers of a specific app version.
+pub async fn deliver_event_to_app_version(
+    state: &AppState,
+    app_version_id: i32,
+    event_type: &str,
+    payload: Value,
+) {
     let Some(subscribers) = subscribers(state, app_version_id).await else {
         return;
     };
@@ -225,31 +301,57 @@ pub async fn deliver_item_events(
             continue;
         };
 
-        for event in &events {
-            let body = json!({
-                "type": event_type,
-                "data": {
-                    "collection_name": collection,
-                    "item_id": event.item_id,
-                    "payload": event.payload,
-                },
-            });
-            let identity = PluginRequestIdentity {
-                slug: subscriber.slug.clone(),
-                app: subscriber.install.api_name.clone(),
-                version: subscriber.install.version_name.clone(),
-                app_version_id: subscriber.install.app_version_id,
-                version_id: subscriber.install.version_id,
-                install_id: Some(subscriber.install.id as i64),
-            };
-            let state = state.clone();
-            let slug = subscriber.slug.clone();
-            let deployment_id = deployment_id.clone();
-            let install = subscriber.install.clone();
-            tokio::spawn(async move {
-                deliver_one(state, slug, install, deployment_id, identity, body).await;
-            });
-        }
+        let body = json!({
+            "type": event_type,
+            "data": payload,
+        });
+        let identity = PluginRequestIdentity {
+            slug: subscriber.slug.clone(),
+            app: subscriber.install.api_name.clone(),
+            version: subscriber.install.version_name.clone(),
+            app_version_id: subscriber.install.app_version_id,
+            version_id: subscriber.install.version_id,
+            install_id: Some(subscriber.install.id as i64),
+        };
+        // Bound the number of queued deliveries: when the semaphore is full,
+        // drop with a loud warning (v1 did the same) instead of growing an
+        // unbounded backlog of spawned tasks on huge bulk writes.
+        let permit = match concurrency(state).clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                tracing::warn!(
+                    "[EVENTS] delivery queue full; dropping {event_type} for {} (install {})",
+                    subscriber.slug,
+                    subscriber.install.id
+                );
+                continue;
+            }
+        };
+        let state = state.clone();
+        let slug = subscriber.slug.clone();
+        let deployment_id = deployment_id.clone();
+        let install = subscriber.install.clone();
+        tokio::spawn(async move {
+            deliver_one(state, slug, install, deployment_id, identity, body, permit).await;
+        });
+    }
+}
+
+#[cfg(test)]
+pub async fn deliver_item_events(
+    state: &AppState,
+    context: &AppContext,
+    event_type: &str,
+    collection: &str,
+    events: Vec<ItemEvent>,
+) {
+    for event in events {
+        let payload = json!({
+            "collection_name": collection,
+            "item_id": event.item_id,
+            "payload": event.payload,
+        });
+        deliver_event(state, context, event_type, payload).await;
     }
 }
 
@@ -260,12 +362,8 @@ async fn deliver_one(
     deployment_id: String,
     identity: PluginRequestIdentity,
     body: Value,
+    _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
-    let _permit = match concurrency(&state).clone().acquire_owned().await {
-        Ok(permit) => permit,
-        Err(_) => return,
-    };
-
     let address = match state.platform.get_address(&deployment_id).await {
         Ok(Some(address)) => address,
         Ok(None) => {
@@ -324,7 +422,7 @@ async fn deliver_one(
             );
         }
         Ok(Err(e)) => {
-            tracing::warn!("[EVENTS] delivering to {slug} failed: {e}");
+            tracing::warn!("[EVENTS] delivering to {slug} at {url} failed: {e:?}");
         }
         Err(_) => {
             tracing::warn!("[EVENTS] delivering to {slug} timed out");

@@ -14,7 +14,9 @@ use crate::{
     controllers::require_admin,
     middelware::auth::AuthLevel,
     services::{
+        context::{AppContext, RequestSource},
         errors::AlcedoError,
+        event_forwarder,
         items::query::Query,
         plugin_logs,
         plugin_migrations::{self, PluginMigrationEngine},
@@ -582,6 +584,17 @@ async fn set_install_scopes(
         .update_install(plugin.id, app_version_id, map)
         .await?;
     let (_, install) = plugin_and_install(&service, &slug, app_version_id).await?;
+    event_forwarder::deliver_event_to_app_version(
+        &state,
+        app_version_id,
+        "PluginScopesUpdated",
+        json!({
+            "plugin_slug": slug,
+            "app_version_id": app_version_id,
+            "granted_scopes": install.granted_scopes,
+        }),
+    )
+    .await;
     Ok(Json(success(ScopesResponse {
         requested_scopes: plugin.requested_scopes,
         granted_scopes: install.granted_scopes,
@@ -777,6 +790,36 @@ async fn set_install_scopes_by_id(
     );
     service.update_install_by_id(install_id, map).await?;
     let (_, install) = install_by_id(&service, install_id).await?;
+    let payload = json!({
+        "plugin_slug": plugin.slug,
+        "install_id": install_id,
+        "granted_scopes": install.granted_scopes,
+    });
+    match install.app_version_id {
+        Some(app_version_id) => {
+            let payload = payload.as_object().cloned().unwrap_or_default();
+            let mut payload = payload;
+            payload.insert("app_version_id".to_string(), json!(app_version_id));
+            event_forwarder::deliver_event_to_app_version(
+                &state,
+                app_version_id,
+                "PluginScopesUpdated",
+                Value::Object(payload),
+            )
+            .await;
+        }
+        // Global install: broadcast to every app version, matching v1's
+        // global subscription matching.
+        None => {
+            event_forwarder::deliver_event(
+                &state,
+                &AppContext::system(RequestSource::API),
+                "PluginScopesUpdated",
+                payload,
+            )
+            .await;
+        }
+    }
     Ok(Json(success(ScopesResponse {
         requested_scopes: plugin.requested_scopes,
         granted_scopes: install.granted_scopes,

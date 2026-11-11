@@ -166,6 +166,7 @@ mod tests {
         let mut service = ItemsService::new(&state, &ctx, &collection);
 
         let (sessions, rules) = seed_keys(&state).await;
+        let mut tx = state.database_pool.begin().await.unwrap();
         service
             .create_many(
                 vec![item_map! {
@@ -174,10 +175,12 @@ mod tests {
                     "description" => "",
                     "is_system" => false,
                 }],
-                &mut None,
+                &mut Some(&mut tx),
             )
             .await
             .unwrap();
+        tx.commit().await.unwrap();
+        service.run_after_commit_sync().await;
 
         assert!(!present(&state, &sessions).await, "sessions must be purged");
         assert!(!present(&state, &rules).await, "rules must be purged");
@@ -230,6 +233,7 @@ mod tests {
         let collection = "alcedocore_user_roles".to_string();
         let ctx = ctx();
         let mut service = ItemsService::new(&state, &ctx, &collection);
+        let mut tx = state.database_pool.begin().await.unwrap();
         service
             .create_many(
                 vec![item_map! {
@@ -237,10 +241,12 @@ mod tests {
                     "user_id" => user_id.to_string(),
                     "role_id" => role_id.to_string(),
                 }],
-                &mut None,
+                &mut Some(&mut tx),
             )
             .await
             .unwrap();
+        tx.commit().await.unwrap();
+        service.run_after_commit_sync().await;
 
         assert!(!present(&state, &sessions).await, "sessions must be purged");
         assert!(present(&state, &rules).await, "rules must be left intact");
@@ -306,7 +312,7 @@ mod tests {
         );
 
         tx.commit().await.unwrap();
-        service.run_after_commit().await;
+        service.run_after_commit_sync().await;
         assert!(!present(&state, &sessions).await, "sessions must be purged");
         assert!(!present(&state, &rules).await, "rules must be purged");
 
