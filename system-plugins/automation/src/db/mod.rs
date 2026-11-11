@@ -43,7 +43,7 @@ async fn db_request(
     params: Vec<serde_json::Value>,
     extra: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let url = format!("{}/p/automation/db/{}", core_url, endpoint);
+    let url = format!("{}{}/db/{}", core_url, crate::util::proxy_base_path(), endpoint);
     let mut body = serde_json::json!({
         "query": sql,
         "params": params,

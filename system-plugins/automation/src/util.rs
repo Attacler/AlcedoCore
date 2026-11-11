@@ -5,6 +5,14 @@ pub fn json_error(e: impl std::fmt::Display) -> HttpResponse {
     HttpResponse::InternalServerError().json(serde_json::json!({"error": e.to_string()}))
 }
 
+/// Proxy base path for this plugin install: `/p/{install_id}`.
+///
+/// The core injects `PLUGIN_BASE_PATH=/p/{install_id}` at deploy time; the
+/// proxy route only accepts numeric install ids, never slugs.
+pub fn proxy_base_path() -> String {
+    std::env::var("PLUGIN_BASE_PATH").unwrap_or_else(|_| "/p/automation".to_string())
+}
+
 pub fn row_to_map(columns: &[String], row: &[Value]) -> serde_json::Map<String, Value> {
     columns.iter().zip(row.iter())
         .map(|(c, v)| (c.clone(), v.clone()))
