@@ -42,6 +42,7 @@ async fn main() -> Result<()> {
         .init();
     let config = get_config();
     let database_pool = services::postgres::pool::setup_pool(&config).await?;
+    let pool_for_shutdown = database_pool.clone();
 
     run_system_migrations(&database_pool).await;
     run_app_migrations(&database_pool).await;
@@ -96,11 +97,13 @@ async fn main() -> Result<()> {
         activity_log_tx,
     };
 
-    services::activity_logs::spawn_log_writer(
+    let log_shutdown = Arc::new(tokio::sync::Notify::new());
+    let log_writer = services::activity_logs::spawn_log_writer(
         state.clone(),
         log_rx,
         100,
         std::time::Duration::from_secs(5),
+        Arc::clone(&log_shutdown),
     );
 
     state.refresh_schema().await;
@@ -260,7 +263,35 @@ async fn main() -> Result<()> {
     println!("🚀 Listening on {listen_address}");
     let listener = tokio::net::TcpListener::bind(listen_address).await.unwrap();
 
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap();
+
+    // Drain the activity-log channel so queued entries are flushed before
+    // exit. Capped well under the K8s terminationGracePeriodSeconds (30s
+    // default) so a stuck DB cannot delay SIGKILL.
+    tracing::info!("shutdown: draining activity log writer");
+    log_shutdown.notify_one();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(25), log_writer).await;
+    pool_for_shutdown.close().await;
+    tracing::info!("shutdown: complete");
 
     Ok(())
+}
+
+/// Resolves on SIGINT, SIGTERM, or SIGQUIT — the same set v1 handles
+/// (`core/bins/src/bin/k8s.rs`), so `docker stop` / K8s pod termination
+/// trigger a graceful drain.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut term = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+    let mut quit = signal(SignalKind::quit()).expect("failed to install SIGQUIT handler");
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => tracing::info!("received SIGINT"),
+        _ = term.recv() => tracing::info!("received SIGTERM"),
+        _ = quit.recv() => tracing::info!("received SIGQUIT"),
+    }
 }

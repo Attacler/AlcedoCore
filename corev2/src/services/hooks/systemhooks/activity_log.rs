@@ -216,7 +216,13 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         let spill = std::fs::File::create("/dev/null").unwrap();
         state.activity_log_tx = ActivityLogChannel::new(tx, Arc::new(Mutex::new(spill)));
-        spawn_log_writer(state.clone(), rx, 100, Duration::from_millis(50));
+        spawn_log_writer(
+            state.clone(),
+            rx,
+            100,
+            Duration::from_millis(50),
+            Arc::new(tokio::sync::Notify::new()),
+        );
         setup_activity_log_hooks(&state.event_bus).await;
 
         let ctx = app_ctx();

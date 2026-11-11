@@ -18,6 +18,7 @@
 use sea_query::{Alias, Expr, PostgresQueryBuilder, Query, SimpleExpr, Value as SeaValue};
 use serde_json::Value;
 use sqlx::{Postgres, Transaction};
+use std::sync::Arc;
 
 use crate::AppState;
 use crate::middelware::auth::AuthLevel;
@@ -285,23 +286,32 @@ impl ActivityLogChannel {
 
 /// Spawns the background writer that drains the channel and batch-inserts
 /// activity-log rows. Flushes when the buffer reaches `batch_size` or every
-/// `flush_interval`.
+/// `flush_interval`. On `shutdown` notification the channel is closed, which
+/// makes the loop drain and flush everything still queued before exiting.
+/// Returns the writer's `JoinHandle` so the caller can await the drain.
 pub fn spawn_log_writer(
     state: AppState,
     mut rx: tokio::sync::mpsc::Receiver<ActivityLogEntry>,
     batch_size: usize,
     flush_interval: std::time::Duration,
-) {
+    shutdown: Arc<tokio::sync::Notify>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut buffer: Vec<ActivityLogEntry> = Vec::with_capacity(batch_size);
         let mut interval = tokio::time::interval(flush_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
-                Some(entry) = rx.recv() => {
-                    buffer.push(entry);
-                    if buffer.len() >= batch_size {
-                        flush(&state, &mut buffer).await;
+                entry = rx.recv() => {
+                    match entry {
+                        Some(entry) => {
+                            buffer.push(entry);
+                            if buffer.len() >= batch_size {
+                                flush(&state, &mut buffer).await;
+                            }
+                        }
+                        // Channel closed and drained (shutdown).
+                        None => break,
                     }
                 }
                 _ = interval.tick() => {
@@ -309,7 +319,9 @@ pub fn spawn_log_writer(
                         flush(&state, &mut buffer).await;
                     }
                 }
-                else => break,
+                _ = shutdown.notified() => {
+                    rx.close();
+                }
             }
         }
         // Drain remaining on shutdown
@@ -319,7 +331,7 @@ pub fn spawn_log_writer(
         if !buffer.is_empty() {
             flush(&state, &mut buffer).await;
         }
-    });
+    })
 }
 
 async fn flush(state: &AppState, buffer: &mut Vec<ActivityLogEntry>) {
