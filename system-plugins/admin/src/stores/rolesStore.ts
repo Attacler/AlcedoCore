@@ -18,6 +18,7 @@ export interface RoleScope {
 }
 
 export const ALL_SCOPES = [
+    "rootaccess.all",
     "plugins.all",
     "plugins.read",
     "plugins.write",
@@ -32,12 +33,31 @@ export const ALL_SCOPES = [
     "kv.put",
     "kv.delete",
     "kv.list",
+    "kv.batch_get",
+    "kv.batch_set",
+    "kv.batch_delete",
+    "kv.exists",
+    "kv.ttl",
     "policies.all",
     "policies.read",
     "policies.write",
+    "items.all",
+    "items.read",
+    "items.write",
+    "collections.all",
+    "collections.read",
+    "collections.write",
+    "collections.delete",
+    "users.all",
+    "db.query",
+    "db.execute",
 ];
 
 export const SCOPE_GROUPS = [
+    {
+        label: "Root",
+        scopes: ["rootaccess.all"],
+    },
     {
         label: "Plugins",
         scopes: [
@@ -51,11 +71,43 @@ export const SCOPE_GROUPS = [
     { label: "Roles", scopes: ["roles.all", "roles.read", "roles.write"] },
     {
         label: "KV Store",
-        scopes: ["kv.all", "kv.get", "kv.put", "kv.delete", "kv.list"],
+        scopes: [
+            "kv.all",
+            "kv.get",
+            "kv.put",
+            "kv.delete",
+            "kv.list",
+            "kv.batch_get",
+            "kv.batch_set",
+            "kv.batch_delete",
+            "kv.exists",
+            "kv.ttl",
+        ],
     },
     {
         label: "Policies",
         scopes: ["policies.all", "policies.read", "policies.write"],
+    },
+    {
+        label: "Items",
+        scopes: ["items.all", "items.read", "items.write"],
+    },
+    {
+        label: "Collections",
+        scopes: [
+            "collections.all",
+            "collections.read",
+            "collections.write",
+            "collections.delete",
+        ],
+    },
+    {
+        label: "Users",
+        scopes: ["users.all"],
+    },
+    {
+        label: "Database",
+        scopes: ["db.query", "db.execute"],
     },
 ];
 

@@ -12,10 +12,11 @@ import Select from "primevue/select";
 import ToggleSwitch from "primevue/toggleswitch";
 import MenuBuilder from "./MenuBuilder.vue";
 import SettingsSession from "./SettingsSession.vue";
-import DeveloperKeysDrawer from "@/components/developerSettings/keysDrawer.vue";
+import SettingsActivity from "./SettingsActivity.vue";
 import FileUpload from "@/components/inputs/FileUpload.vue";
 import { MediaFile } from "@alcedocore/sdk";
 import EnableDevelopmentMode from "./development/enableDevelopmentMode.vue";
+import { appPath } from "@/utils/appHeaders";
 
 const props = defineProps<{ category: string }>();
 const router = useRouter(),
@@ -36,7 +37,7 @@ const settingsKeys = computed(() => store.getCategorySettings(props.category));
 
 watch(categoryDef, (def) => {
     if (!def && !store.loading) {
-        router.replace("/settings");
+        router.replace(appPath("/settings"));
     }
 });
 
@@ -101,11 +102,12 @@ function fileUploaded(key: string, uploadResponse: MediaFile) {
 <template>
     <MenuBuilder v-if="category === 'menu'" />
     <SettingsSession v-else-if="category === 'session'" />
+    <SettingsActivity v-else-if="category === 'activity'" />
     <div v-else class="space-y-6">
         <div class="flex items-center justify-between mb-6">
             <div class="flex items-center gap-3">
                 <router-link
-                    to="/settings"
+                    :to="appPath('/settings')"
                     class="material-symbols-outlined text-gray-400 hover:text-gray-600 transition-colors"
                 >
                     arrow_back
@@ -221,20 +223,8 @@ function fileUploaded(key: string, uploadResponse: MediaFile) {
                         />
                     </div>
                 </div>
-                <div class="flex items-center justify-between px-4 py-3">
-                    <div class="flex-1 mr-4 min-w-0">
-                        <div class="text-sm font-medium text-gray-900">
-                            API keys
-                        </div>
-                        <div class="text-xs text-gray-500 mt-0.5">
-                            View, create or delete keys. The keys are can be
-                            used to easily interact with the API.
-                        </div>
-                    </div>
-                    <DeveloperKeysDrawer />
-                </div>
                 <routerLink
-                    to="/apidocs"
+                    :to="appPath('/apidocs')"
                     class="flex items-center justify-between px-4 py-3"
                 >
                     <div class="flex-1 mr-4 min-w-0">
@@ -248,7 +238,7 @@ function fileUploaded(key: string, uploadResponse: MediaFile) {
                     <Button label="Open documentation" />
                 </routerLink>
                 <div
-                    to="/apidocs"
+                    :to="appPath('/apidocs')"
                     class="flex items-center justify-between px-4 py-3"
                 >
                     <div class="flex-1 mr-4 min-w-0">
@@ -394,7 +384,7 @@ function fileUploaded(key: string, uploadResponse: MediaFile) {
                             :disabled="
                                 savingKey === key ||
                                 store.getLocalValue(key) ===
-                                    store.settings[key] ||
+                                    store.appSettings[key] ||
                                 !!store.validateValue(key)
                             "
                             severity="secondary"

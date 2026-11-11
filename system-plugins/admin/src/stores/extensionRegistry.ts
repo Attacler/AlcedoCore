@@ -15,6 +15,9 @@ export interface InputWidgetRegistration {
     component: () => Promise<any>;
     settingsComponent?: () => Promise<any>;
     pluginSlug: string;
+    installId?: number | null;
+    app?: string | null;
+    version?: string | null;
 }
 
 export interface ViewTypeRegistration {
@@ -34,6 +37,9 @@ export interface NavItemRegistration {
     pluginSlug: string;
     sidebar: boolean;
     component: Component;
+    installId: number;
+    app?: string | null;
+    version?: string | null;
 }
 
 export const useExtensionRegistryStore = defineStore(

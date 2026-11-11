@@ -3,6 +3,7 @@ import warnings
 import pytest
 
 from alcedo_sdk.exceptions import (
+    AlcedoApiError,
     AlcedoError,
     AuthenticationError,
     ConnectionError,  # backward-compat alias
@@ -26,6 +27,7 @@ class TestAlcedoError:
         assert isinstance(ValidationError("msg"), AlcedoError)
         assert isinstance(AuthenticationError("msg"), AlcedoError)
         assert isinstance(ServerError("msg"), AlcedoError)
+        assert isinstance(AlcedoApiError("msg"), AlcedoError)
 
     def test_str_with_status_code(self):
         """str() includes status code when set."""
@@ -69,3 +71,21 @@ class TestAlcedoError:
         with pytest.warns(DeprecationWarning):
             exc = KeyNotFoundError("my-key")
         assert "my-key" in str(exc)
+
+
+class TestAlcedoApiError:
+    """JSend fail/error exception (mirrors the node SDK's AlcedoApiError)."""
+
+    def test_fields_preserved(self):
+        err = AlcedoApiError("core down", code=500, status="error", http_status=503)
+        assert err.message == "core down"
+        assert err.code == 500
+        assert err.status == "error"
+        assert err.http_status == 503
+        assert err.status_code == 503
+
+    def test_defaults(self):
+        err = AlcedoApiError("bad")
+        assert err.code is None
+        assert err.status is None
+        assert err.http_status is None

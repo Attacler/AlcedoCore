@@ -16,8 +16,9 @@ spec:
                       - -c
                       - |
                           PGPASSWORD=postgres psql -U postgres -d plugin_core -h postgres <<SQL
-                          INSERT INTO role_scopes (role_id, scope)
-                          SELECT id, 'collections.all' FROM roles WHERE name = 'admin'
+                          SET search_path TO default010v1, public;
+                          INSERT INTO alcedocore_role_scopes (role_id, scope)
+                          SELECT id, 'collections.all' FROM alcedocore_roles WHERE name = 'admin'
                           ON CONFLICT DO NOTHING;
                           SQL
             restartPolicy: Never

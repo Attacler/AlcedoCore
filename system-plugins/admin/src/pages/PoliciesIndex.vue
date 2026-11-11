@@ -9,6 +9,7 @@ import Textarea from "primevue/textarea";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import CollectionData from "@/pages/CollectionData.vue";
 import { createClientDataSource } from "@/utils/collectionDataSource";
+import { appPath } from "@/utils/appHeaders";
 import { Drawer } from "primevue";
 
 const store = usePoliciesStore(),
@@ -57,7 +58,7 @@ async function handleCreate() {
         });
         toast.show(`Policy "${policy.name}" created`, "success");
         closeCreateModal();
-        router.push(`/policies/${policy.id}`);
+        router.push(appPath(`/policies/${policy.id}`));
     } catch (e) {
         toast.show(
             `Failed to create policy: ${e instanceof Error ? e.message : "Unknown error"}`,
@@ -105,7 +106,7 @@ function closeDeleteModal() {
                 label: 'Create Policy',
                 run: () => openCreateModal(),
             }"
-            :row-link-to="(p) => `/policies/${p.id}`"
+            :row-link-to="(p) => appPath(`/policies/${p.id}`)"
             @delete-item="confirmDelete"
         />
 

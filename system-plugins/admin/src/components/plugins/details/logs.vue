@@ -9,7 +9,7 @@ import {
 import { formatLogTime } from "@/utils/formatters";
 import { withAsyncHandlingVoid } from "@/utils/asyncUtils";
 import LogDetailPopup from "@/components/LogDetailPopup.vue";
-import { Select } from "primevue";
+import { Select, DatePicker } from "primevue";
 
 const route = useRoute(),
     store = usePluginsStore();
@@ -19,25 +19,36 @@ const logs = ref<RequestLogEntry[]>([]),
     logsError = ref<string | null>(null),
     logsPathFilter = ref(""),
     logsStatusFilter = ref(""),
+    logsMethodFilter = ref(""),
+    logsFromDate = ref<Date | null>(null),
+    logsToDate = ref<Date | null>(null),
     logsNextCursor = ref<string | null>(null),
     showLogDetail = ref(false),
     selectedLog = ref<RequestLogEntry | null>(null),
     logDetail = ref<LogDetailResponse | null>(null);
+
+function buildFilterParams(cursor?: string) {
+    const statusCode = logsStatusFilter.value
+        ? parseInt(logsStatusFilter.value)
+        : undefined;
+    return {
+        path: logsPathFilter.value || undefined,
+        status_code: statusCode,
+        method: logsMethodFilter.value || undefined,
+        from: logsFromDate.value?.toISOString() || undefined,
+        to: logsToDate.value?.toISOString() || undefined,
+        cursor,
+    };
+}
 
 async function loadLogs() {
     await withAsyncHandlingVoid(
         logsLoading,
         logsError,
         async () => {
-            const statusCode = logsStatusFilter.value
-                ? parseInt(logsStatusFilter.value)
-                : undefined;
             const result = await store.fetchPluginLogs(
                 route.params.name as string,
-                {
-                    path: logsPathFilter.value || undefined,
-                    status_code: statusCode,
-                },
+                buildFilterParams(),
             );
             logs.value = result.logs;
             logsNextCursor.value = result.next_cursor;
@@ -51,16 +62,9 @@ async function loadMoreLogs() {
     logsLoading.value = true;
     logsError.value = null;
     try {
-        const statusCode = logsStatusFilter.value
-            ? parseInt(logsStatusFilter.value)
-            : undefined;
         const result = await store.fetchPluginLogs(
             route.params.name as string,
-            {
-                path: logsPathFilter.value || undefined,
-                status_code: statusCode,
-                cursor: logsNextCursor.value,
-            },
+            buildFilterParams(logsNextCursor.value),
         );
         logs.value = [...logs.value, ...result.logs];
         logsNextCursor.value = result.next_cursor;
@@ -96,28 +100,73 @@ onMounted(() => {
 </script>
 
 <template>
-    <div class="flex flex-col sm:flex-row gap-2 sm:gap-4 mb-4">
-        <InputText
-            v-model="logsPathFilter"
-            placeholder="Path prefix..."
-            class="w-full sm:w-auto"
-            fluid
-        />
-        <Select
-            v-model="logsStatusFilter"
-            :options="[
-                { label: 'All statuses', value: '' },
-                { label: '200 OK', value: '200' },
-                { label: '400 Bad Request', value: '400' },
-                { label: '404 Not Found', value: '404' },
-                { label: '500 Error', value: '500' },
-            ]"
-            option-label="label"
-            option-value="value"
-            placeholder="All statuses"
-            class="w-full sm:w-auto"
-        />
-        <Button label="Filter" severity="primary" @click="loadLogs" />
+    <div class="flex flex-col gap-2 mb-4">
+        <div class="flex flex-col sm:flex-row gap-2 sm:gap-4">
+            <InputText
+                v-model="logsPathFilter"
+                placeholder="Path contains..."
+                class="w-full sm:w-auto"
+                fluid
+            />
+            <Select
+                v-model="logsStatusFilter"
+                :options="[
+                    { label: 'All statuses', value: '' },
+                    { label: '200 OK', value: '200' },
+                    { label: '400 Bad Request', value: '400' },
+                    { label: '404 Not Found', value: '404' },
+                    { label: '500 Error', value: '500' },
+                ]"
+                option-label="label"
+                option-value="value"
+                placeholder="All statuses"
+                class="w-full sm:w-auto"
+            />
+            <Select
+                v-model="logsMethodFilter"
+                :options="[
+                    { label: 'All methods', value: '' },
+                    { label: 'GET', value: 'GET' },
+                    { label: 'POST', value: 'POST' },
+                    { label: 'PUT', value: 'PUT' },
+                    { label: 'PATCH', value: 'PATCH' },
+                    { label: 'DELETE', value: 'DELETE' },
+                ]"
+                option-label="label"
+                option-value="value"
+                placeholder="All methods"
+                class="w-full sm:w-auto"
+            />
+            <Button label="Filter" severity="primary" @click="loadLogs" />
+        </div>
+        <div class="flex flex-col sm:flex-row gap-2 sm:gap-4 items-start sm:items-center">
+            <div class="flex gap-1 items-center">
+                <label class="text-xs text-gray-500 font-medium">From</label>
+                <DatePicker
+                    v-model="logsFromDate"
+                    show-time
+                    hour-format="24"
+                    date-format="yy-mm-dd"
+                    class="w-48"
+                    placeholder="Start date"
+                    show-icon
+                    :show-on-focus="false"
+                />
+            </div>
+            <div class="flex gap-1 items-center">
+                <label class="text-xs text-gray-500 font-medium">To</label>
+                <DatePicker
+                    v-model="logsToDate"
+                    show-time
+                    hour-format="24"
+                    date-format="yy-mm-dd"
+                    class="w-48"
+                    placeholder="End date"
+                    show-icon
+                    :show-on-focus="false"
+                />
+            </div>
+        </div>
     </div>
 
     <div v-if="logsLoading" class="text-gray-500">Loading logs...</div>

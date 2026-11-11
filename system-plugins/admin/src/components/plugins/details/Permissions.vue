@@ -7,8 +7,9 @@ import { useRoute } from "vue-router";
 import { usePoliciesStore, Policy } from "@/stores/policies.ts";
 import { actionSeverity } from "@/utils/formatters.ts";
 import { Select } from "primevue";
+import { appPath } from "@/utils/appHeaders";
 
-const props = defineProps<{ plugin: PluginStore }>();
+const props = defineProps<{ plugin: PluginStore; appVersionId: number }>();
 
 const route = useRoute(),
     store = usePluginsStore();
@@ -80,7 +81,8 @@ async function loadScopes() {
         scopesError,
         async () => {
             scopesData.value = await store.fetchPluginScopes(
-                route.params.name as string,
+                props.plugin.name,
+                props.appVersionId,
             );
         },
         "Failed to load scopes",
@@ -97,7 +99,8 @@ function openScopesDialog() {
 async function saveScopes() {
     try {
         await store.updatePluginScopes(
-            route.params.name as string,
+            props.plugin.name,
+            props.appVersionId,
             scopesEdit.value,
         );
         await loadScopes();
@@ -252,7 +255,7 @@ onMounted(() => {
                         <Column header="Policy">
                             <template #body="{ data }">
                                 <router-link
-                                    :to="`/policies/${data.policy_id}`"
+                                    :to="appPath(`/policies/${data.policy_id}`)"
                                     class="font-medium text-blue-600 hover:underline"
                                 >
                                     {{
@@ -311,7 +314,7 @@ onMounted(() => {
                         <Column header="Policy">
                             <template #body="{ data }">
                                 <router-link
-                                    :to="`/policies/${data.policy.id}`"
+                                    :to="appPath(`/policies/${data.policy.id}`)"
                                     class="font-medium text-blue-600 hover:underline"
                                 >
                                     {{

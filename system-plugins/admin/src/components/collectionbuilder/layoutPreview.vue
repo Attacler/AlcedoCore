@@ -29,12 +29,72 @@ import FieldPreview from "./fieldPreview.vue";
 import FieldPropertiesDrawer from "./fieldPropertiesDrawer.vue";
 import { Tag } from "primevue";
 import { useDevServerStore } from "@/stores/devServerStore.ts";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
+import { useAppContextStore } from "@/stores/appContext";
 
 const route = useRoute(),
     store = useCollectionsStore(),
     toast = useToast(),
     extensionRegistry = useExtensionRegistryStore(),
     devStore = useDevServerStore();
+
+const { client } = useAlcedoClient(),
+    appContext = useAppContextStore();
+const currentApp = computed(() => appContext.appSlug ?? undefined),
+    currentVersion = computed(() => appContext.version ?? undefined);
+
+interface RelationOption {
+    label: string;
+    value: string;
+    app: string | null;
+    collection: string;
+    field: string;
+}
+const relationOptions = ref<RelationOption[]>([]);
+
+async function loadRelationOptions() {
+    const opts: RelationOption[] = [];
+    try {
+        const appsRes: any = await client.apps.list();
+        const apps = (appsRes?.data ?? appsRes ?? []).filter((a: any) =>
+            (a.versions || []).includes(currentVersion.value),
+        );
+        for (const a of apps) {
+            const app = a.api_name as string;
+            let cols: any[] = [];
+            try {
+                const res: any = await client.collections.list({
+                    app,
+                    version: currentVersion.value,
+                });
+                cols = res.collections || res.data?.collections || [];
+            } catch {
+                continue;
+            }
+            for (const c of cols) {
+                for (const f of c.fields || []) {
+                    if (
+                        f.type === "relationship" &&
+                        f.related_collection === collectionName.value &&
+                        f.relationship_type !== "one_to_many"
+                    ) {
+                        const sameApp = app === currentApp.value;
+                        opts.push({
+                            label: `${f.display_name || f.name} (${app}.${c.name})`,
+                            value: `${app}::${c.name}.${f.name}`,
+                            app: sameApp ? null : app,
+                            collection: c.name,
+                            field: f.name,
+                        });
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("[CollectionBuilder] Failed to load relation options", e);
+    }
+    relationOptions.value = opts;
+}
 
 const fields = defineModel<(FieldDefinition & { _key: string })[]>("fields", {
         required: true,
@@ -167,7 +227,7 @@ function nextKey(): string {
 function makeField(displayType: string, pos: number): any {
     const displayDef =
         (devStore.pluginDetails?.displays || []).find(
-            (e) => e.name == displayType,
+            (e: any) => e.name == displayType,
         ) ||
         getDisplayComponentDef(displayType) ||
         extensionRegistry.getDisplayWidget(displayType);
@@ -485,26 +545,39 @@ function openFieldEditor(field: any) {
 }
 
 function replaceTempName(field: any) {
-    const tempName = field._tempName;
-    if (!tempName || !field.name || !/^[a-z][a-z0-9_]*$/.test(field.name))
-        return;
+    resolveTempNames();
+    if (field) delete field._tempName;
+}
+
+/**
+ * Replace every `__new_*` temp name in the section display_fields / column
+ * map with the real field name. Falls back to a name derived from the field's
+ * own `_tempName` so a field is always resolvable even when its temp entry was
+ * pushed by a slightly different drop.
+ */
+function resolveTempNames() {
+    const map = new Map<string, string>();
+    for (const f of fields.value) {
+        if (!f._tempName || !f.name) continue;
+        map.set(f._tempName, f.name);
+        const derived = `__new_${f._key}`;
+        if (derived !== f._tempName) map.set(derived, f.name);
+    }
     for (const section of sections.value) {
-        if (section.section_type === "field_group" && section.display_fields) {
-            const idx = section.display_fields.indexOf(tempName);
-            if (idx !== -1) {
-                section.display_fields[idx] = field.name;
-            }
-            if (
-                section._field_columns &&
-                section._field_columns[tempName] !== undefined
-            ) {
-                section._field_columns[field.name] =
-                    section._field_columns[tempName];
-                delete section._field_columns[tempName];
+        if (section.section_type !== "field_group" || !section.display_fields)
+            continue;
+        section.display_fields = (section.display_fields as string[]).map(
+            (n: string) => map.get(n) || n,
+        );
+        if (section._field_columns) {
+            for (const [temp, name] of map) {
+                if (section._field_columns[temp] !== undefined) {
+                    section._field_columns[name] = section._field_columns[temp];
+                    delete section._field_columns[temp];
+                }
             }
         }
     }
-    delete field._tempName;
 }
 
 function closeFieldEditor() {
@@ -627,7 +700,10 @@ watch(
             return;
         }
         try {
-            const coll = await store.getCollection(childName, true);
+            const coll = await store.getCollection(childName, true, {
+                app: sectionFormData.value?.related_app ?? undefined,
+                version: currentVersion.value,
+            });
             childCollectionFields.value = coll.fields || [];
         } catch (e) {
             console.warn(
@@ -654,23 +730,21 @@ const namedFields = computed(() =>
     fields.value.filter((f) => f.name && /^[a-z][a-z0-9_]*$/.test(f.name)),
 );
 
-const relationFieldOptions = computed(() =>
-    store.collections
-        .map((c) =>
-            c.fields
-                .filter((f) => f.related_collection == collectionName.value)
-                .map((f) => ({
-                    collectionName: c.name,
-                    collectionDisplayName: c.display_name || c.name,
-                    ...f,
-                })),
-        )
-        .flat()
-        .map((f) => ({
-            label: `${f.display_name || f.name} (${f.collectionDisplayName || "?"})`,
-            value: `${f.collectionName}.${f.name}`,
-        })),
-);
+const relationModel = computed({
+    get: () => {
+        const f = sectionFormData.value;
+        if (!f?.relation_field) return null;
+        return f.related_app
+            ? `${f.related_app}::${f.relation_field}`
+            : f.relation_field;
+    },
+    set: (value: any) => {
+        const opt = relationOptions.value.find((o) => o.value === value);
+        if (!opt || !sectionFormData.value) return;
+        sectionFormData.value.relation_field = `${opt.collection}.${opt.field}`;
+        sectionFormData.value.related_app = opt.app;
+    },
+});
 
 const orderedSections = computed(() => {
     return [...sections.value].sort(
@@ -725,27 +799,20 @@ function flatColumnFields(section: any, colIdx: number): any[] {
 }
 
 async function loadLayouts() {
-    try {
-        const resp = await fetch(
-            "/api/collections/" + collectionName.value + "/layouts",
-            { credentials: "include" },
-        );
-        const json = await resp.json();
-        const raw = json.layouts || [];
-        collLayouts.value = raw;
-        if (raw.length > 0 && !activeLayoutId.value) {
-            activeLayoutId.value = raw[0].id;
-        } else if (raw.length === 0) {
-            activeLayoutId.value = null;
-        } else if (
-            activeLayoutId.value &&
-            !raw.find((l) => l.id === activeLayoutId.value)
-        ) {
-            activeLayoutId.value = raw[0].id;
-        }
-    } catch (e) {
-        console.warn("[CollectionBuilder] Failed to load layouts", e);
-        collLayouts.value = [];
+    const raw = await store.listLayouts(collectionName.value, {
+        app: currentApp.value,
+        version: currentVersion.value,
+    });
+    collLayouts.value = raw;
+    if (raw.length > 0 && !activeLayoutId.value) {
+        activeLayoutId.value = raw[0].id;
+    } else if (raw.length === 0) {
+        activeLayoutId.value = null;
+    } else if (
+        activeLayoutId.value &&
+        !raw.find((l) => l.id === activeLayoutId.value)
+    ) {
+        activeLayoutId.value = raw[0].id;
     }
 }
 
@@ -759,6 +826,7 @@ function openNewSectionEditor(type: string) {
         name: "",
         section_type: type,
         relation_field: null,
+        related_app: null,
         view_type: "table",
         display_fields: [],
         item_limit: 25,
@@ -770,6 +838,7 @@ function openNewSectionEditor(type: string) {
         visibility_parent: null,
         visibility_child: null,
     };
+    loadRelationOptions();
 }
 
 function editSection(section: any) {
@@ -783,12 +852,16 @@ function editSection(section: any) {
         visibility_child: df.section_visibility?.child || null,
     };
     showSectionEditor.value = true;
+    loadRelationOptions();
     // Load child fields for settings/filter
     if (section.relation_field) {
         const childName = getSectionChildCollectionName(section.relation_field);
         if (childName) {
             store
-                .getCollection(childName, true)
+                .getCollection(childName, true, {
+                    app: section.related_app ?? undefined,
+                    version: currentVersion.value,
+                })
                 .then((coll) => {
                     childCollectionFields.value = coll.fields || [];
                 })
@@ -822,6 +895,10 @@ async function saveSection() {
             relation_field:
                 fg.section_type === "relational"
                     ? fg.relation_field || ""
+                    : null,
+            related_app:
+                fg.section_type === "relational"
+                    ? fg.related_app || null
                     : null,
             view_type:
                 fg.section_type === "relational"
@@ -1043,7 +1120,7 @@ watch(
                             "
                             @dragover.prevent="onDragOverEmptySection(section)"
                             @dragleave="onDragLeaveEmptySection(section)"
-                            @drop="onDropInSection($event, section)"
+                            @drop.stop="onDropInSection($event, section)"
                         >
                             <template v-if="dragType || dragFieldKey"
                                 >Drop fields here</template
@@ -1244,8 +1321,8 @@ watch(
                         >Relation</label
                     >
                     <Select
-                        v-model="sectionFormData.relation_field"
-                        :options="relationFieldOptions"
+                        v-model="relationModel"
+                        :options="relationOptions"
                         option-label="label"
                         option-value="value"
                         placeholder="Select..."

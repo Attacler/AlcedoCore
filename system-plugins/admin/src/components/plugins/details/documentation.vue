@@ -6,7 +6,7 @@ import { computed } from "vue";
 import { useRoute } from "vue-router";
 import DocsViewer from "./DocsViewer.vue";
 
-const props = defineProps<{ plugin: PluginStore }>();
+const props = defineProps<{ plugin: PluginStore; installId?: number }>();
 
 const route = useRoute(),
     store = usePluginsStore();
@@ -82,6 +82,7 @@ async function loadDocs() {
         async () => {
             const res = await store.fetchPluginDocs(
                 route.params.name as string,
+                props.installId,
             );
 
             docs.value = res.docs.map((d) => ({ path: d.path, size: d.size }));
@@ -101,7 +102,11 @@ async function selectDoc(docPath: string) {
     await nextTick();
     try {
         const name = route.params.name as string;
-        docContent.value = await store.fetchDocContent(name, docPath);
+        docContent.value = await store.fetchDocContent(
+            name,
+            docPath,
+            props.installId,
+        );
     } catch (e) {
         docsError.value =
             e instanceof Error ? e.message : "Failed to load document content";

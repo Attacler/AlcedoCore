@@ -18,13 +18,54 @@ export type FilterOperator =
     | "in"
     | "not_in"
     | "null"
-    | "not_null";
+    | "not_null"
+    | "count_eq"
+    | "count_neq"
+    | "count_gt"
+    | "count_gte"
+    | "count_lt"
+    | "count_lte"
+    | "sum_eq"
+    | "sum_neq"
+    | "sum_gt"
+    | "sum_gte"
+    | "sum_lt"
+    | "sum_lte"
+    | "sum_distinct_eq"
+    | "sum_distinct_neq"
+    | "sum_distinct_gt"
+    | "sum_distinct_gte"
+    | "sum_distinct_lt"
+    | "sum_distinct_lte"
+    | "avg_eq"
+    | "avg_neq"
+    | "avg_gt"
+    | "avg_gte"
+    | "avg_lt"
+    | "avg_lte"
+    | "avg_distinct_eq"
+    | "avg_distinct_neq"
+    | "avg_distinct_gt"
+    | "avg_distinct_gte"
+    | "avg_distinct_lt"
+    | "avg_distinct_lte"
+    | "min_eq"
+    | "min_neq"
+    | "min_gt"
+    | "min_gte"
+    | "min_lt"
+    | "min_lte"
+    | "max_eq"
+    | "max_neq"
+    | "max_gt"
+    | "max_gte"
+    | "max_lt"
+    | "max_lte";
 
 export type GroupOperator = "and" | "or";
 
-/** A single leaf filter rule: field + operator + value */
 export interface FilterRule {
-    field: string;
+    path: string[];
     operator: FilterOperator;
     value: unknown;
 }
@@ -122,6 +163,65 @@ export const OPERATORS_BY_TYPE: Record<string, OperatorMeta[]> = {
     ],
 };
 
+/**
+ * Operators for virtual one-to-many relation fields (e.g. `contacts` on
+ * `customers`): "parents with N related rows". Sent as `_count_*` and
+ * resolved by the backend as a COUNT(*) subquery.
+ */
+export const COUNT_OPERATORS: OperatorMeta[] = [
+    { operator: "count_eq", label: "Count =", requiresValue: true },
+    { operator: "count_neq", label: "Count ≠", requiresValue: true },
+    { operator: "count_gt", label: "Count >", requiresValue: true },
+    { operator: "count_gte", label: "Count ≥", requiresValue: true },
+    { operator: "count_lt", label: "Count <", requiresValue: true },
+    { operator: "count_lte", label: "Count ≤", requiresValue: true },
+];
+
+/**
+ * Aggregate operators for child fields of a virtual one-to-many relation
+ * (e.g. `lines.total` on `invoices`): "parents whose related rows sum to
+ * more than N". Sent as `_sum_*` / `_avg_*` / `_min_*` / `_max_*` and
+ * resolved by the backend as an aggregate subquery.
+ */
+export const AGGREGATE_OPERATORS: OperatorMeta[] = [
+    { operator: "sum_eq", label: "Sum =", requiresValue: true },
+    { operator: "sum_neq", label: "Sum ≠", requiresValue: true },
+    { operator: "sum_gt", label: "Sum >", requiresValue: true },
+    { operator: "sum_gte", label: "Sum ≥", requiresValue: true },
+    { operator: "sum_lt", label: "Sum <", requiresValue: true },
+    { operator: "sum_lte", label: "Sum ≤", requiresValue: true },
+    { operator: "sum_distinct_eq", label: "Sum distinct =", requiresValue: true },
+    { operator: "sum_distinct_neq", label: "Sum distinct ≠", requiresValue: true },
+    { operator: "sum_distinct_gt", label: "Sum distinct >", requiresValue: true },
+    { operator: "sum_distinct_gte", label: "Sum distinct ≥", requiresValue: true },
+    { operator: "sum_distinct_lt", label: "Sum distinct <", requiresValue: true },
+    { operator: "sum_distinct_lte", label: "Sum distinct ≤", requiresValue: true },
+    { operator: "avg_eq", label: "Avg =", requiresValue: true },
+    { operator: "avg_neq", label: "Avg ≠", requiresValue: true },
+    { operator: "avg_gt", label: "Avg >", requiresValue: true },
+    { operator: "avg_gte", label: "Avg ≥", requiresValue: true },
+    { operator: "avg_lt", label: "Avg <", requiresValue: true },
+    { operator: "avg_lte", label: "Avg ≤", requiresValue: true },
+    { operator: "avg_distinct_eq", label: "Avg distinct =", requiresValue: true },
+    { operator: "avg_distinct_neq", label: "Avg distinct ≠", requiresValue: true },
+    { operator: "avg_distinct_gt", label: "Avg distinct >", requiresValue: true },
+    { operator: "avg_distinct_gte", label: "Avg distinct ≥", requiresValue: true },
+    { operator: "avg_distinct_lt", label: "Avg distinct <", requiresValue: true },
+    { operator: "avg_distinct_lte", label: "Avg distinct ≤", requiresValue: true },
+    { operator: "min_eq", label: "Min =", requiresValue: true },
+    { operator: "min_neq", label: "Min ≠", requiresValue: true },
+    { operator: "min_gt", label: "Min >", requiresValue: true },
+    { operator: "min_gte", label: "Min ≥", requiresValue: true },
+    { operator: "min_lt", label: "Min <", requiresValue: true },
+    { operator: "min_lte", label: "Min ≤", requiresValue: true },
+    { operator: "max_eq", label: "Max =", requiresValue: true },
+    { operator: "max_neq", label: "Max ≠", requiresValue: true },
+    { operator: "max_gt", label: "Max >", requiresValue: true },
+    { operator: "max_gte", label: "Max ≥", requiresValue: true },
+    { operator: "max_lt", label: "Max <", requiresValue: true },
+    { operator: "max_lte", label: "Max ≤", requiresValue: true },
+];
+
 /** Check if a condition is a group (has `conditions` property) */
 export function isFilterGroup(
     condition: FilterCondition,
@@ -129,11 +229,10 @@ export function isFilterGroup(
     return "conditions" in condition;
 }
 
-/** Check if a condition is a rule (has `field` property) */
 export function isFilterRule(
     condition: FilterCondition,
 ): condition is FilterRule {
-    return "field" in condition;
+    return "path" in condition;
 }
 
 /** Recursively check if a filter condition has any meaningful rules */
@@ -141,7 +240,7 @@ export function hasNonEmptyCondition(
     cond: FilterCondition | null | undefined,
 ): boolean {
     if (!cond) return false;
-    if (isFilterRule(cond)) return !!cond.field;
+    if (isFilterRule(cond)) return !!cond.path && cond.path.length > 0;
     if (cond.conditions.length > 0) {
         return cond.conditions.some((c) => hasNonEmptyCondition(c));
     }
@@ -150,7 +249,7 @@ export function hasNonEmptyCondition(
 
 /** Create an empty rule with sensible defaults */
 export function createEmptyRule(): FilterRule {
-    return { field: "", operator: "eq", value: "" };
+    return { path: [], operator: "eq", value: "" };
 }
 
 /** Create an empty group with AND operator */
@@ -177,6 +276,48 @@ const OPERATOR_TO_SHORT: Record<string, string> = {
     not_in: "_nin",
     null: "_null",
     not_null: "_nnull",
+    count_eq: "_count_eq",
+    count_neq: "_count_neq",
+    count_gt: "_count_gt",
+    count_gte: "_count_gte",
+    count_lt: "_count_lt",
+    count_lte: "_count_lte",
+    sum_eq: "_sum_eq",
+    sum_neq: "_sum_neq",
+    sum_gt: "_sum_gt",
+    sum_gte: "_sum_gte",
+    sum_lt: "_sum_lt",
+    sum_lte: "_sum_lte",
+    sum_distinct_eq: "_sum_distinct_eq",
+    sum_distinct_neq: "_sum_distinct_neq",
+    sum_distinct_gt: "_sum_distinct_gt",
+    sum_distinct_gte: "_sum_distinct_gte",
+    sum_distinct_lt: "_sum_distinct_lt",
+    sum_distinct_lte: "_sum_distinct_lte",
+    avg_eq: "_avg_eq",
+    avg_neq: "_avg_neq",
+    avg_gt: "_avg_gt",
+    avg_gte: "_avg_gte",
+    avg_lt: "_avg_lt",
+    avg_lte: "_avg_lte",
+    avg_distinct_eq: "_avg_distinct_eq",
+    avg_distinct_neq: "_avg_distinct_neq",
+    avg_distinct_gt: "_avg_distinct_gt",
+    avg_distinct_gte: "_avg_distinct_gte",
+    avg_distinct_lt: "_avg_distinct_lt",
+    avg_distinct_lte: "_avg_distinct_lte",
+    min_eq: "_min_eq",
+    min_neq: "_min_neq",
+    min_gt: "_min_gt",
+    min_gte: "_min_gte",
+    min_lt: "_min_lt",
+    min_lte: "_min_lte",
+    max_eq: "_max_eq",
+    max_neq: "_max_neq",
+    max_gt: "_max_gt",
+    max_gte: "_max_gte",
+    max_lt: "_max_lt",
+    max_lte: "_max_lte",
 };
 
 /** Map short-form operator names back to internal names */
@@ -194,9 +335,58 @@ const SHORT_TO_OPERATOR: Record<string, string> = {
     _nin: "not_in",
     _null: "null",
     _nnull: "not_null",
+    _count_eq: "count_eq",
+    _count_neq: "count_neq",
+    _count_gt: "count_gt",
+    _count_gte: "count_gte",
+    _count_lt: "count_lt",
+    _count_lte: "count_lte",
+    _sum_eq: "sum_eq",
+    _sum_neq: "sum_neq",
+    _sum_gt: "sum_gt",
+    _sum_gte: "sum_gte",
+    _sum_lt: "sum_lt",
+    _sum_lte: "sum_lte",
+    _sum_distinct_eq: "sum_distinct_eq",
+    _sum_distinct_neq: "sum_distinct_neq",
+    _sum_distinct_gt: "sum_distinct_gt",
+    _sum_distinct_gte: "sum_distinct_gte",
+    _sum_distinct_lt: "sum_distinct_lt",
+    _sum_distinct_lte: "sum_distinct_lte",
+    _avg_eq: "avg_eq",
+    _avg_neq: "avg_neq",
+    _avg_gt: "avg_gt",
+    _avg_gte: "avg_gte",
+    _avg_lt: "avg_lt",
+    _avg_lte: "avg_lte",
+    _avg_distinct_eq: "avg_distinct_eq",
+    _avg_distinct_neq: "avg_distinct_neq",
+    _avg_distinct_gt: "avg_distinct_gt",
+    _avg_distinct_gte: "avg_distinct_gte",
+    _avg_distinct_lt: "avg_distinct_lt",
+    _avg_distinct_lte: "avg_distinct_lte",
+    _min_eq: "min_eq",
+    _min_neq: "min_neq",
+    _min_gt: "min_gt",
+    _min_gte: "min_gte",
+    _min_lt: "min_lt",
+    _min_lte: "min_lte",
+    _max_eq: "max_eq",
+    _max_neq: "max_neq",
+    _max_gt: "max_gt",
+    _max_gte: "max_gte",
+    _max_lt: "max_lt",
+    _max_lte: "max_lte",
 };
 
-/** Convert internal FilterCondition to short-form JSON for the API */
+function nestPath(path: string[], leaf: unknown): Record<string, unknown> {
+    let node: unknown = leaf;
+    for (let i = path.length - 1; i >= 0; i--) {
+        node = { [path[i]]: node };
+    }
+    return node as Record<string, unknown>;
+}
+
 export function toShortForm(cond: FilterCondition): Record<string, unknown> {
     if (isFilterGroup(cond)) {
         const key = cond.operator === "and" ? "_and" : "_or";
@@ -208,5 +398,31 @@ export function toShortForm(cond: FilterCondition): Record<string, unknown> {
         rule.value !== undefined && rule.value !== null && rule.value !== ""
             ? rule.value
             : null;
-    return { [rule.field]: { [opKey]: val } };
+    return nestPath(rule.path || [], { [opKey]: val });
+}
+
+export function normalizeFilterCondition(
+    cond: FilterCondition | null | undefined,
+): FilterCondition | null {
+    if (!cond) return null;
+    if (isFilterGroup(cond)) {
+        return {
+            operator: cond.operator,
+            conditions: cond.conditions
+                .map((c) => normalizeFilterCondition(c))
+                .filter((c): c is FilterCondition => !!c),
+        };
+    }
+    const legacy = cond as unknown as {
+        path?: unknown;
+        field?: unknown;
+        operator: FilterOperator;
+        value: unknown;
+    };
+    const path: string[] = Array.isArray(legacy.path)
+        ? (legacy.path as string[])
+        : typeof legacy.field === "string" && legacy.field.length > 0
+          ? legacy.field.split(".")
+          : [];
+    return { path, operator: legacy.operator, value: legacy.value };
 }

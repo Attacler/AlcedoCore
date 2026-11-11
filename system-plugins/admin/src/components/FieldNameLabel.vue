@@ -79,7 +79,9 @@ const displayType = computed(() => {
                 >
                     <span class="text-gray-400 w-20 shrink-0">Relates To</span>
                     <span class="text-gray-800">{{
-                        field.related_collection
+                        field.related_app
+                            ? `${field.related_app}.${field.related_collection}`
+                            : field.related_collection
                     }}</span>
                 </div>
             </div>

@@ -1,0 +1,123 @@
+import { KyInstance } from "ky";
+
+export interface AppWithVersions {
+    id: number;
+    name: string;
+    api_name: string;
+    icon: string | null;
+    logo: string | null;
+    versions: string[];
+}
+
+export interface UserAppAccess {
+    app_id: number;
+    app_name: string;
+    api_name: string;
+    version: string;
+    roles: string[];
+}
+
+/** An app × version link — a deploy target. */
+export interface AppVersionRow {
+    id: number;
+    app_id: number;
+    app_name: string;
+    api_name: string;
+    version_id: number;
+    version_name: string;
+}
+
+export interface CreateAppInput {
+    name: string;
+    api_name: string;
+    version: string;
+    icon?: string;
+    logo?: string;
+}
+
+export interface UpdateAppInput {
+    name?: string;
+    icon?: string;
+    logo?: string;
+}
+
+export function createAppsResource(ky: KyInstance) {
+    return {
+        list: (options?: any) =>
+            ky.get("platform/apps", options).json<AppWithVersions[]>(),
+        get: (id: number, options?: any) =>
+            ky
+                .get(`platform/apps/${encodeURIComponent(id)}`, options)
+                .json<AppWithVersions>(),
+        create: (data: CreateAppInput, options?: any) =>
+            ky
+                .post("platform/apps", { json: data, ...options })
+                .json<AppWithVersions>(),
+        update: (id: number, data: UpdateAppInput, options?: any) =>
+            ky
+                .put(`platform/apps/${encodeURIComponent(id)}`, {
+                    json: data,
+                    ...options,
+                })
+                .json<AppWithVersions>(),
+        remove: (id: number, options?: any) =>
+            ky
+                .delete(`platform/apps/${encodeURIComponent(id)}`, options)
+                .json<{ success: boolean }>(),
+        me: (options?: any) =>
+            ky.get("platform/me/apps", options).json<UserAppAccess[]>(),
+        /** Every app × version pair (deploy targets for plugins). */
+        appVersions: (options?: any) =>
+            ky.get("platform/app-versions", options).json<AppVersionRow[]>(),
+        getUserAccess: (userId: string, options?: any) =>
+            ky
+                .get(`platform/users/${encodeURIComponent(userId)}/app-access`, options)
+                .json<UserAppAccess[]>(),
+        setUserAccess: (
+            userId: string,
+            data: { app: string; version: string; role_ids: string[] },
+            options?: any,
+        ) =>
+            ky
+                .put(`platform/users/${encodeURIComponent(userId)}/app-access`, {
+                    json: data,
+                    ...options,
+                })
+                .json<{ success: boolean }>(),
+        getAppVersionAccess: (
+            appId: number,
+            versionId: number,
+            options?: any,
+        ) =>
+            ky
+                .get(
+                    `platform/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/access`,
+                    options,
+                )
+                .json(),
+        setAppVersionAccess: (
+            appId: number,
+            versionId: number,
+            data: any,
+            options?: any,
+        ) =>
+            ky
+                .put(
+                    `platform/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/access`,
+                    { json: data, ...options },
+                )
+                .json(),
+        revokeAppVersionAccess: (
+            appId: number,
+            versionId: number,
+            userId: string,
+            options?: any,
+        ) =>
+            ky
+                .delete(
+                    `platform/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/access/${encodeURIComponent(userId)}`,
+                    options,
+                )
+                .json(),
+    };
+}

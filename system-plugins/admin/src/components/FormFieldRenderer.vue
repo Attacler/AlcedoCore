@@ -12,6 +12,7 @@ import {
 } from "@/composables/useSystemFields";
 import { markRaw } from "vue";
 import { useDevServerStore } from "@/stores/devServerStore";
+import { useAppContextStore } from "@/stores/appContext";
 
 const props = withDefaults(
     defineProps<{
@@ -22,6 +23,8 @@ const props = withDefaults(
         readonly?: boolean;
         inlineCreate?: boolean;
         displayValue?: any;
+        targetApp?: string;
+        targetVersion?: string;
     }>(),
     {
         modelValue: undefined,
@@ -37,16 +40,48 @@ const emit = defineEmits<{
 }>();
 
 const collectionsStore = useCollectionsStore(),
-    devStore = useDevServerStore();
+    devStore = useDevServerStore(),
+    appContext = useAppContextStore();
+
+const currentApp = computed(() => appContext.appSlug ?? undefined);
+
+const targetFields = ref<FieldDefinition[] | null>(null);
 
 const loadingField = ref(false),
     fields = computed(() => {
+        if (props.targetApp && props.targetApp !== currentApp.value) {
+            return targetFields.value || [];
+        }
         return (
             collectionsStore.collections.find(
                 (c) => c.name == props.collectionName,
             )?.fields || []
         );
     });
+
+watchEffect(() => {
+    const useTarget =
+        !!props.targetApp && props.targetApp !== currentApp.value;
+    if (!useTarget) {
+        targetFields.value = null;
+        return;
+    }
+    const collectionName = props.collectionName;
+    const app = props.targetApp;
+    const version = props.targetVersion;
+    loadingField.value = true;
+    collectionsStore
+        .getCollection(collectionName, false, { app, version })
+        .then((coll) => {
+            targetFields.value = coll.fields || [];
+        })
+        .catch(() => {
+            targetFields.value = [];
+        })
+        .finally(() => {
+            loadingField.value = false;
+        });
+});
 
 const field = computed<FieldDefinition | undefined>(() => {
     if (!fields.value) return undefined;
@@ -75,8 +110,10 @@ const displayComponentProps = computed(() => {
         ...(isRelation
             ? {
                   "related-collection": field.value.related_collection,
+                  "related-app": field.value.related_app ?? undefined,
                   "related-field": field.value.name,
                   "display-value": props.displayValue,
+                  "display-field": field.value.display_field,
               }
             : {}),
     };

@@ -1,6 +1,10 @@
 import { KyInstance } from "ky";
 
-export interface Settings {
+export interface PlatformSettings {
+    platform_name: string;
+}
+
+export interface AppSettings {
     catch_all_plugin_slug: string;
     favicon_url: string;
     logo_url: string;
@@ -21,17 +25,27 @@ export interface SettingsBatchUpdateResponse {
 
 export function createAppSettingsResource(ky: KyInstance) {
     return {
-        list: (options?: any) => ky.get("settings", options).json<Settings>(),
+        getPlatformSettings: (options?: any) =>
+            ky.get("/platform/settings", options).json<PlatformSettings>(),
+        updatePlatformSettings: (platformName: string, options?: any) =>
+            ky
+                .put("/platform/settings", {
+                    json: { platform_name: platformName },
+                    ...options,
+                })
+                .json<PlatformSettings>(),
+        list: (options?: any) =>
+            ky.get("app/settings", options).json<Record<string, any>>(),
         update: (key: string, value: any, options?: any) =>
             ky
-                .put(`settings/${encodeURIComponent(key)}`, {
+                .put(`app/settings/${encodeURIComponent(key)}`, {
                     json: { value },
                     ...options,
                 })
                 .json<SettingsUpdateResponse>(),
         batch: (settings: Record<string, any>, options?: any) =>
             ky
-                .post("settings/batch", { json: { settings }, ...options })
+                .post("app/settings/batch", { json: { settings }, ...options })
                 .json<SettingsBatchUpdateResponse>(),
     };
 }

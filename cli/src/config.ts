@@ -8,6 +8,8 @@ export interface ConfigSchema {
     coreUrl?: string;
     pluginDir?: string;
     apiKey?: string;
+    app?: string;
+    version?: string;
 }
 
 const DEFAULTS: ConfigSchema = {
@@ -73,6 +75,8 @@ function loadDevEnv(): Partial<ConfigSchema> {
 
     if (envConfig.CORE_URL) config.coreUrl = envConfig.CORE_URL;
     if (envConfig.API_KEY) config.apiKey = envConfig.API_KEY;
+    if (envConfig.APP) config.app = envConfig.APP;
+    if (envConfig.VERSION) config.version = envConfig.VERSION;
 
     return config;
 }

@@ -1,6 +1,5 @@
 use crate::client::BaseClient;
 use crate::error::AlcedoError;
-use crate::models::LogEntry;
 use reqwest::Method;
 use serde_json::Value;
 
@@ -8,6 +7,7 @@ pub struct LogsResource {
     client: BaseClient,
 }
 
+#[derive(Default)]
 pub struct LogListParams {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
@@ -18,70 +18,58 @@ pub struct LogListParams {
     pub item_id: Option<String>,
 }
 
-impl Default for LogListParams {
-    fn default() -> Self {
-        Self {
-            limit: Some(50),
-            offset: Some(0),
-            start_date: None,
-            end_date: None,
-            target: None,
-            operation_type: None,
-            item_id: None,
+impl LogListParams {
+    pub(crate) fn to_query(&self) -> Vec<(String, String)> {
+        let mut params: Vec<(String, String)> = Vec::new();
+        if let Some(v) = self.limit {
+            params.push(("limit".to_string(), v.to_string()));
         }
+        if let Some(v) = self.offset {
+            params.push(("offset".to_string(), v.to_string()));
+        }
+        if let Some(ref v) = self.start_date {
+            params.push(("start_date".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.end_date {
+            params.push(("end_date".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.target {
+            params.push(("target".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.operation_type {
+            params.push(("operation_type".to_string(), v.clone()));
+        }
+        if let Some(ref v) = self.item_id {
+            params.push(("item_id".to_string(), v.clone()));
+        }
+        params
     }
 }
 
 impl_new!(LogsResource);
 
 impl LogsResource {
-    /// Get request logs for this plugin, with optional filters.
-    pub async fn list(&self, params: LogListParams) -> Result<Vec<LogEntry>, AlcedoError> {
-        let slug = self.client.plugin_slug();
-        let mut query_params: Vec<(String, String)> = Vec::new();
-        if let Some(v) = params.limit {
-            query_params.push(("limit".to_string(), v.to_string()));
-        }
-        if let Some(v) = params.offset {
-            query_params.push(("offset".to_string(), v.to_string()));
-        }
-        if let Some(v) = params.start_date {
-            query_params.push(("start_date".to_string(), v));
-        }
-        if let Some(v) = params.end_date {
-            query_params.push(("end_date".to_string(), v));
-        }
-        if let Some(v) = params.target {
-            query_params.push(("target".to_string(), v));
-        }
-        if let Some(v) = params.operation_type {
-            query_params.push(("operation_type".to_string(), v));
-        }
-        if let Some(v) = params.item_id {
-            query_params.push(("item_id".to_string(), v));
-        }
+    /// Request logs for this plugin: `GET /api/platform/plugins/{slug}/logs`.
+    pub async fn list(&self, params: LogListParams) -> Result<Value, AlcedoError> {
+        let slug = self.client.plugin_slug().to_string();
+        self.list_for(&slug, params).await
+    }
 
+    /// Request logs for an arbitrary plugin slug.
+    pub async fn list_for(&self, slug: &str, params: LogListParams) -> Result<Value, AlcedoError> {
         let builder = self
             .client
-            .request(Method::GET, &format!("/api/plugins/{slug}/logs"))
-            .query(&query_params);
-        let resp: Value = self.client.execute(builder).await?;
+            .request(Method::GET, &format!("/api/platform/plugins/{slug}/logs"))
+            .query(&params.to_query());
+        self.client.execute(builder).await
+    }
 
-        // API may return [{...}] directly or wrap in a key
-        if resp.as_array().is_some() {
-            serde_json::from_value(resp).map_err(|e| AlcedoError::Server {
-                message: format!("Failed to parse log entries: {e}"),
-                status_code: 500,
-            })
-        } else if let Some(logs) = resp.get("logs").and_then(|l| l.as_array()) {
-            serde_json::from_value(serde_json::Value::Array(logs.clone())).map_err(|e| {
-                AlcedoError::Server {
-                    message: format!("Failed to parse log entries: {e}"),
-                    status_code: 500,
-                }
-            })
-        } else {
-            Ok(Vec::new())
-        }
+    /// Request log detail: `GET /api/platform/plugins/{slug}/logs/{request_id}`.
+    pub async fn detail(&self, slug: &str, request_id: &str) -> Result<Value, AlcedoError> {
+        let builder = self.client.request(
+            Method::GET,
+            &format!("/api/platform/plugins/{slug}/logs/{request_id}"),
+        );
+        self.client.execute(builder).await
     }
 }

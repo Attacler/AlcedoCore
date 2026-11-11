@@ -1,0 +1,224 @@
+use std::env;
+use std::fmt::Display;
+use std::str::FromStr;
+
+use dotenvy::dotenv;
+
+#[derive(Clone, Debug)]
+pub struct SecurityHeadersConfig {
+    pub hsts: String,
+    pub x_frame_options: String,
+    pub x_content_type_options: String,
+    pub referrer_policy: String,
+    pub permissions_policy: String,
+    pub content_security_policy: String,
+    pub cors_origins: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct Config {
+    pub listen_port: u16,
+    pub listen_ip: String,
+    pub database_url: String,
+    pub database_max_connections: u32,
+    pub database_log_queries: bool,
+    pub session_ttl_seconds: i64,
+    pub cache_strategy: String,
+    pub max_login_attempts: u8,
+    pub login_fatal_ttl: u16,
+    pub admin_email: Option<String>,
+    pub admin_password: Option<String>,
+    pub session_cookie_name: String,
+    pub session_cookie_path: String,
+    pub session_cookie_http_only: bool,
+    pub session_cookie_secure: bool,
+    pub session_cookie_same_site: String,
+    pub session_cookie_domain: Option<String>,
+    pub file_storage_provider: String,
+    pub files_dir: String,
+    pub s3_bucket: Option<String>,
+    pub s3_prefix: String,
+    pub local_registry_url: String,
+    /// Public address of this instance, e.g. `http://localhost:8080`. Used to
+    pub host_url: String,
+    pub root_system_developer_token: Option<String>,
+    pub mock_plugin_port: u16,
+    pub plugin_core_url: String,
+    pub plugin_port: u16,
+    /// `mock` or `docker`. `docker` only takes effect with the `docker` feature.
+    pub plugin_platform: String,
+    pub docker_socket: String,
+    pub plugin_network: String,
+    pub plugins_dir: String,
+    pub event_forwarder_max_concurrent: usize,
+    pub system_plugins_url: Option<String>,
+    pub rate_limit_auth_requests: u32,
+    pub rate_limit_auth_window: u64,
+    pub rate_limit_api_requests: u32,
+    pub rate_limit_api_window: u64,
+    pub max_request_body_size: usize,
+    pub max_proxy_body_size: usize,
+    pub security_headers: SecurityHeadersConfig,
+}
+
+pub fn get_config() -> Config {
+    dotenv().ok();
+    let database_url = env_required("DATABASE_URL");
+    let database_max_connections = env_or_msg("DATABASE_MAX_CONNECTIONS", 5u32, "must be a number");
+    let listen_ip = env_str("CORE_IP", "0.0.0.0");
+    let listen_port = env_or_msg("CORE_PORT", 3000u16, "must be a number");
+    let session_ttl_seconds = env_or_msg("SESSION_TTL_SECONDS", 604800i64, "must be a number");
+    let database_log_queries = env_or_msg("DATABASE_LOG_QUERIES", false, "must be a boolean");
+    let cache_strategy = env_str("CACHE_STRATEGY", "in_memory");
+    let max_login_attempts = env_or_msg("MAX_LOGIN_ATTEMPTS", 5u8, "must be a number (under 255)");
+    let login_fatal_ttl = env_or_msg(
+        "LOGIN_FAIL_TTL",
+        60 * 30u16,
+        "must be a number (under 26553555)",
+    );
+
+    let admin_email = env_opt("ADMIN_EMAIL");
+    let admin_password = env_opt("ADMIN_PASSWORD");
+
+    let session_cookie_name = env_str("SECURITY_COOKIE_NAME", "alcedocore_session");
+    let session_cookie_path = env_str("SECURITY_COOKIE_PATH", "/");
+    let session_cookie_http_only =
+        env_or_msg("SECURITY_COOKIE_HTTP_ONLY", true, "must be a boolean");
+    let session_cookie_secure = env_or_msg("SECURITY_COOKIE_SECURE", false, "must be a boolean");
+    let session_cookie_same_site = env_str("SECURITY_COOKIE_SAMESITE", "lax");
+    let session_cookie_domain = env_opt("SECURITY_COOKIE_DOMAIN");
+
+    let file_storage_provider = env_str("FILE_STORAGE_PROVIDER", "local");
+    let files_dir = env_str("FILES_DIR", "./files");
+    let s3_bucket = env_opt("S3_BUCKET");
+    let s3_prefix = env_str("S3_PREFIX", "");
+    let local_registry_url = env_str("LOCAL_REGISTRY_URL", "localhost:5000");
+    let host_url = env_str("HOST_URL", &format!("http://localhost:{}", listen_port))
+        .trim()
+        .trim_end_matches('/')
+        .to_string();
+    let root_system_developer_token = env_opt("ROOT_SYSTEM_DEVELOPER_TOKEN");
+    let mock_plugin_port = env_or_msg("MOCK_PLUGIN_PORT", 8080, "must be a number");
+    let plugin_core_url = env_str("PLUGIN_CORE_URL", "http://core:8080");
+    let plugin_port = env_or_msg("PLUGIN_PORT", 8080u16, "must be a number");
+    let plugin_platform = env_str("PLUGIN_PLATFORM", "mock");
+    let docker_socket = env_str("DOCKER_SOCKET", "/var/run/docker.sock");
+    let plugin_network = env_str("PLUGIN_NETWORK", "alcedocore_plugins");
+    let plugins_dir = env_str("PLUGINS_DIR", "./plugins");
+    let event_forwarder_max_concurrent = env_or_msg(
+        "EVENT_FORWARDER_MAX_CONCURRENT",
+        50usize,
+        "must be a number",
+    );
+    let system_plugins_url = env_opt("SYSTEM_PLUGINS_URL");
+    let rate_limit_auth_requests = env_or_msg("RATE_LIMIT_AUTH_REQUESTS", 10u32, "must be a number");
+    let rate_limit_auth_window = env_or_msg("RATE_LIMIT_AUTH_WINDOW", 60u64, "must be a number");
+    let rate_limit_api_requests = env_or_msg("RATE_LIMIT_API_REQUESTS", 100u32, "must be a number");
+    let rate_limit_api_window = env_or_msg("RATE_LIMIT_API_WINDOW", 60u64, "must be a number");
+    let max_request_body_size = env_or_msg(
+        "MAX_REQUEST_BODY_SIZE",
+        10 * 1024 * 1024usize,
+        "must be a number",
+    );
+    let max_proxy_body_size = env_or_msg(
+        "MAX_PROXY_BODY_SIZE",
+        max_request_body_size,
+        "must be a number",
+    );
+
+    let security_headers = SecurityHeadersConfig {
+        hsts: env_str(
+            "SECURITY_HSTS",
+            "max-age=63072000; includeSubDomains; preload",
+        ),
+        x_frame_options: env_str("SECURITY_X_FRAME_OPTIONS", "DENY"),
+        x_content_type_options: env_str("SECURITY_X_CONTENT_TYPE_OPTIONS", "nosniff"),
+        referrer_policy: env_str("SECURITY_REFERRER_POLICY", "strict-origin-when-cross-origin"),
+        permissions_policy: env_str(
+            "SECURITY_PERMISSIONS_POLICY",
+            "geolocation=(), microphone=(), camera=()",
+        ),
+        content_security_policy: env_str(
+            "CONTENT_SECURITY_POLICY",
+            "default-src 'self'; script-src 'self' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' blob:",
+        ),
+        cors_origins: env::var("CORS_ORIGINS")
+            .or_else(|_| env::var("SECURITY_CORS_ORIGINS"))
+            .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+    };
+
+    if session_cookie_same_site.eq_ignore_ascii_case("none") && !session_cookie_secure {
+        eprintln!(
+            "[CONFIG] SECURITY_COOKIE_SAMESITE=none requires SECURITY_COOKIE_SECURE=true; \
+             browsers will reject the session cookie."
+        );
+    }
+
+    Config {
+        listen_port,
+        listen_ip,
+        database_url,
+        database_max_connections,
+        database_log_queries,
+        session_ttl_seconds,
+        cache_strategy,
+        max_login_attempts,
+        login_fatal_ttl,
+        admin_email,
+        admin_password,
+        session_cookie_name,
+        session_cookie_path,
+        session_cookie_http_only,
+        session_cookie_secure,
+        session_cookie_same_site,
+        session_cookie_domain,
+        file_storage_provider,
+        files_dir,
+        s3_bucket,
+        s3_prefix,
+        local_registry_url,
+        host_url,
+        root_system_developer_token,
+        mock_plugin_port,
+        plugin_core_url,
+        plugin_port,
+        plugin_platform,
+        docker_socket,
+        plugin_network,
+        plugins_dir,
+        event_forwarder_max_concurrent,
+        system_plugins_url,
+        rate_limit_auth_requests,
+        rate_limit_auth_window,
+        rate_limit_api_requests,
+        rate_limit_api_window,
+        max_request_body_size,
+        max_proxy_body_size,
+        security_headers,
+    }
+}
+
+fn env_required(key: &str) -> String {
+    env::var(key).unwrap_or_else(|_| panic!("Environment variable '{}' is not defined!", key))
+}
+
+fn env_or_msg<T>(key: &str, default: T, message: &str) -> T
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    match env::var(key) {
+        Ok(value) => value
+            .parse::<T>()
+            .unwrap_or_else(|_| panic!("{} {}", key, message)),
+        Err(_) => default,
+    }
+}
+
+fn env_str(key: &str, default: &str) -> String {
+    env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn env_opt(key: &str) -> Option<String> {
+    env::var(key).ok().filter(|value| !value.is_empty())
+}

@@ -11,6 +11,7 @@ import Column from "primevue/column";
 import { formatDate } from "@/utils/formatters";
 import Details from "@/components/policies/details.vue";
 import PermissionRules from "@/components/policies/permissionRules.vue";
+import { appPath } from "@/utils/appHeaders";
 
 const route = useRoute(),
     store = usePoliciesStore(),
@@ -50,7 +51,7 @@ onMounted(async () => {
 <template>
     <div class="p-6">
         <router-link
-            to="/policies"
+            :to="appPath('/policies')"
             class="inline-block mb-4 text-blue-500 text-sm hover:underline"
             >← Back to Policies</router-link
         >

@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { ref, computed, watch } from "vue";
 import { useCollectionsStore } from "@/stores/collections";
+import { useAppContextStore } from "@/stores/appContext";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useToast } from "@/composables/useToast";
 import RecordForm from "@/components/RecordForm.vue";
+import { Drawer } from "primevue";
 
 const props = defineProps<{
     visible: boolean;
     collectionName: string;
+    relatedApp?: string;
     deferred?: boolean;
 }>();
 const emit = defineEmits<{
@@ -15,9 +18,12 @@ const emit = defineEmits<{
     created: [item: any];
 }>();
 
-const collectionsStore = useCollectionsStore();
-const { client } = useAlcedoClient();
-const toast = useToast();
+const collectionsStore = useCollectionsStore(),
+    appContext = useAppContextStore(),
+    { client } = useAlcedoClient(),
+    toast = useToast();
+
+const currentVersion = computed(() => appContext.version ?? undefined);
 
 const visibleInner = ref(props.visible);
 const formValues = ref<Record<string, any>>({});
@@ -33,7 +39,18 @@ watch(
         if (val) loadFields();
     },
 );
+function hasPendingChanges(): boolean {
+    return !!(
+        recordFormRef.value &&
+        typeof recordFormRef.value.hasPendingChanges === "function" &&
+        recordFormRef.value.hasPendingChanges()
+    );
+}
+
 function onVisibleChange(val: boolean) {
+    if (!val && hasPendingChanges()) {
+        if (!window.confirm("Discard unsaved changes?")) return;
+    }
     visibleInner.value = val;
     emit("update:visible", val);
 }
@@ -42,7 +59,10 @@ async function loadFields() {
     loadingFields.value = true;
     fetchError.value = null;
     try {
-        await collectionsStore.getCollection(props.collectionName);
+        await collectionsStore.getCollection(props.collectionName, true, {
+            app: props.relatedApp ?? undefined,
+            version: currentVersion.value,
+        });
         formValues.value = {};
     } catch (e) {
         fetchError.value =
@@ -77,39 +97,21 @@ async function save() {
             if (value === null || value === undefined || value === "") continue;
             payload[key] = value instanceof Date ? value.toISOString() : value;
         }
-        // Merge inlined O2M children into the same request (parent + children, atomic).
-        let inlinedTempIds: string[] = [];
+        // Merge nested relational sections into the same request (atomic).
         if (
             recordFormRef.value &&
-            typeof recordFormRef.value.getCreateBody === "function"
+            typeof recordFormRef.value.getRelationBody === "function"
         ) {
-            const { body, inlinedTempIds: ids } =
-                recordFormRef.value.getCreateBody();
+            const body = recordFormRef.value.getRelationBody();
             if (body) Object.assign(payload, body);
-            inlinedTempIds = ids;
         }
-        const res = (await client.items.create(
-            props.collectionName,
-            payload,
-        )) as any;
+        const res = await client.items.create(props.collectionName, payload, {
+            app: props.relatedApp ?? undefined,
+            version: currentVersion.value,
+        });
         const createdRaw = res.created || res.data || res;
         const created = Array.isArray(createdRaw) ? createdRaw : [createdRaw];
         const item = created[0];
-        const createdId = item?.id ?? null;
-        // Drop inlined children, then flush any remaining queued ops (nested ones).
-        if (recordFormRef.value) {
-            if (
-                typeof recordFormRef.value.consumeInlinedCreates === "function"
-            ) {
-                recordFormRef.value.consumeInlinedCreates(inlinedTempIds);
-            }
-            if (
-                createdId &&
-                typeof recordFormRef.value.flushPendingChildren === "function"
-            ) {
-                await recordFormRef.value.flushPendingChildren(createdId);
-            }
-        }
         toast.show("Item created successfully", "success");
         emit("created", item);
         visibleInner.value = false;
@@ -124,19 +126,22 @@ async function save() {
     }
 }
 function close() {
+    if (hasPendingChanges() && !window.confirm("Discard unsaved changes?"))
+        return;
     visibleInner.value = false;
     emit("update:visible", false);
 }
 </script>
 
 <template>
-    <Dialog
+    <Drawer
         v-model:visible="visibleInner"
         :header="`Add ${collectionName}`"
         :modal="true"
         :style="{ width: '640px' }"
         :draggable="false"
         :closable="!saving"
+        position="right"
         @update:visible="onVisibleChange"
     >
         <div v-if="loadingFields" class="text-center py-8 text-gray-500">
@@ -152,6 +157,8 @@ function close() {
                     :collection-name="collectionName"
                     v-model="formValues"
                     :scalar-only="deferred"
+                    :target-app="relatedApp"
+                    :target-version="currentVersion"
                 />
             </div>
         </template>
@@ -166,5 +173,5 @@ function close() {
                 <Button label="Save" :loading="saving" @click="save" />
             </div>
         </template>
-    </Dialog>
+    </Drawer>
 </template>

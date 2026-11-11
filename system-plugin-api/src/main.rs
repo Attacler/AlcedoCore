@@ -24,6 +24,8 @@ struct PluginConfig {
     min_core_version: Option<String>,
     #[serde(default)]
     env: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    accessable_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

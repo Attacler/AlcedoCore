@@ -136,6 +136,9 @@ async function saveCollectionDetails() {
                 p.related_collection = a.related_collection;
                 p.relationship_type = a.relationship_type;
             }
+            if (a.related_app) {
+                p.related_app = a.related_app;
+            }
             if (a.display_field) {
                 p.display_field = a.display_field;
             }

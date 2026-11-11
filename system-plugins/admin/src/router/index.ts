@@ -1,11 +1,16 @@
 import { createRouter, createWebHashHistory, RouteRecordRaw } from "vue-router";
 import { useAuthStore } from "@/stores/authStore";
+import { useAppContextStore } from "@/stores/appContext";
+import { setAppHeaders } from "@/utils/appHeaders";
 import LoginView from "@/pages/LoginView.vue";
+import AppsOverview from "@/pages/AppsOverview.vue";
+import VersionsPage from "@/pages/VersionsPage.vue";
+import VersionDetail from "@/pages/VersionDetail.vue";
+import AppZoneLayout from "@/pages/AppZoneLayout.vue";
 import Dashboard from "@/pages/Dashboard.vue";
 import PluginList from "@/pages/plugins/PluginList.vue";
 import PluginCreate from "@/pages/plugins/PluginCreate.vue";
 import PluginDetail from "@/pages/plugins/PluginDetail.vue";
-import PluginSettings from "@/pages/plugins/PluginSettings.vue";
 import PluginPage from "@/pages/plugins/PluginPage.vue";
 import RegistryList from "@/pages/RegistryList.vue";
 import RegistryDetail from "@/pages/RegistryDetail.vue";
@@ -16,14 +21,20 @@ import PoliciesIndex from "@/pages/PoliciesIndex.vue";
 import PolicyDetail from "@/pages/PolicyDetail.vue";
 import UsersIndex from "@/pages/UsersIndex.vue";
 import UserDetail from "@/pages/UserDetail.vue";
+import AppUsersIndex from "@/pages/AppUsersIndex.vue";
 import RolesIndex from "@/pages/RolesIndex.vue";
 import RoleDetail from "@/pages/RoleDetail.vue";
 import SettingsIndex from "@/pages/Settings/SettingsIndex.vue";
-import SettingsActivity from "@/pages/Settings/SettingsActivity.vue";
 import SettingsCategory from "@/pages/Settings/SettingsCategory.vue";
 import MediaLibrary from "@/pages/MediaLibrary.vue";
 import ApiDocs from "@/pages/ApiDocs.vue";
+import Development from "@/pages/Development.vue";
 import CollectionBuilder from "@/pages/CollectionBuilder.vue";
+import SettingsSession from "@/pages/Settings/SettingsSession.vue";
+import GlobalSettings from "@/pages/GlobalSettings.vue";
+import RouteMappings from "@/pages/RouteMappings.vue";
+
+const APP_DASHBOARD_ROUTE = "AppDashboard";
 
 const routes: RouteRecordRaw[] = [
     {
@@ -34,37 +45,67 @@ const routes: RouteRecordRaw[] = [
     },
     {
         path: "/",
-        redirect: "/dashboard",
+        redirect: "/apps",
+    },
+    // ---------------------------------------------------------------------
+    // Global zone (no app context)
+    // ---------------------------------------------------------------------
+    {
+        path: "/apps",
+        name: "AppsOverview",
+        component: AppsOverview,
     },
     {
-        path: "/dashboard",
-        name: "Dashboard",
-        component: Dashboard,
+        path: "/sessions",
+        name: "GlobalSessions",
+        component: SettingsSession,
     },
     {
-        path: "/plugins",
-        name: "PluginList",
-        component: PluginList,
+        path: "/settings",
+        name: "GlobalSettings",
+        component: GlobalSettings,
     },
     {
-        path: "/plugins/new",
-        name: "PluginCreate",
-        component: PluginCreate,
+        path: "/settings/routing",
+        name: "RouteMappings",
+        component: RouteMappings,
     },
     {
-        path: "/plugins/:name",
-        name: "PluginDetail",
-        component: PluginDetail,
+        path: "/development",
+        name: "Development",
+        component: Development,
     },
     {
-        path: "/plugins/:name/settings",
-        name: "PluginSettings",
-        component: PluginSettings,
+        path: "/development/api-docs",
+        name: "DevelopmentApiDocs",
+        component: ApiDocs,
     },
     {
-        path: "/p/:plugin/:pathMatch(.*)*",
-        name: "PluginPage",
-        component: PluginPage,
+        path: "/versions",
+        name: "Versions",
+        component: VersionsPage,
+        meta: { global: true },
+    },
+    {
+        path: "/versions/:id",
+        name: "VersionDetail",
+        component: VersionDetail,
+        meta: { global: true },
+    },
+    {
+        path: "/users",
+        name: "Users",
+        component: UsersIndex,
+    },
+    {
+        path: "/users/new",
+        name: "UserNew",
+        component: UserDetail,
+    },
+    {
+        path: "/users/:id",
+        name: "UserDetail",
+        component: UserDetail,
     },
     {
         path: "/registries",
@@ -83,101 +124,149 @@ const routes: RouteRecordRaw[] = [
         props: true,
     },
     {
-        path: "/collections",
-        name: "CollectionList",
-        component: CollectionList,
+        path: "/plugins",
+        name: "PluginList",
+        component: PluginList,
     },
     {
-        path: "/collections/:name/edit",
-        name: "CollectionBuilder",
-        component: CollectionBuilder,
-        meta: { fullPage: true },
+        path: "/plugins/new",
+        name: "PluginCreate",
+        component: PluginCreate,
     },
     {
-        path: "/collections/:name/data",
-        name: "CollectionData",
-        component: CollectionData,
+        path: "/plugins/:name",
+        name: "PluginDetail",
+        component: PluginDetail,
     },
+    // ---------------------------------------------------------------------
+    // App zone (scoped to /app/:appSlug/:version)
+    // ---------------------------------------------------------------------
     {
-        path: "/detail/:collection/:id",
-        name: "RecordDetail",
-        component: RecordDetail,
-        props: true,
-    },
-    {
-        path: "/policies",
-        name: "Policies",
-        component: PoliciesIndex,
-    },
-    {
-        path: "/policies/:id",
-        name: "PolicyDetail",
-        component: PolicyDetail,
-    },
-    {
-        path: "/users",
-        name: "Users",
-        component: UsersIndex,
-    },
-    {
-        path: "/users/new",
-        name: "UserNew",
-        component: UserDetail,
-    },
-    {
-        path: "/users/:id",
-        name: "UserDetail",
-        component: UserDetail,
-    },
-    {
-        path: "/roles",
-        name: "Roles",
-        component: RolesIndex,
-    },
-    {
-        path: "/roles/:id",
-        name: "RoleDetail",
-        component: RoleDetail,
-    },
-    {
-        path: "/settings",
-        name: "Settings",
-        component: SettingsIndex,
-    },
-    {
-        path: "/settings/activity",
-        name: "SettingsActivity",
-        component: SettingsActivity,
-    },
-    {
-        path: "/settings/:category",
-        name: "SettingsCategory",
-        component: SettingsCategory,
-        props: true,
-    },
-    {
-        path: "/files",
-        name: "MediaLibrary",
-        component: MediaLibrary,
-    },
-    {
-        path: "/files/:folderID",
-        name: "MediaLibraryFolder",
-        component: MediaLibrary,
-    },
-    {
-        path: "/files/:folderID/:fileName",
-        name: "MediaLibraryFolderFileDetails",
-        component: MediaLibrary,
-    },
-    {
-        path: "/apidocs",
-        name: "ApiDocs",
-        component: ApiDocs,
-    },
-    {
-        path: "/menu-builder",
-        redirect: "/settings/menu",
+        path: "/app/:appSlug/:version",
+        component: AppZoneLayout,
+        meta: { appZone: true },
+        children: [
+            {
+                path: "",
+                redirect: (to) => ({
+                    name: APP_DASHBOARD_ROUTE,
+                    params: to.params,
+                }),
+            },
+            {
+                path: "dashboard",
+                name: APP_DASHBOARD_ROUTE,
+                component: Dashboard,
+            },
+            {
+                path: "collections",
+                name: "AppCollectionList",
+                component: CollectionList,
+            },
+            {
+                path: "collections/:name/edit",
+                name: "AppCollectionBuilder",
+                component: CollectionBuilder,
+                meta: { fullPage: true },
+            },
+            {
+                path: "collections/:name/data",
+                name: "AppCollectionData",
+                component: CollectionData,
+            },
+            {
+                path: "detail/:collection/:id",
+                name: "AppRecordDetail",
+                component: RecordDetail,
+                props: true,
+            },
+            {
+                path: "policies",
+                name: "AppPolicies",
+                component: PoliciesIndex,
+            },
+            {
+                path: "policies/:id",
+                name: "AppPolicyDetail",
+                component: PolicyDetail,
+            },
+            {
+                path: "roles",
+                name: "AppRoles",
+                component: RolesIndex,
+            },
+            {
+                path: "roles/:id",
+                name: "AppRoleDetail",
+                component: RoleDetail,
+            },
+            {
+                path: "settings",
+                name: "AppSettings",
+                component: SettingsIndex,
+            },
+            {
+                path: "settings/users",
+                name: "AppUsers",
+                component: AppUsersIndex,
+            },
+            {
+                path: "settings/users/new",
+                name: "AppUserNew",
+                component: UserDetail,
+            },
+            {
+                path: "settings/users/:id",
+                name: "AppUserDetail",
+                component: UserDetail,
+            },
+            {
+                path: "settings/:category",
+                name: "AppSettingsCategory",
+                component: SettingsCategory,
+                props: true,
+            },
+            {
+                path: "files",
+                name: "AppMediaLibrary",
+                component: MediaLibrary,
+            },
+            {
+                path: "files/:folderID",
+                name: "AppMediaLibraryFolder",
+                component: MediaLibrary,
+            },
+            {
+                path: "files/:folderID/:fileName",
+                name: "AppMediaLibraryFolderFileDetails",
+                component: MediaLibrary,
+            },
+            {
+                path: "plugins",
+                name: "AppPlugins",
+                component: PluginList,
+            },
+            {
+                path: "plugins/new",
+                name: "AppPluginCreate",
+                component: PluginCreate,
+            },
+            {
+                path: "plugins/:name",
+                name: "AppPluginDetail",
+                component: PluginDetail,
+            },
+            {
+                path: "apidocs",
+                name: "AppApiDocs",
+                component: ApiDocs,
+            },
+            {
+                path: "p/:plugin/:pathMatch(.*)*",
+                name: "AppPluginPage",
+                component: PluginPage,
+            },
+        ],
     },
 ];
 
@@ -185,6 +274,8 @@ const router = createRouter({
     history: createWebHashHistory("/admin"),
     routes,
 });
+
+let lastScopeContext: string | null = null;
 
 router.beforeEach(async (to, _from) => {
     if (to.meta.public) return true;
@@ -196,6 +287,24 @@ router.beforeEach(async (to, _from) => {
 
     if (!authStore.user) {
         return { path: "/login", query: { redirect: to.fullPath } };
+    }
+
+    const appContext = useAppContextStore();
+    const appSlug = (to.params.appSlug as string) || null;
+    const version = (to.params.version as string) || null;
+    appContext.setContext(appSlug, version);
+    setAppHeaders(appSlug, version);
+
+    // Scopes are app-scoped, so re-resolve them whenever the app context
+    // changes (initialize() ran before the headers were set).
+    const scopeContext = `${appSlug ?? ""}::${version ?? ""}`;
+    if (scopeContext !== lastScopeContext) {
+        lastScopeContext = scopeContext;
+        const { useMenuStore } = await import("@/stores/menuStore");
+        await Promise.all([
+            authStore.refreshScopes(),
+            useMenuStore().loadMyMenus(),
+        ]);
     }
 
     return true;

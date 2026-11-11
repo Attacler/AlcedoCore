@@ -11,7 +11,7 @@ pub fn create_alcedo_sdk<'js>(ctx: Ctx<'js>, core_url: &str, request_id: &str) -
         let client = client.clone();
         let core_url = core_url.clone();
         Function::new(ctx.clone(), move |collection: String, id: String| {
-            let url = format!("{}/p/automation/db/query", core_url);
+            let url = format!("{}{}/db/query", core_url, crate::util::proxy_base_path());
             let body = serde_json::json!({
                 "query": format!("SELECT row_to_json(t.*)::text as result FROM \"{}\" t WHERE id = $1::uuid", collection),
                 "params": [id],
@@ -192,7 +192,7 @@ pub fn create_alcedo_sdk<'js>(ctx: Ctx<'js>, core_url: &str, request_id: &str) -
     };
     sdk.set("health", health)?;
 
-    // alcedocore.db.query(sql, params?) — POST to /p/automation/db/query proxy
+    // alcedocore.db.query(sql, params?) — POST to {PLUGIN_BASE_PATH}/db/query proxy
     let db_query = {
         let client = client.clone();
         let core_url = core_url.clone();
@@ -203,7 +203,7 @@ pub fn create_alcedo_sdk<'js>(ctx: Ctx<'js>, core_url: &str, request_id: &str) -
             if forbidden.iter().any(|f| upper.starts_with(f)) {
                 return format!("{{\"error\":\"DDL statements are not allowed: {}\"}}", sql);
             }
-            let url = format!("{}/p/automation/db/query", core_url);
+            let url = format!("{}{}/db/query", core_url, crate::util::proxy_base_path());
             let mut body = serde_json::json!({"query": sql, "params": []});
             if let Some(p) = args.0.get(1) {
                 let params_str = p.as_str();
@@ -215,7 +215,7 @@ pub fn create_alcedo_sdk<'js>(ctx: Ctx<'js>, core_url: &str, request_id: &str) -
             }
         })?
     };
-    // alcedocore.db.execute(sql, params?) — POST to /p/automation/db/execute proxy
+    // alcedocore.db.execute(sql, params?) — POST to {PLUGIN_BASE_PATH}/db/execute proxy
     let db_execute = {
         let client = client.clone();
         let core_url = core_url.clone();
@@ -226,7 +226,7 @@ pub fn create_alcedo_sdk<'js>(ctx: Ctx<'js>, core_url: &str, request_id: &str) -
             if forbidden.iter().any(|f| upper.starts_with(f)) {
                 return format!("{{\"error\":\"DDL statements are not allowed: {}\"}}", sql);
             }
-            let url = format!("{}/p/automation/db/execute", core_url);
+            let url = format!("{}{}/db/execute", core_url, crate::util::proxy_base_path());
             let mut body = serde_json::json!({"query": sql, "params": []});
             if let Some(p) = args.0.get(1) {
                 let params_str = p.as_str();

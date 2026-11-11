@@ -13,8 +13,7 @@ RUN cargo build --release
 # Use a minimal base image for the final stage
 FROM debian:bookworm-slim
 
-# Install dependencies
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates wget && rm -rf /var/lib/apt/lists/*
 
 # Copy the built binary from the builder stage
 COPY --from=builder /usr/src/alcedo-system-plugin-api/target/release/alcedo-system-plugin-api /usr/local/bin/alcedo-system-plugin-api

@@ -20,14 +20,20 @@ import { useSavedViewsStore } from "@/stores/savedViews";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useExtensionRegistryStore } from "@/stores/extensionRegistry";
 import type { FilterCondition } from "@/types/filters";
-import { toShortForm, hasNonEmptyCondition } from "@/types/filters";
+import {
+    toShortForm,
+    hasNonEmptyCondition,
+    normalizeFilterCondition,
+} from "@/types/filters";
 import ViewSelector from "@/components/ViewSelector.vue";
 import ViewRenderer from "@/components/ViewRenderer.vue";
 import FilterBuilder from "@/components/FilterBuilder.vue";
 import ViewSettingsDrawer from "@/components/ViewSettingsDrawer.vue";
 import type { RelatedFieldOption } from "@/components/FilterBuilder.vue";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
+import { useAppContextStore } from "@/stores/appContext";
 import { useToast } from "@/composables/useToast";
+import type { RowAction } from "@/views/TableView";
 import { useAuthStore } from "@/stores/authStore";
 import QuickAddModal from "@/components/QuickAddModal.vue";
 import { Popover } from "primevue";
@@ -48,6 +54,7 @@ const props = withDefaults(
         };
         createAction?: { label: string; run: () => void };
         rowLinkTo?: (item: any) => string;
+        rowActions?: (item: any) => RowAction[];
         title?: string;
         defaultViewConfig?: {
             render_mode?: string;
@@ -71,15 +78,18 @@ const route = useRoute(),
     savedViewsStore = useSavedViewsStore(),
     settingsStore = useSettingsStore(),
     collectionsStore = useCollectionsStore(),
-    extensionRegistry = useExtensionRegistryStore();
+    extensionRegistry = useExtensionRegistryStore(),
+    appContext = useAppContextStore();
 
 const showViewMenu = ref(),
     collection = ref<Collection | null>(null),
     metaLoading = ref(true);
 
-const collectionName = computed(
-    () => props.collectionName || (route.params.name as string),
-);
+const currentVersion = computed(() => appContext.version ?? undefined),
+    currentApp = computed(() => appContext.appSlug ?? undefined),
+    collectionName = computed(
+        () => props.collectionName || (route.params.name as string),
+    );
 
 const items = ref<any[]>([]),
     total = ref(0),
@@ -291,14 +301,32 @@ async function fetchItems() {
         params.set("page", String(page.value));
         params.set("per_page", String(perPage.value));
         if (sortField.value) {
-            params.set("sort", sortField.value);
-            params.set("order", sortOrder.value);
+            params.set(
+                "sort",
+                JSON.stringify([
+                    `${sortOrder.value === "desc" ? "-" : "+"}${sortField.value}`,
+                ]),
+            );
         }
 
         const cond = filterCondition.value;
         const hasFilter = cond !== null && hasNonEmptyCondition(cond);
         if (hasFilter) {
             params.set("filter", JSON.stringify(toShortForm(cond)));
+        }
+
+        const relationFields = fields.value.filter(
+            (f) =>
+                f.type === "relationship" &&
+                f.related_collection &&
+                f.relationship_type !== "one_to_many",
+        );
+        const requestedFields = [
+            "*",
+            ...relationFields.map((f) => `${f.name}.*`),
+        ];
+        if (requestedFields.length > 1) {
+            params.set("fields", JSON.stringify(requestedFields));
         }
 
         const paramsObj: Record<string, string> = {};
@@ -313,12 +341,49 @@ async function fetchItems() {
         const rawItems = data.data || data.items || data;
         items.value = Array.isArray(rawItems) ? rawItems : [];
         total.value = data.total || items.value.length;
+        await fetchRowPermissions();
     } catch (e) {
         error.value = e instanceof Error ? e.message : "Failed to load data";
         items.value = [];
         total.value = 0;
     } finally {
         loading.value = false;
+    }
+}
+
+/**
+ * Row-level edit/delete permissions are not carried on the item payload; ask
+ * the dedicated `$update` / `$delete` endpoints for this page's pks and stash
+ * the flags per row.
+ */
+async function fetchRowPermissions() {
+    if (!items.value.length) return;
+    const pks = items.value.map((item: any) => item.id).filter(Boolean);
+
+    try {
+        const permissions = (await client.items.deletePermissions(
+            collectionName.value,
+            pks,
+        )) as Record<string, boolean>;
+        for (const item of items.value) {
+            item.$delete_permission = permissions[String(item.id)] !== false;
+        }
+    } catch {
+        // Fail closed: without an answer, hide delete.
+        for (const item of items.value) item.$delete_permission = false;
+    }
+
+    try {
+        const permissions = (await client.items.updatePermissions(
+            collectionName.value,
+            pks,
+        )) as Record<string, boolean>;
+        for (const item of items.value) {
+            item.$update_permission = permissions[String(item.id)] !== false;
+        }
+    } catch {
+        // Fail closed: without an answer, hide edit.
+        for (const item of items.value) item.$update_permission = false;
     }
 }
 
@@ -336,17 +401,57 @@ async function fetchRelatedFieldOptions() {
 
     for (const rf of relFields) {
         const relName = rf.related_collection!;
+        const directApp = rf.related_app ?? currentApp.value;
         try {
-            const relCollection = await collectionsStore.getCollection(relName);
+            const relCollection = await collectionsStore.getCollection(
+                relName,
+                false,
+                {
+                    app: directApp ?? undefined,
+                    version: currentVersion.value,
+                },
+            );
 
             if (relCollection && relCollection.fields) {
                 for (const field of relCollection.fields) {
-                    if (field.type === "relationship") continue;
+                    if (field.type === "relationship") {
+                        const nestedName = field.related_collection;
+                        if (!nestedName) continue;
+                        const nestedApp = field.related_app ?? directApp;
+                        try {
+                            const nestedCollection =
+                                await collectionsStore.getCollection(
+                                    nestedName,
+                                    false,
+                                    {
+                                        app: nestedApp ?? undefined,
+                                        version: currentVersion.value,
+                                    },
+                                );
+                            if (!nestedCollection?.fields) continue;
+                            for (const deep of nestedCollection.fields) {
+                                if (deep.type === "relationship") continue;
+                                options.push({
+                                    value: `${rf.name}.${field.name}.${deep.name}`,
+                                    label: `${rf.name}.${field.name}.${deep.name}  (→ ${nestedName})`,
+                                    collection: nestedName,
+                                    fieldType: deep.type,
+                                    app: nestedApp ?? undefined,
+                                });
+                            }
+                        } catch {
+                            console.warn(
+                                `[CollectionData] Could not fetch nested collection: ${nestedName}`,
+                            );
+                        }
+                        continue;
+                    }
                     options.push({
                         value: `${rf.name}.${field.name}`,
                         label: `${rf.name}.${field.name}  (→ ${relName})`,
                         collection: relName,
                         fieldType: field.type,
+                        app: directApp ?? undefined,
                     });
                 }
             }
@@ -399,7 +504,7 @@ function applyViewConfig(view: {
 
     if (view.config.filterCondition) {
         const parsed = JSON.parse(JSON.stringify(view.config.filterCondition));
-        filterCondition.value = parsed;
+        filterCondition.value = normalizeFilterCondition(parsed);
     } else {
         filterCondition.value = null;
     }
@@ -473,7 +578,7 @@ function closeDeleteModal() {
 }
 
 watch(
-    () => settingsStore.settings["default_page_size"],
+    () => settingsStore.appSettings["default_page_size"],
     (newVal) => {
         if (newVal !== undefined && newVal !== null) {
             perPage.value = Number(newVal);
@@ -488,7 +593,7 @@ watch(
             if (!filterCondition.value) {
                 filterCondition.value = {
                     operator: "and",
-                    conditions: [{ field: "", operator: "eq", value: "" }],
+                    conditions: [{ path: [], operator: "eq", value: "" }],
                 };
             }
         }
@@ -800,6 +905,7 @@ onMounted(() => {
         :collection-fields="fields"
         :lazy="true"
         :row-link-to="rowLinkTo"
+        :row-actions="rowActions"
         :default-view-config="defaultViewConfig"
         @update:sort="onUpdateSort"
         @update:page="goToPage"

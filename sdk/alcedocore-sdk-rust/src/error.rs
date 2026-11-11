@@ -34,6 +34,15 @@ pub enum AlcedoError {
         message: String,
         status_code: u16,
     },
+
+    /// JSend `fail`/`error` envelope returned by the core API.
+    #[error("API error ({status}): {message}")]
+    Api {
+        message: String,
+        code: Option<String>,
+        status: String,
+        http_status: Option<u16>,
+    },
 }
 
 impl AlcedoError {
@@ -45,6 +54,7 @@ impl AlcedoError {
             AlcedoError::Validation { status_code, .. } => Some(*status_code),
             AlcedoError::Authentication { status_code, .. } => Some(*status_code),
             AlcedoError::Server { status_code, .. } => Some(*status_code),
+            AlcedoError::Api { http_status, .. } => *http_status,
         }
     }
 

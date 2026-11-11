@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, inject, computed } from "vue";
 
 const count = ref(0);
 const loading = ref(false);
 const step = ref(1);
 const error = ref("");
 
-const BASE = "/p/hello-world/api/counter";
+const plugin = inject<any>("alcedoPlugin", null);
+const BASE = computed(() => `${plugin?.basePath || "/p/hello-world"}/api/counter`);
 
 async function fetchCount() {
     try {
-        const r = await fetch(`${BASE}/value`);
+        const r = await fetch(`${BASE.value}/value`);
         const d = await r.json();
         count.value = d.count;
     } catch {
@@ -22,7 +23,7 @@ async function increment() {
     loading.value = true;
     error.value = "";
     try {
-        const r = await fetch(`${BASE}/increment`, {
+        const r = await fetch(`${BASE.value}/increment`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ step: step.value }),
@@ -44,7 +45,7 @@ async function decrement() {
     loading.value = true;
     error.value = "";
     try {
-        const r = await fetch(`${BASE}/decrement`, {
+        const r = await fetch(`${BASE.value}/decrement`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ step: step.value }),
@@ -67,12 +68,12 @@ async function reset() {
     loading.value = true;
     error.value = "";
     try {
-        const r = await fetch(`${BASE}/value`);
+        const r = await fetch(`${BASE.value}/value`);
         const d = await r.json();
         const current = d.count;
         const ops = current > 0 ? "decrement" : "increment";
         for (let i = 0; i < Math.abs(current); i++) {
-            await fetch(`${BASE}/${ops}`, { method: "POST" });
+            await fetch(`${BASE.value}/${ops}`, { method: "POST" });
         }
         count.value = 0;
     } catch {
@@ -139,7 +140,7 @@ onMounted(fetchCount);
 
         <p class="footer-link">
             Link to:
-            <a href="/admin#/p/hello-world/index" class="link">Hello</a>
+            <a :href="`/admin#${plugin?.basePath || '/p/hello-world'}/index`" class="link">Hello</a>
         </p>
     </div>
 </template>

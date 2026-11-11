@@ -99,7 +99,7 @@ async fn item_matches_filter(
         where_clause,
     );
 
-    let url = format!("{}/p/automation/db/query", core_url);
+    let url = format!("{}{}/db/query", core_url, crate::util::proxy_base_path());
     let body = serde_json::json!({
         "query": sql,
         "params": [item_id],

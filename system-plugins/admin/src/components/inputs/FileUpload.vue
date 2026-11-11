@@ -40,8 +40,10 @@ async function startUpload(file: File) {
         emit("fileUploaded", upload);
         visible.value = false;
     } catch (e: any) {
-        uploading.value = false;
         toast.show(e.data?.detail || "Upload failed", "error");
+    } finally {
+        uploading.value = false;
+        uploadProgress.value = 0;
     }
 }
 

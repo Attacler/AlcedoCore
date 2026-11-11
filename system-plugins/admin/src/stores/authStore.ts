@@ -2,10 +2,14 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import type { User as UserInfo } from "@/types/user";
 import { useMenuStore } from "./menuStore";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
 
 export const useAuthStore = defineStore("auth", () => {
+    const { client } = useAlcedoClient();
+
     const user = ref<UserInfo | null>(null);
     const scopes = ref<string[]>([]);
+    const isAdmin = ref(false);
     const loading = ref(false);
     const initialized = ref(false);
     const loginError = ref<string | null>(null);
@@ -13,14 +17,13 @@ export const useAuthStore = defineStore("auth", () => {
     async function initialize() {
         loading.value = true;
         try {
-            const res = await fetch("/api/auth/me", { credentials: "include" });
-            if (res.ok) {
-                const data = await res.json();
-                user.value = data.user;
-                scopes.value = data.scopes || [];
-                const menuStore = useMenuStore();
-                menuStore.loadMyMenus();
-            }
+            const res = await client.auth.me();
+
+            user.value = res.user;
+            scopes.value = res.scopes || [];
+            isAdmin.value = res.user.is_admin === true;
+            const menuStore = useMenuStore();
+            menuStore.loadMyMenus();
         } catch {
             user.value = null;
             scopes.value = [];
@@ -34,24 +37,17 @@ export const useAuthStore = defineStore("auth", () => {
         loading.value = true;
         loginError.value = null;
         try {
-            const res = await fetch("/api/auth/login", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                credentials: "include",
-                body: JSON.stringify({ email, password }),
-            });
-            if (res.ok) {
+            const res = await client.auth.login({ email, password });
+            if ("user" in res) {
                 await initialize();
                 return true;
             } else {
-                const err = await res
-                    .json()
-                    .catch(() => ({ error: "Login failed" }));
-                loginError.value = err.error || "Invalid email or password";
+                loginError.value = res.error || "Invalid email or password";
                 return false;
             }
-        } catch {
-            loginError.value = "Network error — could not reach server";
+        } catch (e: any) {
+            loginError.value =
+                e?.message || "Network error — could not reach server";
             return false;
         } finally {
             loading.value = false;
@@ -60,10 +56,7 @@ export const useAuthStore = defineStore("auth", () => {
 
     async function logout() {
         try {
-            await fetch("/api/auth/logout", {
-                method: "POST",
-                credentials: "include",
-            });
+            await client.auth.logout();
         } catch {
             // Proceed with local logout even if server call fails
         }
@@ -71,11 +64,46 @@ export const useAuthStore = defineStore("auth", () => {
     }
 
     function hasScope(scope: string): boolean {
-        return scopes.value.includes(scope);
+        if (isAdmin.value) return true;
+        return scopes.value.some((granted) => {
+            if (granted === scope || granted === "rootaccess.all") return true;
+            if (granted.endsWith(".all")) {
+                return scope.startsWith(granted.slice(0, -4) + ".");
+            }
+            return false;
+        });
+    }
+
+    async function refreshScopes() {
+        try {
+            const res = await client.auth.me();
+            user.value = res.user;
+            scopes.value = res.scopes || [];
+            isAdmin.value = res.user.is_admin === true;
+        } catch {
+            // Keep the current state when the refresh fails.
+        }
     }
 
     function clearError() {
         loginError.value = null;
+    }
+
+    async function resolveLanding(): Promise<string> {
+        if (isAdmin.value) {
+            return "/apps";
+        }
+        // non-admin: fetch accessible apps
+        try {
+            const apps = await client.apps.me();
+            if (apps.length === 1) {
+                const a = apps[0];
+                return `/app/${encodeURIComponent(a.api_name)}/${encodeURIComponent(a.version)}/dashboard`;
+            }
+            return "/apps";
+        } catch {
+            return "/apps";
+        }
     }
 
     const displayName = computed(() => {
@@ -93,6 +121,7 @@ export const useAuthStore = defineStore("auth", () => {
     return {
         user,
         scopes,
+        isAdmin,
         loading,
         initialized,
         loginError,
@@ -101,6 +130,8 @@ export const useAuthStore = defineStore("auth", () => {
         logout,
         clearError,
         hasScope,
+        refreshScopes,
+        resolveLanding,
         displayName,
         userInitial,
     };

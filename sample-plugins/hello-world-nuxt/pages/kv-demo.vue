@@ -5,28 +5,11 @@ const result = ref('')
 const error = ref('')
 const loading = ref(false)
 
-const SLUG = typeof window !== 'undefined' ? window.location.pathname.split('/')[1] : 'hello-world-nuxt'
-
-async function apiFetch(path: string, opts: any = {}) {
-  const res = await fetch(`/p/${SLUG}/api${path}`, {
-    method: opts.method || 'GET',
-    headers: { 'Content-Type': 'application/json' },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  })
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-  return res.json()
-}
-
-function show(data: any) {
-  try { result.value = JSON.stringify(data, null, 2) }
-  catch { result.value = String(data) }
-}
-
 async function getKey() {
   loading.value = true; error.value = ''; result.value = ''
   try {
-    const data: any = await apiFetch(`/kv/${key.value}`)
-    show(data)
+    const data = await pluginFetch(`/kv/${key.value}`)
+    result.value = JSON.stringify(data, null, 2)
   } catch (e: any) {
     error.value = e.message || String(e)
   }
@@ -36,8 +19,11 @@ async function getKey() {
 async function setKey() {
   loading.value = true; error.value = ''; result.value = ''
   try {
-    const data: any = await apiFetch(`/kv/${key.value}`, { method: 'PUT', body: { value: value.value } })
-    show(data)
+    const data = await pluginFetch(`/kv/${key.value}`, {
+      method: 'PUT',
+      body: JSON.stringify({ value: value.value }),
+    })
+    result.value = JSON.stringify(data, null, 2)
   } catch (e: any) {
     error.value = e.message || String(e)
   }
@@ -47,8 +33,8 @@ async function setKey() {
 async function deleteKey() {
   loading.value = true; error.value = ''; result.value = ''
   try {
-    const data: any = await apiFetch(`/kv/${key.value}`, { method: 'DELETE' })
-    show(data)
+    const data = await pluginFetch(`/kv/${key.value}`, { method: 'DELETE' })
+    result.value = JSON.stringify(data, null, 2)
   } catch (e: any) {
     error.value = e.message || String(e)
   }
@@ -58,8 +44,8 @@ async function deleteKey() {
 async function getTtl() {
   loading.value = true; error.value = ''; result.value = ''
   try {
-    const data: any = await apiFetch(`/kv/${key.value}/ttl`)
-    show(data)
+    const data = await pluginFetch(`/kv/${key.value}/ttl`)
+    result.value = JSON.stringify(data, null, 2)
   } catch (e: any) {
     error.value = e.message || String(e)
   }

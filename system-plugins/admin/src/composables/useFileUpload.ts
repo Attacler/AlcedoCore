@@ -1,10 +1,12 @@
 import { ref } from 'vue'
+import { useAppContextStore } from '@/stores/appContext'
 
 export interface UploadedFile {
     id: string
     filename: string
     size_bytes: number
     mime_type: string
+    download_url?: string | null
 }
 
 export interface FileConflict {
@@ -61,7 +63,9 @@ export function useFileUpload() {
             }
             xhr.onload = () => {
                 if (xhr.status >= 200 && xhr.status < 300) {
-                    resolve(JSON.parse(xhr.responseText))
+                    const body = JSON.parse(xhr.responseText)
+                    // Core wraps responses in the JSend envelope.
+                    resolve(body?.data ?? body)
                 } else {
                     const err = new Error(xhr.statusText) as any
                     err.status = xhr.status
@@ -70,7 +74,10 @@ export function useFileUpload() {
                 }
             }
             xhr.onerror = () => reject(new Error('Upload failed'))
-            xhr.open('POST', '/api/files/upload')
+            xhr.open('POST', '/api/app/files/upload')
+            const ctx = useAppContextStore()
+            if (ctx.appSlug) xhr.setRequestHeader('X-App', ctx.appSlug)
+            if (ctx.version) xhr.setRequestHeader('X-Version', ctx.version)
             xhr.send(formData)
         })
     }

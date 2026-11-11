@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useAlcedoClient } from "../composables/useAlcedoClient";
+import { useAppContextStore } from "@/stores/appContext";
 import { withAsyncHandlingVoid } from "../utils/asyncUtils";
 
 export type FieldType =
@@ -11,6 +12,7 @@ export type FieldType =
     | "datetime"
     | "uuid"
     | "relationship"
+    | "user"
     | "boolean"
     | "file";
 
@@ -31,6 +33,7 @@ export interface FieldDefinition {
     display_component?: string;
     ordinal_position?: number;
     related_collection?: string;
+    related_app?: string | null;
     relationship_type?: "one_to_one" | "many_to_one" | "one_to_many";
     display_field?: string;
     inline_parent_fields?: string[];
@@ -50,6 +53,7 @@ export interface CollectionSection {
     name: string;
     section_type: "field_group" | "relational";
     relation_field?: string | null;
+    related_app?: string | null;
     view_type?: string;
     default_filter?: any;
     display_fields?: string[] | null;
@@ -80,6 +84,12 @@ export interface CollectionLayout {
 
 export const useCollectionsStore = defineStore("collections", () => {
     const { client } = useAlcedoClient();
+    const appContext = useAppContextStore();
+    // Scope cache keys by the active app context so switching apps never
+    // serves a previous app's collection definition (e.g. both apps have
+    // `notes` with different fields).
+    const cacheScope = () =>
+        `${appContext.appSlug ?? "global"}:${appContext.version ?? "default"}`;
     const collections = ref<Collection[]>([]),
         loading = ref(false),
         error = ref<string | null>(null),
@@ -101,33 +111,54 @@ export const useCollectionsStore = defineStore("collections", () => {
         deletedFieldNames.value = [];
     }
 
-    let fetchCollectionsPromise: Promise<void> | null = null; // Cache collection responses
+    // Per-scope collection-list promises so switching apps refetches.
+    const fetchCollectionsPromises: Record<string, Promise<void> | null> = {};
 
-    async function fetchCollections(force = false) {
-        if (fetchCollectionsPromise && !force) return fetchCollectionsPromise;
-        fetchCollectionsPromise = withAsyncHandlingVoid(
+    async function fetchCollections(
+        force = false,
+        target?: { app?: string | null; version?: string | null },
+    ) {
+        const scope = `${target?.app ?? appContext.appSlug ?? "global"}:${target?.version ?? appContext.version ?? "default"}`;
+        if (fetchCollectionsPromises[scope] && !force)
+            return fetchCollectionsPromises[scope];
+        fetchCollectionsPromises[scope] = withAsyncHandlingVoid(
             loading,
             error,
             async () => {
-                const response = (await client.collections.list()) as any;
+                const response = (await client.collections.list({
+                    app: target?.app ?? undefined,
+                    version: target?.version ?? undefined,
+                })) as any;
                 collections.value = response.collections || [];
             },
         ).finally(() => {
-            fetchCollectionsPromise = null;
+            fetchCollectionsPromises[scope] = null;
         });
-        return fetchCollectionsPromise;
+        return fetchCollectionsPromises[scope];
     }
 
     async function getCollection(
         name: string,
         ignoreCache = false,
+        target?: { app?: string | null; version?: string | null },
     ): Promise<Collection> {
-        if (!ignoreCache && name in collectionCache)
-            return await collectionCache[name];
+        const scope = target
+            ? `${target?.app ?? appContext.appSlug ?? "global"}:${target?.version ?? appContext.version ?? "default"}`
+            : cacheScope();
+        const key = `${scope}:${name}`;
+        if (!ignoreCache && key in collectionCache)
+            return await collectionCache[key];
 
-        collectionCache[name] = new Promise(async (res, rej) => {
+        // Clear any stale definition from a previous app context before the
+        // scoped fetch resolves.
+        currentCollection.value = null;
+
+        collectionCache[key] = new Promise(async (res, rej) => {
             try {
-                const response = (await client.collections.get(name)) as any;
+                const response = (await client.collections.get(name, {
+                    app: target?.app ?? undefined,
+                    version: target?.version ?? undefined,
+                })) as any;
                 const data = response.data || response;
 
                 currentCollection.value = data;
@@ -137,7 +168,7 @@ export const useCollectionsStore = defineStore("collections", () => {
             }
         });
 
-        return await collectionCache[name];
+        return await collectionCache[key];
     }
 
     async function createCollection(data: {
@@ -179,10 +210,15 @@ export const useCollectionsStore = defineStore("collections", () => {
 
     async function listLayouts(
         collectionName: string,
+        target?: { app?: string | null; version?: string | null },
     ): Promise<CollectionLayout[]> {
         try {
             const response = (await client.collections.listLayouts(
                 collectionName,
+                {
+                    app: target?.app ?? undefined,
+                    version: target?.version ?? undefined,
+                },
             )) as any;
             const data = response.data || response;
 
@@ -247,9 +283,16 @@ export const useCollectionsStore = defineStore("collections", () => {
         )) as any;
     }
 
-    async function getResolvedLayout(collectionName: string): Promise<any> {
+    async function getResolvedLayout(
+        collectionName: string,
+        target?: { app?: string | null; version?: string | null },
+    ): Promise<any> {
         const response = (await client.collections.getResolvedLayout(
             collectionName,
+            {
+                app: target?.app ?? undefined,
+                version: target?.version ?? undefined,
+            },
         )) as any;
         return response.data || response;
     }
@@ -257,10 +300,15 @@ export const useCollectionsStore = defineStore("collections", () => {
     async function listLayoutSections(
         collectionName: string,
         layoutId: string,
+        target?: { app?: string | null; version?: string | null },
     ): Promise<any[]> {
         const response = (await client.collections.listLayoutSections(
             collectionName,
             layoutId,
+            {
+                app: target?.app ?? undefined,
+                version: target?.version ?? undefined,
+            },
         )) as any;
         const data = response.data || response;
         return data.sections || [];
@@ -270,11 +318,16 @@ export const useCollectionsStore = defineStore("collections", () => {
         collectionName: string,
         layoutId: string,
         data: any,
+        target?: { app?: string | null; version?: string | null },
     ): Promise<any> {
         return (await client.collections.createLayoutSection(
             collectionName,
             layoutId,
             data,
+            {
+                app: target?.app ?? undefined,
+                version: target?.version ?? undefined,
+            },
         )) as any;
     }
 
@@ -283,12 +336,17 @@ export const useCollectionsStore = defineStore("collections", () => {
         layoutId: string,
         sectionId: string,
         data: any,
+        target?: { app?: string | null; version?: string | null },
     ): Promise<any> {
         return (await client.collections.updateLayoutSection(
             collectionName,
             layoutId,
             sectionId,
             data,
+            {
+                app: target?.app ?? undefined,
+                version: target?.version ?? undefined,
+            },
         )) as any;
     }
 
@@ -296,11 +354,16 @@ export const useCollectionsStore = defineStore("collections", () => {
         collectionName: string,
         layoutId: string,
         sectionId: string,
+        target?: { app?: string | null; version?: string | null },
     ): Promise<any> {
         return (await client.collections.deleteLayoutSection(
             collectionName,
             layoutId,
             sectionId,
+            {
+                app: target?.app ?? undefined,
+                version: target?.version ?? undefined,
+            },
         )) as any;
     }
 
@@ -308,11 +371,16 @@ export const useCollectionsStore = defineStore("collections", () => {
         collectionName: string,
         layoutId: string,
         sections: any[],
+        target?: { app?: string | null; version?: string | null },
     ): Promise<any> {
         return (await client.collections.batchReorderSections(
             collectionName,
             layoutId,
             sections,
+            {
+                app: target?.app ?? undefined,
+                version: target?.version ?? undefined,
+            },
         )) as any;
     }
 

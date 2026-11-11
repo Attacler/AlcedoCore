@@ -6,19 +6,64 @@ import { useMenuStore } from "@/stores/menuStore";
 import type { MenuSection, MenuItem } from "@/types/menu";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useAuthStore } from "@/stores/authStore";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useRouter } from "vue-router";
 import ToastContainer from "@/components/ToastContainer.vue";
 import SplashScreen from "@/components/SplashScreen.vue";
 import { Message, Toast } from "primevue";
 import { useDevServerStore } from "@/stores/devServerStore";
+import { useAppContextStore } from "@/stores/appContext";
+import { appPath } from "@/utils/appHeaders";
 
 const authStore = useAuthStore(),
+    { client } = useAlcedoClient(),
     router = useRouter(),
     pluginsStore = usePluginsStore(),
     collectionsStore = useCollectionsStore(),
     menuStore = useMenuStore(),
     settingsStore = useSettingsStore(),
-    devStore = useDevServerStore();
+    devStore = useDevServerStore(),
+    appContext = useAppContextStore();
+
+const accessibleApps = ref<{ api_name: string; name: string }[]>([]);
+const appSwitcherOpen = ref(false);
+
+const currentAppName = computed(
+    () =>
+        accessibleApps.value.find((a) => a.api_name === appContext.appSlug)
+            ?.name ?? appContext.appSlug,
+);
+
+async function loadAccessibleApps() {
+    try {
+        const apps = await client.apps.me();
+        const version = appContext.version;
+        accessibleApps.value = apps
+            .filter((a) => a.version === version)
+            .map((a) => ({ api_name: a.api_name, name: a.app_name }));
+    } catch {
+        /* ignore */
+    }
+}
+
+function switchApp(apiName: string) {
+    const version = appContext.version;
+    if (!version) return;
+    const current = router.currentRoute.value.path;
+    const target = current.replace(
+        new RegExp(`^/app/[^/]+/${version}`),
+        `/app/${encodeURIComponent(apiName)}/${version}`,
+    );
+    router.push(target);
+    appSwitcherOpen.value = false;
+}
+
+function goBackToApps() {
+    router.push({
+        path: "/apps",
+        query: { version: appContext.version || undefined },
+    });
+}
 
 const fullPage = computed(
     () => router.currentRoute.value.meta.fullPage || false,
@@ -74,13 +119,6 @@ const settingsSections = computed<MenuSection[]>(() => {
                 visible: true,
             },
             {
-                id: "registries",
-                label: "Registries",
-                icon: "cloud",
-                route: "/registries",
-                visible: true,
-            },
-            {
                 id: "policies",
                 label: "Policies",
                 icon: "policy",
@@ -98,7 +136,7 @@ const settingsSections = computed<MenuSection[]>(() => {
                 id: "users",
                 label: "Users",
                 icon: "group",
-                route: "/users",
+                route: "/settings/users",
                 visible: true,
             },
         ],
@@ -114,13 +152,14 @@ const settingsSections = computed<MenuSection[]>(() => {
         },
     ];
     for (const c of collectionsStore.collections) {
-        collectionItems.push({
-            id: `collection-${c.name}-settings`,
-            label: c.display_name || c.name,
-            icon: "table",
-            route: `/collections/${encodeURIComponent(c.name)}/edit`,
-            visible: true,
-        });
+        if (!c.name.startsWith("alcedocore_"))
+            collectionItems.push({
+                id: `collection-${c.name}-settings`,
+                label: c.display_name || c.name,
+                icon: "table",
+                route: `/collections/${encodeURIComponent(c.name)}/edit`,
+                visible: true,
+            });
     }
     sections.push({
         id: "settings-collections",
@@ -226,13 +265,29 @@ function visibleSectionItems(section: { items: any[]; visible: boolean }) {
     return section.items.filter((i: any) => i.visible !== false);
 }
 
+const GLOBAL_ONLY_ROUTES = ["/apps", "/users", "/registries", "/login"];
+
+function isGlobalOnlyRoute(route: string): boolean {
+    if (
+        route === "/settings/developer" ||
+        route.startsWith("/settings/developer/")
+    ) {
+        return true;
+    }
+    return GLOBAL_ONLY_ROUTES.some(
+        (prefix) => route === prefix || route.startsWith(prefix + "/"),
+    );
+}
+
 function resolveItemRoute(item: {
     route?: string;
     url?: string;
     external?: boolean;
 }) {
     if (item.external && item.url) return item.url;
-    return item.route || "/";
+    const route = item.route || "/";
+    if (isGlobalOnlyRoute(route)) return route;
+    return appPath(route);
 }
 
 onMounted(() => {
@@ -242,9 +297,22 @@ onMounted(() => {
 
     settingsStore.fetchSettings();
     collectionsStore.fetchCollections();
-    pluginsStore.fetchPlugins();
+    pluginsStore.fetchPlugins({ effective: true });
+    loadAccessibleApps();
     bootStarted.value = true;
 });
+
+watch(
+    () => [appContext.appSlug, appContext.version],
+    async () => {
+        if (appContext.appSlug) {
+            menuStore.loadMyMenus();
+            collectionsStore.fetchCollections(true);
+            await pluginsStore.fetchPlugins({ effective: true });
+        }
+        loadAccessibleApps();
+    },
+);
 
 const bootStarted = ref(false);
 const booting = ref(true);
@@ -419,38 +487,89 @@ onUnmounted(() => {
                     </div>
 
                     <!-- Section Items -->
-                    <component
+                    <template
                         v-for="item in visibleSectionItems(section)"
-                        :is="item.external ? 'a' : 'router-link'"
                         :key="item.id"
-                        :to="resolveItemRoute(item)"
-                        :href="resolveItemRoute(item)"
-                        :target="item.external ? '_blank' : undefined"
-                        class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-700 transition-colors border-l-2 border-transparent"
-                        :class="{
-                            'flex-col': !isMobile && !collapsed,
-                            'text-sm': isMobile,
-                            'text-slate-400': !item.visible,
-                        }"
-                        active-class="bg-slate-700 border-l-2 border-blue-400"
-                        @click="closeSidebarOnMobile"
                     >
-                        <span
-                            class="material-symbols-outlined text-xl"
-                            :class="{ 'mx-auto': collapsed && !isMobile }"
-                            >{{ item.icon }}</span
+                        <component
+                            :is="item.external ? 'a' : 'router-link'"
+                            :to="resolveItemRoute(item)"
+                            :href="resolveItemRoute(item)"
+                            :target="item.external ? '_blank' : undefined"
+                            class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-slate-700 transition-colors border-l-2 border-transparent"
+                            :class="{
+                                'text-sm': isMobile,
+                                'text-slate-300': !item.visible,
+                            }"
+                            active-class="bg-slate-700 border-l-2 border-blue-400 text-white"
+                            @click="closeSidebarOnMobile"
                         >
-                        <span
-                            v-if="!collapsed || isMobile"
-                            class="text-xs flex items-center"
-                            >{{ item.label }}
                             <span
-                                v-if="item.external"
-                                class="material-symbols-outlined text-xs text-slate-400 ml-1"
-                                >open_in_new</span
-                            ></span
+                                class="material-symbols-outlined text-xl shrink-0"
+                                :class="{ 'mx-auto': collapsed && !isMobile }"
+                                >{{ item.icon }}</span
+                            >
+                            <span
+                                v-if="!collapsed || isMobile"
+                                class="text-sm flex items-center truncate"
+                                >{{ item.label }}
+                                <span
+                                    v-if="item.external"
+                                    class="material-symbols-outlined text-xs text-slate-400 ml-1"
+                                    >open_in_new</span
+                                ></span
+                            >
+                        </component>
+
+                        <!-- Nested sub-items -->
+                        <div
+                            v-if="
+                                item.children &&
+                                item.children.some(
+                                    (c) => c.visible !== false,
+                                )
+                            "
+                            class="ml-4 flex flex-col gap-1 border-l border-slate-700 pl-2 mb-1"
                         >
-                    </component>
+                            <component
+                                v-for="child in item.children.filter(
+                                    (c) => c.visible !== false,
+                                )"
+                                :key="child.id"
+                                :is="child.external ? 'a' : 'router-link'"
+                                :to="resolveItemRoute(child)"
+                                :href="resolveItemRoute(child)"
+                                :target="
+                                    child.external ? '_blank' : undefined
+                                "
+                                class="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-slate-700 transition-colors border-l-2 border-transparent"
+                                :class="{
+                                    'text-sm': isMobile,
+                                    'text-slate-300': !child.visible,
+                                }"
+                                active-class="bg-slate-700 border-l-2 border-blue-400 text-white"
+                                @click="closeSidebarOnMobile"
+                            >
+                                <span
+                                    class="material-symbols-outlined text-lg shrink-0"
+                                    :class="{
+                                        'mx-auto': collapsed && !isMobile,
+                                    }"
+                                    >{{ child.icon }}</span
+                                >
+                                <span
+                                    v-if="!collapsed || isMobile"
+                                    class="text-sm flex items-center truncate"
+                                    >{{ child.label }}
+                                    <span
+                                        v-if="child.external"
+                                        class="material-symbols-outlined text-xs text-slate-400 ml-1"
+                                        >open_in_new</span
+                                    ></span
+                                >
+                            </component>
+                        </div>
+                    </template>
 
                     <!-- Empty section placeholder -->
                     <div
@@ -464,14 +583,63 @@ onUnmounted(() => {
                         No items
                     </div>
                 </div>
+
+                <div
+                    v-if="appContext.appSlug && activeSection == 'settings'"
+                    class="mb-2"
+                >
+                    <Button
+                        label="Back to the app overview"
+                        icon="pi pi-arrow-left"
+                        text
+                        size="small"
+                        @click="goBackToApps"
+                    />
+                </div>
             </nav>
+
+            <!-- App Switcher -->
+            <div
+                v-if="accessibleApps.length > 1"
+                class="px-2 py-2 border-t border-slate-700/50"
+            >
+                <button
+                    @click="appSwitcherOpen = !appSwitcherOpen"
+                    class="flex items-center gap-2 w-full px-2 py-1.5 rounded hover:bg-slate-700/50 text-sm text-slate-200 transition-colors cursor-pointer"
+                >
+                    <span class="material-symbols-outlined text-lg">apps</span>
+                    <span
+                        v-if="!collapsed || isMobile"
+                        class="flex-1 text-left truncate"
+                        >{{ currentAppName }}</span
+                    >
+                    <span
+                        v-if="!collapsed"
+                        class="material-symbols-outlined text-sm ml-auto"
+                        >arrow_drop_down</span
+                    >
+                </button>
+                <div
+                    v-if="appSwitcherOpen"
+                    class="mt-1 bg-slate-800 border border-slate-600 rounded-lg shadow-lg z-50 overflow-hidden"
+                >
+                    <div
+                        v-for="a in accessibleApps"
+                        :key="a.api_name"
+                        @click="switchApp(a.api_name)"
+                        class="flex items-center gap-2 px-3 py-2.5 hover:bg-slate-700 cursor-pointer text-sm transition-colors"
+                    >
+                        <span>{{ a.name }}</span>
+                    </div>
+                </div>
+            </div>
 
             <!-- User Info & Logout -->
             <div
                 v-if="authStore.user"
                 class="border-t border-slate-700 px-3 py-2"
             >
-                <routerLink to="/settings/developer">
+                <routerLink :to="appPath('/settings/developer')">
                     <Message
                         v-if="devStore.enabled"
                         :severity="devStore.connected ? 'success' : 'error'"
@@ -485,19 +653,29 @@ onUnmounted(() => {
                     class="flex items-center gap-2"
                     :class="{ 'justify-center': collapsed && !isMobile }"
                 >
-                    <div
-                        class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium shrink-0"
+                    <RouterLink
+                        :to="`/users/${authStore.user?.id}`"
+                        class="flex items-center gap-2 min-w-0 flex-1"
+                        :class="{ 'justify-center': collapsed && !isMobile }"
+                        title="Open your user record"
                     >
-                        {{ authStore.userInitial }}
-                    </div>
-                    <div v-if="!collapsed || isMobile" class="flex-1 min-w-0">
-                        <p class="text-sm font-medium text-white truncate">
-                            {{ authStore.displayName }}
-                        </p>
-                        <p class="text-xs text-slate-400 truncate">
-                            {{ authStore.user.email }}
-                        </p>
-                    </div>
+                        <div
+                            class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white text-sm font-medium shrink-0"
+                        >
+                            {{ authStore.userInitial }}
+                        </div>
+                        <div
+                            v-if="!collapsed || isMobile"
+                            class="flex-1 min-w-0"
+                        >
+                            <p class="text-sm font-medium text-white truncate">
+                                {{ authStore.displayName }}
+                            </p>
+                            <p class="text-xs text-slate-400 truncate">
+                                {{ authStore.user.email }}
+                            </p>
+                        </div>
+                    </RouterLink>
                     <Button
                         v-if="!collapsed || isMobile"
                         icon="pi pi-sign-out"
@@ -514,6 +692,7 @@ onUnmounted(() => {
             <div
                 class="border-t border-slate-700 p-2"
                 v-if="
+                    authStore.isAdmin ||
                     authStore.scopes.some(
                         (s) =>
                             s === 'users.all' ||
@@ -591,7 +770,9 @@ onUnmounted(() => {
                 class="flex-1 flex flex-col grow"
                 :class="{ 'p-4': !fullPage }"
             >
-                <router-view />
+                <router-view
+                    :key="`${appContext.appSlug}:${appContext.version}`"
+                />
             </main>
         </div>
     </div>

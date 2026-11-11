@@ -4,8 +4,9 @@ import { withAsyncHandlingVoid } from "@/utils/asyncUtils";
 import { ref } from "vue";
 import { onMounted } from "vue";
 import { useRoute } from "vue-router";
+import { appPath } from "@/utils/appHeaders";
 
-const props = defineProps<{ plugin: PluginStore }>();
+const props = defineProps<{ plugin: PluginStore; installId?: number }>();
 
 const route = useRoute(),
     store = usePluginsStore();
@@ -21,8 +22,9 @@ async function loadFrontendManifest() {
         async () => {
             const module = await store.fetchPluginAssets(
                 route.params.name as string,
+                props.installId,
             );
-            frontendManifest.value = module.default || null;
+            frontendManifest.value = module?.default || null;
         },
         "Failed to load frontend assets",
     );
@@ -59,7 +61,7 @@ onMounted(() => {
                 <router-link
                     v-for="page in frontendManifest.pages"
                     :key="page.path"
-                    :to="`/p/${route.params.name}${page.path}`"
+                    :to="appPath(`/p/${route.params.name}${page.path}`)"
                     class="block p-4 border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-blue-300 transition-colors"
                 >
                     <div class="flex items-center gap-3">

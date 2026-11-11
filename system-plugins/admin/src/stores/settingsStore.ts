@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, computed } from "vue";
 import { useAlcedoClient } from "../composables/useAlcedoClient";
+import { PlatformSettings } from "@alcedocore/sdk";
 
 export interface CategoryDef {
     id: string;
@@ -92,23 +93,16 @@ export const SETTING_META: Record<string, SettingMeta> = {
         required: false,
         defaultValue: "",
     },
-    catch_all_plugin_slug: {
-        key: "catch_all_plugin_slug",
-        label: "Catch-all Plugin",
-        description:
-            "Plugin slug that receives all unmatched requests. Empty = disabled.",
-        category: "general",
-        type: "select",
-        required: false,
-        defaultValue: "",
-    },
 };
 
 export const useSettingsStore = defineStore("settings", () => {
     const { client } = useAlcedoClient();
 
     // ── State ──
-    const settings = ref<Record<string, any>>({});
+    const appSettings = ref<Record<string, any>>({});
+    const platformSettings = ref<PlatformSettings>({
+        platform_name: "Loading",
+    });
     const localEdits = ref<Record<string, any>>({});
     const savedValues = ref<Record<string, any>>({});
     const loading = ref(false);
@@ -116,9 +110,7 @@ export const useSettingsStore = defineStore("settings", () => {
     const searchQuery = ref("");
     const dynamicOptions = ref<
         Record<string, { value: string; label: string }[]>
-    >({
-        catch_all_plugin_slug: [{ label: "(Disabled)", value: "" }],
-    });
+    >({});
 
     // ── Computed ──
     const isDirty = computed(() => {
@@ -146,7 +138,7 @@ export const useSettingsStore = defineStore("settings", () => {
             }
         }
         // Check dynamic keys from settings
-        for (const key of Object.keys(settings.value)) {
+        for (const key of Object.keys(appSettings.value)) {
             if (!keys.has(key) && key.toLowerCase().includes(q)) {
                 keys.add(key);
             }
@@ -154,12 +146,14 @@ export const useSettingsStore = defineStore("settings", () => {
         return Array.from(keys);
     });
 
-    const hasSettings = computed(() => Object.keys(settings.value).length > 0);
+    const hasSettings = computed(
+        () => Object.keys(appSettings.value).length > 0,
+    );
 
     // ── Helpers ──
     function getSettingValue(key: string): any {
         if (key in localEdits.value) return localEdits.value[key];
-        if (key in settings.value) return settings.value[key];
+        if (key in appSettings.value) return appSettings.value[key];
         return SETTING_META[key]?.defaultValue;
     }
 
@@ -218,36 +212,24 @@ export const useSettingsStore = defineStore("settings", () => {
         return null;
     }
 
+    async function fetchPlatformSettings() {
+        loading.value = true;
+        platformSettings.value = await client.appSettings.getPlatformSettings();
+        loading.value = false;
+    }
+
+    async function updatePlatformName(name: string) {
+        platformSettings.value =
+            await client.appSettings.updatePlatformSettings(name);
+    }
+
     async function fetchSettings() {
         loading.value = true;
         error.value = null;
         try {
-            settings.value = await client.appSettings.list();
-            savedValues.value = { ...settings.value };
+            appSettings.value = await client.appSettings.list();
+            savedValues.value = { ...appSettings.value };
             localEdits.value = {};
-
-            try {
-                const pluginsRes = await client.plugins.list();
-                const plugins =
-                    pluginsRes?.data?.plugins || pluginsRes?.plugins || [];
-                dynamicOptions.value["catch_all_plugin_slug"] = [
-                    { label: "(Disabled)", value: "" },
-                    ...plugins
-                        .filter((p: any) => p.slug && p.plugin_type != "static")
-                        .map((p: any) => ({
-                            label: p.display_name || p.slug,
-                            value: p.slug,
-                        })),
-                ];
-            } catch (e) {
-                console.error(
-                    "[SETTINGS] Failed to fetch plugins for dropdown:",
-                    e,
-                );
-                dynamicOptions.value["catch_all_plugin_slug"] = [
-                    { label: "(Disabled)", value: "" },
-                ];
-            }
         } catch (e) {
             error.value =
                 e instanceof Error ? e.message : "Failed to fetch settings";
@@ -263,13 +245,13 @@ export const useSettingsStore = defineStore("settings", () => {
     function getLocalValue(key: string): any {
         return key in localEdits.value
             ? localEdits.value[key]
-            : settings.value[key];
+            : appSettings.value[key];
     }
 
     async function saveSetting(key: string): Promise<boolean> {
         const value = getLocalValue(key);
         await client.appSettings.update(key, value);
-        settings.value[key] = value;
+        appSettings.value[key] = value;
         savedValues.value[key] = value;
         delete localEdits.value[key];
         return true;
@@ -296,7 +278,8 @@ export const useSettingsStore = defineStore("settings", () => {
 
     return {
         // State
-        settings,
+        appSettings,
+        platformSettings,
         localEdits,
         savedValues,
         loading,
@@ -309,6 +292,8 @@ export const useSettingsStore = defineStore("settings", () => {
         hasSettings,
         // Actions
         fetchSettings,
+        fetchPlatformSettings,
+        updatePlatformName,
         updateLocalValue,
         getLocalValue,
         saveSetting,

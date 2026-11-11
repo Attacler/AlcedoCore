@@ -6,6 +6,7 @@ import { withAsyncHandlingVoid } from "../utils/asyncUtils";
 export interface ActivityLogEntry {
     id: string;
     action: string;
+    actor_id: string | null;
     description: string | null;
     target: string | null;
     item_id: string | null;
@@ -14,7 +15,7 @@ export interface ActivityLogEntry {
     created_at: string;
 }
 
-export type ActivityTab = "items" | "system";
+export type ActivityTab = "items" | "system" | "global";
 
 export interface ActivityFilters {
     dateRange: [Date | null, Date | null];
@@ -195,19 +196,49 @@ export const useActivityLogStore = defineStore("activityLog", () => {
             label: "Developer key created",
             dotColors: "",
             serverity: "success",
-            type: "system",
+            type: "global",
+        },
+        developer_key_updated: {
+            label: "Developer key updated",
+            dotColors: "",
+            serverity: "info",
+            type: "global",
+        },
+        developer_key_deleted: {
+            label: "Developer key deleted",
+            dotColors: "",
+            serverity: "danger",
+            type: "global",
+        },
+        user_created: {
+            label: "User created",
+            dotColors: "",
+            serverity: "success",
+            type: "global",
+        },
+        user_updated: {
+            label: "User updated",
+            dotColors: "",
+            serverity: "info",
+            type: "global",
+        },
+        user_deleted: {
+            label: "User deleted",
+            dotColors: "",
+            serverity: "danger",
+            type: "global",
         },
         login_success: {
             label: "Login",
             dotColors: "",
             serverity: "success",
-            type: "system",
+            type: "global",
         },
         logout: {
             label: "Logout",
             dotColors: "",
             serverity: "warn",
-            type: "system",
+            type: "global",
         },
         user_role_assigned: {
             label: "Role assigned to user",
@@ -289,14 +320,11 @@ export const useActivityLogStore = defineStore("activityLog", () => {
             const fetcher =
                 activeTab.value === "items"
                     ? client.activityLogs.listCollections
-                    : client.activityLogs.listSystem;
-            const response = (await fetcher(params)) as {
-                data: ActivityLogEntry[];
-                total: number;
-                limit: number;
-                offset: number;
-            };
-            logs.value = response.data;
+                    : activeTab.value === "system"
+                      ? client.activityLogs.listAppSystem
+                      : client.activityLogs.listSystem;
+            const response = await fetcher(params);
+            logs.value = response.data as any;
             pagination.value = {
                 limit: response.limit,
                 offset: response.offset,

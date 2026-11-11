@@ -1,46 +1,96 @@
 export function createItemsResource(ky: any) {
     return {
-        list: (name: string, params?: Record<string, string>) =>
+        list: (
+            name: string,
+            params?: Record<string, string> | URLSearchParams | string,
+            options?: Record<string, any>,
+        ) =>
             ky
                 .get(
-                    `${name == "users" ? name : "items" + `/${encodeURIComponent(name)}`}`,
-                    { searchParams: params },
+                    `${name == "users" ? "platform/users" : "app/items" + `/${encodeURIComponent(name)}`}`,
+                    { searchParams: params, ...options },
                 )
                 .json(),
 
-        create: (name: string, data: any) =>
-            ky.post(`items/${encodeURIComponent(name)}`, { json: data }).json(),
-
-        update: (name: string, data: { filter: any; update: any }) =>
-            ky.put(`items/${encodeURIComponent(name)}`, { json: data }).json(),
-
-        delete: (name: string, data: { filter?: any; pk_values?: any[] }) =>
+        create: (name: string, data: any, options?: Record<string, any>) =>
             ky
-                .delete(`items/${encodeURIComponent(name)}`, { json: data })
+                .post(`app/items/${encodeURIComponent(name)}`, {
+                    json: data,
+                    ...options,
+                })
                 .json(),
 
-        get: (name: string, id: string, params?: Record<string, string>) =>
+        update: (
+            name: string,
+            data: { filter: any; update: any },
+            options?: Record<string, any>,
+        ) => {
+            const { filter, update, ...rest } = data;
+            return ky
+                .patch(`app/items/${encodeURIComponent(name)}`, {
+                    json: update ?? rest,
+                    searchParams: { filter: JSON.stringify(filter ?? {}) },
+                    ...options,
+                })
+                .json();
+        },
+
+        delete: (
+            name: string,
+            data: { filter?: any; pk_values?: any[] },
+            options?: Record<string, any>,
+        ) =>
+            ky
+                .delete(`app/items/${encodeURIComponent(name)}`, {
+                    json: data,
+                    ...options,
+                })
+                .json(),
+
+        get: (
+            name: string,
+            id: string,
+            params?: Record<string, string>,
+            options?: Record<string, any>,
+        ) =>
             ky
                 .get(
-                    `items/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
-                    { searchParams: params },
+                    `app/items/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
+                    { searchParams: params, ...options },
                 )
                 .json(),
 
-        patch: (name: string, id: string, data: any) =>
+        patch: (
+            name: string,
+            id: string,
+            data: any,
+            options?: Record<string, any>,
+        ) =>
             ky
                 .patch(
-                    `items/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
-                    { json: data },
+                    `app/items/${encodeURIComponent(name)}/${encodeURIComponent(id)}`,
+                    { json: data, ...options },
                 )
                 .json(),
 
-        query: (name: string, data: any) => {
+        query: (name: string, data: any, options?: Record<string, any>) => {
             const params = new URLSearchParams();
             if (data.filter) params.set("filter", JSON.stringify(data.filter));
             if (data.limit) params.set("limit", String(data.limit));
             if (data.offset) params.set("offset", String(data.offset));
             if (data.fields) params.set("fields", data.fields.join(","));
+            if (data.groupBy) {
+                for (const field of [data.groupBy].flat()) {
+                    params.append("groupBy[]", String(field));
+                }
+            }
+            if (data.aggregate) {
+                for (const [fn, fields] of Object.entries(data.aggregate)) {
+                    for (const field of [fields].flat()) {
+                        params.append(`aggregate[${fn}]`, String(field));
+                    }
+                }
+            }
             if (data.sort && data.sort.length > 0) {
                 params.set("sort", data.sort[0].field);
                 if (data.sort[0].order || data.sort[0].direction) {
@@ -51,24 +101,69 @@ export function createItemsResource(ky: any) {
                 }
             }
             return ky
-                .get(`items/${encodeURIComponent(name)}`, {
+                .get(`app/items/${encodeURIComponent(name)}`, {
                     searchParams: params,
+                    ...options,
                 })
                 .json();
         },
 
-        grouped: (name: string, data: any) =>
-            ky
-                .post(`items/${encodeURIComponent(name)}/grouped`, {
-                    json: data,
-                })
-                .json(),
-
-        references: (name: string, id: string) =>
+        references: (name: string, id: string, options?: Record<string, any>) =>
             ky
                 .get(
-                    `items/${encodeURIComponent(name)}/${encodeURIComponent(id)}/references`,
+                    `app/items/${encodeURIComponent(name)}/${encodeURIComponent(id)}/references`,
+                    options,
                 )
                 .json(),
+
+        deletePermissions: (
+            name: string,
+            pkValues: any[],
+            options?: Record<string, any>,
+        ) =>
+            ky
+                .post(`app/items/${encodeURIComponent(name)}/$delete`, {
+                    json: { pk_values: pkValues },
+                    ...options,
+                })
+                .json() as Promise<Record<string, boolean>>,
+
+        /**
+         * Per-pk "may I edit this row" flags, from the `update` rules' row
+         * filters. Whether specific new values are allowed is answered by
+         * {@link permissions} with `action: "update"`.
+         */
+        updatePermissions: (
+            name: string,
+            pkValues: any[],
+            options?: Record<string, any>,
+        ) =>
+            ky
+                .post(`app/items/${encodeURIComponent(name)}/$update`, {
+                    json: { pk_values: pkValues },
+                    ...options,
+                })
+                .json() as Promise<Record<string, boolean>>,
+
+        /**
+         * Resolves what the caller may do with a candidate item, so a form can
+         * reflect permissions before submitting. `update` judges a delta against
+         * an existing row, so it also requires `pk`.
+         */
+        permissions: (
+            name: string,
+            item: Record<string, any>,
+            action: "create" | "update" = "create",
+            pk?: string,
+            options?: Record<string, any>,
+        ) =>
+            ky
+                .post(`app/items/${encodeURIComponent(name)}/$permissions`, {
+                    json: { action, item, ...(pk ? { pk } : {}) },
+                    ...options,
+                })
+                .json() as Promise<
+                import("./types/permissions").ItemPermissions
+            >,
     };
 }

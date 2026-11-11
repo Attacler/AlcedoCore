@@ -46,13 +46,13 @@ async function handleDelete() {
 <template>
     <div>
         <CollectionData
-            collection-name="users"
+            collection-name="alcedocore_users"
             title="Users"
             is-system-collection
             :data-source="dataSource"
             :default-view-config="{ render_mode: 'table' }"
             :create-action="
-                authStore.scopes.includes('users.all')
+                authStore.hasScope('users.all')
                     ? {
                           label: 'New User',
                           run: () => router.push('/users/new'),

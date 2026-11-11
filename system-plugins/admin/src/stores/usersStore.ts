@@ -13,8 +13,8 @@ export const useUsersStore = defineStore('users', () => {
     loading.value = true
     error.value = null
     try {
-      const data = await client.users.list() as { data: UserData[] }
-      users.value = data.data
+      const data: any = await client.users.list()
+      users.value = Array.isArray(data) ? data : (data?.data ?? [])
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to fetch users'
     } finally {
@@ -24,8 +24,8 @@ export const useUsersStore = defineStore('users', () => {
 
   async function fetchUser(id: string): Promise<UserData | null> {
     try {
-      const data = await client.users.get(id) as { data: UserData }
-      return data.data
+      const data: any = await client.users.get(id)
+      return (data?.data ?? data) as UserData
     } catch {
       return null
     }

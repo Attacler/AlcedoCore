@@ -5,6 +5,7 @@ import DateTimeDisplay from "./DateTimeDisplay.vue";
 import DateDisplay from "./DateDisplay.vue";
 import BooleanDisplay from "./BooleanDisplay.vue";
 import RelationDisplay from "./RelationDisplay.vue";
+import UserDisplay from "./UserDisplay.vue";
 import FileDisplay from "./FileDisplay.vue";
 import FileListDisplay from "./FileListDisplay.vue";
 import MultiLineDisplay from "./MultiLineDisplay.vue";
@@ -35,8 +36,8 @@ export const DISPLAY_COMPONENT_REGISTRY: DisplayComponentDef[] = [
         label: "Text",
         icon: "text_fields",
         group: "Text",
-        supportedFieldTypes: ["string", "text"],
-        preferredInputs: ["single-line", "multi-line"],
+        supportedFieldTypes: ["text", "string"],
+        preferredInputs: ["multi-line", "single-line"],
         component: TextDisplay,
     },
     {
@@ -164,6 +165,15 @@ export const DISPLAY_COMPONENT_REGISTRY: DisplayComponentDef[] = [
         supportedFieldTypes: ["relationship"],
         preferredInputs: ["lookup", "multi-select-lookup"],
         component: RelationDisplay,
+    },
+    {
+        type: "user",
+        label: "User",
+        icon: "person",
+        group: "Relationship",
+        supportedFieldTypes: ["user"],
+        preferredInputs: ["user"],
+        component: UserDisplay,
     },
 ];
 

@@ -1,26 +1,62 @@
-export { createClient } from "./client";
-export type { ClientOptions } from "./client";
+export type { ClientOptions, AppHeaderOptions } from "./client";
+export { AlcedoApiError } from "./types/jsend";
+export type { JSendResponse } from "./types/jsend";
+export type { PlatformSettings, AppSettings } from "./appSettings";
+export type { TimelineEntry } from "./activityLogs";
 
 export { createHealthResource } from "./health";
 export { createPluginsResource } from "./plugins";
 export { createMigrationsResource } from "./migrations";
-export { createSettingsResource } from "./settings";
-export { createUsageResource } from "./usage";
+export { createDevResource } from "./dev";
 export { createKvResource } from "./kv";
 export { createDbResource } from "./db";
 export { createSchemaResource } from "./schema";
 export { createLogsResource } from "./logs";
 export { createAuthResource } from "./auth";
+export { createSessionsResource } from "./sessions";
+export type { SessionInfo } from "./sessions";
+export { createAppsResource } from "./apps";
+export type {
+    AppWithVersions,
+    UserAppAccess,
+    CreateAppInput,
+    UpdateAppInput,
+} from "./apps";
+export { createVersionsResource } from "./versions";
+export type { Version, CreateVersionInput } from "./versions";
 export { createUsersResource } from "./users";
 export { createRolesResource } from "./roles";
 export { createPoliciesResource } from "./policies";
 export { createCollectionsResource } from "./collections";
 export { createItemsResource } from "./items";
+export { createLookupResource } from "./lookup";
+export type { UserOption } from "./lookup";
 export { createFilesResource } from "./files";
 export { createRegistriesResource } from "./registries";
 export { createActivityLogsResource } from "./activityLogs";
 export { createAppSettingsResource } from "./appSettings";
+export { createRouteMappingsResource } from "./routeMappings";
+export type { RouteMapping, CreateRouteMappingRequest, UpdateRouteMappingRequest } from "./routeMappings";
 export { createDeveloperApiKeysResource } from "./developerApiKeys";
+export { createMenusResource } from "./menus";
+export type { Menu, MenuItem, MenuSection, MenuListEntry } from "./menus";
+
+export { createClient, resolveAppHeaders } from "./client";
+
+export {
+    evaluateFilter,
+    evaluateCondition,
+    matchesFilter,
+    matchesAnyFilter,
+    proposedValues,
+    KNOWN_OPERATORS,
+} from "./filters";
+export type {
+    Filter,
+    FilterCondition,
+    FilterResult,
+    ConditionStatus,
+} from "./filters";
 
 export {
     PluginSchema,
@@ -48,5 +84,9 @@ export type {
     WriteSuccessResponse,
 } from "./zod-schemas";
 
-export type { DeveloperKey } from "./types/developerKeys";
+export type {
+    DeveloperKey,
+    DeveloperKeyWithRawKey,
+} from "./types/developerKeys";
 export type { FileFolder, MediaFile, ListFilesParameters } from "./types/files";
+export type { ItemPermissions, PermissionRule, PermissionViolation } from "./types/permissions";

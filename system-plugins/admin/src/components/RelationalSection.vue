@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
-import { useAlcedoClient } from "@/composables/useAlcedoClient";
+import { useRouter } from "vue-router";
+import { targetAppPath } from "@/utils/appHeaders";
 import { useToast } from "@/composables/useToast";
 import { useSectionView } from "@/composables/useSectionView";
 import {
@@ -11,15 +12,11 @@ import {
     fetchCreatePermission as fetchChildCreatePermission,
     loadSectionData as loadChildData,
 } from "@/composables/useRelationalSection";
-import {
-    useRelationalQueue,
-    type PendingOp,
-} from "@/composables/useRelationalQueue";
+import { useRelationBody, isTempId } from "@/composables/useRelationBody";
 import Dialog from "primevue/dialog";
 import type { FieldDefinition } from "@/stores/collections";
 import RecordForm from "./RecordForm.vue";
-
-const TEMP_ID_PREFIX = "__new__";
+import { Drawer } from "primevue";
 
 const props = withDefaults(
     defineProps<{
@@ -28,16 +25,20 @@ const props = withDefaults(
         parentItem: Record<string, any> | null;
         parentFields?: FieldDefinition[];
         deferred?: boolean;
+        readonly?: boolean;
+        targetApp?: string;
+        targetVersion?: string;
     }>(),
     {
         parentItem: null,
         parentFields: () => [],
         deferred: undefined,
+        readonly: false,
     },
 );
 
-const { client } = useAlcedoClient(),
-    toast = useToast();
+const toast = useToast(),
+    router = useRouter();
 
 const emit = defineEmits<{
     count: [total: number];
@@ -48,6 +49,22 @@ const { sectionViewComponent } = useSectionView();
 const isDeferred = computed(() => props.deferred ?? !props.parentItem?.id),
     collectionName = computed(() => props.parentCollectionName),
     childCollectionName = computed(() => resolveChildCollection(props.section));
+
+const childTarget = computed(() => ({
+    app: props.section?.related_app ?? props.targetApp,
+    version: props.targetVersion,
+}));
+
+function childRowHref(row: any): string {
+    if (!row?.id || isTempId(row.id)) return "";
+    return router.resolve(
+        targetAppPath(
+            childTarget.value.app,
+            childTarget.value.version,
+            `/detail/${childCollectionName.value}/${row.id}`,
+        ),
+    ).href;
+}
 
 const sectionLoading = ref(false),
     sectionError = ref<string | null>(null),
@@ -66,19 +83,44 @@ const sectionViewFields = computed(() => {
     return all;
 });
 
-const queue = useRelationalQueue(),
-    pendingOps = queue.pendingOps,
+const relation = useRelationBody(
+        () => childCollectionName.value,
+        () => findParentFKField()?.name,
+    ),
+    relationBody = relation.body,
     childDialogVisible = ref(false),
     childCreateEditItem = ref<any>(null),
     childValues = ref<Record<string, any>>({}),
-    childSaving = ref(false),
-    childSaveError = ref<string | null>(null),
     childFormRef = ref<any>(null),
     showDeleteDialog = ref(false),
     childToDelete = ref<any>(null);
 
+/** Loaded rows overlaid with queued updates/deletes, plus queued creates. */
+const displayItems = computed(() => {
+    const deleted = new Set(relationBody.value.delete),
+        updates = new Map(
+            relationBody.value.update.map((u) => [u.id, u] as const),
+        ),
+        fkField = findParentFKField()?.name,
+        existing = sectionItems.value
+            .filter((it: any) => !deleted.has(it.id))
+            .map((it: any) =>
+                updates.has(it.id) ? { ...it, ...updates.get(it.id)! } : it,
+            ),
+        created = relationBody.value.create.map((entry) => ({
+            ...(entry.values || {}),
+            ...(fkField ? { [fkField]: props.parentItem?.id } : {}),
+            id: entry.tempId,
+        }));
+    return [...existing, ...created];
+});
+
 function findParentFKField(): FieldDefinition | null {
-    return findParentFKFieldIn(sectionFields.value, collectionName.value);
+    return findParentFKFieldIn(
+        sectionFields.value,
+        collectionName.value,
+        props.targetApp,
+    );
 }
 
 const sectionViewSettings = computed(
@@ -91,16 +133,21 @@ const sectionFilterCondition = computed(() =>
         sectionFields.value,
         collectionName.value,
         props.parentItem?.id,
+        props.targetApp,
     ),
 );
 
 async function loadSectionFields() {
-    sectionFields.value = await loadChildFields(childCollectionName.value);
+    sectionFields.value = await loadChildFields(
+        childCollectionName.value,
+        childTarget.value,
+    );
 }
 
 async function fetchCreatePermission() {
     canCreate.value = await fetchChildCreatePermission(
         childCollectionName.value,
+        childTarget.value,
     );
 }
 
@@ -114,6 +161,8 @@ async function loadSectionData() {
             section: props.section,
             sectionFields: sectionFields.value,
             parentCollectionName: collectionName.value,
+            parentApp: props.targetApp,
+            target: childTarget.value,
         });
         sectionItems.value = items;
         sectionTotal.value = total;
@@ -136,8 +185,6 @@ function fieldDefault(field: any, editItem: any): any {
 function openChildDialog(editItem: any) {
     childCreateEditItem.value = editItem;
     childDialogVisible.value = true;
-    childSaveError.value = null;
-    childSaving.value = false;
 
     const fkField = findParentFKField();
     const values: Record<string, any> = {};
@@ -161,190 +208,52 @@ function closeChildDialog() {
     childDialogVisible.value = false;
     childCreateEditItem.value = null;
     childValues.value = {};
-    childSaveError.value = null;
-    childSaving.value = false;
 }
 
-function extractCreatedId(res: any): string | null {
-    const created = res?.created ?? res?.data ?? res;
-    if (Array.isArray(created)) return created[0]?.id ?? null;
-    return created?.id ?? null;
-}
-
-function generateTempId(): string {
-    return `${TEMP_ID_PREFIX}${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function isTempId(id: string): boolean {
-    return id.startsWith(TEMP_ID_PREFIX);
-}
-
-async function saveChild() {
+function saveChild() {
     const form = childFormRef.value;
     if (form && !form.validate()) return;
 
-    const payload: Record<string, any> = form ? form.getPayload() : {};
-    const fkField = findParentFKField();
     const childColl = childCollectionName.value;
     if (!childColl) return;
 
-    const nestedOps = form ? form.collectPendingOps() : [];
+    const payload: Record<string, any> = form ? form.getPayload() : {};
+    // Nest any relations the child form itself queued (grandchildren).
+    const childRelations =
+        form && typeof form.getRelationBody === "function"
+            ? form.getRelationBody()
+            : null;
+    const values = childRelations ? { ...payload, ...childRelations } : payload;
 
-    childSaving.value = true;
-    childSaveError.value = null;
-    try {
-        if (isDeferred.value) {
-            // Queue the operation; parent record may not exist yet.
-            if (
-                childCreateEditItem.value?.id &&
-                !isTempId(childCreateEditItem.value.id)
-            ) {
-                pendingOps.value.push({
-                    type: "update",
-                    id: childCreateEditItem.value.id,
-                    childCollection: childColl,
-                    values: payload,
-                    nestedOps,
-                });
-                sectionItems.value = sectionItems.value.map((it: any) =>
-                    it.id === childCreateEditItem.value.id
-                        ? { ...it, ...payload }
-                        : it,
-                );
-            } else if (
-                childCreateEditItem.value?.id &&
-                isTempId(childCreateEditItem.value.id)
-            ) {
-                // Editing a queued temp row — update the queued create payload in place.
-                const op = pendingOps.value.find(
-                    (o: any) => o.tempId === childCreateEditItem.value.id,
-                );
-                if (op) op.values = payload;
-                sectionItems.value = sectionItems.value.map((it: any) =>
-                    it.id === childCreateEditItem.value.id
-                        ? { ...it, ...payload }
-                        : it,
-                );
-            } else {
-                const tempId = generateTempId();
-                pendingOps.value.push({
-                    type: "create",
-                    tempId,
-                    childCollection: childColl,
-                    fkFieldName: fkField?.name,
-                    values: payload,
-                    nestedOps,
-                });
-                sectionItems.value = [
-                    ...sectionItems.value,
-                    { id: tempId, ...payload },
-                ];
-            }
-            closeChildDialog();
-        } else {
-            // Immediate mode: parent exists.
-            if (childCreateEditItem.value?.id) {
-                await client.items.patch(
-                    childColl,
-                    childCreateEditItem.value.id,
-                    payload,
-                );
-                if (nestedOps.length > 0) {
-                    await flushNestedOps(
-                        nestedOps,
-                        childCreateEditItem.value.id,
-                    );
-                }
-            } else {
-                const createPayload = { ...payload };
-                if (fkField) createPayload[fkField.name] = props.parentItem?.id;
-                const res = (await client.items.create(
-                    childColl,
-                    createPayload,
-                )) as any;
-                const createdId = extractCreatedId(res);
-                if (nestedOps.length > 0 && createdId) {
-                    await flushNestedOps(nestedOps, createdId);
-                }
-            }
-            toast.show(
-                childCreateEditItem.value
-                    ? "Item updated successfully"
-                    : "Item created successfully",
-                "success",
-            );
-            closeChildDialog();
-            await loadSectionData();
-        }
-    } catch (e) {
-        childSaveError.value =
-            e instanceof Error ? e.message : "Failed to save item";
-        childSaving.value = false;
-    }
-}
-
-async function executePendingOp(op: PendingOp, parentId: string | null) {
-    const payload = { ...(op.values || {}) };
-    if (op.type === "create") {
-        if (op.fkFieldName && parentId != null) {
-            payload[op.fkFieldName] = parentId;
-        }
-        const res = (await client.items.create(
-            op.childCollection,
-            payload,
-        )) as any;
-        const createdId = extractCreatedId(res);
-        for (const nested of op.nestedOps || []) {
-            await executePendingOp(nested, createdId);
-        }
-    } else if (op.type === "update") {
-        await client.items.patch(op.childCollection, op.id!, payload);
-        for (const nested of op.nestedOps || []) {
-            await executePendingOp(nested, op.id!);
-        }
-    } else if (op.type === "delete") {
-        await client.items.delete(op.childCollection, { pk_values: [op.id!] });
-    }
-}
-
-async function flushNestedOps(ops: PendingOp[], parentId: string | null) {
-    for (const op of ops) {
-        await executePendingOp(op, parentId);
-    }
-}
-
-function collectPendingOps(): PendingOp[] {
-    return queue.collect(childCollectionName.value, findParentFKField()?.name);
-}
-
-async function flushPending(parentId: string) {
-    const ops = pendingOps.value.slice();
-    pendingOps.value = [];
-    for (const op of ops) {
-        await executePendingOp(op, parentId);
-    }
-    await loadSectionData();
-}
-
-function getCreateBody(): {
-    body: Record<string, any> | null;
-    inlinedTempIds: string[];
-} {
-    return queue.getCreateBody(
-        childCollectionName.value,
-        findParentFKField()?.name,
-    );
-}
-
-function consumeInlinedCreates(tempIds: string[]) {
-    queue.consumeInlinedCreates(tempIds);
-    if (props.parentItem?.id) {
-        loadSectionData();
+    const editItem = childCreateEditItem.value;
+    if (editItem?.id && !isTempId(editItem.id)) {
+        relation.upsertUpdate(editItem.id, values);
+    } else if (editItem?.id) {
+        relation.replaceCreate(editItem.id, values);
     } else {
-        sectionItems.value = sectionItems.value.filter(
-            (it: any) => !tempIds.includes(it.id),
-        );
+        relation.addCreate(values);
     }
+    closeChildDialog();
+}
+
+/** Serialized nested body for this section (write-only; displays fetch data). */
+function getRelationBody() {
+    return relation.serialize();
+}
+
+/** Whether this section has queued create/update/delete ops. */
+function hasPendingChanges(): boolean {
+    return !relation.isEmpty();
+}
+
+function clearRelations() {
+    relation.reset();
+}
+
+/** Drop queued ops and re-fetch rows (real ids replace optimistic temp rows). */
+async function reload() {
+    relation.reset();
+    await loadSectionData();
 }
 
 function confirmDeleteChild(row: any) {
@@ -352,45 +261,17 @@ function confirmDeleteChild(row: any) {
     showDeleteDialog.value = true;
 }
 
-async function handleDeleteConfirmed() {
+function handleDeleteConfirmed() {
     const row = childToDelete.value;
     if (!row) return;
-    const childColl = childCollectionName.value;
-    if (!childColl) return;
-    try {
-        if (isDeferred.value) {
-            if (isTempId(row.id)) {
-                // Remove a queued create (temp row) entirely.
-                pendingOps.value = pendingOps.value.filter(
-                    (op: any) => op.tempId !== row.id,
-                );
-                sectionItems.value = sectionItems.value.filter(
-                    (it: any) => it.id !== row.id,
-                );
-            } else {
-                pendingOps.value.push({
-                    type: "delete",
-                    id: row.id,
-                    childCollection: childColl,
-                });
-                sectionItems.value = sectionItems.value.filter(
-                    (it: any) => it.id !== row.id,
-                );
-            }
-        } else {
-            await client.items.delete(childColl, { pk_values: [row.id] });
-            await loadSectionData();
-        }
-        toast.show("Item deleted", "success");
-    } catch (e) {
-        toast.show(
-            `Failed to delete: ${e instanceof Error ? e.message : "Unknown error"}`,
-            "error",
-        );
-    } finally {
-        showDeleteDialog.value = false;
-        childToDelete.value = null;
+    if (isTempId(row.id)) {
+        relation.removeCreate(row.id);
+    } else {
+        relation.addDelete(row.id);
     }
+    toast.show("Item removed", "success");
+    showDeleteDialog.value = false;
+    childToDelete.value = null;
 }
 
 function onEditChild(row: any) {
@@ -409,15 +290,16 @@ watch(
     () => props.parentItem?.id,
     () => {
         sectionItems.value = [];
+        relation.reset();
         loadAll();
     },
 );
 
 defineExpose({
-    collectPendingOps,
-    flushPending,
-    getCreateBody,
-    consumeInlinedCreates,
+    getRelationBody,
+    hasPendingChanges,
+    clearRelations,
+    reload,
 });
 </script>
 
@@ -428,7 +310,7 @@ defineExpose({
                 {{ section.name }}
             </h2>
             <Button
-                v-if="canCreate"
+                v-if="canCreate && !readonly"
                 label="Add"
                 icon="pi pi-plus"
                 severity="primary"
@@ -475,9 +357,9 @@ defineExpose({
             </div>
 
             <component
-                v-else-if="sectionItems.length > 0"
+                v-else-if="displayItems.length > 0"
                 :is="sectionViewComponent(section.view_type)"
-                :items="sectionItems"
+                :items="displayItems"
                 :fields="sectionViewFields"
                 :collection-name="childCollectionName"
                 :loading="sectionLoading"
@@ -492,8 +374,9 @@ defineExpose({
                 :view-specific="sectionViewSettings"
                 :filter-condition="sectionFilterCondition"
                 embedded
-                :actions="true"
-                :enable-edit="true"
+                :actions="!readonly"
+                :enable-edit="!readonly"
+                :row-href="isDeferred ? undefined : childRowHref"
                 @edit-item="onEditChild"
                 @delete-item="confirmDeleteChild"
             />
@@ -503,7 +386,7 @@ defineExpose({
             </div>
         </div>
 
-        <Dialog
+        <Drawer
             v-model:visible="childDialogVisible"
             :header="
                 childCreateEditItem
@@ -512,8 +395,8 @@ defineExpose({
             "
             :modal="true"
             :style="{ width: '640px' }"
+            position="right"
             :draggable="false"
-            :closable="!childSaving"
         >
             <div class="space-y-3">
                 <RecordForm
@@ -528,14 +411,9 @@ defineExpose({
                     "
                     :parent-item="childCreateEditItem"
                     :deferred-children="true"
+                    :target-app="childTarget.app"
+                    :target-version="childTarget.version"
                 />
-
-                <div
-                    v-if="childSaveError"
-                    class="text-sm text-red-500 bg-red-50 border border-red-200 rounded p-3"
-                >
-                    {{ childSaveError }}
-                </div>
             </div>
 
             <template #footer>
@@ -543,17 +421,15 @@ defineExpose({
                     <Button
                         label="Cancel"
                         severity="secondary"
-                        :disabled="childSaving"
                         @click="closeChildDialog"
                     />
                     <Button
                         :label="childCreateEditItem ? 'Update' : 'Save'"
-                        :loading="childSaving"
                         @click="saveChild"
                     />
                 </div>
             </template>
-        </Dialog>
+        </Drawer>
 
         <Dialog
             v-model:visible="showDeleteDialog"

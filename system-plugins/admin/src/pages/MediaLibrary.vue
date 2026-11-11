@@ -11,6 +11,7 @@ import type {
 } from "@alcedocore/sdk";
 import FileUpload from "@/components/inputs/FileUpload.vue";
 import { useRouter } from "vue-router";
+import { appPath } from "@/utils/appHeaders";
 
 const { client } = useAlcedoClient();
 const toast = useToast(),
@@ -96,10 +97,12 @@ async function fetchFileDetail(id: string) {
 function openFileDetail(file: MediaFile) {
     if (router.currentRoute.value.params.fileName != file.filename) {
         router.push(
-            "/files/" +
-                router.currentRoute.value.params.folderID +
-                "/" +
-                file.filename,
+            appPath(
+                "/files/" +
+                    router.currentRoute.value.params.folderID +
+                    "/" +
+                    file.filename,
+            ),
         );
     }
     selectedFile.value = file;
@@ -221,8 +224,8 @@ async function buildFolderPath(folderId: string | null): Promise<FileFolder[]> {
 }
 
 function navigateToFolder(folder: FileFolder | null) {
-    if (folder) router.push("/files/" + folder.id);
-    else router.push("/files");
+    if (folder) router.push(appPath("/files/" + folder.id));
+    else router.push(appPath("/files"));
     currentFolderId.value = folder ? folder.id : null;
     page.value = 1;
     loadCurrentFolders();
@@ -231,7 +234,7 @@ function navigateToFolder(folder: FileFolder | null) {
 }
 
 function navigateToRoot() {
-    router.push("/files");
+    router.push(appPath("/files"));
     currentFolderId.value = null;
     page.value = 1;
     loadCurrentFolders();
@@ -338,7 +341,11 @@ onMounted(async () => {
         if (findFile) {
             openFileDetail(findFile);
         } else {
-            router.push("/files/" + router.currentRoute.value.params.folderID);
+            router.push(
+                appPath(
+                    "/files/" + router.currentRoute.value.params.folderID,
+                ),
+            );
             toast.show(`Could not find ${targetFileName}`, "error");
         }
     }
@@ -350,7 +357,7 @@ function onFileUploaded() {
 }
 
 function closeDetailSidebar() {
-    router.push("/files/" + currentFolderId.value);
+    router.push(appPath("/files/" + currentFolderId.value));
 }
 </script>
 
@@ -522,7 +529,7 @@ function closeDetailSidebar() {
                     >
                         <img
                             v-if="isImage(file.mime_type)"
-                            :src="`/api/files/${file.id}/download`"
+                            :src="client.files.downloadUrl(file)"
                             :alt="file.alt_text || file.filename"
                             class="w-full h-full object-cover"
                         />
@@ -579,7 +586,7 @@ function closeDetailSidebar() {
             >
                 <img
                     v-if="isImage(selectedFile.mime_type)"
-                    :src="`/api/files/${selectedFile.id}/download`"
+                    :src="client.files.downloadUrl(selectedFile)"
                     :alt="selectedFile.alt_text || selectedFile.filename"
                     class="w-full h-48 object-contain"
                 />

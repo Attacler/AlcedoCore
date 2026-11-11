@@ -5,10 +5,7 @@ const error = ref('')
 
 onMounted(async () => {
   try {
-    const slug = window.location.pathname.split('/')[1]
-    const res = await fetch(`/p/${slug}/api/settings`)
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
-    const data = await res.json()
+    const data = await pluginFetch<{ settings?: Record<string, any> }>('/settings')
     settings.value = data.settings ?? data
   } catch (e: any) {
     error.value = e.message || String(e)

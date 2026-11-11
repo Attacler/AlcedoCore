@@ -1,25 +1,19 @@
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /build
 
-# Copy SDK and plugin source
-COPY sdk/alcedocore-sdk-node ./alcedocore-sdk-node
+# Copy plugin source
 COPY sample-plugins/hello-world-nuxt/ ./hello-world-nuxt/
 
-# Build the SDK
-RUN cd alcedocore-sdk-node && npm ci && npm run build
+# Build the Nuxt plugin (SDK is pulled from npm)
+# NUXT_BASE_URL=/nuxt-test so the app is built for the /nuxt-test route alias.
+RUN cd hello-world-nuxt && NUXT_BASE_URL=/nuxt-test npm install --no-audit --no-fund && NUXT_BASE_URL=/nuxt-test npm run build
 
-# Build the Nuxt plugin (alcedo-sdk is a local path dependency)
-RUN cd hello-world-nuxt && npm install && npm run build
-
-# Runtime stage - copy only the built SDK dist + the server output
-FROM node:20-alpine
+# Runtime stage
+FROM node:22-alpine
 WORKDIR /app
 
 COPY --from=builder /build/hello-world-nuxt/.output ./output/
-COPY --from=builder /build/alcedocore-sdk-node /app/alcedocore-sdk-node
-# Symlink so output server can import alcedo-sdk
-RUN mkdir -p /app/output/node_modules && ln -s /app/alcedocore-sdk-node /app/output/node_modules/alcedocore-sdk-node
 COPY sample-plugins/hello-world-nuxt/manifest.json /app/manifest.json
 
 EXPOSE 8080

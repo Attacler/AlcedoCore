@@ -1,12 +1,24 @@
 <script setup lang="ts">
-import { onMounted, ref, shallowRef, computed, type Component } from "vue";
+import {
+    onMounted,
+    ref,
+    shallowRef,
+    computed,
+    reactive,
+    watch,
+    provide,
+    type Component,
+} from "vue";
 import { useRoute } from "vue-router";
 import { useDevServerStore } from "@/stores/devServerStore";
 import { useExtensionRegistryStore } from "@/stores/extensionRegistry";
+import { usePluginsStore } from "@/stores/plugins";
+import { appPath } from "@/utils/appHeaders";
 
 const route = useRoute(),
     devServerStore = useDevServerStore(),
-    extensionRegistry = useExtensionRegistryStore();
+    extensionRegistry = useExtensionRegistryStore(),
+    pluginsStore = usePluginsStore();
 
 const pluginName = computed(() => (route.params.plugin as string) || ""),
     pagePath = computed(() => {
@@ -19,6 +31,25 @@ const pluginName = computed(() => (route.params.plugin as string) || ""),
 
 const error = ref<string | null>(null),
     currentComponent = shallowRef(null as null | Component);
+
+const pluginContext = reactive({
+    installId: null as number | null,
+    slug: null as string | null,
+    basePath: null as string | null,
+    app: null as string | null,
+    version: null as string | null,
+});
+provide("alcedoPlugin", pluginContext);
+
+function setPluginContext(registration: any) {
+    pluginContext.installId = registration?.installId ?? null;
+    pluginContext.slug = registration?.pluginSlug ?? null;
+    pluginContext.basePath = registration?.installId
+        ? `/p/${registration.installId}`
+        : null;
+    pluginContext.app = registration?.app ?? null;
+    pluginContext.version = registration?.version ?? null;
+}
 
 // Loading and state tracking
 const loading = ref(false),
@@ -50,14 +81,17 @@ function fetchPageInfo() {
                 pagePath.value.startsWith(p.path + "/"),
             );
             if (parentPage) {
+                setPluginContext(parentPage);
                 pageLabel.value = parentPage.label || parentPage.path;
                 currentComponent.value = parentPage.component;
                 return true;
             }
             // Truly unknown page — show 404 but allow loadAssets to attempt anyway
+            setPluginContext(null);
             pageLabel.value = pagePath.value;
             return true;
         }
+        setPluginContext(page);
         pageLabel.value = page.label || page.path;
         currentComponent.value = page.component;
         loading.value = false;
@@ -68,23 +102,32 @@ function fetchPageInfo() {
     }
 }
 
-// Load on mount and connect SSE
-onMounted(async () => {
-    console.log(
-        "[PluginPage] mounted, route params:",
-        route.params,
-        "pathMatch:",
-        route.params.pathMatch,
-    );
-
-    fetchPageInfo();
+onMounted(() => {
+    if (pluginsStore.pluginsReady) fetchPageInfo();
 });
+
+watch(
+    () => pluginsStore.pluginsReady,
+    (ready) => {
+        if (ready) fetchPageInfo();
+    },
+);
+
+watch(
+    () => [pluginName.value, pagePath.value],
+    () => {
+        if (pluginsStore.pluginsReady) fetchPageInfo();
+    },
+);
 </script>
 
 <template>
     <div class="plugin-page" :class="{ fullpage: fullpage }">
         <!-- Loading spinner -->
-        <div v-if="loading" class="flex items-center justify-center p-8">
+        <div
+            v-if="loading || !pluginsStore.pluginsReady"
+            class="flex items-center justify-center p-8"
+        >
             <div
                 class="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"
             ></div>
@@ -94,7 +137,7 @@ onMounted(async () => {
         <!-- Component -->
         <component
             :is="devServerStore.pageComponents[pagePath] || currentComponent"
-            v-if="!loading && !error && !notFound"
+            v-if="pluginsStore.pluginsReady && !loading && !error && !notFound"
             :class="fullpage ? 'fullpage-component' : ''"
         />
         <!-- Error boundary -->
@@ -119,7 +162,7 @@ onMounted(async () => {
                 The page "{{ pagePath }}" does not exist in this plugin.
             </p>
             <router-link
-                :to="`/plugins/${pluginName}`"
+                :to="appPath(`/plugins/${pluginName}`)"
                 class="text-blue-600 hover:text-blue-800 underline"
             >
                 Back to plugin

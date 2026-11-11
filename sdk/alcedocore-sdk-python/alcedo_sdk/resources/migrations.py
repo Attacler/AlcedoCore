@@ -1,31 +1,73 @@
-from typing import Any
+from typing import Any, Optional
+from urllib.parse import quote
 
 from .base import BaseResource
 
 
+def _enc(value: Any) -> str:
+    return quote(str(value), safe="")
+
+
 class MigrationsResource(BaseResource):
-    """Plugin database migrations resource. Maps to /api/plugins/{slug}/migrations and rollback."""
+    """Plugin database migrations resource.
 
-    async def list(self) -> list[dict]:
-        """List all migrations for this plugin and their status.
+    Maps to /api/platform/plugins/{slug}/migrations and
+    /api/platform/plugins/{slug}/rollback/{version}.
+    """
 
-        Returns: [{ "version": str, "name": str, "status": str, "applied_at": str, ... }]
+    async def list(
+        self,
+        slug: Optional[str] = None,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """List all migrations for a plugin and their status.
+
+        Args:
+            slug: Plugin slug; defaults to the client's plugin_slug.
         """
-        data = await self._request("GET", f"/api/plugins/{self._plugin_slug}/migrations")
-        return data if isinstance(data, list) else data.get("migrations", [])
+        resolved_slug = slug if slug is not None else self._plugin_slug
+        return await self._request(
+            "GET",
+            f"/api/platform/plugins/{_enc(resolved_slug)}/migrations",
+            app=app,
+            version=version,
+        )
 
-    async def run(self) -> dict:
-        """Run pending migrations.
+    async def run(
+        self,
+        slug: Optional[str] = None,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> None:
+        """Run pending migrations. Returns None (mirrors the node SDK)."""
+        resolved_slug = slug if slug is not None else self._plugin_slug
+        await self._request(
+            "POST",
+            f"/api/platform/plugins/{_enc(resolved_slug)}/migrations",
+            app=app,
+            version=version,
+        )
 
-        Returns: { "applied": [str], "errors": [str] }
-        """
-        return await self._request("POST", f"/api/plugins/{self._plugin_slug}/migrations")
-
-    async def rollback(self, version: str) -> dict:
+    async def rollback(
+        self,
+        version: str,
+        slug: Optional[str] = None,
+        app: Optional[str] = None,
+    ) -> Any:
         """Rollback a specific migration version.
 
         Args:
             version: Migration version string (e.g., "002_add_status_column")
+            slug: Plugin slug; defaults to the client's plugin_slug.
         Returns: dict with rollback result.
+
+        A per-call X-Version header can be supplied via the request ``headers``
+        (the client-level default always applies when unset).
         """
-        return await self._request("POST", f"/api/plugins/{self._plugin_slug}/rollback/{version}")
+        resolved_slug = slug if slug is not None else self._plugin_slug
+        return await self._request(
+            "POST",
+            f"/api/platform/plugins/{_enc(resolved_slug)}/rollback/{_enc(version)}",
+            app=app,
+        )

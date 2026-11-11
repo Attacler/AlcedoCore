@@ -2,6 +2,7 @@
 import { usePluginsStore } from "@/stores/plugins";
 import MetricCard from "@/components/MetricCard.vue";
 import { useCollectionsStore } from "@/stores/collections";
+import { appPath } from "@/utils/appHeaders";
 
 const pluginsStore = usePluginsStore();
 const collectionsStore = useCollectionsStore();
@@ -40,7 +41,7 @@ const collectionsStore = useCollectionsStore();
             v-for="collection of collectionsStore.collections.filter(
                 (e) => !e.is_system,
             )"
-            :to="'/collections/' + collection.name + '/data'"
+            :to="appPath('/collections/' + collection.name + '/data')"
         >
             <div
                 class="bg-white p-2 rounded-md border border-gray-200 flex place-content-between items-center hover:text-gray-600 hover:border-gray-600 cursor-pointer"

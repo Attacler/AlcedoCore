@@ -3,7 +3,7 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineNuxtConfig({
     ssr: true,
     devServer: { port: 8080 },
-    app: { baseURL: "/hello-world-nuxt/" },
+    app: { baseURL: "/nuxt-test" },
     css: ["~/assets/css/main.css"],
     vite: {
         plugins: [tailwindcss()],
@@ -11,6 +11,6 @@ export default defineNuxtConfig({
     nitro: {
         preset: "node-server",
         output: { serverDir: ".output/server" },
-        externals: { inline: ["alcedocore-sdk-node"] },
+        externals: { inline: ["@alcedocore/sdk"] },
     },
 });

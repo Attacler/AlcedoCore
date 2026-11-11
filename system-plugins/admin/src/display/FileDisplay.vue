@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { formatFileSize } from "@/utils/formatters";
+import { useAlcedoClient } from "@/composables/useAlcedoClient";
 
 defineOptions({ inheritAttrs: false });
+
+const { client } = useAlcedoClient();
 
 interface FileMeta {
     id: string;
     filename: string;
     size_bytes: number;
     mime_type: string;
+    download_url?: string | null;
 }
 
 const props = defineProps<{
@@ -19,12 +23,12 @@ function isImage(file: FileMeta) {
 }
 
 function thumbnailSrc(file: FileMeta) {
-    return `/api/files/${file.id}/download`;
+    return client.files.downloadUrl(file);
 }
 
 function download(file: FileMeta) {
     if (!props.value) return;
-    window.open(`/api/files/${file.id}/download`, "_blank");
+    window.open(client.files.downloadUrl(file), "_blank");
 }
 </script>
 

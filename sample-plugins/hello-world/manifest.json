@@ -21,6 +21,9 @@
       "description": "Execute SQL writes on plugin schema"
     }
   ],
+  "events": [
+    "ItemCreated"
+  ],
   "image": "local/static",
   "env": {},
   "resources": {},
@@ -51,6 +54,11 @@
       "method": "GET",
       "path": "/health",
       "description": "Health check endpoint"
+    },
+    {
+      "method": "GET",
+      "path": "/api/db",
+      "description": "Query the plugin's own schema via the scoped DATABASE_URL"
     },
     {
       "method": "GET",

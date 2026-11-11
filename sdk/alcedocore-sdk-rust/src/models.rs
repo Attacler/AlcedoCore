@@ -119,3 +119,341 @@ pub struct KvTtlResponse {
     #[serde(default)]
     pub ttl: Option<i64>,
 }
+
+// ─── Auth / users / sessions ────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct User {
+    pub id: String,
+    pub email: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub is_admin: bool,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FetchMeResponse {
+    pub user: User,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LoginResponse {
+    pub user: User,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub id: String,
+    pub user_id: String,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub current: bool,
+}
+
+// ─── Apps / versions ────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppWithVersions {
+    pub id: i64,
+    pub name: String,
+    pub api_name: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub logo: Option<String>,
+    #[serde(default)]
+    pub versions: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserAppAccess {
+    pub app_id: i64,
+    pub app_name: String,
+    pub api_name: String,
+    pub version: String,
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppVersionRow {
+    pub id: i64,
+    pub app_id: i64,
+    pub app_name: String,
+    pub api_name: String,
+    pub version_id: i64,
+    pub version_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Version {
+    pub id: i64,
+    pub version_name: String,
+}
+
+// ─── Settings ───────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlatformSettings {
+    pub platform_name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SettingsUpdateResponse {
+    #[serde(default)]
+    pub description: Option<String>,
+    pub key: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SettingsBatchUpdateResponse {
+    pub count: u32,
+    pub success: bool,
+}
+
+// ─── Route mappings / developer keys ────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RouteMapping {
+    pub id: i64,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+    pub install_id: i64,
+    #[serde(default)]
+    pub is_active: bool,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub install_slug: Option<String>,
+    #[serde(default)]
+    pub install_app: Option<String>,
+    #[serde(default)]
+    pub install_version: Option<String>,
+    #[serde(default)]
+    pub effective_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeveloperKey {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub version_id: Option<i64>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub last_used_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeveloperKeyWithRawKey {
+    #[serde(flatten)]
+    pub key: DeveloperKey,
+    pub raw_key: String,
+}
+
+// ─── Menus ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MenuItem {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub visible: bool,
+    #[serde(default)]
+    pub route: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub external: Option<bool>,
+    #[serde(default)]
+    pub link_type: Option<String>,
+    #[serde(default)]
+    pub children: Vec<MenuItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MenuSection {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub visible: bool,
+    #[serde(default)]
+    pub items: Vec<MenuItem>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Menu {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub sections: Vec<MenuSection>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MenuListEntry {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub role_count: i64,
+    #[serde(default)]
+    pub item_count: i64,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+// ─── Activity logs ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TimelineEntry {
+    pub id: String,
+    pub action: String,
+    #[serde(default)]
+    pub actor_id: Option<String>,
+    pub collection_name: String,
+    pub item_id: String,
+    pub request_id: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    #[serde(default)]
+    pub diff: Option<Value>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TimelineEntrySystem {
+    pub action: String,
+    #[serde(default)]
+    pub actor_id: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub description: String,
+    pub id: i64,
+    #[serde(default)]
+    pub metadata: Option<Value>,
+    pub request_id: String,
+    pub target: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ActivityLogPage<T> {
+    pub data: Vec<T>,
+    #[serde(default)]
+    pub total: i64,
+    #[serde(default)]
+    pub limit: i64,
+    #[serde(default)]
+    pub offset: i64,
+}
+
+// ─── Collections / lookup ───────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CollectionField {
+    #[serde(default)]
+    pub default: Option<Value>,
+    pub display_name: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub field_type: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default)]
+    pub unique: bool,
+    #[serde(default)]
+    pub is_system: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Collection {
+    pub created_at: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub fields: Vec<CollectionField>,
+    #[serde(default)]
+    pub is_system: bool,
+    pub name: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CollectionListResponse {
+    pub collections: Vec<Collection>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserOption {
+    pub id: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+// ─── Files ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MediaFile {
+    pub id: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub size: Option<i64>,
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    #[serde(default)]
+    pub alt_text: Option<String>,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FileListResponse {
+    pub data: Vec<MediaFile>,
+    #[serde(default)]
+    pub total: i64,
+}
+
+// ─── Dev ────────────────────────────────────────────────────────────────────
+
+/// Bare (non-JSend) response of `POST /api/dev/request-id`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RequestIdResponse {
+    pub request_id: String,
+}

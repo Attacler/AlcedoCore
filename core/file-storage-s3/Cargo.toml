@@ -15,6 +15,7 @@ aws-sdk-s3 = "1"
 aws-config = "1"
 thiserror = "1"
 tracing = "0.1"
-uuid = { version = "1", features = ["v4", "serde"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"

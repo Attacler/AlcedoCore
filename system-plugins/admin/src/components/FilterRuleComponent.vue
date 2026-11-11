@@ -5,7 +5,12 @@ import {
     type FieldDefinition,
 } from "@/stores/collections";
 import type { FilterRule, OperatorMeta } from "@/types/filters";
-import { OPERATORS_BY_TYPE } from "@/types/filters";
+import {
+    OPERATORS_BY_TYPE,
+    COUNT_OPERATORS,
+    AGGREGATE_OPERATORS,
+} from "@/types/filters";
+import { useAppContextStore } from "@/stores/appContext";
 import Select from "primevue/select";
 import TreeSelect from "primevue/treeselect";
 import Button from "primevue/button";
@@ -21,7 +26,13 @@ const props = defineProps<{
         remove: [];
     }>();
 
-const collectionStore = useCollectionsStore();
+const collectionStore = useCollectionsStore(),
+    appContext = useAppContextStore();
+
+const currentApp = computed(() => appContext.appSlug ?? undefined),
+    currentVersion = computed(() => appContext.version ?? undefined);
+
+const MAX_TREE_DEPTH = 3;
 
 onErrorCaptured((err: any) => {
     console.error("[FilterRuleComponent] Error:", err?.message, err?.stack);
@@ -36,11 +47,39 @@ interface FieldTreeNode {
     children?: FieldTreeNode[];
 }
 
+interface CollectionRef {
+    collection: string;
+    app?: string;
+}
+
 const keyTypeMap = new Map<string, string>(),
+    keyOneToManyMap = new Map<string, boolean>(),
+    keyCollectionMap = new Map<string, CollectionRef>(),
     fieldTree = ref<FieldTreeNode[]>([]),
     treeReady = ref(false),
     selectedKeys = ref<Record<string, boolean> | null>(null),
     rawValue = ref(false);
+
+const resolvedCollections = new Map<string, Promise<any>>();
+
+function getCollectionCached(
+    name: string,
+    app: string | undefined,
+): Promise<any> {
+    const key = `${app ?? "__current__"}:${name}`;
+    if (!resolvedCollections.has(key)) {
+        resolvedCollections.set(
+            key,
+            collectionStore
+                .getCollection(name, false, {
+                    app: app ?? undefined,
+                    version: currentVersion.value,
+                })
+                .catch(() => null),
+        );
+    }
+    return resolvedCollections.get(key)!;
+}
 
 /** Recursively find a tree node by key */
 function findNodeByKey(
@@ -65,14 +104,19 @@ const selectedLabel = computed(() => {
     return node ? node.label : key;
 });
 
+/** The selected field path joined into a tree key (e.g. "customer.name"). */
+const dottedPath = computed(() => (props.condition.path || []).join("."));
+
 /** Watch parent field reset via condition prop */
 watch(
-    () => props.condition.field,
+    () => props.condition.path,
     (val) => {
-        selectedKeys.value = val ? { [val]: true } : null;
+        const key = (val || []).join(".");
+        selectedKeys.value = key ? { [key]: true } : null;
     },
     {
         immediate: true,
+        deep: true,
     },
 );
 
@@ -82,74 +126,172 @@ watch(
     (keys) => {
         if (!keys) return;
         const field = Object.keys(keys)[0];
-        if (!field || field === props.condition.field) return;
+        if (!field || field === dottedPath.value) return;
         const clone = getClone();
-        clone.field = field;
-        clone.operator = "eq";
+        clone.path = field.split(".");
+        // A direct one-to-many field (e.g. `contacts`) gets count operators
+        clone.operator =
+            field.indexOf(".") === -1 && keyOneToManyMap.get(field)
+                ? "count_gt"
+                : "eq";
         clone.value = "";
         emitUpdate(clone);
     },
     { deep: true },
 );
 
-function buildFullTree(fields: FieldDefinition[]): FieldTreeNode[] {
+interface TreeBuildResult {
+    tree: FieldTreeNode[];
+    mapping: Map<string, CollectionRef>;
+}
+
+function prefixTreeNodes(
+    nodes: FieldTreeNode[],
+    prefix: string,
+): FieldTreeNode[] {
+    return nodes.map((n) => ({
+        ...n,
+        key: `${prefix}.${n.key}`,
+        children: n.children
+            ? prefixTreeNodes(n.children, prefix)
+            : undefined,
+    }));
+}
+
+async function buildFullTree(
+    fields: FieldDefinition[],
+    collectionName: string,
+    collectionApp: string | undefined,
+    visited: Set<string>,
+    depth: number,
+): Promise<TreeBuildResult> {
     const tree: FieldTreeNode[] = [];
+    const mapping = new Map<string, CollectionRef>();
 
     for (const f of fields) {
         if (f.type !== "relationship") {
             keyTypeMap.set(f.name, f.type);
+            mapping.set(f.name, { collection: collectionName, app: collectionApp });
             tree.push({
                 key: f.name,
                 label: f.display_name || f.name,
                 type: f.type,
                 leaf: true,
             });
-        } else if (f.related_collection) {
-            const childFields = collectionStore.collections.find(
-                (e) => e.name == f.related_collection,
-            )?.fields;
-
-            if (childFields) {
-                const children: FieldTreeNode[] = childFields.map((cf) => {
-                    const key = `${f.name}.${cf.name}`;
-                    keyTypeMap.set(key, cf.type);
-
-                    const children = cf.related_collection
-                        ? buildFullTree(
-                              collectionStore.collections.find(
-                                  (e) => e.name == cf.related_collection,
-                              )?.fields || [],
-                          ).map((e) => ({
-                              ...e,
-                              key: key + "." + e.key,
-                          }))
-                        : [];
-
-                    return {
-                        key,
-                        label: `${f.display_name || f.name} > ${cf.display_name || cf.name}`,
-                        type: cf.type,
-                        leaf: true,
-                        children,
-                    };
-                });
-                tree.push({
-                    key: f.name,
-                    label: `${f.display_name || f.name} (${f.related_collection})`,
-                    leaf: false,
-                    children,
-                });
-            }
+            continue;
         }
+
+        if (!f.related_collection) continue;
+
+        keyTypeMap.set(f.name, f.type);
+        keyOneToManyMap.set(f.name, f.relationship_type === "one_to_many");
+
+        // Guard against bidirectional relations (e.g. orders.items ->
+        // order_items.order -> orders) which would recurse forever.
+        if (visited.has(f.related_collection)) continue;
+
+        const relatedApp = f.related_app ?? collectionApp;
+        const childColl = await getCollectionCached(
+            f.related_collection,
+            relatedApp ?? undefined,
+        );
+        const childFields: FieldDefinition[] | undefined = childColl?.fields;
+        if (!childFields) continue;
+
+        mapping.set(f.name, { collection: collectionName, app: collectionApp });
+
+        const nextVisited = new Set(visited);
+        nextVisited.add(f.related_collection);
+        const children: FieldTreeNode[] = [];
+
+        for (const cf of childFields) {
+            const key = `${f.name}.${cf.name}`;
+            keyTypeMap.set(key, cf.type);
+            mapping.set(key, {
+                collection: f.related_collection,
+                app: relatedApp ?? undefined,
+            });
+
+            let grandChildren: FieldTreeNode[] = [];
+            if (
+                cf.type === "relationship" &&
+                cf.related_collection &&
+                !nextVisited.has(cf.related_collection) &&
+                depth + 1 < MAX_TREE_DEPTH
+            ) {
+                const nestedApp = cf.related_app ?? relatedApp;
+                const nestedColl = await getCollectionCached(
+                    cf.related_collection,
+                    nestedApp ?? undefined,
+                );
+                const sub = await buildFullTree(
+                    nestedColl?.fields || [],
+                    cf.related_collection,
+                    nestedApp ?? undefined,
+                    nextVisited,
+                    depth + 1,
+                );
+                grandChildren = prefixTreeNodes(sub.tree, key);
+                for (const [subKey, info] of sub.mapping) {
+                    const fullKey = `${key}.${subKey}`;
+                    mapping.set(fullKey, info);
+                    const subType = keyTypeMap.get(subKey);
+                    if (subType) keyTypeMap.set(fullKey, subType);
+                }
+            }
+
+            children.push({
+                key,
+                label: `${f.display_name || f.name} > ${cf.display_name || cf.name}`,
+                type: cf.type,
+                leaf: true,
+                children: grandChildren,
+            });
+        }
+
+        tree.push({
+            key: f.name,
+            label: `${f.display_name || f.name} (${f.related_collection})`,
+            leaf: false,
+            children,
+        });
     }
 
-    fieldTree.value = tree;
-    treeReady.value = true;
-
-    return tree;
+    return { tree, mapping };
 }
 
-if (props.fields.length > 0) buildFullTree(props.fields);
+let buildToken = 0;
+
+async function rebuildTree() {
+    const token = ++buildToken;
+    keyTypeMap.clear();
+    keyOneToManyMap.clear();
+    keyCollectionMap.clear();
+    if (!props.fields || props.fields.length === 0) {
+        fieldTree.value = [];
+        treeReady.value = true;
+        return;
+    }
+    const { tree, mapping } = await buildFullTree(
+        props.fields,
+        props.collectionName,
+        currentApp.value,
+        new Set([props.collectionName]),
+        0,
+    );
+    if (token !== buildToken) return;
+    for (const [key, info] of mapping) {
+        keyCollectionMap.set(key, info);
+    }
+    fieldTree.value = tree;
+    treeReady.value = true;
+}
+
+watch(
+    () => [props.fields, props.collectionName, currentApp.value],
+    rebuildTree,
+    { immediate: true },
+);
 
 const currentKey = computed(() => {
     if (!selectedKeys.value) return null;
@@ -157,14 +299,40 @@ const currentKey = computed(() => {
 });
 
 const selectedFieldType = computed<string>(() => {
-    const fieldName = props.condition.field;
+    const fieldName = (props.condition.path || []).join(".");
     if (!fieldName) return "string";
     return keyTypeMap.get(fieldName) || "string";
 });
 
+/** True when the selected path is a direct one-to-many relation field */
+const isOneToManyField = computed(() => {
+    const path = props.condition.path || [];
+    return path.length === 1 && keyOneToManyMap.get(path[0]) === true;
+});
+
+/** True when the selected path is a child field of a one-to-many relation
+ * (e.g. `lines.total` on `invoices`) */
+const isOneToManyChildField = computed(() => {
+    const path = props.condition.path || [];
+    return path.length === 2 && keyOneToManyMap.get(path[0]) === true;
+});
+
+/** True when the current operator is a relation aggregate comparison
+ * (count or sum/avg/min/max over the related rows) */
+const isAggValueOp = computed(() =>
+    /^(count_|sum|avg|min|max)/.test(props.condition.operator),
+);
+
 const availableOperators = computed<OperatorMeta[]>(() => {
+    if (isOneToManyField.value) return COUNT_OPERATORS;
     const type = selectedFieldType.value;
-    return OPERATORS_BY_TYPE[type] || OPERATORS_BY_TYPE.string;
+    const base = OPERATORS_BY_TYPE[type] || OPERATORS_BY_TYPE.string;
+    // Aggregate operators only make sense on numeric child fields of a
+    // one-to-many relation; plain operators keep their EXISTS semantics.
+    if (isOneToManyChildField.value && (type === "int" || type === "float")) {
+        return [...base, ...AGGREGATE_OPERATORS];
+    }
+    return base;
 });
 
 const requiresValue = computed(() => {
@@ -197,31 +365,18 @@ function onValueChange(newValue: unknown) {
     emitUpdate(clone);
 }
 
-function getCollectionName(key: string) {
-    if (!key.includes(".")) {
-        return props.collectionName;
-    }
+function onCountInput(event: Event) {
+    const n = (event.target as HTMLInputElement).valueAsNumber;
+    onValueChange(isNaN(n) ? "" : n);
+}
 
-    let lastCollectionName = props.collectionName;
-    const keys = key.split(".");
-    keys.pop();
-
-    for (const k of keys) {
-        const findCollection = collectionStore.collections.find(
-            (e) => e.name == lastCollectionName,
-        );
-
-        const findField = findCollection?.fields.find((e) => e.name == k);
-
-        if (findField?.related_collection) {
-            lastCollectionName = findField.related_collection;
-            continue;
+function getCollectionInfo(key: string): CollectionRef {
+    return (
+        keyCollectionMap.get(key) ?? {
+            collection: props.collectionName,
+            app: currentApp.value,
         }
-
-        return lastCollectionName;
-    }
-
-    return lastCollectionName;
+    );
 }
 </script>
 
@@ -279,10 +434,19 @@ function getCollectionName(key: string) {
                 Value
             </label>
             <div class="flex items-center mb-1 gap-2">
+                <input
+                    v-if="isAggValueOp"
+                    type="number"
+                    :value="condition.value"
+                    class="grow px-2 py-1.5 text-sm border border-gray-300 rounded-md"
+                    @input="onCountInput"
+                />
                 <FormFieldRenderer
-                    v-if="!rawValue"
-                    :collectionName="getCollectionName(currentKey)"
+                    v-else-if="!rawValue"
+                    :collectionName="getCollectionInfo(currentKey).collection"
                     :fieldName="currentKey.split('.').reverse()[0]"
+                    :targetApp="getCollectionInfo(currentKey).app"
+                    :targetVersion="currentVersion"
                     :modelValue="condition.value"
                     @update:modelValue="onValueChange"
                     class="grow"

@@ -4,6 +4,7 @@ import { PolicyWithPermissions, usePoliciesStore } from "@/stores/policies";
 import { formatDate } from "@/utils/formatters";
 import { ref } from "vue";
 import { useRouter } from "vue-router";
+import { appPath } from "@/utils/appHeaders";
 
 const props = defineProps<{ policy: PolicyWithPermissions }>();
 
@@ -56,7 +57,7 @@ async function handleDelete() {
     try {
         await store.deletePolicy(props.policy.id);
         toast.show(`Policy "${props.policy.name}" deleted`, "success");
-        router.push("/policies");
+        router.push(appPath("/policies"));
     } catch (e) {
         toast.show(
             `Failed to delete: ${e instanceof Error ? e.message : "Unknown error"}`,

@@ -50,8 +50,8 @@ onMounted(async () => {
             const response = (await client.registries.get(
                 registryId.value,
             )) as { data?: any };
-            if (response.data) {
-                const reg = response.data;
+            const reg = response?.data ?? response;
+            if (reg) {
                 form.name = reg.name || "";
                 form.url = reg.url || "";
                 form.pull_url = reg.pull_url || "";
@@ -97,20 +97,19 @@ async function checkReachability(showToast: boolean) {
     if (!form.url.trim()) return;
     reachableStatus.value = "checking";
     try {
-        let response = (await fetch("/api/registries/health-check", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ url: form.url }),
-        }).then((r) => r.json())) as any;
-        if (response.data?.reachable) {
+        const response = (await client.registries.healthCheckUrl(
+            form.url,
+        )) as any;
+        // The SDK unwraps core's JSend envelope to the inner object.
+        const result = response?.data ?? response;
+        if (result?.reachable) {
             reachableStatus.value = "reachable";
 
             if (showToast) toast.show("Registry connected", "success");
         } else {
             reachableStatus.value = "unreachable";
             toast.show(
-                `Registry unreachable: ${response.data?.status || "Failed"}`,
+                `Registry unreachable: ${result?.status || "Failed"}`,
                 "error",
             );
         }
@@ -123,21 +122,12 @@ async function checkReachability(showToast: boolean) {
 async function saveRegistry() {
     if (!validate()) return;
 
-    // For existing registries, verify reachability before saving
-    if (registryId.value) {
-        if (reachableStatus.value === "unknown") {
-            await checkReachability(false);
-            if ((reachableStatus.value as string) !== "reachable") {
-                toast.show(
-                    "Please wait for registry validation to complete",
-                    "warning",
-                );
-                return;
-            }
-        } else if (reachableStatus.value === "unreachable") {
-            toast.show("Cannot save: registry is not reachable", "error");
-            return;
-        }
+    if (
+        isEdit.value &&
+        registryId.value &&
+        reachableStatus.value === "unknown"
+    ) {
+        await checkReachability(false);
     }
 
     saving.value = true;

@@ -1,20 +1,28 @@
 import asyncio
+import json
 import os
+import psycopg
 from aiohttp import web
 
-from alcedo_sdk import AlcedoClient, KeyNotFoundError, KVStoreError
+from alcedo_sdk import AlcedoClient
+from alcedo_sdk.exceptions import AlcedoError
 
 
 CORE_URL = os.environ.get("CORE_URL", "http://core:8080")
 PORT = os.environ.get("PORT", "8080")
+# Injected by the core at deploy time: a connection string whose Postgres role
+# is scoped to this install's own schema (plugin_install_<id>).
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
 
 async def _forward_items(method: str, path: str, body: any, query_params: dict | None = None, request_id: str | None = None) -> dict:
-    from alcedo_sdk.exceptions import AlcedoError
     try:
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
             items_path = path[len("/api/items/"):]
             if method == "GET":
                 data = await client.items.list(items_path, params=query_params)
+                items = data.get("data", []) if isinstance(data, dict) else data
+                return {"items": items}
             elif method == "POST":
                 data = await client.items.create(items_path, body)
             elif method == "PUT":
@@ -23,20 +31,28 @@ async def _forward_items(method: str, path: str, body: any, query_params: dict |
                 data = await client.items.delete(items_path, body)
             else:
                 return {"error": f"Unsupported method: {method}"}
-            return data
+            return data if isinstance(data, dict) else {"data": data}
     except AlcedoError as e:
-        return {"error": str(e), "status": getattr(e, 'status_code', 500)}
+        return {"error": str(e), "status": getattr(e, "http_status", None) or getattr(e, "status_code", 500)}
+
+
+def _kv_value(payload: any) -> any:
+    """kv.get answers with the API payload; the value lives under "value"."""
+    if isinstance(payload, dict):
+        return payload.get("value")
+    return payload
 
 
 async def get_counter(request_id: str | None = None) -> int:
     try:
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
-            val = await client.kv.get("counter")
+            val = _kv_value(await client.kv.get("counter"))
             if val is None:
                 return 0
             return int(val)
-    except KVStoreError as e:
-        print(f"[KV Error] get_counter: {e}")
+    except AlcedoError as e:
+        # A missing counter key reads as 0 — the counter starts there.
+        print(f"[KV] get_counter: {e}")
         return 0
 
 
@@ -46,7 +62,7 @@ async def decrement_counter(delta: int = 1, request_id: str | None = None) -> in
     try:
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
             await client.kv.set("counter",str(count))
-    except KVStoreError as e:
+    except AlcedoError as e:
         print(f"[KV Error] decrement_counter: {e}")
     return count
 
@@ -58,7 +74,7 @@ async def increment_counter(delta: int = 1, request_id: str | None = None) -> in
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
             res = await client.kv.set("counter",str(count))
             print(res)
-    except KVStoreError as e:
+    except AlcedoError as e:
         print(f"[KV Error] increment_counter: {e}")
     return count
 
@@ -74,18 +90,21 @@ async def ttl_demo(request_id: str | None = None) -> dict:
         demo_key = "ttl-demo"
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
             before = await client.kv.ttl(demo_key)
-            result["before_set"] = before
+            result["before_set"] = before.get("ttl") if isinstance(before, dict) else before
             await client.kv.set(demo_key, "This key will auto-expire", ttl=2)
             after_set = await client.kv.ttl(demo_key)
-            result["after_set"] = after_set
+            result["after_set"] = after_set.get("ttl") if isinstance(after_set, dict) else after_set
             val = await client.kv.get(demo_key)
-            result["after_set_value"] = val
+            result["after_set_value"] = _kv_value(val)
             await asyncio.sleep(3)
-            after_expiry = await client.kv.get(demo_key)
-            result["after_expiry_value"] = after_expiry
+            try:
+                after_expiry = await client.kv.get(demo_key)
+                result["after_expiry_value"] = _kv_value(after_expiry)
+            except AlcedoError:
+                result["after_expiry_value"] = None
             after_ttl = await client.kv.ttl(demo_key)
-            result["after_ttl"] = after_ttl
-    except KVStoreError as e:
+            result["after_ttl"] = after_ttl.get("ttl") if isinstance(after_ttl, dict) else after_ttl
+    except AlcedoError as e:
         result["status"] = "error"
         result["error"] = str(e)
     return result
@@ -94,12 +113,10 @@ async def ttl_demo(request_id: str | None = None) -> dict:
 async def fetch_kv(key: str, request_id: str | None = None) -> dict:
     try:
         async with AlcedoClient(base_url=CORE_URL, plugin_slug="hello-world", request_id=request_id) as client:
-            val = await client.kv.get(key)
+            val = _kv_value(await client.kv.get(key))
             return {"key": key, "value": val}
-    except KeyNotFoundError:
-        return {"key": key, "value": None, "error": "not_found"}
-    except KVStoreError as e:
-        return {"key": key, "error": str(e)}
+    except AlcedoError as e:
+        return {"key": key, "value": None, "error": "not_found" if "not found" in str(e).lower() else str(e)}
 
 
 async def change_counter(delta: int, request_id: str | None = None) -> dict:
@@ -107,7 +124,7 @@ async def change_counter(delta: int, request_id: str | None = None) -> dict:
     try:
         count = await func(abs(delta), request_id=request_id)
         return {"count": count}
-    except KVStoreError as e:
+    except AlcedoError as e:
         return {"error": str(e)}
 
 
@@ -128,6 +145,23 @@ def _json_response(data, status=200):
 
 async def handle_health(request: web.Request) -> web.Response:
     return _json_response({"status": "healthy"})
+
+
+async def handle_db(request: web.Request) -> web.Response:
+    """Direct DB access through the scoped DATABASE_URL.
+
+    The role behind that URL can only reach this install's own schema, so the
+    `items` table below is the one created by the plugin's migrations.
+    """
+    if not DATABASE_URL:
+        return _json_response({"error": "DATABASE_URL not set"}, status=500)
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            user, schema = conn.execute("SELECT current_user, current_schema()").fetchone()
+            items = conn.execute("SELECT count(*) FROM items").fetchone()[0]
+        return _json_response({"user": user, "schema": schema, "items": items})
+    except Exception as e:
+        return _json_response({"error": str(e)}, status=500)
 
 
 async def handle_hello(request: web.Request) -> web.Response:
@@ -245,10 +279,17 @@ async def handle_items_delete(request: web.Request) -> web.Response:
 
 
 
+async def handle_events(request: web.Request) -> web.Response:
+    payload = await request.json()
+    print(f"[EVENT] ItemCreated payload: {json.dumps(payload)}")
+    return _json_response({"received": True, "type": payload.get("type")})
+
+
 def make_app() -> web.Application:
     app = web.Application()
 
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/api/db", handle_db)
     app.router.add_get("/api/hello", handle_hello)
     app.router.add_get("/api/version", handle_version)
     app.router.add_get("/api/counter/value", handle_counter_value)
@@ -257,6 +298,7 @@ def make_app() -> web.Application:
     app.router.add_get("/api/kv/ttl-demo", handle_ttl_demo)
     app.router.add_get("/api/kv/hello", handle_kv_hello)
     app.router.add_get("/", handle_root)
+    app.router.add_post("/__events__", handle_events)
 
     # Items CRUD via SDK proxy
     items_resource = app.router.add_resource("/api/items/{path:.*}")

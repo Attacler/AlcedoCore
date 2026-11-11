@@ -1,0 +1,97 @@
+use std::sync::Arc;
+
+use sqlx::{Pool, Postgres};
+use sqlx_migrator::Info;
+use sqlx_migrator::migration::Migration;
+use sqlx_migrator::{Migrate, Migrator, Plan, vec_box};
+
+use crate::services::context::{AppContext, RequestSource};
+
+pub(crate) mod m00001_init;
+pub(crate) mod m00002_users;
+pub(crate) mod m00003_settings;
+pub(crate) mod m00004_sessions;
+pub(crate) mod m00005_developer_keys;
+pub(crate) mod m00006_user_profile_fk;
+pub(crate) mod m00007_activity_logs;
+pub(crate) mod m00008_registries;
+pub(crate) mod m00009_plugins;
+pub(crate) mod m00010_plugin_image;
+pub(crate) mod m00011_install_deployment_id;
+pub(crate) mod m00012_route_mappings;
+pub(crate) mod m00013_plugin_recovery;
+pub(crate) mod m00014_install_scope;
+pub(crate) mod m00015_plugin_versions;
+pub(crate) mod m00016_system_plugin_flag;
+pub(crate) mod m00017_plugin_db_access;
+
+pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
+    vec_box![
+        m00001_init::M0001Migration {
+            app_context: app_context.clone()
+        },
+        m00002_users::M0002Migration {
+            app_context: app_context.clone()
+        },
+        m00003_settings::M0003Migration {
+            app_context: app_context.clone()
+        },
+        m00004_sessions::M0004Migration {
+            app_context: app_context.clone()
+        },
+        m00005_developer_keys::M0005Migration {
+            app_context: app_context.clone()
+        },
+        m00006_user_profile_fk::M0006Migration {
+            app_context: app_context.clone()
+        },
+        m00007_activity_logs::M0007Migration {
+            app_context: app_context.clone()
+        },
+        m00008_registries::M0008Migration {
+            app_context: app_context.clone()
+        },
+        m00009_plugins::M0009Migration {
+            app_context: app_context.clone()
+        },
+        m00010_plugin_image::M0010Migration,
+        m00011_install_deployment_id::M0011Migration,
+        m00012_route_mappings::M0012Migration {
+            app_context: app_context.clone()
+        },
+        m00013_plugin_recovery::M0013Migration,
+        m00014_install_scope::M0014Migration,
+        m00015_plugin_versions::M0015Migration,
+        m00016_system_plugin_flag::M0016Migration,
+        m00017_plugin_db_access::M0017Migration,
+    ]
+}
+
+pub async fn run_system_migrations(database_pool: &Pool<Postgres>) {
+    let mut migrator = Migrator::default().set_schema("alcedocore").unwrap();
+    let app_context = AppContext::system(RequestSource::Migration);
+
+    sqlx::query(&format!(
+        "CREATE SCHEMA IF NOT EXISTS {}",
+        app_context.schema_name()
+    ))
+    .execute(database_pool)
+    .await
+    .unwrap();
+
+    // CREATE SCHEMA grants USAGE+CREATE to PUBLIC by default; the global schema
+    // holds users and password hashes, so lock it down. The core connects as a
+    // superuser and is unaffected.
+    sqlx::query(&format!(
+        "REVOKE ALL ON SCHEMA {} FROM PUBLIC",
+        app_context.schema_name()
+    ))
+    .execute(database_pool)
+    .await
+    .unwrap();
+
+    migrator.add_migrations(migrations(app_context)).unwrap();
+    let mut conn = database_pool.acquire().await.unwrap();
+
+    migrator.run(&mut *conn, &Plan::apply_all()).await.unwrap();
+}

@@ -1,0 +1,32 @@
+use std::sync::Arc;
+
+use crate::services::{
+    collections::schema::SchemaService,
+    hooks::{
+        MultiEventBus,
+        types::{items_create::ItemsAfterCreate, items_update::ItemsAfterUpdate},
+    },
+};
+
+pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
+    bus.on::<ItemsAfterUpdate, _>(
+        "after.items.update.alcedocore_collections",
+        |_, context, state, _| {
+            Box::pin(async move {
+                let table_service = SchemaService::new(&state, &context);
+                table_service.refresh_schema().await;
+            })
+        },
+    )
+    .await;
+    bus.on::<ItemsAfterCreate, _>(
+        "after.items.create.alcedocore_fields",
+        |_, context, state, _| {
+            Box::pin(async move {
+                let table_service = SchemaService::new(&state, &context);
+                table_service.refresh_schema().await;
+            })
+        },
+    )
+    .await;
+}

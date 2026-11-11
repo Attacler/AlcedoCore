@@ -5,6 +5,7 @@ import { useSavedViewsStore } from "@/stores/savedViews";
 import type { FieldDefinition } from "@/stores/collections";
 import FieldNameLabel from "@/components/FieldNameLabel.vue";
 import { resolveTemplate } from "@/utils/templateResolver";
+import { appPath } from "@/utils/appHeaders";
 
 const FormFieldRenderer = inject("FormFieldRenderer");
 
@@ -90,7 +91,7 @@ function onCardClick(item: any) {
         router.push(props.rowLinkTo(item));
         return;
     }
-    router.push(`/detail/${collectionName.value}/${item.id}`);
+    router.push(appPath(`/detail/${collectionName.value}/${item.id}`));
 }
 </script>
 
@@ -132,7 +133,7 @@ function onCardClick(item: any) {
                         <Button
                             v-if="
                                 (!embedded || actions) &&
-                                item.$permissions?.delete !== false
+                                item.$delete_permission !== false
                             "
                             icon="pi pi-trash"
                             severity="danger"
@@ -145,7 +146,7 @@ function onCardClick(item: any) {
                         <Button
                             v-if="
                                 (!embedded || actions) &&
-                                item.$permissions?.update !== false
+                                item.$update_permission !== false
                             "
                             icon="pi pi-pencil"
                             severity="secondary"

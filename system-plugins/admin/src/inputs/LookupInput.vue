@@ -2,6 +2,7 @@
 import { ref, computed, watchEffect } from "vue";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useCollectionsStore } from "@/stores/collections";
+import { useAppContextStore } from "@/stores/appContext";
 import Select from "primevue/select";
 import QuickCreateDialog from "@/components/QuickCreateDialog.vue";
 
@@ -28,9 +29,13 @@ const props = withDefaults(
     }>();
 
 const { client } = useAlcedoClient(),
-    collectionsStore = useCollectionsStore();
+    collectionsStore = useCollectionsStore(),
+    appContext = useAppContextStore();
 
-const relatedOptions = ref<{ label: string; value: string }[]>([]),
+const currentVersion = computed(() => appContext.version ?? undefined),
+    targetApp = computed(() => props.field?.related_app ?? undefined);
+
+const relatedOptions = ref<{ label: string; value: string }[]>(),
     relatedLoading = ref(false);
 
 async function resolveDisplayField(): Promise<string | undefined> {
@@ -40,7 +45,11 @@ async function resolveDisplayField(): Promise<string | undefined> {
     const relatedCollection = props.field?.related_collection;
     if (!relatedCollection) return undefined;
     try {
-        const target = await collectionsStore.getCollection(relatedCollection);
+        const target = await collectionsStore.getCollection(
+            relatedCollection,
+            true,
+            { app: targetApp.value, version: currentVersion.value },
+        );
         const fieldList: any[] = target.fields || [];
         const firstString = fieldList.find(
             (f: any) => f.type === "string" && !f.is_system,
@@ -65,9 +74,11 @@ async function loadRelatedOptions() {
     try {
         const displayField = await resolveDisplayField();
 
-        const res = (await client.items.list(relatedCollection, {
-            limit: "50",
-        })) as any;
+        const res = await client.items.list(
+            relatedCollection,
+            { limit: "50" },
+            { app: targetApp.value, version: currentVersion.value },
+        );
 
         const data = res.data || res;
         const items: any[] = data.data || data.items || data || [];
@@ -118,6 +129,7 @@ watchEffect(async () => {
     try {
         const policy = (await client.collections.getCreatePolicy(
             props.field.related_collection,
+            { app: targetApp.value, version: currentVersion.value },
         )) as any;
         canCreateRelated.value = policy?.$permissions?.create !== false;
     } catch {
@@ -218,6 +230,7 @@ async function onRelatedCreated(item: any) {
         <QuickCreateDialog
             :visible="showQuickCreate"
             :collection-name="field?.related_collection"
+            :related-app="field?.related_app ?? undefined"
             :deferred="inlineCreate"
             @update:visible="(v) => (showQuickCreate = v)"
             @created="onRelatedCreated"

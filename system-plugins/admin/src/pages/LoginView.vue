@@ -3,8 +3,10 @@ import { ref, onMounted } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useAuthStore } from "@/stores/authStore";
 import Password from "primevue/password";
+import { useSettingsStore } from "@/stores/settingsStore";
 
 const authStore = useAuthStore(),
+    settingsStore = useSettingsStore(),
     router = useRouter(),
     route = useRoute();
 
@@ -14,7 +16,9 @@ const email = ref(""),
 onMounted(async () => {
     await authStore.initialize();
     if (authStore.user) {
-        const redirect = (route.query.redirect as string) || "/dashboard";
+        const redirect =
+            (route.query.redirect as string) ||
+            (await authStore.resolveLanding());
         router.replace(redirect);
     }
 });
@@ -22,7 +26,9 @@ onMounted(async () => {
 async function handleLogin() {
     const success = await authStore.login(email.value, password.value);
     if (success) {
-        const redirect = (route.query.redirect as string) || "/dashboard";
+        const redirect =
+            (route.query.redirect as string) ||
+            (await authStore.resolveLanding());
         router.push(redirect);
     }
 }
@@ -105,7 +111,11 @@ async function handleLogin() {
                 </template>
             </Card>
             <p class="text-center text-xs text-gray-400 mt-6">
-                Alcedo Admin Panel
+                {{
+                    settingsStore.platformSettings.platform_name ||
+                    "Alcedo Core"
+                }}
+                Panel
             </p>
         </div>
     </div>

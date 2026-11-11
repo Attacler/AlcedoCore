@@ -6,7 +6,9 @@ import { formatFileSize } from "@/utils/formatters";
 import { onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 
-const props = defineProps<{ plugin: PluginStore }>();
+// `installId` is the selected install's own id. Runtime detail is keyed by it
+// rather than the slug, because a slug can be installed on several app versions.
+const props = defineProps<{ plugin: PluginStore; installId?: number | null }>();
 
 const route = useRoute(),
     store = usePluginsStore(),
@@ -21,8 +23,8 @@ const dockerInfo = ref<{
         image_id: string;
         tags: string[];
         size: number;
-        container_id: string | null;
-        container_state: string | null;
+        deployment_id: string | null;
+        deployment_state: string | null;
         status: string;
     } | null>(null),
     dockerLoading = ref(false),
@@ -35,15 +37,14 @@ const availableVersions = ref<{ tag: string; size: number }[]>([]),
     deployingTag = ref<string | null>(null);
 
 async function loadDockerInfo() {
+    if (!props.installId) return;
     await withAsyncHandlingVoid(
         dockerLoading,
         dockerError,
         async () => {
-            const result = await store.fetchPluginDockerInfo(
-                route.params.name as string,
-            );
-            if (result?.data) {
-                dockerInfo.value = result.data;
+            const result = await store.fetchPluginDockerInfo(props.installId!);
+            if (result) {
+                dockerInfo.value = result;
             }
         },
         "Failed to load Docker info",
@@ -67,7 +68,7 @@ async function loadAvailableVersions() {
 }
 
 async function deployVersion(tag: string) {
-    if (props.plugin.value?.status === "enabled") {
+    if (props.plugin.status === "enabled") {
         pendingDeployTag.value = tag;
         showDeployDialog.value = true;
         return;
@@ -86,7 +87,15 @@ async function confirmDeployVersion() {
 async function doDeployVersion(tag: string) {
     deployingTag.value = tag;
     try {
-        await store.deployPluginVersion(route.params.name as string, tag);
+        const install = props.plugin.installations.find(
+            (i) => i.id === props.installId,
+        );
+        if (!install) throw new Error("Select a deployment to redeploy");
+        await store.deployPluginVersion(
+            route.params.name as string,
+            tag,
+            install.app_version_id,
+        );
         deployingTag.value = null;
         await loadDockerInfo();
         await loadAvailableVersions();
@@ -192,12 +201,12 @@ onMounted(() => {
                         </h3>
                         <div>
                             <div class="text-xs text-gray-500 mb-1">
-                                Container ID
+                                Deployment ID
                             </div>
                             <div
                                 class="font-mono text-sm bg-gray-50 p-2 rounded truncate"
                             >
-                                {{ dockerInfo.container_id || "Not running" }}
+                                {{ dockerInfo.deployment_id || "Not running" }}
                             </div>
                         </div>
                         <div class="grid grid-cols-2 gap-4 mt-2">
@@ -210,18 +219,18 @@ onMounted(() => {
                                         class="px-2 py-0.5 rounded-full text-xs font-medium"
                                         :class="{
                                             'bg-green-100 text-green-800':
-                                                dockerInfo.container_state ===
+                                                dockerInfo.deployment_state ===
                                                 'running',
                                             'bg-gray-100 text-gray-700':
-                                                dockerInfo.container_state ===
+                                                dockerInfo.deployment_state ===
                                                     'stopped' ||
-                                                !dockerInfo.container_state,
+                                                !dockerInfo.deployment_state,
                                             'bg-red-100 text-red-800':
-                                                dockerInfo.container_state ===
+                                                dockerInfo.deployment_state ===
                                                 'failed',
                                         }"
                                         >{{
-                                            dockerInfo.container_state ||
+                                            dockerInfo.deployment_state ||
                                             "unknown"
                                         }}</span
                                     >

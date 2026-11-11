@@ -13,6 +13,10 @@ import {
     normalizeSection,
 } from "@/composables/useSectionLayout";
 import RelationalSection from "./RelationalSection.vue";
+import {
+    mergeRelationBodies,
+    type RelationBodyFragment,
+} from "@/composables/useRelationBody";
 
 const props = withDefaults(
         defineProps<{
@@ -25,6 +29,8 @@ const props = withDefaults(
             deferredChildren?: boolean;
             scalarOnly?: boolean;
             fieldReadonly?: (field: FieldDefinition) => boolean;
+            targetApp?: string;
+            targetVersion?: string;
         }>(),
         {
             fieldsOverride: undefined,
@@ -132,6 +138,13 @@ function getPayload(): Record<string, any> {
                 const value = model.value[field.name];
                 if (value === null || value === undefined || value === "")
                     continue;
+                if (field.type === "relationship" && typeof value === "object") {
+                    payload[field.name] =
+                        value.id !== undefined && value.id !== null
+                            ? value.id
+                            : value;
+                    continue;
+                }
                 payload[field.name] = value;
             }
         }
@@ -148,58 +161,37 @@ function setSectionRef(id: string, el: any) {
     }
 }
 
-function collectPendingOps(): any[] {
-    const ops: any[] = [];
+/** Serialized nested body aggregating every relational section on this form. */
+function getRelationBody(): Record<string, any> | null {
+    const merged: RelationBodyFragment = {};
     for (const id of Object.keys(sectionRefs.value)) {
         const el = sectionRefs.value[id];
-        if (el && typeof el.collectPendingOps === "function") {
-            ops.push(...el.collectPendingOps());
+        if (el && typeof el.getRelationBody === "function") {
+            mergeRelationBodies(merged, el.getRelationBody());
         }
     }
-    return ops;
+    return Object.keys(merged).length ? merged : null;
 }
 
-async function flushPendingChildren(parentId: string) {
+/** Whether any relational section on this form has queued ops. */
+function hasPendingChanges(): boolean {
     for (const id of Object.keys(sectionRefs.value)) {
         const el = sectionRefs.value[id];
-        if (el && typeof el.flushPending === "function") {
-            await el.flushPending(parentId);
+        if (el && typeof el.hasPendingChanges === "function") {
+            if (el.hasPendingChanges()) return true;
         }
     }
-}
-
-function getCreateBody(): {
-    body: Record<string, any> | null;
-    inlinedTempIds: string[];
-} {
-    const body: Record<string, any> = {};
-    const inlinedTempIds: string[] = [];
-    for (const id of Object.keys(sectionRefs.value)) {
-        const el = sectionRefs.value[id];
-        if (el && typeof el.getCreateBody === "function") {
-            const part = el.getCreateBody();
-            if (part?.body) Object.assign(body, part.body);
-            if (part?.inlinedTempIds)
-                inlinedTempIds.push(...part.inlinedTempIds);
-        }
-    }
-    return { body: Object.keys(body).length ? body : null, inlinedTempIds };
-}
-
-function consumeInlinedCreates(tempIds: string[]) {
-    for (const id of Object.keys(sectionRefs.value)) {
-        const el = sectionRefs.value[id];
-        if (el && typeof el.consumeInlinedCreates === "function") {
-            el.consumeInlinedCreates(tempIds);
-        }
-    }
+    return false;
 }
 
 async function loadData() {
     if (props.fieldsOverride) {
         fields.value = props.fieldsOverride;
     } else {
-        const coll = await store.getCollection(props.collectionName, true);
+        const coll = await store.getCollection(props.collectionName, true, {
+            app: props.targetApp,
+            version: props.targetVersion,
+        });
         fields.value = coll.fields || [];
     }
 
@@ -208,7 +200,10 @@ async function loadData() {
     } else {
         let resolved: any = null;
         try {
-            resolved = await store.getResolvedLayout(props.collectionName);
+            resolved = await store.getResolvedLayout(props.collectionName, {
+                app: props.targetApp,
+                version: props.targetVersion,
+            });
         } catch (e) {
             console.warn("[RecordForm] Failed to resolve layout", e);
         }
@@ -229,7 +224,10 @@ async function loadData() {
         }
 
         try {
-            const all = await store.listLayouts(props.collectionName);
+            const all = await store.listLayouts(props.collectionName, {
+                app: props.targetApp,
+                version: props.targetVersion,
+            });
             availableLayouts.value = (all || []).filter((l: any) => l && l.id);
         } catch {
             availableLayouts.value = (resolved?.available_layouts || []).filter(
@@ -244,6 +242,15 @@ onMounted(loadData);
 watch(
     () => props.collectionName,
     () => loadData(),
+);
+
+watch(
+    () => props.fieldsOverride,
+    (val) => {
+        if (val) {
+            fields.value = val;
+        }
+    },
 );
 
 watch(
@@ -262,6 +269,7 @@ async function onLayoutChange(layoutId: string) {
         const raw = await store.listLayoutSections(
             props.collectionName,
             layoutId,
+            { app: props.targetApp, version: props.targetVersion },
         );
         sections.value = raw.map(normalizeSection);
     } catch (e) {
@@ -273,10 +281,8 @@ async function onLayoutChange(layoutId: string) {
 defineExpose({
     validate,
     getPayload,
-    collectPendingOps,
-    flushPendingChildren,
-    getCreateBody,
-    consumeInlinedCreates,
+    getRelationBody,
+    hasPendingChanges,
 });
 </script>
 
@@ -332,6 +338,8 @@ defineExpose({
                                     <FormFieldRenderer
                                         :collection-name="collectionName"
                                         :field-name="field.name"
+                                        :target-app="targetApp"
+                                        :target-version="targetVersion"
                                         :model-value="model?.[field.name]"
                                         :invalid="
                                             fieldErrors[field.name] || false
@@ -382,6 +390,8 @@ defineExpose({
                                     <FormFieldRenderer
                                         :collection-name="collectionName"
                                         :field-name="field.name"
+                                        :target-app="targetApp"
+                                        :target-version="targetVersion"
                                         :model-value="model?.[field.name]"
                                         :invalid="
                                             fieldErrors[field.name] || false
@@ -415,6 +425,9 @@ defineExpose({
                     :parent-item="parentItem"
                     :parent-fields="fields"
                     :deferred="deferredChildren"
+                    :readonly="readonly"
+                    :target-app="targetApp"
+                    :target-version="targetVersion"
                 />
             </section>
         </template>

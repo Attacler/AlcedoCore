@@ -2,16 +2,21 @@
 import {
     usePluginsStore,
     InstanceInfo,
-    ContainerStatsSnapshot,
+    DeploymentStatsSnapshot,
 } from "@/stores/plugins";
 import { withAsyncHandlingVoid } from "@/utils/asyncUtils";
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
 import { onBeforeUnmount } from "vue";
 import { useRoute } from "vue-router";
 import InstanceLogsDrawer from "./InstanceLogsDrawer.vue";
 
 const route = useRoute(),
     store = usePluginsStore();
+
+// This tab is about one deployment, and a slug can be installed on several app
+// versions — so the parent passes the selected install's own id, which is what
+// `/platform/plugins/installs/{id}/instances` is keyed on.
+const props = defineProps<{ plugin: unknown; installId?: number | null }>();
 
 // Instances state
 const instances = ref<InstanceInfo[]>([]),
@@ -25,31 +30,51 @@ const instances = ref<InstanceInfo[]>([]),
     showInstanceDetail = ref(false),
     showInstanceLogs = ref(false),
     selectedInstanceId = ref<string | null>(null),
-    instanceStats = ref<Record<string, ContainerStatsSnapshot>>({});
+    instanceStats = ref<Record<string, DeploymentStatsSnapshot>>({});
 let instancesPollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function loadInstances() {
+    if (!props.installId) {
+        instances.value = [];
+        return;
+    }
     await withAsyncHandlingVoid(
         instancesLoading,
         instancesError,
         async () => {
-            const list = await store.fetchPluginInstances(
-                route.params.name as string,
-            );
+            const list = await store.fetchPluginInstances(props.installId!);
             instances.value = list;
             scaleReplicas.value = list.length;
-            await pollInstanceStats();
+            await Promise.all([pollInstanceStats(), loadDeploymentSpec()]);
         },
         "Failed to load instances",
     );
 }
 
+async function loadDeploymentSpec() {
+    if (!props.installId) return;
+    try {
+        const info = await store.fetchPluginDockerInfo(props.installId);
+
+        if (typeof info.replicas === "number") {
+            scaleReplicas.value = info.replicas;
+        }
+        const limits = info.service?.Spec?.TaskTemplate?.Resources?.Limits;
+        if (typeof limits?.NanoCPUs === "number" && limits.NanoCPUs > 0) {
+            scaleCpuCores.value = limits.NanoCPUs / 1e9;
+        }
+        if (typeof limits?.MemoryBytes === "number" && limits.MemoryBytes > 0) {
+            scaleRamMb.value = limits.MemoryBytes / (1024 * 1024);
+        }
+    } catch {}
+}
+
 async function pollInstanceStats() {
     for (const inst of instances.value) {
-        if (inst.status.includes("Up") && inst.task_id) {
+        if (inst.status === "running" && inst.task_id) {
             try {
                 const stats = await store.fetchInstanceStats(
-                    route.params.name as string,
+                    props.installId!,
                     inst.task_id,
                 );
                 instanceStats.value = {
@@ -66,10 +91,9 @@ async function pollInstanceStats() {
 function startInstancesPolling() {
     stopInstancesPolling();
     instancesPollTimer = setInterval(async () => {
+        if (!props.installId) return;
         try {
-            const list = await store.fetchPluginInstances(
-                route.params.name as string,
-            );
+            const list = await store.fetchPluginInstances(props.installId);
             instances.value = list;
             await pollInstanceStats();
         } catch {
@@ -97,6 +121,7 @@ async function applyScale() {
             route.params.name as string,
             scaleReplicas.value,
             resourceLimits,
+            props.installId,
         );
         scaleResult.value = `Scaled to ${scaleReplicas.value} replica(s)`;
         await loadInstances();
@@ -134,6 +159,15 @@ onMounted(() => {
     loadInstances();
     startInstancesPolling();
 });
+
+// Switching the selected app version changes the install, so the deployment on
+// screen changes too.
+watch(
+    () => props.installId,
+    async () => {
+        await loadInstances();
+    },
+);
 
 onBeforeUnmount(() => {
     stopInstancesPolling();
@@ -311,14 +345,16 @@ onBeforeUnmount(() => {
     <!-- Instance Detail Drawer -->
     <InstanceDetailDrawer
         v-model:visible="showInstanceDetail"
-        :pluginName="route.params.name as string"
-        :taskId="selectedInstanceId"
+        :plugin-name="route.params.name as string"
+        :install-id="installId"
+        :task-id="selectedInstanceId"
     />
 
     <!-- Instance Logs Drawer -->
     <InstanceLogsDrawer
         v-model:visible="showInstanceLogs"
-        :pluginName="route.params.name as string"
-        :taskId="selectedInstanceId"
+        :plugin-name="route.params.name as string"
+        :install-id="installId"
+        :task-id="selectedInstanceId"
     />
 </template>

@@ -58,6 +58,9 @@ async function handleSave() {
                     p.related_collection = a.related_collection;
                     p.relationship_type = a.relationship_type;
                 }
+                if (a.related_app) {
+                    p.related_app = a.related_app;
+                }
                 if (a.display_field) {
                     p.display_field = a.display_field;
                 }
@@ -96,9 +99,18 @@ async function handleSave() {
                     default_filter: null,
                 };
                 if (sectionType === "field_group") {
-                    sectionPayload.display_fields =
-                        section.display_fields || [];
+                    const tempToName = new Map<string, string>();
+                    for (const f of fields.value) {
+                        if ((f as any)._tempName && f.name)
+                            tempToName.set((f as any)._tempName, f.name);
+                    }
+                    sectionPayload.display_fields = (
+                        section.display_fields || []
+                    )
+                        .map((n: string) => tempToName.get(n) || n)
+                        .filter((n: string) => !n.startsWith("__new_"));
                     sectionPayload.relation_field = null;
+                    sectionPayload.related_app = null;
                     sectionPayload.view_type = null;
                     sectionPayload.item_limit = null;
                     sectionPayload.default_filter =
@@ -112,6 +124,7 @@ async function handleSave() {
                     sectionPayload.display_fields = null;
                     sectionPayload.relation_field =
                         section.relation_field || "";
+                    sectionPayload.related_app = section.related_app || null;
                     sectionPayload.view_type = section.view_type || "table";
                     sectionPayload.item_limit = section.item_limit || 25;
                     sectionPayload.default_filter =

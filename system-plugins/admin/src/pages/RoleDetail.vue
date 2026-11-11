@@ -8,6 +8,7 @@ import type { Role } from "@/stores/rolesStore";
 import ToggleSwitch from "primevue/toggleswitch";
 import { useToast } from "@/composables/useToast";
 import { Column, DataTable } from "primevue";
+import { appPath } from "@/utils/appHeaders";
 
 const route = useRoute(),
     authStore = useAuthStore(),
@@ -32,7 +33,7 @@ onMounted(async () => {
         await loadRolePolicies();
     } else {
         toast.show("Failed to load role, redirecting to the overview.");
-        router.push("/roles");
+        router.push(appPath("/roles"));
     }
     loading.value = false;
 });
@@ -102,7 +103,7 @@ async function assignPolicies() {
     <div class="space-y-3 flex flex-col" v-if="role">
         <div class="flex items-center gap-3">
             <router-link
-                to="/roles"
+                :to="appPath('/roles')"
                 class="material-symbols-outlined text-gray-400 hover:text-gray-600 transition-colors"
             >
                 arrow_back
@@ -157,7 +158,7 @@ async function assignPolicies() {
                                 <ToggleSwitch
                                     :modelValue="enabledScopes.has(scope)"
                                     :disabled="
-                                        !authStore.scopes.includes('roles.all')
+                                        !authStore.hasScope('roles.all')
                                     "
                                     @update:modelValue="toggleScope(scope)"
                                 />
@@ -167,21 +168,21 @@ async function assignPolicies() {
                     <Divider />
                     <div class="flex gap-2">
                         <Button
-                            v-if="authStore.scopes.includes('roles.all')"
+                            v-if="authStore.hasScope('roles.all')"
                             label="Save Scopes"
                             icon="pi pi-check"
                             :loading="saving"
                             @click="handleSaveScopes"
                         />
                         <Button
-                            v-if="authStore.scopes.includes('roles.all')"
+                            v-if="authStore.hasScope('roles.all')"
                             label="Select All"
                             severity="secondary"
                             outlined
                             @click="selectAll"
                         />
                         <Button
-                            v-if="authStore.scopes.includes('roles.all')"
+                            v-if="authStore.hasScope('roles.all')"
                             label="Clear All"
                             severity="secondary"
                             outlined
@@ -233,7 +234,7 @@ async function assignPolicies() {
                     </div>
                     <div class="flex gap-2">
                         <Button
-                            v-if="authStore.scopes.includes('policies.all')"
+                            v-if="authStore.hasScope('policies.all')"
                             label="Assign Policies"
                             @click="assignPolicies"
                         />

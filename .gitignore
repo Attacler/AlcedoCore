@@ -69,3 +69,5 @@ docs/superpowers/plans/*.md
 # Core testing directories/files
 core/files
 core/.plugin-public
+# Git worktrees
+.worktrees/

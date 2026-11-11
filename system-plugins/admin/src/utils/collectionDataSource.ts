@@ -71,7 +71,10 @@ export function matchesFilter(cond: FilterCondition, item: any): boolean {
             : results.some(Boolean);
     }
     if (!isFilterRule(cond)) return true;
-    const val = item[cond.field];
+    const val = (cond.path || []).reduce(
+        (acc: any, key: string) => (acc == null ? acc : acc[key]),
+        item,
+    );
     const expected = cond.value;
     switch (cond.operator) {
         case "eq":

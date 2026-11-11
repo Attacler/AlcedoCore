@@ -1,2 +1,0 @@
-ALTER TABLE request_logs
-  ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'production';

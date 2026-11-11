@@ -11,6 +11,6 @@ export function createLogsResource(ky: any) {
         operation_type?: string;
         item_id?: string;
       },
-    ) => ky.get(`plugins/${slug}/logs`, options).json(),
+    ) => ky.get(`platform/plugins/${slug}/logs`, options).json(),
   };
 }

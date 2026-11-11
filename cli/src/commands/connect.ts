@@ -12,20 +12,26 @@ import {
 interface ConnectOptions {
     url?: string;
     apiKey?: string;
+    app?: string;
+    version?: string;
 }
 
 export const connectCommand = new Command("connect")
     .description("Connect to a core instance and save credentials")
     .option("-u, --url <url>", "Core URL")
-    .option("-k, --api-key <key>", "API key")
+    .option("-k, --api-key <key>", "API key (version-scoped)")
+    .option("--app <app>", "App to use during development")
+    .option("--version <version>", "Version the API key is scoped to")
     .action(async (opts: ConnectOptions, cmd: Command) => {
         const config = loadConfig(cmd.optsWithGlobals() as any);
 
         let coreUrl = opts.url || config.coreUrl || "http://localhost:8080";
         let apiKey = opts.apiKey || "";
+        let app = opts.app || config.app || "";
+        let version = opts.version || config.version || "";
 
         // If no flags, prompt interactively
-        if (!opts.url || !opts.apiKey) {
+        if (!opts.url || !opts.apiKey || !opts.app || !opts.version) {
             const inquirer = (await import("inquirer")).default;
             const prompts: any[] = [];
 
@@ -45,10 +51,28 @@ export const connectCommand = new Command("connect")
                     mask: "*",
                 });
             }
+            if (!opts.app) {
+                prompts.push({
+                    type: "input",
+                    name: "app",
+                    message: "App:",
+                    default: app,
+                });
+            }
+            if (!opts.version) {
+                prompts.push({
+                    type: "input",
+                    name: "version",
+                    message: "Version (must match the API key's version):",
+                    default: version,
+                });
+            }
 
             const answers = await inquirer.prompt(prompts);
             if (answers.coreUrl) coreUrl = answers.coreUrl;
             if (answers.apiKey) apiKey = answers.apiKey;
+            if (answers.app) app = answers.app;
+            if (answers.version) version = answers.version;
         }
 
         if (!coreUrl) {
@@ -57,6 +81,10 @@ export const connectCommand = new Command("connect")
         }
         if (!apiKey) {
             logError("API key is required");
+            process.exit(1);
+        }
+        if (!app || !version) {
+            logError("App and version are required (the API key is version-scoped)");
             process.exit(1);
         }
 
@@ -70,6 +98,8 @@ export const connectCommand = new Command("connect")
                     headers: {
                         "Content-Type": "application/json",
                         Authorization: `Bearer ${apiKey}`,
+                        "X-App": app,
+                        "X-Version": version,
                     },
                     body: JSON.stringify({ slug: "alcedo-connect" }),
                 },
@@ -91,8 +121,13 @@ export const connectCommand = new Command("connect")
 
         // Write to .alcedocore.dev.env
         const envPath = path.join(process.cwd(), ".alcedocore.dev.env");
-        fs.writeFileSync(envPath, `CORE_URL=${coreUrl}\nAPI_KEY=${apiKey}\n`);
+        fs.writeFileSync(
+            envPath,
+            `CORE_URL=${coreUrl}\nAPI_KEY=${apiKey}\nAPP=${app}\nVERSION=${version}\n`,
+        );
         success(`Credentials saved to ${envPath}`);
         info(`  CORE_URL=${coreUrl}`);
+        info(`  APP=${app}`);
+        info(`  VERSION=${version}`);
         info("  API_KEY=********");
     });

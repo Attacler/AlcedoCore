@@ -3,7 +3,7 @@ import { ref, computed, watch, onUnmounted } from "vue";
 import {
     usePluginsStore,
     type InstanceDetail,
-    type ContainerStatsSnapshot,
+    type DeploymentStatsSnapshot,
 } from "@/stores/plugins";
 import { registerables, Chart as ChartJS } from "chart.js";
 import Drawer from "primevue/drawer";
@@ -15,6 +15,7 @@ ChartJS.register(...registerables);
 const props = defineProps<{
     visible: boolean;
     pluginName: string;
+    installId?: number | null;
     taskId: string | null;
 }>();
 
@@ -28,7 +29,7 @@ const visible = ref(props.visible),
     loading = ref(false),
     error = ref<string | null>(null),
     detail = ref<InstanceDetail | null>(null),
-    statsHistory = ref<ContainerStatsSnapshot[]>([]),
+    statsHistory = ref<DeploymentStatsSnapshot[]>([]),
     restarting = ref(false);
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -59,12 +60,12 @@ onUnmounted(() => {
 });
 
 async function loadData() {
-    if (!props.taskId || !props.pluginName) return;
+    if (!props.installId || !props.taskId) return;
     loading.value = true;
     error.value = null;
     try {
         const [instanceDetail] = await Promise.all([
-            store.fetchInstanceDetail(props.pluginName, props.taskId),
+            store.fetchInstanceDetail(props.installId, props.taskId),
         ]);
         detail.value = instanceDetail;
     } catch (e) {
@@ -81,7 +82,8 @@ async function restartInstance() {
     try {
         await store.restartPlugin(
             props.pluginName,
-            detail.value?.container_id || undefined,
+            detail.value?.deployment_id || undefined,
+            props.installId,
         );
         await loadData();
     } catch (e) {
@@ -93,10 +95,10 @@ async function restartInstance() {
 }
 
 async function fetchStats() {
-    if (!props.taskId || !props.pluginName) return;
+    if (!props.installId || !props.taskId) return;
     try {
         const stats = await store.fetchInstanceStats(
-            props.pluginName,
+            props.installId,
             props.taskId,
         );
         statsHistory.value.push(stats);
@@ -283,10 +285,10 @@ const memChartData = computed(() => {
                         }}</span>
                     </div>
                     <div class="flex justify-between text-sm">
-                        <span class="text-gray-500">Container ID</span>
+                        <span class="text-gray-500">Deployment ID</span>
                         <span
                             class="font-mono text-xs truncate max-w-[200px]"
-                            >{{ detail.container_id || "—" }}</span
+                            >{{ detail.deployment_id || "—" }}</span
                         >
                     </div>
                     <div class="pt-3">
@@ -304,7 +306,7 @@ const memChartData = computed(() => {
 
                 <!-- Container Details -->
                 <div
-                    v-if="detail.container"
+                    v-if="detail.deployment"
                     class="bg-gray-50 rounded-lg p-4 space-y-2"
                 >
                     <h4 class="text-sm font-semibold text-gray-700 mb-2">
@@ -314,7 +316,7 @@ const memChartData = computed(() => {
                         <span class="text-gray-500">Name</span>
                         <span
                             class="font-mono text-xs truncate max-w-[220px]"
-                            >{{ detail.container.name }}</span
+                            >{{ detail.deployment.name }}</span
                         >
                     </div>
                     <div class="flex justify-between text-sm">
@@ -322,31 +324,31 @@ const memChartData = computed(() => {
                         <span
                             :class="{
                                 'text-green-600':
-                                    detail.container.state === 'running',
+                                    detail.deployment.state === 'running',
                                 'text-red-600':
-                                    detail.container.state !== 'running',
+                                    detail.deployment.state !== 'running',
                             }"
                         >
-                            {{ detail.container.state }}
+                            {{ detail.deployment.state }}
                         </span>
                     </div>
                     <div class="flex justify-between text-sm">
                         <span class="text-gray-500">Image</span>
                         <span
                             class="font-mono text-xs truncate max-w-[220px]"
-                            >{{ detail.container.image }}</span
+                            >{{ detail.deployment.image }}</span
                         >
                     </div>
                     <div class="flex justify-between text-sm">
                         <span class="text-gray-500">Created</span>
                         <span class="text-xs">{{
-                            formatDate(detail.container.created)
+                            formatDate(detail.deployment.created)
                         }}</span>
                     </div>
                     <div class="flex justify-between text-sm">
                         <span class="text-gray-500">Network</span>
                         <span class="text-xs">{{
-                            detail.container.network_mode || "default"
+                            detail.deployment.network_mode || "default"
                         }}</span>
                     </div>
                 </div>

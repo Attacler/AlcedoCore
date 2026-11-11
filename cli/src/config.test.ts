@@ -1,6 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { loadConfig, findAlcedorc } from "./config";
 import os from "node:os";
+import fs from "node:fs";
+import path from "node:path";
 
 describe("loadConfig", () => {
   const originalEnv = { ...process.env };
@@ -38,6 +40,23 @@ describe("loadConfig", () => {
     process.env.ALCEDO_PLUGIN_DIR = "/custom/plugin/path";
     const config = loadConfig({});
     expect(config.pluginDir).toBe("/custom/plugin/path");
+  });
+
+  it("reads APP and VERSION from .alcedocore.dev.env", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "alcedo-dev-env-"));
+    fs.writeFileSync(
+      path.join(dir, ".alcedocore.dev.env"),
+      "CORE_URL=http://x:1\nAPI_KEY=k\nAPP=myapp\nVERSION=v1\n",
+    );
+    const cwd = process.cwd();
+    try {
+      process.chdir(dir);
+      const config = loadConfig({});
+      expect(config.app).toBe("myapp");
+      expect(config.version).toBe("v1");
+    } finally {
+      process.chdir(cwd);
+    }
   });
 });
 

@@ -106,40 +106,40 @@ async function loadGroupedData() {
     internalError.value = null;
 
     try {
+        let rows: any[];
         if (isVirtual.value) {
-            let rows = props.items || [];
+            rows = props.items || [];
             if (hasNonEmptyCondition(props.filterCondition)) {
                 rows = rows.filter((item) =>
                     matchesFilter(props.filterCondition, item),
                 );
             }
-            const map = new Map<string, any[]>();
-            for (const item of rows) {
-                const val = item[groupByField.value];
-                const key =
-                    val === null || val === undefined ? "" : String(val);
-                if (!map.has(key)) map.set(key, []);
-                map.get(key)!.push(item);
+        } else {
+            const params: Record<string, string> = { limit: "1000" };
+            if (hasNonEmptyCondition(props.filterCondition)) {
+                params.filter = JSON.stringify(
+                    toShortForm(props.filterCondition),
+                );
             }
-            groups.value = Array.from(map.entries()).map(([value, items]) => ({
-                value: value === "" ? null : value,
-                count: items.length,
-                items,
-            }));
-            return;
+            const response = (await client.items.list(
+                props.collectionName,
+                params,
+            )) as any;
+            const data = response.data || response;
+            rows = data.data || data.items || data;
         }
-
-        const response = (await client.items.grouped(props.collectionName, {
-            group_by: groupByField.value,
-            ...(hasNonEmptyCondition(props.filterCondition)
-                ? { filter: toShortForm(props.filterCondition) }
-                : {}),
-            limit: 50,
-            offset: 0,
-        })) as any;
-
-        const data = response.data || response;
-        groups.value = data.groups || [];
+        const map = new Map<string, any[]>();
+        for (const item of rows) {
+            const val = item[groupByField.value];
+            const key = val === null || val === undefined ? "" : String(val);
+            if (!map.has(key)) map.set(key, []);
+            map.get(key)!.push(item);
+        }
+        groups.value = Array.from(map.entries()).map(([value, items]) => ({
+            value: value === "" ? null : value,
+            count: items.length,
+            items,
+        }));
     } catch (e) {
         internalError.value =
             e instanceof Error ? e.message : "Failed to load grouped data";
@@ -247,7 +247,7 @@ watch(
                                 {{ getCardTitle(item) }}
                             </div>
                             <Button
-                                v-if="item.$permissions?.delete !== false"
+                                v-if="item.$delete_permission !== false"
                                 icon="pi pi-trash"
                                 severity="danger"
                                 text

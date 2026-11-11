@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute, useRouter, onBeforeRouteLeave } from "vue-router";
 import {
     useCollectionsStore,
     type FieldDefinition,
@@ -15,24 +15,32 @@ import { withSystemFields } from "@/composables/useSystemFields";
 import { onUnmounted } from "vue";
 import RelationalSection from "@/components/RelationalSection.vue";
 import FormFieldRenderer from "@/components/FormFieldRenderer.vue";
+import { appPath } from "@/utils/appHeaders";
+import { useAppContextStore } from "@/stores/appContext";
 
 const route = useRoute(),
     router = useRouter(),
     collectionsStore = useCollectionsStore(),
+    appContext = useAppContextStore(),
     { client } = useAlcedoClient(),
     toast = useToast();
 
-const collectionName = computed(() => route.params.collection as string),
+const currentVersion = computed(() => appContext.version ?? undefined),
+    currentApp = computed(() => appContext.appSlug ?? undefined),
+    collectionName = computed(() => route.params.collection as string),
     itemId = computed(() => route.params.id as string);
 
 const allowedFields = computed(() => {
-    return item.value?.$permissions?.fields ?? null;
+    return item.value?.$update_fields ?? null;
 });
 
 function canEditField(fieldName: string): boolean {
     if (!allowedFields.value) return true;
     return allowedFields.value.includes(fieldName);
 }
+
+/** Whether the whole record may be edited at all (the row filter allows it). */
+const canEditRecord = computed(() => item.value?.$update_permission !== false);
 
 const showSidebar = ref(false),
     isLargeScreen = ref(window.innerWidth >= 1024),
@@ -49,6 +57,7 @@ const activeTab = ref("details"),
 const isEditing = ref(false),
     editValues = ref<Record<string, any>>({}),
     inlineParentEditValues = ref<Record<string, any>>({}),
+    inlineParentObjects = ref<Record<string, any>>({}),
     saving = ref(false);
 
 // Refs to mounted RecordForm instances (one per field_group section) for validate/getPayload
@@ -100,11 +109,45 @@ function setRelSectionRef(id: string, el: any) {
     }
 }
 
-async function flushRelationalSections() {
+/** Merge every relational section's queued ops into one nested body. */
+function collectRelationBody(): Record<string, any> {
+    const body: Record<string, any> = {};
     for (const id of Object.keys(relSectionRefs.value)) {
         const el = relSectionRefs.value[id];
-        if (el && typeof el.flushPending === "function") {
-            await el.flushPending(itemId.value);
+        if (el && typeof el.getRelationBody === "function") {
+            const part = el.getRelationBody();
+            if (part) Object.assign(body, part);
+        }
+    }
+    return body;
+}
+
+/** Whether any relational section has queued create/update/delete ops. */
+function hasPendingRelationChanges(): boolean {
+    return Object.keys(relSectionRefs.value).some((id) => {
+        const el = relSectionRefs.value[id];
+        return el && typeof el.hasPendingChanges === "function"
+            ? el.hasPendingChanges()
+            : false;
+    });
+}
+
+/** Reload every relational section after a save (clears queued ops). */
+async function reloadRelationalSections() {
+    for (const id of Object.keys(relSectionRefs.value)) {
+        const el = relSectionRefs.value[id];
+        if (el && typeof el.reload === "function") {
+            await el.reload();
+        }
+    }
+}
+
+/** Discard queued relational ops (e.g. on cancel). */
+function clearRelationalSections() {
+    for (const id of Object.keys(relSectionRefs.value)) {
+        const el = relSectionRefs.value[id];
+        if (el && typeof el.clearRelations === "function") {
+            el.clearRelations();
         }
     }
 }
@@ -161,7 +204,7 @@ const inlineParentFields = computed(() => {
             | string[]
             | undefined;
         if (field.related_collection && inlineFields?.length) {
-            const parentObj = item.value[field.name + "__inline_parent"];
+            const parentObj = inlineParentObjects.value[field.name];
             if (parentObj && typeof parentObj === "object") {
                 const fields = inlineFields.map((fname) => ({
                     name: fname,
@@ -206,9 +249,23 @@ async function fetchRecord() {
     error.value = null;
 
     try {
+        const params: Record<string, string> = {};
+        const relationFields = (collection.value?.fields || []).filter(
+            (f) =>
+                f.type === "relationship" &&
+                f.related_collection &&
+                f.relationship_type !== "one_to_many",
+        );
+        if (relationFields.length > 0) {
+            params.fields = JSON.stringify([
+                "*",
+                ...relationFields.map((f) => `${f.name}.*`),
+            ]);
+        }
         const res = (await client.items.get(
             collectionName.value,
             itemId.value,
+            params,
         )) as any;
 
         const data = res.data || res;
@@ -216,11 +273,105 @@ async function fetchRecord() {
         if (!item.value) {
             throw new Error(`Record with id "${itemId.value}" not found`);
         }
+        await fetchUpdatePermission();
+        await fetchDeletePermission();
+        await loadInlineParents();
     } catch (e) {
         error.value = e instanceof Error ? e.message : "Failed to load record";
         item.value = null;
     } finally {
         loading.value = false;
+    }
+}
+
+/**
+ * Update and delete permissions are not carried on the item payload; ask the
+ * dedicated `$update` / `$delete` endpoints for this record's pk and stash the
+ * flags. `$update` is row-filter only; the per-field whitelist comes from the
+ * per-payload probe, so ask `$permissions` with `action: "update"` too.
+ */
+async function fetchUpdatePermission() {
+    if (!item.value || !collectionName.value) return;
+    const pk = item.value.id;
+    try {
+        const permissions = (await client.items.updatePermissions(
+            collectionName.value,
+            [pk],
+        )) as Record<string, boolean>;
+        item.value.$update_permission = permissions[String(pk)] !== false;
+    } catch {
+        item.value.$update_permission = false;
+    }
+
+    // Field-level whitelist: probe this row with an empty delta so the covering
+    // rules' whitelists are reported. Under the per-key update model a field is
+    // settable when *some* covering rule authorizes it, so the union is the
+    // right gate. An empty whitelist means "all fields" (no restriction).
+    if (!item.value.$update_permission) return;
+    try {
+        const detail = await client.items.permissions(
+            collectionName.value,
+            {},
+            "update",
+            pk,
+        );
+        const rules = detail.rules ?? [];
+        const anyRuleAllowsAll = rules.some(
+            (rule) => (rule.fields ?? []).length === 0,
+        );
+        item.value.$update_fields =
+            anyRuleAllowsAll || rules.length === 0
+                ? null
+                : [...new Set(rules.flatMap((rule) => rule.fields ?? []))];
+    } catch {
+        // Fail open: the server still enforces, and a broken probe must not
+        // lock the user out of editing.
+        item.value.$update_fields = null;
+    }
+}
+
+async function fetchDeletePermission() {
+    if (!item.value || !collectionName.value) return;
+    try {
+        const permissions = (await client.items.deletePermissions(
+            collectionName.value,
+            [item.value.id],
+        )) as Record<string, boolean>;
+        item.value.$delete_permission =
+            permissions[String(item.value.id)] !== false;
+    } catch {
+        item.value.$delete_permission = false;
+    }
+}
+
+async function loadInlineParents() {
+    inlineParentObjects.value = {};
+    const col = collection.value;
+    if (!col || !item.value) return;
+    for (const f of col.fields) {
+        const inlineFields = (f as any).inline_parent_fields as
+            | string[]
+            | undefined;
+        const related = (f as any).related_collection as string | undefined;
+        const relatedApp = (f as any).related_app as string | undefined;
+        const fk = item.value[f.name];
+        const fkId = fk && typeof fk === "object" ? fk.id : fk;
+        if (
+            !inlineFields?.length ||
+            !related ||
+            !fkId ||
+            typeof fkId !== "string"
+        )
+            continue;
+        try {
+            const res: any = await client.items.get(related, fkId, undefined, {
+                app: relatedApp ?? undefined,
+                version: currentVersion.value,
+            });
+            inlineParentObjects.value[f.name] = res.data || res;
+        } catch {
+            /* parent unavailable — leave inline fields empty */
+        }
     }
 }
 
@@ -233,7 +384,11 @@ function enterEditMode() {
             existingValue !== undefined && existingValue !== null;
 
         if (hasExisting) {
-            values[field.name] = existingValue;
+            values[field.name] =
+                field.type === "relationship" &&
+                typeof existingValue === "object"
+                    ? existingValue.id
+                    : existingValue;
         } else {
             values[field.name] = field.default_value ?? null;
         }
@@ -249,7 +404,7 @@ function enterEditMode() {
     // Populate inline parent edit values
     for (const pf of inlineParentFields.value) {
         for (const f of pf.fields) {
-            const key = `__parent__${pf.fieldName}__${f.name}`;
+            const key = `${pf.fieldName}__${f.name}`;
             parentValues[key] = f.value ?? "";
         }
     }
@@ -261,6 +416,12 @@ function enterEditMode() {
 }
 
 function cancelEdit() {
+    if (
+        hasUnsavedEdits.value &&
+        !window.confirm("You have unsaved changes. Discard them?")
+    )
+        return;
+    clearRelationalSections();
     isEditing.value = false;
     editValues.value = {};
 }
@@ -311,6 +472,29 @@ function fieldChanged(editValue: any, originalValue: any): boolean {
     return String(editValue) !== String(originalValue);
 }
 
+/** Pending scalar / inline-parent / relational edits while editing. */
+const hasUnsavedEdits = computed(() => {
+    if (!isEditing.value || saving.value) return false;
+    if (hasInlineParentChanges.value || hasPendingRelationChanges()) return true;
+    for (const [name, value] of Object.entries(editValues.value)) {
+        if (fieldChanged(value, item.value?.[name])) return true;
+    }
+    return false;
+});
+
+function onBeforeUnload(e: BeforeUnloadEvent) {
+    if (!hasUnsavedEdits.value) return;
+    e.preventDefault();
+    e.returnValue = "";
+}
+
+onBeforeRouteLeave(() => {
+    if (hasUnsavedEdits.value) {
+        return window.confirm("You have unsaved changes. Leave anyway?");
+    }
+    return true;
+});
+
 async function saveEdit() {
     if (!validate() || !item.value) return;
 
@@ -326,7 +510,6 @@ const showParentConfirm = ref(false);
 
 async function doSave() {
     if (!item.value) return;
-    debugger;
     saving.value = true;
     showParentConfirm.value = false;
     try {
@@ -345,7 +528,29 @@ async function doSave() {
             if (!fieldChanged(payload[field.name], original))
                 delete payload[field.name];
         }
-        const parentPayload = { ...payload, ...inlineParentEditValues.value };
+        const parentPayload: Record<string, any> = { ...payload };
+        for (const pf of inlineParentFields.value) {
+            const edits: Record<string, any> = {};
+            for (const f of pf.fields) {
+                const key = `${pf.fieldName}__${f.name}`;
+                const cur = inlineParentEditValues.value[key];
+                const orig = originalInlineParentValues.value[key] ?? "";
+                if (cur !== orig) edits[f.name] = cur;
+            }
+            if (Object.keys(edits).length > 0) {
+                const rawParent = item.value?.[pf.fieldName];
+                const parentId =
+                    inlineParentObjects.value[pf.fieldName]?.id ??
+                    (rawParent && typeof rawParent === "object"
+                        ? rawParent.id
+                        : rawParent);
+                parentPayload[pf.fieldName] = { id: parentId, ...edits };
+            }
+        }
+
+        // Merge queued relational-section create/update/delete into the same
+        // atomic PATCH as the parent.
+        Object.assign(parentPayload, collectRelationBody());
 
         // Single PATCH - backend handles parent + children atomically
         const hasParentChanges = Object.keys(parentPayload).length > 0;
@@ -355,11 +560,11 @@ async function doSave() {
                 itemId.value,
                 parentPayload,
             )) as any;
-
             await loadRecordData(collectionName.value, itemId.value);
+            await loadInlineParents();
+            // Re-fetch sections so real ids/links replace optimistic temp rows.
+            await reloadRelationalSections();
         }
-
-        await flushRelationalSections();
 
         toast.show("Record saved successfully", "success");
         editValues.value = {};
@@ -425,6 +630,7 @@ watch(
 onMounted(() => {
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", handleResize);
+    window.addEventListener("beforeunload", onBeforeUnload);
 });
 
 async function loadSections() {
@@ -463,6 +669,7 @@ async function switchLayout(layoutId: string) {
 onUnmounted(() => {
     window.removeEventListener("scroll", onScroll);
     window.removeEventListener("resize", handleResize);
+    window.removeEventListener("beforeunload", onBeforeUnload);
 });
 </script>
 
@@ -470,7 +677,7 @@ onUnmounted(() => {
     <div class="p-6 pl-0 grow flex flex-col">
         <!-- Back Navigation -->
         <router-link
-            :to="`/collections/${collectionName}/data`"
+            :to="appPath(`/collections/${collectionName}/data`)"
             class="inline-block mb-4 text-blue-500 text-sm hover:underline"
         >
             ← Back to {{ collectionName }}
@@ -674,6 +881,9 @@ onUnmounted(() => {
                                     :parent-item="item"
                                     :parent-fields="fields"
                                     :deferred="isEditing"
+                                    :readonly="!isEditing"
+                                    :target-app="currentApp"
+                                    :target-version="currentVersion"
                                     @count="
                                         (n: number) => {
                                             sectionTotal[section.id] = n;
@@ -723,10 +933,17 @@ onUnmounted(() => {
                                                     :field-name="
                                                         parentField.name
                                                     "
-                                                    v-model="
+                                                    :model-value="
+                                                        isEditing
+                                                            ? inlineParentEditValues[
+                                                                  `${pf.fieldName}__${parentField.name}`
+                                                              ]
+                                                            : parentField.value
+                                                    "
+                                                    @update:model-value="
                                                         inlineParentEditValues[
-                                                            `__parent__${pf.fieldName}__${parentField.name}`
-                                                        ]
+                                                            `${pf.fieldName}__${parentField.name}`
+                                                        ] = $event
                                                     "
                                                     :readonly="!isEditing"
                                                 />
@@ -804,7 +1021,11 @@ onUnmounted(() => {
                                                 class="text-sm font-medium text-gray-700"
                                             >
                                                 <router-link
-                                                    :to="`/collections/${group.collection_name}/data`"
+                                                    :to="
+                                                        appPath(
+                                                            `/collections/${group.collection_name}/data`,
+                                                        )
+                                                    "
                                                     class="text-blue-500 hover:underline"
                                                 >
                                                     {{ group.collection_name }}
@@ -851,7 +1072,11 @@ onUnmounted(() => {
                                                 class="text-sm text-gray-600 flex items-center gap-2"
                                             >
                                                 <router-link
-                                                    :to="`/detail/${group.collection_name}/${refItem.id}`"
+                                                    :to="
+                                                        appPath(
+                                                            `/detail/${group.collection_name}/${refItem.id}`,
+                                                        )
+                                                    "
                                                     class="text-blue-500 hover:underline font-mono text-xs truncate"
                                                 >
                                                     {{ refItem.id }}
@@ -937,14 +1162,14 @@ onUnmounted(() => {
                     icon="pi pi-pencil"
                     severity="info"
                     @click="enterEditMode"
-                    v-if="item.$permissions?.update !== false"
+                    v-if="canEditRecord"
                 />
                 <Button
                     label="Delete"
                     icon="pi pi-trash"
                     severity="danger"
                     @click="confirmDelete"
-                    v-if="item.$permissions?.delete !== false"
+                    v-if="item.$delete_permission !== false"
                 />
             </template>
             <!-- Edit mode: Cancel + Save buttons -->
