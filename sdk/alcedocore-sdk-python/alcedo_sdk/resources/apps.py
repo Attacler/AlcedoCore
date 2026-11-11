@@ -66,3 +66,48 @@ class AppsResource(BaseResource):
             app=app,
             version=version,
         )
+
+    async def get_app_version_access(
+        self,
+        app_id: int,
+        version_id: int,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "GET",
+            f"/api/platform/apps/{_enc(app_id)}/versions/{_enc(version_id)}/access",
+            app=app,
+            version=version,
+        )
+
+    async def set_app_version_access(
+        self,
+        app_id: int,
+        version_id: int,
+        data: dict,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "PUT",
+            f"/api/platform/apps/{_enc(app_id)}/versions/{_enc(version_id)}/access",
+            json=data,
+            app=app,
+            version=version,
+        )
+
+    async def revoke_app_version_access(
+        self,
+        app_id: int,
+        version_id: int,
+        user_id: str,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "DELETE",
+            f"/api/platform/apps/{_enc(app_id)}/versions/{_enc(version_id)}/access/{_enc(user_id)}",
+            app=app,
+            version=version,
+        )

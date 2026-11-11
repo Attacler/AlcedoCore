@@ -84,15 +84,40 @@ async def test_query_builds_params(items):
 
 
 @pytest.mark.asyncio
-async def test_grouped_and_references(items):
+async def test_query_group_by_and_aggregate(items):
+    """groupBy[]/aggregate[fn] are repeated query params on GET /{collection}."""
     with respx.mock as mock:
-        grouped = mock.post(f"{ITEMS}/posts/grouped", json={"group_by": "status"}).respond(
-            json=jsend({"groups": []})
+        route = mock.get(f"{ITEMS}/posts").respond(json=jsend({"data": [], "total": 0}))
+        await items.query(
+            "posts",
+            {
+                "groupBy": ["status", "author"],
+                "aggregate": {"count": "id", "sum": ["total", "tax"]},
+            },
         )
+        assert route.called
+        params = route.calls.last.request.url.params
+        assert params.get_list("groupBy[]") == ["status", "author"]
+        assert params.get_list("aggregate[count]") == ["id"]
+        assert params.get_list("aggregate[sum]") == ["total", "tax"]
+
+
+@pytest.mark.asyncio
+async def test_query_group_by_single_string(items):
+    with respx.mock as mock:
+        route = mock.get(f"{ITEMS}/posts").respond(json=jsend({"data": []}))
+        await items.query("posts", {"groupBy": "status", "aggregate": {"count": "id"}})
+        params = route.calls.last.request.url.params
+        assert params.get_list("groupBy[]") == ["status"]
+        assert params.get_list("aggregate[count]") == ["id"]
+
+
+@pytest.mark.asyncio
+async def test_references(items):
+    with respx.mock as mock:
         references = mock.get(f"{ITEMS}/posts/i1/references").respond(json=jsend([]))
-        await items.grouped("posts", {"group_by": "status"})
         await items.references("posts", "i1")
-        assert grouped.called and references.called
+        assert references.called
 
 
 @pytest.mark.asyncio

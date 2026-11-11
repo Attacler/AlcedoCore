@@ -164,23 +164,26 @@ async fn get_ts_schema(
                 .filter(|col| col.schema == version.schema_name && col.table == table.name)
             {
                 let ts_type = if let Some(fk) = &column.foreign_key {
+                    let base = column_type_to_ts(column.data_type.to_string());
+                    // FKs can target the global `alcedocore` schema (e.g.
+                    // `alcedocore_users`), which is not an app version — only
+                    // reference `alcedocore_apps[...]` when both lookups succeed.
                     let find_app = schema
                         .tables
                         .iter()
-                        .find(|t| t.schema == fk.schema && t.name == fk.table)
-                        .unwrap();
+                        .find(|t| t.schema == fk.schema && t.name == fk.table);
                     let find_version = schema
                         .app_versions
                         .iter()
-                        .find(|av| av.schema_name == fk.schema)
-                        .unwrap();
+                        .find(|av| av.schema_name == fk.schema);
 
-                    format!(
-                        "{}|alcedocore_apps[\"{}\"][\"{}\"]",
-                        column_type_to_ts(column.data_type.to_string()),
-                        find_version.app_name,
-                        find_app.name
-                    )
+                    match (find_app, find_version) {
+                        (Some(app), Some(version)) => format!(
+                            "{}|alcedocore_apps[\"{}\"][\"{}\"]",
+                            base, version.app_name, app.name
+                        ),
+                        _ => base,
+                    }
                 } else {
                     column_type_to_ts(column.data_type.to_string()).to_string()
                 };

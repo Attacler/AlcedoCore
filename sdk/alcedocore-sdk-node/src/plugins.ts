@@ -70,6 +70,10 @@ export function createPluginsResource(ky: any) {
                     ...options,
                 })
                 .json(),
+        getSystemSettings: (slug: string, appVersionId: number, options?: any) =>
+            ky
+                .get(installPath(slug, appVersionId, "/settings/system"), options)
+                .json(),
         getScopes: (slug: string, appVersionId: number, options?: any) =>
             ky.get(installPath(slug, appVersionId, "/scopes"), options).json(),
         updateScopes: (
@@ -84,6 +88,36 @@ export function createPluginsResource(ky: any) {
                     ...options,
                 })
                 .json(),
+        uninstallById: (installId: number, options?: any) =>
+            ky.delete(installIdPath(installId), options).json(),
+        enableById: (installId: number, options?: any) =>
+            ky.post(installIdPath(installId, "/enable"), options).json(),
+        disableById: (installId: number, options?: any) =>
+            ky.post(installIdPath(installId, "/disable"), options).json(),
+        getSettingsById: (installId: number, options?: any) =>
+            ky.get(installIdPath(installId, "/settings"), options).json(),
+        updateSettingsById: (installId: number, data: any, options?: any) =>
+            ky
+                .patch(installIdPath(installId, "/settings"), {
+                    json: data,
+                    ...options,
+                })
+                .json(),
+        getScopesById: (installId: number, options?: any) =>
+            ky.get(installIdPath(installId, "/scopes"), options).json(),
+        updateScopesById: (
+            installId: number,
+            scopes: string[],
+            options?: any,
+        ) =>
+            ky
+                .post(installIdPath(installId, "/scopes"), {
+                    json: { scopes },
+                    ...options,
+                })
+                .json(),
+        installVersions: (installId: number, options?: any) =>
+            ky.get(installIdPath(installId, "/versions"), options).json(),
         runtimeInfo: (installId: number, options?: any) =>
             ky.get(installIdPath(installId, "/runtime"), options).json(),
         instances: (installId: number, options?: any) =>
@@ -165,5 +199,9 @@ export function createPluginsResource(ky: any) {
                 json: { deployment_id: containerId },
                 ...options,
             }),
+        stop: (slug: string, options?: any) =>
+            ky.post(slugPath(slug, "/stop"), options).json(),
+        events: (slug: string, options?: any) =>
+            ky.get(slugPath(slug, "/events"), options).json(),
     };
 }

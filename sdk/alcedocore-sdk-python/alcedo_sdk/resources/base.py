@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import httpx
 
@@ -83,7 +83,7 @@ class BaseResource:
         path: str,
         *,
         json: Optional[Any] = None,
-        params: Optional[dict[str, Any]] = None,
+        params: Optional[Union[dict[str, Any], list[tuple[str, Any]]]] = None,
         timeout: Optional[float] = None,
         app: Optional[str] = None,
         version: Optional[str] = None,
@@ -121,7 +121,7 @@ class BaseResource:
         self,
         path: str,
         *,
-        params: Optional[dict[str, Any]] = None,
+        params: Optional[Union[dict[str, Any], list[tuple[str, Any]]]] = None,
         app: Optional[str] = None,
         version: Optional[str] = None,
     ) -> str:

@@ -7,7 +7,7 @@ export type { TimelineEntry } from "./activityLogs";
 export { createHealthResource } from "./health";
 export { createPluginsResource } from "./plugins";
 export { createMigrationsResource } from "./migrations";
-export { createUsageResource } from "./usage";
+export { createDevResource } from "./dev";
 export { createKvResource } from "./kv";
 export { createDbResource } from "./db";
 export { createSchemaResource } from "./schema";

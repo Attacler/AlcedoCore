@@ -34,10 +34,21 @@ export function createKvResource(ky: any) {
         batch_delete: (keys: string[], options?: any) =>
             ky.post("app/kv/batch/delete", { json: { keys }, ...options }).json(),
 
-        query: (pattern?: string, options?: any) =>
-            ky.get("app/kv/query", {
-                searchParams: pattern !== undefined ? { pattern } : undefined,
-                ...options,
-            }).json(),
+        increment: (key: string, amount?: number, ttl?: number, options?: any) =>
+            ky
+                .post(`app/kv/${key}/increment`, {
+                    json: { amount },
+                    searchParams: ttl !== undefined ? { ttl: String(ttl) } : undefined,
+                    ...options,
+                })
+                .json(),
+
+        decrement: (key: string, amount?: number, options?: any) =>
+            ky
+                .post(`app/kv/${key}/decrement`, {
+                    json: { amount },
+                    ...options,
+                })
+                .json(),
     };
 }

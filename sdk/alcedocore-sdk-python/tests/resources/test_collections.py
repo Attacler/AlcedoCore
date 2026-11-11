@@ -14,6 +14,27 @@ def collections(http_client):
 
 
 @pytest.mark.asyncio
+async def test_schema(collections):
+    with respx.mock as mock:
+        schema = mock.get(f"{COLLECTIONS}/schema").respond(json=jsend({"tables": ["posts"]}))
+        result = await collections.schema()
+        assert result == {"tables": ["posts"]}
+        assert schema.called
+
+
+@pytest.mark.asyncio
+async def test_schema_ts_returns_text(collections):
+    """GET /schema/ts returns raw TypeScript text, not a JSend envelope."""
+    with respx.mock as mock:
+        route = mock.get(f"{COLLECTIONS}/schema/ts").respond(
+            text="export interface Post { id: number }", status_code=200
+        )
+        result = await collections.schema_ts()
+        assert result == "export interface Post { id: number }"
+        assert route.called
+
+
+@pytest.mark.asyncio
 async def test_crud(collections):
     with respx.mock as mock:
         listing = mock.get(f"{COLLECTIONS}").respond(json=jsend({"collections": []}))

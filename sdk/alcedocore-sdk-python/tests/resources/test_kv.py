@@ -166,16 +166,41 @@ async def test_batch_delete(kv):
         assert result == {"deleted": 2}
 
 
-# ── QUERY ──
+# ── INCREMENT / DECREMENT ──
 
 @pytest.mark.asyncio
-async def test_query(kv):
+async def test_increment_default_amount(kv):
     with respx.mock as mock:
-        mock.get(f"{BASE_URL}/api/app/kv/query", params={"pattern": "sess:*"}).respond(
-            json=jsend({"status": "ok"})
-        )
-        result = await kv.query(pattern="sess:*")
-        assert result == {"status": "ok"}
+        route = mock.post(
+            f"{BASE_URL}/api/app/kv/counter/increment", json={"amount": 1}
+        ).respond(json=jsend({"key": "counter", "value": 2}))
+        result = await kv.increment("counter")
+        assert result == {"key": "counter", "value": 2}
+        assert route.called
+
+
+@pytest.mark.asyncio
+async def test_increment_with_amount_and_ttl(kv):
+    with respx.mock as mock:
+        route = mock.post(
+            f"{BASE_URL}/api/app/kv/counter/increment",
+            json={"amount": 5},
+            params={"ttl": 60},
+        ).respond(json=jsend({"key": "counter", "value": 7}))
+        result = await kv.increment("counter", amount=5, ttl=60)
+        assert result == {"key": "counter", "value": 7}
+        assert route.called
+
+
+@pytest.mark.asyncio
+async def test_decrement(kv):
+    with respx.mock as mock:
+        route = mock.post(
+            f"{BASE_URL}/api/app/kv/counter/decrement", json={"amount": 3}
+        ).respond(json=jsend({"key": "counter", "value": -1}))
+        result = await kv.decrement("counter", amount=3)
+        assert result == {"key": "counter", "value": -1}
+        assert route.called
 
 
 # ── APP CONTEXT HEADERS ──

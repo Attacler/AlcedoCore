@@ -116,38 +116,41 @@ class ItemsResource(BaseResource):
         app: Optional[str] = None,
         version: Optional[str] = None,
     ) -> Any:
-        """List with a structured query dict (filter/limit/offset/fields/sort)."""
-        params: dict[str, str] = {}
+        """List with a structured query dict.
+
+        Supports filter/limit/offset/fields/sort plus group-by/aggregate,
+        emitted as repeated query params on GET /{collection}:
+        ``groupBy[]=field`` (``data["groupBy"]``: str or list) and
+        ``aggregate[fn]=field`` (``data["aggregate"]``: {fn: field | [fields]}).
+        """
+        params: list[tuple[str, str]] = []
         if data.get("filter"):
-            params["filter"] = json.dumps(data["filter"])
+            params.append(("filter", json.dumps(data["filter"])))
         if data.get("limit"):
-            params["limit"] = str(data["limit"])
+            params.append(("limit", str(data["limit"])))
         if data.get("offset"):
-            params["offset"] = str(data["offset"])
+            params.append(("offset", str(data["offset"])))
         if data.get("fields"):
-            params["fields"] = ",".join(data["fields"])
+            params.append(("fields", ",".join(data["fields"])))
+        if data.get("groupBy"):
+            group_by = data["groupBy"]
+            for field in group_by if isinstance(group_by, list) else [group_by]:
+                params.append(("groupBy[]", str(field)))
+        if data.get("aggregate"):
+            for fn, fields in data["aggregate"].items():
+                for field in fields if isinstance(fields, list) else [fields]:
+                    params.append((f"aggregate[{fn}]", str(field)))
         if data.get("sort"):
             sort = data["sort"]
             if isinstance(sort, list) and sort:
-                params["sort"] = sort[0]["field"]
+                params.append(("sort", sort[0]["field"]))
                 order = sort[0].get("order") or sort[0].get("direction")
                 if order:
-                    params["order"] = order
+                    params.append(("order", order))
             elif isinstance(sort, str):
-                params["sort"] = sort
+                params.append(("sort", sort))
         return await self._request(
             "GET", f"/api/app/items/{_enc(name)}", params=params, app=app, version=version
-        )
-
-    async def grouped(
-        self,
-        name: str,
-        data: dict,
-        app: Optional[str] = None,
-        version: Optional[str] = None,
-    ) -> Any:
-        return await self._request(
-            "POST", f"/api/app/items/{_enc(name)}/grouped", json=data, app=app, version=version
         )
 
     async def references(

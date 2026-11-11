@@ -44,6 +44,9 @@ export function createCollectionsResource(ky: KyInstance) {
             ky
                 .delete(`app/collections/${encodeURIComponent(name)}`, options)
                 .json<{ deleted: true }>(),
+        schema: (options?: any) => ky.get("app/collections/schema", options).json(),
+        schemaTs: (options?: any) =>
+            ky.get("app/collections/schema/ts", options).json(),
 
         // Layouts
         listLayouts: (name: string, options?: any) =>

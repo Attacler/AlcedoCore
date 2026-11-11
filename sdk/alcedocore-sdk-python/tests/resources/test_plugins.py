@@ -211,6 +211,69 @@ async def test_scale_and_restart(plugins):
 
 
 @pytest.mark.asyncio
+async def test_system_settings(plugins):
+    with respx.mock as mock:
+        get_route = mock.get(f"{PLUGINS}/hello-world/installs/7/settings/system").respond(
+            json=jsend({"settings": {"debug": True}})
+        )
+        patch_route = mock.patch(
+            f"{PLUGINS}/hello-world/installs/7/settings/system", json={"debug": False}
+        ).respond(json=jsend({"settings": {"debug": False}}))
+        result = await plugins.get_system_settings("hello-world", 7)
+        assert result == {"settings": {"debug": True}}
+        result = await plugins.update_system_settings("hello-world", 7, {"debug": False})
+        assert result == {"settings": {"debug": False}}
+        assert get_route.called and patch_route.called
+
+
+# ── install-by-id operations ──
+
+@pytest.mark.asyncio
+async def test_install_by_id_ops(plugins):
+    with respx.mock as mock:
+        uninstall = mock.delete(f"{PLUGINS}/installs/42").respond(json=jsend({"success": True}))
+        enable = mock.post(f"{PLUGINS}/installs/42/enable").respond(json=jsend({"enabled": True}))
+        disable = mock.post(f"{PLUGINS}/installs/42/disable").respond(json=jsend({"enabled": False}))
+        get_settings = mock.get(f"{PLUGINS}/installs/42/settings").respond(json=jsend({"settings": {}}))
+        update_settings = mock.patch(
+            f"{PLUGINS}/installs/42/settings", json={"a": 1}
+        ).respond(json=jsend({"settings": {"a": 1}}))
+        get_scopes = mock.get(f"{PLUGINS}/installs/42/scopes").respond(json=jsend({"granted": []}))
+        update_scopes = mock.post(
+            f"{PLUGINS}/installs/42/scopes", json={"scopes": ["kv.get"]}
+        ).respond(json=jsend({"granted": ["kv.get"]}))
+        versions = mock.get(f"{PLUGINS}/installs/42/versions").respond(json=jsend([{"version": "1.0.0"}]))
+        await plugins.uninstall_by_id(42)
+        await plugins.enable_by_id(42)
+        await plugins.disable_by_id(42)
+        await plugins.get_settings_by_id(42)
+        await plugins.update_settings_by_id(42, {"a": 1})
+        await plugins.get_scopes_by_id(42)
+        await plugins.update_scopes_by_id(42, ["kv.get"])
+        result = await plugins.install_versions(42)
+        assert result == [{"version": "1.0.0"}]
+        assert all(
+            r.called
+            for r in (uninstall, enable, disable, get_settings, update_settings, get_scopes, update_scopes, versions)
+        )
+
+
+@pytest.mark.asyncio
+async def test_request_log_detail_events_stop(plugins):
+    with respx.mock as mock:
+        detail = mock.get(f"{PLUGINS}/hello-world/logs/req-1").respond(json=jsend({"request_id": "req-1"}))
+        events = mock.get(f"{PLUGINS}/hello-world/events").respond(json=jsend([{"event_type": "ItemCreated"}]))
+        stop = mock.post(f"{PLUGINS}/hello-world/stop").respond(json=jsend({"stopped": True}))
+        result = await plugins.request_log_detail("hello-world", "req-1")
+        assert result == {"request_id": "req-1"}
+        result = await plugins.events("hello-world")
+        assert result == [{"event_type": "ItemCreated"}]
+        result = await plugins.stop("hello-world")
+        assert result == {"stopped": True}
+        assert detail.called and events.called and stop.called
+
+
+@pytest.mark.asyncio
 async def test_not_found(plugins):
     with respx.mock as mock:
         mock.get(f"{PLUGINS}/missing").respond(status_code=404)

@@ -5,6 +5,7 @@ from .apps import AppsResource
 from .auth import AuthResource
 from .collections import CollectionsResource
 from .db import DBResource
+from .dev import DevResource
 from .developer_keys import DeveloperApiKeysResource
 from .files import FilesResource, FoldersResource, resolve_download_url
 from .health import HealthResource
@@ -18,9 +19,9 @@ from .plugins import PluginsResource
 from .policies import PoliciesResource
 from .registries import RegistriesResource
 from .roles import RolesResource
+from .route_mappings import RouteMappingsResource
 from .schema import SchemaResource
 from .sessions import SessionsResource
-from .usage import UsageResource
 from .users import UsersResource
 from .versions import VersionsResource
 
@@ -32,6 +33,7 @@ __all__ = [
     "AuthResource",
     "CollectionsResource",
     "DBResource",
+    "DevResource",
     "DeveloperApiKeysResource",
     "FilesResource",
     "FoldersResource",
@@ -47,9 +49,9 @@ __all__ = [
     "PoliciesResource",
     "RegistriesResource",
     "RolesResource",
+    "RouteMappingsResource",
     "SchemaResource",
     "SessionsResource",
-    "UsageResource",
     "UsersResource",
     "VersionsResource",
 ]

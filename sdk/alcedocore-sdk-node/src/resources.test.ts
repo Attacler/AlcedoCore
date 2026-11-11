@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { createKvResource } from "./kv.js";
 import { createDbResource } from "./db.js";
 import { createSchemaResource } from "./schema.js";
@@ -6,7 +6,9 @@ import { createLogsResource } from "./logs.js";
 import { createHealthResource } from "./health.js";
 import { createPluginsResource } from "./plugins.js";
 import { createMigrationsResource } from "./migrations.js";
-import { createUsageResource } from "./usage.js";
+import { createDevResource } from "./dev.js";
+import { createCollectionsResource } from "./collections.js";
+import { createAppsResource } from "./apps.js";
 import { createClient } from "./client.js";
 
 // ---------------------------------------------------------------------------
@@ -150,19 +152,40 @@ describe("KV Resource", () => {
         expect(getLastBody(ky)).toEqual({ keys: ["a", "b"] });
     });
 
-    it("query with pattern sends query param", async () => {
-        const ky = mockKy([{ key: "a" }]);
+    it("increment posts amount to the increment endpoint", async () => {
+        const ky = mockKy({ key: "c", value: 6 });
         const kv = createKvResource(ky);
-        await kv.query("a*");
-        expect(getLastUrl(ky)).toBe("app/kv/query");
-        expect(getLastSearchParams(ky)).toEqual({ pattern: "a*" });
+        const result = await kv.increment("c", 5);
+        expect(getLastUrl(ky)).toBe("app/kv/c/increment");
+        expect(getLastBody(ky)).toEqual({ amount: 5 });
+        expect(getLastSearchParams(ky)).toBeUndefined();
+        expect(result).toEqual({ key: "c", value: 6 });
     });
 
-    it("query without pattern omits query param", async () => {
-        const ky = mockKy([]);
+    it("increment sends ttl as a query param when given", async () => {
+        const ky = mockKy({ key: "c", value: 1 });
         const kv = createKvResource(ky);
-        await kv.query();
-        expect(getLastUrl(ky)).toBe("app/kv/query");
+        await kv.increment("c", 1, 3600);
+        expect(getLastUrl(ky)).toBe("app/kv/c/increment");
+        expect(getLastBody(ky)).toEqual({ amount: 1 });
+        expect(getLastSearchParams(ky)).toEqual({ ttl: "3600" });
+    });
+
+    it("increment without amount sends an empty-ish body (core defaults to 1)", async () => {
+        const ky = mockKy({ key: "c", value: 1 });
+        const kv = createKvResource(ky);
+        await kv.increment("c");
+        expect(getLastUrl(ky)).toBe("app/kv/c/increment");
+        expect(getLastBody(ky)).toEqual({ amount: undefined });
+        expect(getLastSearchParams(ky)).toBeUndefined();
+    });
+
+    it("decrement posts amount to the decrement endpoint without ttl", async () => {
+        const ky = mockKy({ key: "c", value: 4 });
+        const kv = createKvResource(ky);
+        await kv.decrement("c", 3);
+        expect(getLastUrl(ky)).toBe("app/kv/c/decrement");
+        expect(getLastBody(ky)).toEqual({ amount: 3 });
         expect(getLastSearchParams(ky)).toBeUndefined();
     });
 });
@@ -172,17 +195,19 @@ describe("KV Resource", () => {
 // ---------------------------------------------------------------------------
 
 describe("DB Resource", () => {
-    it("query sends SQL with params and returns json", async () => {
+    const OLD_ENV = process.env.PLUGIN_BASE_PATH;
+
+    afterEach(() => {
+        if (OLD_ENV === undefined) delete process.env.PLUGIN_BASE_PATH;
+        else process.env.PLUGIN_BASE_PATH = OLD_ENV;
+    });
+
+    it("query posts to {PLUGIN_BASE_PATH}/db/query with SQL and params", async () => {
+        process.env.PLUGIN_BASE_PATH = "/p/7";
         const ky = mockKy({ rows: [] });
         const db = createDbResource(ky);
-        const result = await db.query(
-            "my-plugin",
-            "SELECT * FROM t",
-            [1],
-            60,
-            500,
-        );
-        expect(getLastUrl(ky)).toBe("p/my-plugin/db/query");
+        const result = await db.query("SELECT * FROM t", [1], 60, 500);
+        expect(getLastUrl(ky)).toBe("/p/7/db/query");
         expect(getLastBody(ky)).toEqual({
             query: "SELECT * FROM t",
             params: [1],
@@ -193,15 +218,32 @@ describe("DB Resource", () => {
     });
 
     it("query uses defaults for optional params", async () => {
+        process.env.PLUGIN_BASE_PATH = "/p/7";
         const ky = mockKy({ rows: [] });
         const db = createDbResource(ky);
-        await db.query("my-plugin", "SELECT 1");
+        await db.query("SELECT 1");
         expect(getLastBody(ky)).toEqual({
             query: "SELECT 1",
             params: [],
             timeout_secs: 30,
             max_rows: 100,
         });
+    });
+
+    it("query prefers an explicit basePath over the env var", async () => {
+        process.env.PLUGIN_BASE_PATH = "/p/7";
+        const ky = mockKy({ rows: [] });
+        const db = createDbResource(ky);
+        await db.query("SELECT 1", [], 30, 100, { basePath: "/p/9/" });
+        expect(getLastUrl(ky)).toBe("/p/9/db/query");
+    });
+
+    it("query throws when no base path is available", () => {
+        delete process.env.PLUGIN_BASE_PATH;
+        const ky = mockKy({ rows: [] });
+        const db = createDbResource(ky);
+        expect(() => db.query("SELECT 1")).toThrow(/PLUGIN_BASE_PATH/);
+        expect(ky.post).not.toHaveBeenCalled();
     });
 });
 
@@ -350,6 +392,130 @@ describe("Plugins Resource", () => {
         expect(getLastUrl(ky)).toBe("platform/plugins/p1/pages/assets");
         expect(result).toEqual({ js: "app.js", css: "style.css" });
     });
+
+    it("stop posts to plugins/:slug/stop", async () => {
+        const ky = mockKy({ stopped: true });
+        const plugins = createPluginsResource(ky);
+        await plugins.stop("p1");
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/stop");
+        expect(ky.post).toHaveBeenCalled();
+    });
+
+    it("events calls GET plugins/:slug/events", async () => {
+        const ky = mockKy({ events: [] });
+        const plugins = createPluginsResource(ky);
+        const result = await plugins.events("p1");
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/events");
+        expect(result).toEqual({ events: [] });
+    });
+
+    it("getSystemSettings is version-scoped", async () => {
+        const ky = mockKy({ settings: {} });
+        const plugins = createPluginsResource(ky);
+        await plugins.getSystemSettings("p1", 2);
+        expect(getLastUrl(ky)).toBe("platform/plugins/p1/installs/2/settings/system");
+    });
+
+    it("uninstallById DELETEs installs/:installId", async () => {
+        const ky = mockKy({ uninstalled: true });
+        const plugins = createPluginsResource(ky);
+        await plugins.uninstallById(42);
+        expect(getLastUrl(ky)).toBe("platform/plugins/installs/42");
+        expect(ky.delete).toHaveBeenCalled();
+    });
+
+    it("enableById/disableById POST installs/:installId/enable|disable", async () => {
+        const ky = mockKy({ ok: true });
+        const plugins = createPluginsResource(ky);
+        await plugins.enableById(42);
+        await plugins.disableById(42);
+        const urls = ky.post.mock.calls.map((c) => c[0]);
+        expect(urls).toEqual([
+            "platform/plugins/installs/42/enable",
+            "platform/plugins/installs/42/disable",
+        ]);
+    });
+
+    it("getSettingsById/updateSettingsById use installs/:installId/settings", async () => {
+        const ky = mockKy({ settings: {} });
+        const plugins = createPluginsResource(ky);
+        await plugins.getSettingsById(42);
+        expect(getLastUrl(ky)).toBe("platform/plugins/installs/42/settings");
+        expect(ky.get).toHaveBeenCalled();
+        await plugins.updateSettingsById(42, { theme: "dark" });
+        expect(getLastUrl(ky)).toBe("platform/plugins/installs/42/settings");
+        expect(getLastBody(ky)).toEqual({ theme: "dark" });
+        expect(ky.patch).toHaveBeenCalled();
+    });
+
+    it("getScopesById/updateScopesById use installs/:installId/scopes", async () => {
+        const ky = mockKy({ granted_scopes: [] });
+        const plugins = createPluginsResource(ky);
+        await plugins.getScopesById(42);
+        expect(getLastUrl(ky)).toBe("platform/plugins/installs/42/scopes");
+        await plugins.updateScopesById(42, ["kv.all"]);
+        expect(getLastUrl(ky)).toBe("platform/plugins/installs/42/scopes");
+        expect(getLastBody(ky)).toEqual({ scopes: ["kv.all"] });
+    });
+
+    it("installVersions GETs installs/:installId/versions", async () => {
+        const ky = mockKy([{ version: "1.0.0" }]);
+        const plugins = createPluginsResource(ky);
+        const result = await plugins.installVersions(42);
+        expect(getLastUrl(ky)).toBe("platform/plugins/installs/42/versions");
+        expect(result).toEqual([{ version: "1.0.0" }]);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Collections Resource
+// ---------------------------------------------------------------------------
+
+describe("Collections Resource", () => {
+    it("schema calls GET app/collections/schema", async () => {
+        const ky = mockKy({ collections: [] });
+        const collections = createCollectionsResource(ky);
+        const result = await collections.schema();
+        expect(getLastUrl(ky)).toBe("app/collections/schema");
+        expect(result).toEqual({ collections: [] });
+    });
+
+    it("schemaTs calls GET app/collections/schema/ts", async () => {
+        const ky = mockKy("export type X = {};");
+        const collections = createCollectionsResource(ky);
+        await collections.schemaTs();
+        expect(getLastUrl(ky)).toBe("app/collections/schema/ts");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Apps Resource
+// ---------------------------------------------------------------------------
+
+describe("Apps Resource", () => {
+    it("getAppVersionAccess GETs the access path", async () => {
+        const ky = mockKy({ users: [] });
+        const apps = createAppsResource(ky);
+        await apps.getAppVersionAccess(1, 2);
+        expect(getLastUrl(ky)).toBe("platform/apps/1/versions/2/access");
+        expect(ky.get).toHaveBeenCalled();
+    });
+
+    it("setAppVersionAccess PUTs data to the access path", async () => {
+        const ky = mockKy({ success: true });
+        const apps = createAppsResource(ky);
+        await apps.setAppVersionAccess(1, 2, { user_ids: ["u1"] });
+        expect(getLastUrl(ky)).toBe("platform/apps/1/versions/2/access");
+        expect(getLastBody(ky)).toEqual({ user_ids: ["u1"] });
+    });
+
+    it("revokeAppVersionAccess DELETEs access/:userId", async () => {
+        const ky = mockKy({ success: true });
+        const apps = createAppsResource(ky);
+        await apps.revokeAppVersionAccess(1, 2, "u1");
+        expect(getLastUrl(ky)).toBe("platform/apps/1/versions/2/access/u1");
+        expect(ky.delete).toHaveBeenCalled();
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -383,16 +549,17 @@ describe("Migrations Resource", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Usage Resource
+// Dev Resource
 // ---------------------------------------------------------------------------
 
-describe("Usage Resource", () => {
-    it("is a function that calls GET usage/:name", async () => {
-        const ky = mockKy({ calls: 42 });
-        const usage = createUsageResource(ky);
-        const result = await usage("my-plugin");
-        expect(getLastUrl(ky)).toBe("usage/my-plugin");
-        expect(result).toEqual({ calls: 42 });
+describe("Dev Resource", () => {
+    it("requestId POSTs the slug to dev/request-id", async () => {
+        const ky = mockKy({ request_id: "abc-123" });
+        const dev = createDevResource(ky);
+        const result = await dev.requestId("my-plugin");
+        expect(getLastUrl(ky)).toBe("dev/request-id");
+        expect(getLastBody(ky)).toEqual({ slug: "my-plugin" });
+        expect(result).toEqual({ request_id: "abc-123" });
     });
 });
 
@@ -406,7 +573,7 @@ describe("createClient", () => {
         expect(client).toHaveProperty("plugins");
         expect(client).toHaveProperty("health");
         expect(client).toHaveProperty("migrations");
-        expect(client).toHaveProperty("usage");
+        expect(client).toHaveProperty("dev");
         expect(client).toHaveProperty("kv");
         expect(client).toHaveProperty("db");
         expect(client).toHaveProperty("schema");

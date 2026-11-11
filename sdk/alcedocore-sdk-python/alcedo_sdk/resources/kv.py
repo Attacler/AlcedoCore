@@ -97,14 +97,44 @@ class KVResource(BaseResource):
             "POST", "/api/app/kv/batch/delete", json={"keys": keys}, app=app, version=version
         )
 
-    async def query(
+    async def increment(
         self,
-        pattern: Optional[str] = None,
+        key: str,
+        amount: int = 1,
+        ttl: Optional[int] = None,
         app: Optional[str] = None,
         version: Optional[str] = None,
     ) -> Any:
-        """Query keys by pattern. Returns {"status": "ok"} or matched keys."""
-        params = {"pattern": pattern} if pattern is not None else None
+        """Increment a numeric key by ``amount`` (default 1).
+
+        Optional ``ttl`` (seconds) resets the key's expiry.
+        Returns the API payload ({"key": ..., "value": new_value}).
+        """
+        params = {"ttl": ttl} if ttl is not None else None
         return await self._request(
-            "GET", "/api/app/kv/query", params=params, app=app, version=version
+            "POST",
+            f"/api/app/kv/{key}/increment",
+            json={"amount": amount},
+            params=params,
+            app=app,
+            version=version,
+        )
+
+    async def decrement(
+        self,
+        key: str,
+        amount: int = 1,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """Decrement a numeric key by ``amount`` (default 1).
+
+        Returns the API payload ({"key": ..., "value": new_value}).
+        """
+        return await self._request(
+            "POST",
+            f"/api/app/kv/{key}/decrement",
+            json={"amount": amount},
+            app=app,
+            version=version,
         )

@@ -219,8 +219,8 @@ app.post("/api/migrate", async (_req, res) => {
 // ─── Task 6: DB Query Demo ────────────────────────────────────────────────
 app.get("/api/db/items", async (_req, res) => {
     try {
+        // db.query goes through the proxy at PLUGIN_BASE_PATH (/p/{install_id})
         const items = await client.db.query(
-            PLUGIN_SLUG,
             "SELECT id, name, description, category, created_at FROM demo_items ORDER BY id ASC",
             [],
             30,

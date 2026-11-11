@@ -81,6 +81,12 @@ fn error_response(err: AlcedoError) -> (StatusCode, Json<Value>) {
         AlcedoError::Server { message, .. } => {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": message })))
         }
+        AlcedoError::Api { message, http_status, .. } => {
+            let status = http_status
+                .and_then(|s| StatusCode::from_u16(s).ok())
+                .unwrap_or(StatusCode::BAD_REQUEST);
+            (status, Json(json!({ "error": message })))
+        }
     }
 }
 
@@ -263,7 +269,7 @@ async fn settings_handler(State(state): State<Arc<AppState>>) -> impl IntoRespon
     match state.client.settings.get().await {
         Ok(settings) => Json(json!({
             "slug": "hello-world-rust",
-            "settings": settings.settings
+            "settings": settings
         }))
         .into_response(),
         Err(e) => error_response(e).into_response(),

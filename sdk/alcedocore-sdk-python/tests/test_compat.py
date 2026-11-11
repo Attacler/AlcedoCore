@@ -90,12 +90,29 @@ class TestAlcedoKVDelegation:
                 assert await kv.list_keys() == ["a", "b"]
 
     @pytest.mark.asyncio
-    async def test_query_hits_proxy_endpoint(self, kv):
+    async def test_query_hits_proxy_endpoint(self, kv, monkeypatch):
+        """db.query targets the install-id proxy base path from PLUGIN_BASE_PATH."""
+        monkeypatch.setenv("PLUGIN_BASE_PATH", "/p/7")
         async with kv:
             with respx.mock as mock:
-                route = mock.post(f"{BASE_URL}/p/test/db/query").respond(
+                route = mock.post(f"{BASE_URL}/p/7/db/query").respond(
                     json=jsend({"columns": ["id"], "rows": [], "row_count": 0})
                 )
                 result = await kv.query("SELECT 1")
                 assert result["row_count"] == 0
                 assert route.called
+
+    @pytest.mark.asyncio
+    async def test_increment_returns_value(self, kv):
+        async with kv:
+            with respx.mock as mock:
+                mock.post(f"{BASE_URL}/api/app/kv/counter/increment", json={"amount": 2}).respond(
+                    json=jsend({"key": "counter", "value": 5})
+                )
+                assert await kv.increment("counter", delta=2) == 5
+
+    @pytest.mark.asyncio
+    async def test_compare_and_swap_not_implemented(self, kv):
+        async with kv:
+            with pytest.raises(NotImplementedError):
+                await kv.compare_and_swap("k", "old", "new")

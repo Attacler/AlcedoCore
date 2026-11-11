@@ -10,6 +10,7 @@ from .resources.apps import AppsResource
 from .resources.auth import AuthResource
 from .resources.collections import CollectionsResource
 from .resources.db import DBResource
+from .resources.dev import DevResource
 from .resources.developer_keys import DeveloperApiKeysResource
 from .resources.files import FilesResource
 from .resources.health import HealthResource
@@ -23,9 +24,9 @@ from .resources.plugins import PluginsResource
 from .resources.policies import PoliciesResource
 from .resources.registries import RegistriesResource
 from .resources.roles import RolesResource
+from .resources.route_mappings import RouteMappingsResource
 from .resources.schema import SchemaResource
 from .resources.sessions import SessionsResource
-from .resources.usage import UsageResource
 from .resources.users import UsersResource
 from .resources.versions import VersionsResource
 
@@ -84,6 +85,7 @@ class AlcedoClient:
         self.auth: AuthResource
         self.collections: CollectionsResource
         self.db: DBResource
+        self.dev: DevResource
         self.developer_api_keys: DeveloperApiKeysResource
         self.files: FilesResource
         self.health: HealthResource
@@ -97,9 +99,9 @@ class AlcedoClient:
         self.policies: PoliciesResource
         self.registries: RegistriesResource
         self.roles: RolesResource
+        self.route_mappings: RouteMappingsResource
         self.schema: SchemaResource
         self.sessions: SessionsResource
-        self.usage: UsageResource
         self.users: UsersResource
         self.versions: VersionsResource
 
@@ -136,6 +138,7 @@ class AlcedoClient:
         self.auth = AuthResource(client, slug, app, version)
         self.collections = CollectionsResource(client, slug, app, version)
         self.db = DBResource(client, slug, app, version)
+        self.dev = DevResource(client, slug, app, version)
         self.developer_api_keys = DeveloperApiKeysResource(client, slug, app, version)
         self.files = FilesResource(client, slug, app, version, base_url=self._base_url)
         self.health = HealthResource(client, slug, app, version)
@@ -149,9 +152,9 @@ class AlcedoClient:
         self.policies = PoliciesResource(client, slug, app, version)
         self.registries = RegistriesResource(client, slug, app, version)
         self.roles = RolesResource(client, slug, app, version)
+        self.route_mappings = RouteMappingsResource(client, slug, app, version)
         self.schema = SchemaResource(client, slug, app, version)
         self.sessions = SessionsResource(client, slug, app, version)
-        self.usage = UsageResource(client, slug, app, version)
         self.users = UsersResource(client, slug, app, version)
         self.versions = VersionsResource(client, slug, app, version)
         self._resources_initialized = True
@@ -290,7 +293,10 @@ class AlcedoKV:
         return await self._client.db.query(sql, params=params, timeout_secs=timeout_secs, max_rows=max_rows)
 
     async def compare_and_swap(self, key: str, old_value: str, new_value: str) -> bool:
-        raise NotImplementedError("CAS is not yet implemented")
+        raise NotImplementedError("CAS is not supported by the core API")
 
-    async def increment(self, key: str, delta: int = 1) -> int:
-        raise NotImplementedError("Increment is not yet implemented")
+    async def increment(self, key: str, delta: int = 1, request_id: Optional[str] = None) -> int:
+        self._check_client()
+        await self._set_request_id(request_id)
+        data = await self._client.kv.increment(key, amount=delta)
+        return self._field(data, "value")

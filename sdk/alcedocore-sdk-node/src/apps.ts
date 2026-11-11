@@ -84,5 +84,40 @@ export function createAppsResource(ky: KyInstance) {
                     ...options,
                 })
                 .json<{ success: boolean }>(),
+        getAppVersionAccess: (
+            appId: number,
+            versionId: number,
+            options?: any,
+        ) =>
+            ky
+                .get(
+                    `platform/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/access`,
+                    options,
+                )
+                .json(),
+        setAppVersionAccess: (
+            appId: number,
+            versionId: number,
+            data: any,
+            options?: any,
+        ) =>
+            ky
+                .put(
+                    `platform/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/access`,
+                    { json: data, ...options },
+                )
+                .json(),
+        revokeAppVersionAccess: (
+            appId: number,
+            versionId: number,
+            userId: string,
+            options?: any,
+        ) =>
+            ky
+                .delete(
+                    `platform/apps/${encodeURIComponent(appId)}/versions/${encodeURIComponent(versionId)}/access/${encodeURIComponent(userId)}`,
+                    options,
+                )
+                .json(),
     };
 }

@@ -22,6 +22,14 @@ class CollectionsResource(BaseResource):
     async def list(self, app: Optional[str] = None, version: Optional[str] = None) -> Any:
         return await self._request("GET", "/api/app/collections", app=app, version=version)
 
+    async def schema(self, app: Optional[str] = None, version: Optional[str] = None) -> Any:
+        """Database schema (tables/columns/fields) as a JSend payload."""
+        return await self._request("GET", "/api/app/collections/schema", app=app, version=version)
+
+    async def schema_ts(self, app: Optional[str] = None, version: Optional[str] = None) -> str:
+        """TypeScript schema definitions. The core returns raw text, not JSend."""
+        return await self._request_text("/api/app/collections/schema/ts", app=app, version=version)
+
     async def get(self, name: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
         return await self._request("GET", _coll(name), app=app, version=version)
 

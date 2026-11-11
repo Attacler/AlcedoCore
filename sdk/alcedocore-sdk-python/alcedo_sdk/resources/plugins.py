@@ -156,6 +156,36 @@ class PluginsResource(BaseResource):
             version=version,
         )
 
+    async def get_system_settings(
+        self,
+        slug: str,
+        app_version_id: int,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "GET",
+            _install_path(slug, app_version_id, "/settings/system"),
+            app=app,
+            version=version,
+        )
+
+    async def update_system_settings(
+        self,
+        slug: str,
+        app_version_id: int,
+        data: dict,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "PATCH",
+            _install_path(slug, app_version_id, "/settings/system"),
+            json=data,
+            app=app,
+            version=version,
+        )
+
     # --- runtime (keyed by the install's own id) ---
 
     async def runtime_info(
@@ -220,6 +250,94 @@ class PluginsResource(BaseResource):
             version=version,
         )
 
+    # --- install-by-id operations (keyed by the install's own id) ---
+
+    async def uninstall_by_id(
+        self,
+        install_id: int,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "DELETE", _install_id_path(install_id), app=app, version=version
+        )
+
+    async def enable_by_id(
+        self,
+        install_id: int,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "POST", _install_id_path(install_id, "/enable"), app=app, version=version
+        )
+
+    async def disable_by_id(
+        self,
+        install_id: int,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "POST", _install_id_path(install_id, "/disable"), app=app, version=version
+        )
+
+    async def get_settings_by_id(
+        self,
+        install_id: int,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "GET", _install_id_path(install_id, "/settings"), app=app, version=version
+        )
+
+    async def update_settings_by_id(
+        self,
+        install_id: int,
+        data: dict,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "PATCH", _install_id_path(install_id, "/settings"), json=data, app=app, version=version
+        )
+
+    async def get_scopes_by_id(
+        self,
+        install_id: int,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "GET", _install_id_path(install_id, "/scopes"), app=app, version=version
+        )
+
+    async def update_scopes_by_id(
+        self,
+        install_id: int,
+        scopes: list,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "POST",
+            _install_id_path(install_id, "/scopes"),
+            json={"scopes": scopes},
+            app=app,
+            version=version,
+        )
+
+    async def install_versions(
+        self,
+        install_id: int,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "GET", _install_id_path(install_id, "/versions"), app=app, version=version
+        )
+
     # --- slug-scoped subresources ---
 
     async def versions(self, slug: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
@@ -237,6 +355,20 @@ class PluginsResource(BaseResource):
         return await self._request(
             "GET", _slug_path(slug, "/logs"), params=params, app=app, version=version
         )
+
+    async def request_log_detail(
+        self,
+        slug: str,
+        request_id: str,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        return await self._request(
+            "GET", _slug_path(slug, f"/logs/{_enc(request_id)}"), app=app, version=version
+        )
+
+    async def events(self, slug: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
+        return await self._request("GET", _slug_path(slug, "/events"), app=app, version=version)
 
     async def docs(self, slug: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
         return await self._request("GET", _slug_path(slug, "/docs"), app=app, version=version)
@@ -291,3 +423,6 @@ class PluginsResource(BaseResource):
             app=app,
             version=version,
         )
+
+    async def stop(self, slug: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
+        return await self._request("POST", _slug_path(slug, "/stop"), app=app, version=version)

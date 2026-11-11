@@ -61,3 +61,20 @@ async def test_user_access(apps):
         await apps.get_user_access("u1")
         await apps.set_user_access("u1", {"app_id": 1, "roles": ["admin"]})
         assert get_route.called and put_route.called
+
+
+@pytest.mark.asyncio
+async def test_app_version_access(apps):
+    with respx.mock as mock:
+        access = f"{APPS}/1/versions/2/access"
+        get_route = mock.get(access).respond(json=jsend([{"user_id": "u1", "roles": ["admin"]}]))
+        put_route = mock.put(access, json={"user_id": "u1", "roles": ["admin"]}).respond(
+            json=jsend({"success": True})
+        )
+        revoke = mock.delete(f"{access}/u1").respond(json=jsend({"revoked": True}))
+        result = await apps.get_app_version_access(1, 2)
+        assert result == [{"user_id": "u1", "roles": ["admin"]}]
+        await apps.set_app_version_access(1, 2, {"user_id": "u1", "roles": ["admin"]})
+        result = await apps.revoke_app_version_access(1, 2, "u1")
+        assert result == {"revoked": True}
+        assert get_route.called and put_route.called and revoke.called
