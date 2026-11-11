@@ -1,5 +1,5 @@
 /**
- * corev2 collection-data API test.
+ * core collection-data API test.
  *
  * Consumes the HTTP API directly (no SDK) and proves:
  *  - collection CRUD (create / get / update / delete)
@@ -10,7 +10,7 @@
  *  - expanded relationship objects (`fields=["*","author.*"]`)
  *  - recursive nested relational writes (Directus-style), unlimited depth
  *
- * Run (corev2 must be running):
+ * Run (core must be running):
  *   cd e2e-tests
  *   npx tsx --test ./api/collection-data.test.ts
  *
@@ -282,7 +282,7 @@ after(async () => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("corev2 collection data API", () => {
+describe("core collection data API", () => {
     it("creates collections and returns their fields", async () => {
         const collection = await ok(
             "GET",

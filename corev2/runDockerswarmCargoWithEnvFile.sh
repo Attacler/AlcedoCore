@@ -1,1 +1,0 @@
-set -a && source .env && set +a && cargo run --bin dockerswarm

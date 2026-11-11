@@ -1,5 +1,5 @@
 /**
- * corev2 cross-app relationship test (same version).
+ * core cross-app relationship test (same version).
  *
  * Proves that a relationship in app A can target a collection in app B
  * (same version) for reads AND writes:
@@ -9,7 +9,7 @@
  *  - cross-app 1:M nested create / update / delete
  *  - validation rejects a relationship to an app not on the version
  *
- * Run (corev2 must be running):
+ * Run (core must be running):
  *   cd e2e-tests
  *   node --test ./api/cross-app-relations.test.ts
  *
@@ -183,7 +183,7 @@ after(async () => {
     }
 });
 
-describe("corev2 cross-app relationships", () => {
+describe("core cross-app relationships", () => {
     it("round-trips related_app in collection metadata", async () => {
         const collection = await ok("GET", `/api/app/collections/${ARTICLES}`, { ...A });
         const post = collection.fields.find((f: any) => f.name === "post");

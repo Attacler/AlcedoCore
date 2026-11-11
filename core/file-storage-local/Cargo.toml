@@ -15,3 +15,9 @@ thiserror = "1"
 tracing = "0.1"
 mime_guess = "2"
 tokio = { version = "1", features = ["fs"] }
+futures-util = "0.3"  
+
+tokio-util = { version = "0.7", features = ["io"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

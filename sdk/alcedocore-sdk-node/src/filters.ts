@@ -5,7 +5,7 @@
  * array of conditions. This module answers "would this object pass?" without a
  * round trip, so UIs can prefill/validate before submitting.
  *
- * Semantics are kept deliberately close to the server (`corev2`
+ * Semantics are kept deliberately close to the server (`core`
  * `services/permissions/create.rs`):
  *  - conditions within a rule are AND-ed;
  *  - a rule with no conditions is always satisfied (used as the `rules` OR);

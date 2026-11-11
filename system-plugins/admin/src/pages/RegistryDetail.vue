@@ -100,7 +100,7 @@ async function checkReachability(showToast: boolean) {
         const response = (await client.registries.healthCheckUrl(
             form.url,
         )) as any;
-        // The SDK unwraps corev2's JSend envelope to the inner object.
+        // The SDK unwraps core's JSend envelope to the inner object.
         const result = response?.data ?? response;
         if (result?.reachable) {
             reachableStatus.value = "reachable";

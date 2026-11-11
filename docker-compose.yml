@@ -1,7 +1,7 @@
 services:
     core:
         build:
-            context: ./corev2
+            context: ./core
             dockerfile: Dockerfile.dev
         restart: unless-stopped
         depends_on:
@@ -14,7 +14,7 @@ services:
         # .env carries the secrets (encryption key, admin bootstrap); the
         # overrides below point at the compose services instead of the host.
         env_file:
-            - ./corev2/.env
+            - ./core/.env
         environment:
             DATABASE_URL: postgres://postgres:postgres@postgres:5432/plugin_core
             REDIS_URL: redis://redis:6379
@@ -27,7 +27,7 @@ services:
             - "host.docker.internal:host-gateway"
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock
-            - ./corev2/.plugins:/app/.plugins
+            - ./core/.plugins:/app/.plugins
         networks:
             - default
             - alcedocore_plugins

@@ -1,5 +1,5 @@
 /**
- * corev2 advanced relationships test.
+ * core advanced relationships test.
  *
  * Covers three things the basic relationship suites do not:
  *  1. A three-hop M:1 filter inside one app
@@ -8,7 +8,7 @@
  *     (`comments -> articles -> posts`, posts lives in app B).
  *  3. `related_app` round-trips on a layout section (relational section).
  *
- * Run (corev2 must be running):
+ * Run (core must be running):
  *   cd e2e-tests
  *   node --test ./api/relations-advanced.test.ts
  *
@@ -274,7 +274,7 @@ after(async () => {
     }
 });
 
-describe("corev2 advanced relationships", () => {
+describe("core advanced relationships", () => {
     it("filters across three same-app M:1 hops", async () => {
         const alice = await ok("POST", `/api/app/items/${CUSTOMERS}`, {
             ...A,

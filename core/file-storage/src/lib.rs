@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures_util::stream::BoxStream;
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -48,6 +50,19 @@ pub struct FileMetadata {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// A streaming object body: `(mime_type, stream)`. Backends hand this back from
+/// [`FileStorage::download_stream`] so the API layer can forward bytes without
+/// holding the whole object in memory.
+pub type ByteStream = BoxStream<'static, Result<Bytes, FileStorageError>>;
+
+async fn collect_stream(mut stream: ByteStream) -> Result<Bytes, FileStorageError> {
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = stream.try_next().await? {
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(Bytes::from(buf))
+}
+
 #[async_trait]
 pub trait FileStorage: Send + Sync {
     async fn upload(
@@ -58,7 +73,21 @@ pub trait FileStorage: Send + Sync {
         folder_path: &str,
     ) -> Result<String, FileStorageError>;
 
-    async fn download(&self, path: &str) -> Result<Option<(String, Bytes)>, FileStorageError>;
+    /// Streams the object's bytes. Returns `None` when the path does not exist.
+    async fn download_stream(
+        &self,
+        path: &str,
+    ) -> Result<Option<(String, ByteStream)>, FileStorageError>;
+
+    /// Fully materializes [`Self::download_stream`]. Convenience for callers
+    /// that immediately re-upload the bytes (move-by-copy); prefer
+    /// `download_stream` for anything that reaches the client.
+    async fn download(&self, path: &str) -> Result<Option<(String, Bytes)>, FileStorageError> {
+        match self.download_stream(path).await? {
+            Some((mime, stream)) => Ok(Some((mime, collect_stream(stream).await?))),
+            None => Ok(None),
+        }
+    }
 
     async fn delete(&self, path: &str) -> Result<(), FileStorageError>;
 
