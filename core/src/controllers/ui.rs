@@ -29,7 +29,8 @@ pub async fn ui_controller_dev(mut req: Request) -> Result<Response, StatusCode>
         .map(|q| format!("?{}", q))
         .unwrap_or_default();
 
-    let uri = format!("http://localhost:3000{}{}", path, query)
+    let port = std::env::var("CORE_PORT").unwrap_or_else(|_| "8080".to_string());
+    let uri = format!("http://localhost:{}{}{}", port, path, query)
         .parse()
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 

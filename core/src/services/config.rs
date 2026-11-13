@@ -66,7 +66,7 @@ pub fn get_config() -> Config {
     let database_url = env_required("DATABASE_URL");
     let database_max_connections = env_or_msg("DATABASE_MAX_CONNECTIONS", 5u32, "must be a number");
     let listen_ip = env_str("CORE_IP", "0.0.0.0");
-    let listen_port = env_or_msg("CORE_PORT", 3000u16, "must be a number");
+    let listen_port = env_or_msg("CORE_PORT", 8080u16, "must be a number");
     let session_ttl_seconds = env_or_msg("SESSION_TTL_SECONDS", 604800i64, "must be a number");
     let database_log_queries = env_or_msg("DATABASE_LOG_QUERIES", false, "must be a boolean");
     let cache_strategy = env_str("CACHE_STRATEGY", "in_memory");
