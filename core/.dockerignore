@@ -8,6 +8,11 @@ docker/
 .env.*
 !.env.example
 plan.md
+# Local build/runtime artifacts — never bake these into the image.
+backend-dist/
+files/
+.plugins/
+temp/
 
 # NOTE: do not exclude *.md or dist/ — the build embeds both at compile time
 # (`include_str!("../../api-docs/query.md")` in controllers/docs.rs and
