@@ -71,3 +71,6 @@ core/files
 core/.plugin-public
 # Git worktrees
 .worktrees/
+
+# Local database dumps
+/*.sql
