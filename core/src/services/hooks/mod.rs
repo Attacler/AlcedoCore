@@ -29,7 +29,7 @@ type AsyncHook<T> = Box<
 >;
 
 struct HookRegistry<T> {
-    hooks: Vec<AsyncHook<T>>,
+    hooks: Vec<Arc<AsyncHook<T>>>,
 }
 
 pub struct MultiEventBus {
@@ -56,17 +56,17 @@ impl MultiEventBus {
             + 'static,
     {
         let key = (table_name.to_string(), TypeId::of::<T>());
-
-        let registry_any = self.registries.entry(key).or_insert_with(|| {
-            let reg: HookRegistry<T> = HookRegistry { hooks: Vec::new() };
-            Arc::new(RwLock::new(reg))
-        });
-
-        let arc_lock = registry_any.value().clone();
+        let arc_lock = {
+            let registry_any = self.registries.entry(key).or_insert_with(|| {
+                let reg: HookRegistry<T> = HookRegistry { hooks: Vec::new() };
+                Arc::new(RwLock::new(reg))
+            });
+            registry_any.value().clone()
+        };
         let mut lock = arc_lock.write().await;
 
         if let Some(reg) = lock.downcast_mut::<HookRegistry<T>>() {
-            reg.hooks.push(Box::new(hook_fn));
+            reg.hooks.push(Arc::new(Box::new(hook_fn)));
         }
     }
 
@@ -79,15 +79,28 @@ impl MultiEventBus {
     ) {
         let lookup_key = (key.to_string(), TypeId::of::<T>());
 
-        if let Some(registry_any) = self.registries.get(&lookup_key) {
-            let arc_lock = registry_any.value().clone();
-            let lock = arc_lock.read().await;
+        // Clone the Arc out of the get() guard so the DashMap shard read lock
+        // is dropped before any await below: holding it across `hook(...).await`
+        // deadlocks against any hook that registers a new hook (entry() takes
+        // a shard write lock) while this trigger is suspended.
+        let arc_lock = self.registries.get(&lookup_key).map(|r| r.value().clone());
 
-            if let Some(reg) = lock.downcast_ref::<HookRegistry<T>>() {
+        if let Some(arc_lock) = arc_lock {
+            // Clone the hook list and drop the read guard before awaiting:
+            // holding it across `hook(...).await` deadlocks against any hook
+            // that registers a new hook (write lock) or otherwise needs the
+            // registry while a trigger is in flight.
+            let hooks = {
+                let lock = arc_lock.read().await;
+                lock.downcast_ref::<HookRegistry<T>>()
+                    .map(|reg| reg.hooks.clone())
+            };
+
+            if let Some(hooks) = hooks {
                 let app_context = context.context.clone();
                 let app_state = context.state.clone();
 
-                for hook in &reg.hooks {
+                for hook in hooks {
                     hook(
                         event,
                         app_context.clone(),

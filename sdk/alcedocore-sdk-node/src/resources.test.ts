@@ -486,6 +486,60 @@ describe("Collections Resource", () => {
         await collections.schemaTs();
         expect(getLastUrl(ky)).toBe("app/collections/schema/ts");
     });
+
+    it("listUnregistered calls GET app/collections/unregistered", async () => {
+        const ky = mockKy({ tables: [{ name: "legacy_orders", columns: [] }] });
+        const collections = createCollectionsResource(ky);
+        const result = await collections.listUnregistered();
+        expect(getLastUrl(ky)).toBe("app/collections/unregistered");
+        expect(result).toEqual({
+            tables: [{ name: "legacy_orders", columns: [] }],
+        });
+    });
+
+    it("importCollection POSTs to app/collections/import", async () => {
+        const ky = mockKy({ name: "legacy_orders", fields: [] });
+        const collections = createCollectionsResource(ky);
+        const result = await collections.importCollection({
+            table: "legacy_orders",
+            display_name: "Legacy Orders",
+            fields: [{ name: "title", display_name: "Title" }],
+        });
+        expect(getLastUrl(ky)).toBe("app/collections/import");
+        expect(ky.post.mock.calls[0][1].json).toEqual({
+            table: "legacy_orders",
+            display_name: "Legacy Orders",
+            fields: [{ name: "title", display_name: "Title" }],
+        });
+        expect(result).toEqual({ name: "legacy_orders", fields: [] });
+    });
+
+    it("listUnregisteredFields calls GET app/collections/{name}/unregistered-fields", async () => {
+        const ky = mockKy({
+            collection: "cases",
+            fields: [{ name: "manual_col", field_type: "text", required: false }],
+        });
+        const collections = createCollectionsResource(ky);
+        const result = await collections.listUnregisteredFields("cases");
+        expect(getLastUrl(ky)).toBe("app/collections/cases/unregistered-fields");
+        expect(result).toEqual({
+            collection: "cases",
+            fields: [{ name: "manual_col", field_type: "text", required: false }],
+        });
+    });
+
+    it("importFields POSTs to app/collections/{name}/import-fields", async () => {
+        const ky = mockKy({ name: "cases", fields: [] });
+        const collections = createCollectionsResource(ky);
+        const result = await collections.importFields("cases", {
+            fields: [{ name: "manual_col", display_name: "Manual col" }],
+        });
+        expect(getLastUrl(ky)).toBe("app/collections/cases/import-fields");
+        expect(ky.post.mock.calls[0][1].json).toEqual({
+            fields: [{ name: "manual_col", display_name: "Manual col" }],
+        });
+        expect(result).toEqual({ name: "cases", fields: [] });
+    });
 });
 
 // ---------------------------------------------------------------------------

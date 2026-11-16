@@ -29,7 +29,7 @@ pub fn parse_value(
         }
 
         // Decimal types - using f64 for better precision
-        "decimal" | "money" => parse_decimal(&value)?,
+        "decimal" | "money" | "numeric" => parse_decimal(&value)?,
 
         "boolean" => {
             let b = value.as_bool().or_else(|| {

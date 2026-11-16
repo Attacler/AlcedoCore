@@ -28,6 +28,16 @@ export { createUsersResource } from "./users";
 export { createRolesResource } from "./roles";
 export { createPoliciesResource } from "./policies";
 export { createCollectionsResource } from "./collections";
+export type {
+    Collection,
+    CollectionField,
+    UnregisteredTable,
+    UnregisteredColumn,
+    ImportCollectionRequest,
+    ImportCollectionField,
+    UnregisteredFieldsResponse,
+    ImportFieldsRequest,
+} from "./collections";
 export { createItemsResource } from "./items";
 export { createLookupResource } from "./lookup";
 export type { UserOption } from "./lookup";

@@ -17,14 +17,15 @@ use crate::{
     services::{
         collections::{
             self as collections_service, CollectionResponse, CreateCollectionRequest,
-            SectionRequest, UpdateCollectionRequest,
+            ImportCollectionRequest, ImportFieldsRequest, SectionRequest,
+            UnregisteredFieldsResponse, UnregisteredTablesResponse, UpdateCollectionRequest,
         },
         context::ExtractContext,
         errors::AlcedoError,
         postgres::{columntypetots::column_type_to_ts, inspector::DatabaseSchema},
         respond::{JSendResponse, success},
         saved_views::{
-            CreateSavedViewRequest, SavedViewsService, SavedViewResponse, UpdateSavedViewRequest,
+            CreateSavedViewRequest, SavedViewResponse, SavedViewsService, UpdateSavedViewRequest,
         },
         scopes::require_scope,
     },
@@ -44,6 +45,8 @@ pub fn tables_controller() -> Router<AppState> {
     Router::new()
         .route("/schema", get(get_schema))
         .route("/schema/ts", get(get_ts_schema))
+        .route("/unregistered", get(list_unregistered))
+        .route("/import", post(import_collection))
         .route("/", post(create_collection).get(list_collections))
         .route(
             "/{name}",
@@ -52,6 +55,8 @@ pub fn tables_controller() -> Router<AppState> {
                 .delete(delete_collection),
         )
         .route("/{name}/$create", get(create_policy))
+        .route("/{name}/unregistered-fields", get(list_unregistered_fields))
+        .route("/{name}/import-fields", post(import_fields))
         // Layouts
         .route("/{name}/layouts", get(list_layouts).post(create_layout))
         .route("/{name}/layout", get(resolve_layout))
@@ -285,6 +290,96 @@ async fn update_collection(
 ) -> Result<Json<JSendResponse<CollectionResponse>>, AlcedoError> {
     require_scope(&state, &auth_level, &context, "collections.write").await?;
     let result = collections_service::update_collection(&state, &context, &name, req).await?;
+    Ok(Json(success(result)))
+}
+
+#[utoipa::path(get, path = "/api/app/collections/unregistered",
+    params(
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    responses(
+        (status = OK, body = UnregisteredTablesResponse)
+    )
+)]
+async fn list_unregistered(
+    State(state): State<AppState>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
+) -> Result<Json<JSendResponse<UnregisteredTablesResponse>>, AlcedoError> {
+    require_scope(&state, &auth_level, &context, "collections.read").await?;
+    let result = collections_service::list_unregistered(&state, &context).await?;
+    Ok(Json(success(result)))
+}
+
+#[utoipa::path(post, path = "/api/app/collections/import",
+    params(
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    request_body = ImportCollectionRequest,
+    responses(
+        (status = OK, body = Value)
+    )
+)]
+async fn import_collection(
+    State(state): State<AppState>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
+    body: Option<Json<ImportCollectionRequest>>,
+) -> Result<Json<JSendResponse<CollectionResponse>>, AlcedoError> {
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
+    let req = body.map(|b| b.0).ok_or_else(|| {
+        AlcedoError::InvalidInput("Missing request body with 'table'".to_string(), 1)
+    })?;
+    let result = collections_service::import_collections(&state, &context, req).await?;
+    Ok(Json(success(result)))
+}
+
+#[utoipa::path(get, path = "/api/app/collections/{name}/unregistered-fields",
+    params(
+        ("name" = String, Path, description = "Collection name."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    responses(
+        (status = OK, body = UnregisteredFieldsResponse)
+    )
+)]
+async fn list_unregistered_fields(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
+) -> Result<Json<JSendResponse<UnregisteredFieldsResponse>>, AlcedoError> {
+    require_scope(&state, &auth_level, &context, "collections.read").await?;
+    let result = collections_service::list_unregistered_fields(&state, &context, &name).await?;
+    Ok(Json(success(result)))
+}
+
+#[utoipa::path(post, path = "/api/app/collections/{name}/import-fields",
+    params(
+        ("name" = String, Path, description = "Collection name."),
+        ("x-app" = String, Header, description = "App name header"),
+        ("x-version" = String, Header, description = "Version name header"),
+    ),
+    request_body = ImportFieldsRequest,
+    responses(
+        (status = OK, body = Value)
+    )
+)]
+async fn import_fields(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    ExtractContext(context): ExtractContext,
+    auth_level: AuthLevel,
+    body: Option<Json<ImportFieldsRequest>>,
+) -> Result<Json<JSendResponse<CollectionResponse>>, AlcedoError> {
+    require_scope(&state, &auth_level, &context, "collections.write").await?;
+    let req = body.map(|b| b.0).ok_or_else(|| {
+        AlcedoError::InvalidInput("Missing request body with 'fields'".to_string(), 1)
+    })?;
+    let result = collections_service::import_fields(&state, &context, &name, req).await?;
     Ok(Json(success(result)))
 }
 

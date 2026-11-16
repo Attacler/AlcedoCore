@@ -182,6 +182,7 @@ watch(
             v-model:drag-field-key="dragFieldKey"
             v-model:drag-type="dragType"
             @onDragStart="onDragStart"
+            @imported="loadCollection(collectionName)"
             :collectionMeta="collectionMeta"
             :sections="sections"
             v-model:is-dragging="isDragging"

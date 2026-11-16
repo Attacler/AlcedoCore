@@ -16,7 +16,8 @@
     "scripts": {
         "build": "tsup",
         "test": "vitest run",
-        "test:watch": "vitest"
+        "test:watch": "vitest",
+        "prepare": "npm run build"
     },
     "dependencies": {
         "ky": "^2.0.2",

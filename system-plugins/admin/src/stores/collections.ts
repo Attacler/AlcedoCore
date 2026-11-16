@@ -197,6 +197,62 @@ export const useCollectionsStore = defineStore("collections", () => {
         await fetchCollections(true);
     }
 
+    async function listUnregistered(): Promise<
+        { name: string; columns: { name: string; field_type: string; required: boolean }[] }[]
+    > {
+        const response = (await client.collections.listUnregistered()) as any;
+        return response.tables || [];
+    }
+
+    async function importCollection(data: {
+        table: string;
+        display_name?: string;
+        fields?: {
+            name: string;
+            display_name?: string;
+            input_component?: string;
+            display_component?: string;
+        }[];
+    }): Promise<Collection> {
+        const response = (await client.collections.importCollection(data)) as any;
+        await fetchCollections(true);
+        return response.data || response;
+    }
+
+    async function listUnregisteredFields(
+        name: string,
+    ): Promise<{
+        collection: string;
+        fields: {
+            name: string;
+            field_type: string;
+            related_collection?: string;
+            related_app?: string;
+            required: boolean;
+        }[];
+    }> {
+        const response = (await client.collections.listUnregisteredFields(
+            name,
+        )) as any;
+        return response;
+    }
+
+    async function importFields(
+        name: string,
+        data: {
+            fields?: {
+                name: string;
+                display_name?: string;
+                input_component?: string;
+                display_component?: string;
+            }[];
+        },
+    ): Promise<Collection> {
+        const response = (await client.collections.importFields(name, data)) as any;
+        await fetchCollections(true);
+        return response.data || response;
+    }
+
     async function fetchReferences(
         collectionName: string,
         itemId: string,
@@ -397,6 +453,10 @@ export const useCollectionsStore = defineStore("collections", () => {
         createCollection,
         updateCollection,
         deleteCollection,
+        listUnregistered,
+        importCollection,
+        listUnregisteredFields,
+        importFields,
         fetchReferences,
         listLayouts,
         createLayout,

@@ -241,8 +241,15 @@ pub fn pgrow_to_json(row: &PgRow) -> Result<Map<String, serde_json::Value>, sqlx
                     json!(val)
                 }
 
-                // Common Floating Point Types
-                "FLOAT4" | "FLOAT8" => {
+                // Common Floating Point Types (FLOAT4 is 4 bytes on the wire,
+                // so it must be decoded as f32 — decoding it as f64 panics in
+                // byteorder)
+                "FLOAT4" => {
+                    let val: f32 =
+                        Decode::<'_, Postgres>::decode(raw_value).map_err(sqlx::Error::Decode)?;
+                    json!(val as f64)
+                }
+                "FLOAT8" => {
                     let val: f64 =
                         Decode::<'_, Postgres>::decode(raw_value).map_err(sqlx::Error::Decode)?;
                     json!(val)

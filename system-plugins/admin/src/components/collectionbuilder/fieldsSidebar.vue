@@ -3,11 +3,26 @@ import { useToast } from "@/composables/useToast";
 import {
     CollectionSection,
     FieldDefinition,
+    FieldType,
     useCollectionsStore,
 } from "@/stores/collections";
-import { getDisplayComponentGroups } from "@/display";
+import {
+    getDisplayComponentGroups,
+    getDisplayComponentsForFieldType,
+} from "@/display";
+import { getInputComponentsForFieldType } from "@/inputs";
 import { useExtensionRegistryStore } from "@/stores/extensionRegistry";
-import { Button, Drawer, Tab, Tabs, TabList, TabPanels } from "primevue";
+import {
+    Button,
+    Dialog,
+    Drawer,
+    InputText,
+    Select,
+    Tab,
+    Tabs,
+    TabList,
+    TabPanels,
+} from "primevue";
 
 import { ref } from "vue";
 import { computed } from "vue";
@@ -29,7 +44,7 @@ const props = defineProps<{
     isDragging = defineModel<boolean>("isDragging", {
         required: true,
     }),
-    emit = defineEmits(["onDragStart"]);
+    emit = defineEmits(["onDragStart", "imported"]);
 
 const extensionRegistry = useExtensionRegistryStore(),
     devStore = useDevServerStore();
@@ -41,6 +56,104 @@ const showCollectionDrawer = ref(false),
     collectionDisplayName = ref(""),
     savingDetails = ref(false),
     editingField = ref<FieldDefinition | null>(null);
+
+interface ImportFieldRow {
+    name: string;
+    field_type: FieldType;
+    display_name: string;
+    input_component: string;
+    display_component: string;
+}
+
+const showImportFieldsModal = ref(false),
+    importFieldsLoading = ref(false),
+    importFieldsError = ref(""),
+    unregisteredFields = ref<ImportFieldRow[]>([]),
+    importFieldsSearch = ref(""),
+    importingFields = ref(false);
+
+const filteredUnregisteredFields = computed(() => {
+    const q = importFieldsSearch.value.trim().toLowerCase();
+    return [...unregisteredFields.value]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .filter(
+            (f) =>
+                !q ||
+                f.name.toLowerCase().includes(q) ||
+                f.display_name.toLowerCase().includes(q),
+        );
+});
+
+function componentOptions(
+    fieldType: FieldType,
+    kind: "input" | "display",
+): { type: string; label: string }[] {
+    const registry =
+        kind === "input"
+            ? getInputComponentsForFieldType(fieldType)
+            : getDisplayComponentsForFieldType(fieldType);
+    return [
+        { type: "default", label: "Default" },
+        ...registry.map((e) => ({ type: e.type, label: e.label })),
+    ];
+}
+
+async function openImportFields() {
+    showImportFieldsModal.value = true;
+    importFieldsLoading.value = true;
+    importFieldsError.value = "";
+    importFieldsSearch.value = "";
+    unregisteredFields.value = [];
+    try {
+        const res = await store.listUnregisteredFields(props.collectionMeta.name);
+        unregisteredFields.value = (res.fields || []).map((f) => ({
+            name: f.name,
+            field_type: f.field_type as FieldType,
+            display_name: f.name,
+            input_component: "default",
+            display_component: "default",
+        }));
+    } catch (e) {
+        importFieldsError.value =
+            e instanceof Error ? e.message : "Failed to load fields";
+    } finally {
+        importFieldsLoading.value = false;
+    }
+}
+
+async function handleImportFields() {
+    if (importingFields.value) return;
+    importingFields.value = true;
+    try {
+        await store.importFields(props.collectionMeta.name, {
+            fields: unregisteredFields.value.map((f) => ({
+                name: f.name,
+                display_name: f.display_name,
+                input_component:
+                    f.input_component === "default"
+                        ? undefined
+                        : f.input_component,
+                display_component:
+                    f.display_component === "default"
+                        ? undefined
+                        : f.display_component,
+            })),
+        });
+        toast.show(
+            `${unregisteredFields.value.length} field(s) imported`,
+            "success",
+        );
+        showImportFieldsModal.value = false;
+        emit("imported");
+    } catch (e) {
+        toast.show(
+            `Failed to import fields: ${e instanceof Error ? e.message : "Unknown error"}`,
+            "error",
+        );
+    } finally {
+        importingFields.value = false;
+    }
+}
 
 const paletteGroups = computed(() => {
     const groups = getDisplayComponentGroups();
@@ -246,11 +359,19 @@ function deleteEditingField() {
         >
             <CollectionNameLabel :collection="collectionMeta as any" />
 
-            <Button
-                text
-                icon="pi pi-pencil"
-                @click="showCollectionDrawer = true"
-            />
+            <div class="flex">
+                <Button
+                    text
+                    icon="pi pi-download"
+                    title="Import fields"
+                    @click="openImportFields"
+                />
+                <Button
+                    text
+                    icon="pi pi-pencil"
+                    @click="showCollectionDrawer = true"
+                />
+            </div>
         </h1>
         <Tabs value="0">
             <TabList>
@@ -369,4 +490,98 @@ function deleteEditingField() {
         @save="saveFieldEditor"
         @delete="deleteEditingField"
     />
+
+    <Dialog
+        v-model:visible="showImportFieldsModal"
+        :header="`Import fields into ${collectionMeta?.name ?? ''}`"
+        :style="{ width: '900px' }"
+        modal
+    >
+        <p v-if="importFieldsLoading" class="text-gray-500 py-4 text-center">
+            Loading fields...
+        </p>
+        <p v-else-if="importFieldsError" class="text-red-500 py-4">
+            {{ importFieldsError }}
+        </p>
+        <p
+            v-else-if="unregisteredFields.length === 0"
+            class="text-gray-500 py-4 text-center"
+        >
+            No columns without metadata found on this collection.
+        </p>
+        <template v-else>
+            <IconField class="mb-3">
+                <InputIcon class="pi pi-search" />
+                <InputText
+                    v-model="importFieldsSearch"
+                    placeholder="Search columns..."
+                    fluid
+                />
+            </IconField>
+            <p
+                v-if="filteredUnregisteredFields.length === 0"
+                class="text-gray-500 py-4 text-center"
+            >
+                No columns match "{{ importFieldsSearch }}".
+            </p>
+            <div v-else class="border border-gray-200 rounded-lg">
+                <div
+                    class="hidden sm:grid grid-cols-[1fr_1fr_1fr_1fr] gap-3 px-4 py-2 border-b border-gray-200 bg-gray-50 text-xs font-medium text-gray-500 uppercase tracking-wider"
+                >
+                    <div>api_name</div>
+                    <div>Display name</div>
+                    <div>Input</div>
+                    <div>Display</div>
+                </div>
+                <div
+                    v-for="field in filteredUnregisteredFields"
+                    :key="field.name"
+                    class="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_1fr] gap-3 px-4 py-3 border-b border-gray-100 last:border-0 items-center"
+                >
+                    <span
+                        class="font-mono text-sm text-gray-700"
+                        :title="field.field_type"
+                        >{{ field.name }}</span
+                    >
+                    <InputText v-model="field.display_name" fluid />
+                    <Select
+                        v-model="field.input_component"
+                        :options="componentOptions(field.field_type, 'input')"
+                        option-label="label"
+                        option-value="type"
+                        class="w-full"
+                        fluid
+                    />
+                    <Select
+                        v-model="field.display_component"
+                        :options="
+                            componentOptions(field.field_type, 'display')
+                        "
+                        option-label="label"
+                        option-value="type"
+                        class="w-full"
+                        fluid
+                    />
+                </div>
+            </div>
+        </template>
+
+        <template #footer>
+            <div class="flex gap-2 justify-end">
+                <Button
+                    label="Cancel"
+                    severity="secondary"
+                    outlined
+                    @click="showImportFieldsModal = false"
+                />
+                <Button
+                    label="Import fields"
+                    severity="primary"
+                    :disabled="unregisteredFields.length === 0 || importingFields"
+                    :loading="importingFields"
+                    @click="handleImportFields"
+                />
+            </div>
+        </template>
+    </Dialog>
 </template>

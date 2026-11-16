@@ -19,6 +19,41 @@ export interface Collection {
     updated_at: string;
 }
 
+export interface UnregisteredColumn {
+    name: string;
+    field_type: string;
+    related_collection?: string;
+    related_app?: string;
+    required: boolean;
+}
+
+export interface UnregisteredTable {
+    name: string;
+    columns: UnregisteredColumn[];
+}
+
+export interface ImportCollectionField {
+    name: string;
+    display_name?: string;
+    input_component?: string;
+    display_component?: string;
+}
+
+export interface ImportCollectionRequest {
+    table: string;
+    display_name?: string;
+    fields?: ImportCollectionField[];
+}
+
+export interface UnregisteredFieldsResponse {
+    collection: string;
+    fields: UnregisteredColumn[];
+}
+
+export interface ImportFieldsRequest {
+    fields?: ImportCollectionField[];
+}
+
 export function createCollectionsResource(ky: KyInstance) {
     return {
         list: (options?: any) =>
@@ -47,6 +82,28 @@ export function createCollectionsResource(ky: KyInstance) {
         schema: (options?: any) => ky.get("app/collections/schema", options).json(),
         schemaTs: (options?: any) =>
             ky.get("app/collections/schema/ts", options).json(),
+        listUnregistered: (options?: any) =>
+            ky
+                .get("app/collections/unregistered", options)
+                .json<{ tables: UnregisteredTable[] }>(),
+        importCollection: (data: ImportCollectionRequest, options?: any) =>
+            ky
+                .post("app/collections/import", { json: data, ...options })
+                .json<Collection>(),
+        listUnregisteredFields: (name: string, options?: any) =>
+            ky
+                .get(
+                    `app/collections/${encodeURIComponent(name)}/unregistered-fields`,
+                    options,
+                )
+                .json<UnregisteredFieldsResponse>(),
+        importFields: (name: string, data: ImportFieldsRequest, options?: any) =>
+            ky
+                .post(
+                    `app/collections/${encodeURIComponent(name)}/import-fields`,
+                    { json: data, ...options },
+                )
+                .json<Collection>(),
 
         // Layouts
         listLayouts: (name: string, options?: any) =>

@@ -167,6 +167,12 @@ pub(crate) fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
 
+/// Escapes a string as a SQL string literal (single quotes), for values —
+/// unlike [`quote`], which produces a quoted identifier.
+pub(crate) fn quote_str(s: &str) -> String {
+    format!("'{}'", escape_sql_string(s))
+}
+
 pub(crate) fn qtable(ctx: &AppContext, table: &str) -> String {
     format!("{}.{}", quote(&ctx.schema_name()), quote(table))
 }
