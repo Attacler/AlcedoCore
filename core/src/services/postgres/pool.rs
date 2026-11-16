@@ -173,6 +173,101 @@ mod tests {
     use super::*;
     use sqlx::Row;
 
+    fn numeric_bytes(weight: i16, sign: u16, dscale: u16, digits: &[u16]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&(digits.len() as u16).to_be_bytes());
+        b.extend_from_slice(&weight.to_be_bytes());
+        b.extend_from_slice(&sign.to_be_bytes());
+        b.extend_from_slice(&dscale.to_be_bytes());
+        for d in digits {
+            b.extend_from_slice(&d.to_be_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn test_numeric_binary_to_string() {
+        // 128 as NUMERIC: ndigits=1, weight=0, sign=pos, dscale=0, digits=[128]
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(0, 0x0000, 0, &[128])).unwrap(),
+            "128"
+        );
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(0, 0x4000, 0, &[42])).unwrap(),
+            "-42"
+        );
+        // 1.50
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(0, 0x0000, 2, &[1, 5000])).unwrap(),
+            "1.50"
+        );
+        // 0.00128 = 12*10000^-1 + 8000*10000^-2
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(-1, 0x0000, 5, &[12, 8000])).unwrap(),
+            "0.00128"
+        );
+        // 0.00
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(0, 0x0000, 2, &[])).unwrap(),
+            "0.00"
+        );
+        // 10000 = 1*10000^1 + 0*10000^0
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(1, 0x0000, 0, &[1, 0])).unwrap(),
+            "10000"
+        );
+        // 12345678901234567890 (beyond i64)
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(4, 0x0000, 0, &[1234, 5678, 9012, 3456, 7890]))
+                .unwrap(),
+            "12345678901234567890"
+        );
+        // NaN
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(0, 0xC000, 0, &[])).unwrap(),
+            "NaN"
+        );
+        // truncated payload is an error, not garbage
+        assert!(numeric_binary_to_string(&[0, 1, 0, 0]).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_pgrow_to_json_numeric_returning() {
+        let state = utils::test_utils::get_app_state().await;
+        let schema = "pool_test_numeric";
+        execute_query(&state, format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+            .await
+            .unwrap();
+        execute_query(&state, format!("CREATE SCHEMA {schema}"))
+            .await
+            .unwrap();
+        execute_query(
+            &state,
+            format!("CREATE TABLE {schema}.t (id NUMERIC PRIMARY KEY, val NUMERIC, big NUMERIC)"),
+        )
+        .await
+        .unwrap();
+
+        // Write path: INSERT ... RETURNING returns NUMERIC in binary wire
+        // format; it must decode exactly, not fail the String UTF-8 fallback.
+        let rows = execute_query(
+            &state,
+            format!(
+                "INSERT INTO {schema}.t (id, val, big) VALUES (128, 1.50, 12345678901234567890) RETURNING id, val, big"
+            ),
+        )
+        .await
+        .unwrap();
+        let map = pgrow_to_json(rows.get(0).unwrap()).unwrap();
+        assert_eq!(map.get("id"), Some(&json!(128)));
+        assert_eq!(map.get("val"), Some(&json!("1.50")));
+        assert_eq!(map.get("big"), Some(&json!(12345678901234567890u64)));
+
+        execute_query(&state, format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn test_query() {
         let state = utils::test_utils::get_app_state().await;
@@ -322,6 +417,30 @@ pub fn pgrow_to_json(row: &PgRow) -> Result<Map<String, serde_json::Value>, sqlx
                     json!(val)
                 }
 
+                // NUMERIC arrives in the binary wire format (sqlx requests
+                // binary for every result column) and is not valid UTF-8, so
+                // the String fallback below cannot decode it — e.g. an
+                // INSERT ... RETURNING on a numeric primary key. Decode the
+                // base-10000 digit encoding to the exact text form; emit a
+                // JSON number when the value is an exact integer.
+                "NUMERIC" => {
+                    let bytes = raw_value.as_bytes().map_err(sqlx::Error::Decode)?;
+                    let text = if raw_value.format() == sqlx::postgres::PgValueFormat::Text {
+                        std::str::from_utf8(bytes)
+                            .map_err(|e| sqlx::Error::Decode(e.into()))?
+                            .to_string()
+                    } else {
+                        numeric_binary_to_string(bytes).map_err(sqlx::Error::Decode)?
+                    };
+                    match text.parse::<i64>() {
+                        Ok(n) => json!(n),
+                        Err(_) => match text.parse::<u64>() {
+                            Ok(n) => json!(n),
+                            Err(_) => json!(text),
+                        },
+                    }
+                }
+
                 // Fallback for complex types (UUIDs, Decimals, Arrays, etc.)
                 // Decodes them as a string to avoid precision loss (e.g., NUMERIC)
                 // or complex type dependencies (e.g., chrono, uuid).
@@ -337,4 +456,74 @@ pub fn pgrow_to_json(row: &PgRow) -> Result<Map<String, serde_json::Value>, sqlx
     }
 
     Ok(map)
+}
+
+/// Decodes the binary wire format of a Postgres NUMERIC to its exact text
+/// form: u16 ndigits, i16 weight, u16 sign, u16 dscale, then `ndigits` u16
+/// digits in base 10000 (most significant first), where the value is
+/// `sum(digits[i] * 10000^(weight - i))`.
+fn numeric_binary_to_string(bytes: &[u8]) -> Result<String, sqlx::error::BoxDynError> {
+    if bytes.len() < 8 {
+        return Err(format!("invalid NUMERIC payload: {} bytes", bytes.len()).into());
+    }
+    let ndigits = u16::from_be_bytes([bytes[0], bytes[1]]) as usize;
+    let weight = i16::from_be_bytes([bytes[2], bytes[3]]);
+    let sign = u16::from_be_bytes([bytes[4], bytes[5]]);
+    let dscale = u16::from_be_bytes([bytes[6], bytes[7]]) as usize;
+    if bytes.len() < 8 + ndigits * 2 {
+        return Err("truncated NUMERIC digits".into());
+    }
+    let digits: Vec<u16> = (0..ndigits)
+        .map(|i| u16::from_be_bytes([bytes[8 + i * 2], bytes[9 + i * 2]]))
+        .collect();
+
+    match sign {
+        0xC000 => return Ok("NaN".to_string()),
+        0xD000 => return Ok("Infinity".to_string()),
+        0xF000 => return Ok("-Infinity".to_string()),
+        0x0000 | 0x4000 => {}
+        other => return Err(format!("invalid NUMERIC sign: {other:#06X}").into()),
+    }
+
+    let mut out = String::new();
+    if sign == 0x4000 {
+        out.push('-');
+    }
+
+    // Integer part: base-10000 groups 0..=weight (missing groups are zero).
+    if weight >= 0 {
+        for i in 0..=(weight as usize) {
+            let d = digits.get(i).copied().unwrap_or(0);
+            if i == 0 {
+                out.push_str(&d.to_string());
+            } else {
+                out.push_str(&format!("{d:04}"));
+            }
+        }
+    } else {
+        out.push('0');
+    }
+
+    // Fraction: groups after `weight`, with leading zero groups when
+    // weight < 0, padded/truncated to the display scale.
+    if dscale > 0 {
+        let mut frac = String::new();
+        if weight < 0 {
+            for _ in 0..(-(weight + 1) as usize) {
+                frac.push_str("0000");
+            }
+        }
+        for d in digits.iter().skip((weight + 1).max(0) as usize) {
+            frac.push_str(&format!("{d:04}"));
+        }
+        if frac.len() < dscale {
+            frac.push_str(&"0".repeat(dscale - frac.len()));
+        } else {
+            frac.truncate(dscale);
+        }
+        out.push('.');
+        out.push_str(&frac);
+    }
+
+    Ok(out)
 }
