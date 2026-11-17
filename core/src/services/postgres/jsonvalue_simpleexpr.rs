@@ -28,8 +28,11 @@ pub fn parse_value(
             parse_number(&value, &column.data_type)?
         }
 
-        // Decimal types - using f64 for better precision
-        "decimal" | "money" => parse_decimal(&value)?,
+        // Decimal types — keep the exact value: f64 cannot represent every
+        // integer above 2^53 (e.g. "9007199254740993" would round to ...992),
+        // so emit a validated literal cast to the column type instead of a
+        // Double.
+        "decimal" | "money" | "numeric" => return parse_decimal(&value, &column.data_type),
 
         "boolean" => {
             let b = value.as_bool().or_else(|| {
@@ -179,19 +182,34 @@ fn parse_number(v: &Value, data_type: &str) -> Option<sea_query::Value> {
     }
 }
 
-// Separate helper for decimal/money types with better precision
-fn parse_decimal(v: &Value) -> Option<sea_query::Value> {
-    match v {
-        Value::Number(n) => {
-            let f = n.as_f64()?;
-            Some(sea_query::Value::Double(Some(f)))
-        }
-        Value::String(s) => {
-            let f = s.parse::<f64>().ok()?;
-            Some(sea_query::Value::Double(Some(f)))
-        }
-        _ => None,
+// Exact decimal/money literal: validates the input as a numeric literal and
+// renders it as a string literal cast to the column type, so Postgres parses
+// it exactly instead of rounding through f64.
+fn parse_decimal(v: &Value, data_type: &str) -> Option<SimpleExpr> {
+    use regex::Regex;
+    use std::sync::OnceLock;
+
+    static NUMERIC_LITERAL: OnceLock<Regex> = OnceLock::new();
+    let re = NUMERIC_LITERAL
+        .get_or_init(|| Regex::new(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$").unwrap());
+
+    let lit = match v {
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.trim().to_string(),
+        _ => return None,
+    };
+    if !re.is_match(&lit) {
+        return None;
     }
+    // The regex only admits digits/signs/dot/exponent, so the literal cannot
+    // contain a quote — inlining it is safe. money is cast via numeric:
+    // a direct ::money cast parses with lc_monetary and rejects exponents.
+    let cast = if data_type == "money" {
+        "numeric::money"
+    } else {
+        data_type
+    };
+    Some(Expr::cust(format!("('{}')::{}", lit, cast)))
 }
 
 #[cfg(test)]
@@ -282,5 +300,115 @@ mod tests {
             json!(["not-a-uuid"]),
         );
         assert!(expr.is_none());
+    }
+
+    fn schema_with_numeric_column() -> DatabaseSchema {
+        DatabaseSchema {
+            columns: vec![Column {
+                schema: "shop010production".to_string(),
+                table: "products".to_string(),
+                name: "price".to_string(),
+                data_type: "numeric".to_string(),
+                udt_name: "numeric".to_string(),
+                default_value: None,
+                max_length: None,
+                numeric_precision: None,
+                numeric_scale: None,
+                is_nullable: true,
+                is_unique: false,
+                is_indexed: false,
+                is_primary_key: false,
+                generated: false,
+                generation_expression: None,
+                has_auto_increment: false,
+                foreign_key: None,
+                meta: None,
+            }],
+            tables: vec![],
+            app_versions: vec![],
+            fields: vec![],
+        }
+    }
+
+    #[test]
+    fn numeric_string_keeps_exact_digits() {
+        let schema = schema_with_numeric_column();
+        // 2^53 + 1: not representable as f64 (would round to ...992).
+        let expr = parse_value(
+            &schema,
+            "shop010production",
+            &vec![],
+            "products",
+            "price",
+            json!("9007199254740993"),
+        )
+        .expect("numeric string should parse");
+        assert_eq!(render(expr), "('9007199254740993')::numeric");
+    }
+
+    #[test]
+    fn numeric_number_keeps_exact_digits() {
+        let schema = schema_with_numeric_column();
+        let expr = parse_value(
+            &schema,
+            "shop010production",
+            &vec![],
+            "products",
+            "price",
+            json!(12345678901234567890u64),
+        )
+        .expect("numeric number should parse");
+        assert_eq!(render(expr), "('12345678901234567890')::numeric");
+    }
+
+    #[test]
+    fn numeric_rejects_non_numeric_strings() {
+        let schema = schema_with_numeric_column();
+        for bad in ["1; DROP TABLE products", "1'::numeric", "abc", ""] {
+            let expr = parse_value(
+                &schema,
+                "shop010production",
+                &vec![],
+                "products",
+                "price",
+                json!(bad),
+            );
+            assert!(expr.is_none(), "should reject {bad:?}");
+        }
+    }
+
+    fn schema_with_money_column() -> DatabaseSchema {
+        let mut schema = schema_with_numeric_column();
+        schema.columns[0].data_type = "money".to_string();
+        schema.columns[0].udt_name = "money".to_string();
+        schema
+    }
+
+    #[test]
+    fn money_casts_via_numeric_so_exponents_and_locales_are_safe() {
+        let schema = schema_with_money_column();
+        // A direct ::money cast rejects exponents and parses with lc_monetary;
+        // the numeric::money chain accepts both decimal and exponent input.
+        let expr = parse_value(
+            &schema,
+            "shop010production",
+            &vec![],
+            "products",
+            "price",
+            json!("12.34"),
+        )
+        .expect("money decimal should parse");
+        assert_eq!(render(expr), "('12.34')::numeric::money");
+
+        let expr = parse_value(
+            &schema,
+            "shop010production",
+            &vec![],
+            "products",
+            "price",
+            json!("1e3"),
+        )
+        .expect("money exponent should parse");
+        assert_eq!(render(expr), "('1e3')::numeric::money");
     }
 }

@@ -8,7 +8,7 @@ use crate::services::collections::schema::{
     FieldCreationObject, FieldMetaObject, SchemaService, TableBuilderExt,
 };
 use crate::services::context::AppContext;
-use crate::services::postgres::inspector::{ForeignKey, TableMeta};
+use crate::services::postgres::inspector::{DatabaseSchema, ForeignKey, TableMeta};
 pub(crate) struct M0002Operation {
     app_context: AppContext,
 }
@@ -18,11 +18,14 @@ impl Operation<Postgres> for M0002Operation {
     async fn up(&self, _: &mut PgConnection) -> Result<(), Error> {
         let state = generate_app_state_for_migrations().await;
         {
+            // Introspect without holding the lock, then swap under the write
+            // guard — holding the guard across the inspector's awaits would
+            // deadlock against any concurrent reader/writer.
+            let refreshed = DatabaseSchema::refresh(&state).await;
             let mut write_schema_lock = state.database_schema.write().await;
-            let refresh_schema = write_schema_lock.refresh(&state).await;
-            write_schema_lock.columns = refresh_schema.columns;
-            write_schema_lock.tables = refresh_schema.tables;
-            write_schema_lock.app_versions = refresh_schema.app_versions;
+            write_schema_lock.columns = refreshed.columns;
+            write_schema_lock.tables = refreshed.tables;
+            write_schema_lock.app_versions = refreshed.app_versions;
         }
         let app_context = self.app_context.clone();
 

@@ -1,11 +1,18 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { useCollectionsStore, type Collection } from "@/stores/collections";
+import {
+    useCollectionsStore,
+    type Collection,
+    type FieldType,
+} from "@/stores/collections";
 import { useToast } from "@/composables/useToast";
 import Button from "primevue/button";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
+import Select from "primevue/select";
+import { getInputComponentsForFieldType } from "@/inputs";
+import { getDisplayComponentsForFieldType } from "@/display";
 import { formatDate } from "@/utils/formatters";
 import { appPath } from "@/utils/appHeaders";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
@@ -122,6 +129,139 @@ function closeDeleteModal() {
     showDeleteModal.value = false;
     collectionToDelete.value = null;
 }
+
+// ---------------------------------------------------------------------------
+// Import collections (adopt existing tables that have no metadata)
+// ---------------------------------------------------------------------------
+
+interface UnregisteredColumnRow {
+    name: string;
+    field_type: string;
+    required: boolean;
+}
+
+interface UnregisteredTableRow {
+    name: string;
+    columns: UnregisteredColumnRow[];
+}
+
+interface ImportFieldRow {
+    name: string;
+    field_type: FieldType;
+    display_name: string;
+    input_component: string;
+    display_component: string;
+}
+
+const showImportModal = ref(false),
+    unregisteredTables = ref<UnregisteredTableRow[]>([]),
+    importLoading = ref(false),
+    importError = ref(""),
+    importTableSearch = ref(""),
+    selectedTable = ref<UnregisteredTableRow | null>(null),
+    importDisplayName = ref(""),
+    importFields = ref<ImportFieldRow[]>([]),
+    importFieldSearch = ref(""),
+    importing = ref(false);
+
+const filteredUnregisteredTables = computed(() => {
+    const q = importTableSearch.value.trim().toLowerCase();
+    return [...unregisteredTables.value]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .filter((t) => !q || t.name.toLowerCase().includes(q));
+});
+
+const filteredImportFields = computed(() => {
+    const q = importFieldSearch.value.trim().toLowerCase();
+    return importFields.value.filter(
+        (f) =>
+            !q ||
+            f.name.toLowerCase().includes(q) ||
+            f.display_name.toLowerCase().includes(q),
+    );
+});
+
+async function openImportModal() {
+    showImportModal.value = true;
+    importLoading.value = true;
+    importError.value = "";
+    importTableSearch.value = "";
+    selectedTable.value = null;
+    unregisteredTables.value = [];
+    try {
+        unregisteredTables.value = await store.listUnregistered();
+    } catch (e) {
+        importError.value =
+            e instanceof Error ? e.message : "Failed to load tables";
+    } finally {
+        importLoading.value = false;
+    }
+}
+
+function componentOptions(
+    fieldType: FieldType,
+    kind: "input" | "display",
+): { type: string; label: string }[] {
+    const registry =
+        kind === "input"
+            ? getInputComponentsForFieldType(fieldType)
+            : getDisplayComponentsForFieldType(fieldType);
+    return [
+        { type: "default", label: "Default" },
+        ...registry.map((e) => ({ type: e.type, label: e.label })),
+    ];
+}
+
+function selectTable(table: UnregisteredTableRow) {
+    selectedTable.value = table;
+    importDisplayName.value = table.name;
+    importFieldSearch.value = "";
+    importFields.value = [...table.columns]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((c) => ({
+            name: c.name,
+            field_type: c.field_type as FieldType,
+            display_name: c.name,
+            input_component: "default",
+            display_component: "default",
+        }));
+}
+
+async function handleImport() {
+    if (!selectedTable.value || importing.value) return;
+    importing.value = true;
+    try {
+        const collection = await store.importCollection({
+            table: selectedTable.value.name,
+            display_name: importDisplayName.value.trim() || undefined,
+            fields: importFields.value.map((f) => ({
+                name: f.name,
+                display_name: f.display_name,
+                input_component:
+                    f.input_component === "default"
+                        ? undefined
+                        : f.input_component,
+                display_component:
+                    f.display_component === "default"
+                        ? undefined
+                        : f.display_component,
+            })),
+        });
+        toast.show(
+            `Collection "${collection.display_name || collection.name}" imported`,
+            "success",
+        );
+        showImportModal.value = false;
+        router.push(appPath(`/collections/${collection.name}/edit`));
+    } catch (e) {
+        toast.show(
+            `Failed to import: ${e instanceof Error ? e.message : "Unknown error"}`,
+            "error",
+        );
+    } finally {
+        importing.value = false;
+    }
+}
 </script>
 
 <template>
@@ -129,12 +269,21 @@ function closeDeleteModal() {
         <!-- Header with Create Collection button -->
         <div class="flex justify-between items-center mb-6">
             <h1 class="text-2xl font-bold text-gray-900">Collections</h1>
-            <Button
-                label="Create Collection"
-                severity="primary"
-                @click="openCreateModal"
-                icon="pi pi-plus"
-            />
+            <div class="flex gap-2">
+                <Button
+                    label="Import collections"
+                    severity="secondary"
+                    outlined
+                    icon="pi pi-download"
+                    @click="openImportModal"
+                />
+                <Button
+                    label="Create Collection"
+                    severity="primary"
+                    @click="openCreateModal"
+                    icon="pi pi-plus"
+                />
+            </div>
         </div>
 
         <div v-if="store.loading" class="text-center text-gray-500 py-8">
@@ -288,6 +437,162 @@ function closeDeleteModal() {
                 </div>
             </template>
         </Drawer>
+
+        <!-- Import Collections Modal -->
+        <Dialog
+            v-model:visible="showImportModal"
+            :header="
+                selectedTable
+                    ? `Import ${selectedTable.name}`
+                    : 'Import collections'
+            "
+            :style="{ width: '900px' }"
+            modal
+        >
+            <!-- Step 1: pick a table without metadata -->
+            <div v-if="!selectedTable">
+                <p v-if="importLoading" class="text-gray-500 py-4 text-center">
+                    Loading tables...
+                </p>
+                <p v-else-if="importError" class="text-red-500 py-4">
+                    {{ importError }}
+                </p>
+                <p
+                    v-else-if="unregisteredTables.length === 0"
+                    class="text-gray-500 py-4 text-center"
+                >
+                    No tables without metadata found in this app.
+                </p>
+                <template v-else>
+                    <IconField class="mb-3">
+                        <InputIcon class="pi pi-search" />
+                        <InputText
+                            v-model="importTableSearch"
+                            placeholder="Search tables..."
+                            fluid
+                        />
+                    </IconField>
+                    <p
+                        v-if="filteredUnregisteredTables.length === 0"
+                        class="text-gray-500 py-4 text-center"
+                    >
+                        No tables match "{{ importTableSearch }}".
+                    </p>
+                    <div v-else class="border border-gray-200 rounded-lg">
+                        <div
+                            class="flex px-4 py-2 border-b border-gray-200 bg-gray-50 text-xs font-medium text-gray-500 uppercase tracking-wider"
+                        >
+                            <div class="flex-1">Table</div>
+                            <div class="w-24 text-center">Columns</div>
+                        </div>
+                        <button
+                            v-for="table in filteredUnregisteredTables"
+                            :key="table.name"
+                            type="button"
+                            class="flex w-full px-4 py-3 border-b border-gray-100 last:border-0 hover:bg-gray-50 text-left"
+                            @click="selectTable(table)"
+                        >
+                            <div class="flex-1 font-medium text-gray-900">
+                                {{ table.name }}
+                            </div>
+                            <div
+                                class="w-24 text-center text-sm text-gray-500"
+                            >
+                                {{ table.columns.length }}
+                            </div>
+                        </button>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Step 2: review fields -->
+            <div v-else>
+                <div class="mb-4">
+                    <label
+                        class="block text-sm font-medium text-gray-700 mb-1"
+                        >Display name</label
+                    >
+                    <InputText
+                        v-model="importDisplayName"
+                        class="w-full"
+                        fluid
+                    />
+                </div>
+                <IconField class="mb-3">
+                    <InputIcon class="pi pi-search" />
+                    <InputText
+                        v-model="importFieldSearch"
+                        placeholder="Search columns..."
+                        fluid
+                    />
+                </IconField>
+                <div class="border border-gray-200 rounded-lg">
+                    <div
+                        class="hidden sm:grid grid-cols-[1fr_1fr_1fr_1fr] gap-3 px-4 py-2 border-b border-gray-200 bg-gray-50 text-xs font-medium text-gray-500 uppercase tracking-wider"
+                    >
+                        <div>api_name</div>
+                        <div>Display name</div>
+                        <div>Input</div>
+                        <div>Display</div>
+                    </div>
+                    <div
+                        v-for="field in filteredImportFields"
+                        :key="field.name"
+                        class="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_1fr] gap-3 px-4 py-3 border-b border-gray-100 last:border-0 items-center"
+                    >
+                        <span
+                            class="font-mono text-sm text-gray-700"
+                            :title="field.field_type"
+                            >{{ field.name }}</span
+                        >
+                        <InputText v-model="field.display_name" fluid />
+                        <Select
+                            v-model="field.input_component"
+                            :options="componentOptions(field.field_type, 'input')"
+                            option-label="label"
+                            option-value="type"
+                            class="w-full"
+                            fluid
+                        />
+                        <Select
+                            v-model="field.display_component"
+                            :options="
+                                componentOptions(field.field_type, 'display')
+                            "
+                            option-label="label"
+                            option-value="type"
+                            class="w-full"
+                            fluid
+                        />
+                    </div>
+                </div>
+            </div>
+
+            <template #footer>
+                <div class="flex gap-2 justify-end">
+                    <Button
+                        v-if="selectedTable"
+                        label="Back"
+                        severity="secondary"
+                        outlined
+                        @click="selectedTable = null"
+                    />
+                    <Button
+                        label="Cancel"
+                        severity="secondary"
+                        outlined
+                        @click="showImportModal = false"
+                    />
+                    <Button
+                        v-if="selectedTable"
+                        label="Import collection"
+                        severity="primary"
+                        :loading="importing"
+                        @click="handleImport"
+                    />
+                </div>
+            </template>
+        </Dialog>
 
         <!-- Delete Confirmation Modal -->
         <ConfirmDialog

@@ -11,6 +11,7 @@ use std::vec;
 use utoipa::ToSchema;
 
 use super::filter_relations::{HopMap, OneToManyHop, resolve_filter_relation_hops};
+use crate::services::collections::ddl::quote;
 use crate::services::context::AppContext;
 use crate::services::permissions::read::{ReadAccess, ReadRule, resolve_read_access};
 use crate::services::postgres::jsonvalue_simpleexpr::parse_value;
@@ -69,12 +70,6 @@ const GROUP_FNS: &[&str] = &[
     "year", "month", "day", "hour", "minute", "second", "quarter", "week", "dow", "doy", "date",
 ];
 
-/// Quotes a column identifier for raw SQL fragments. Callers must have
-/// validated the name against `DatabaseSchema.columns` first.
-fn quote_ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', ""))
-}
-
 /// Coerces a string filter value to a numeric literal. Aggregate comparisons
 /// (`_count_*`, `_sum_*`, ...) compare against a SQL aggregate with no column
 /// to coerce against, so a non-numeric string would surface as a Postgres type
@@ -124,7 +119,7 @@ fn parse_group_expr(entry: &str) -> Result<(String, String, String), AlcedoError
                 0,
             ));
         }
-        let col = quote_ident(&field);
+        let col = quote(&field);
         // EXTRACT returns NUMERIC, which the row decoder cannot map to JSON;
         // cast to a supported type (`second` can be fractional).
         let sql = if fn_name == "date" {
@@ -142,7 +137,7 @@ fn parse_group_expr(entry: &str) -> Result<(String, String, String), AlcedoError
                 0,
             ));
         }
-        Ok((entry.to_string(), quote_ident(entry), entry.to_string()))
+        Ok((entry.to_string(), quote(entry), entry.to_string()))
     }
 }
 
@@ -194,14 +189,16 @@ fn parse_aggregate_expr(
     let sql = match fn_name {
         "countAll" => "COUNT(*)".to_string(),
         "count" if field == "*" => "COUNT(*)".to_string(),
-        "count" => format!("COUNT({})", quote_ident(field)),
-        "countDistinct" => format!("COUNT(DISTINCT {})", quote_ident(field)),
-        "sum" => format!("SUM({})::float8", quote_ident(field)),
-        "sumDistinct" => format!("SUM(DISTINCT {})::float8", quote_ident(field)),
-        "avg" => format!("AVG({})::float8", quote_ident(field)),
-        "avgDistinct" => format!("AVG(DISTINCT {})::float8", quote_ident(field)),
-        "min" => format!("MIN({})", quote_ident(field)),
-        "max" => format!("MAX({})", quote_ident(field)),
+        "count" => format!("COUNT({})", quote(field)),
+        "countDistinct" => format!("COUNT(DISTINCT {})", quote(field)),
+        // `::numeric::float8` also covers `money` aggregates (SUM/AVG over
+        // money return money, which has no direct float8 cast).
+        "sum" => format!("SUM({})::numeric::float8", quote(field)),
+        "sumDistinct" => format!("SUM(DISTINCT {})::numeric::float8", quote(field)),
+        "avg" => format!("AVG({})::numeric::float8", quote(field)),
+        "avgDistinct" => format!("AVG(DISTINCT {})::numeric::float8", quote(field)),
+        "min" => format!("MIN({})", quote(field)),
+        "max" => format!("MAX({})", quote(field)),
         _ => unreachable!("fn whitelist checked above"),
     };
     Ok((field.to_string(), sql, alias))
@@ -491,10 +488,22 @@ impl Query {
             .filter_map(|row| pgrow_to_json(&row).ok())
             .collect();
 
-        let schema = state.database_schema.read().await;
+        let pks: Vec<Option<crate::services::postgres::inspector::Column>> = {
+            let schema = state.database_schema.read().await;
+            remaining_queries
+                .iter()
+                .map(|rq| {
+                    schema
+                        .columns
+                        .iter()
+                        .find(|c| c.table == rq.table && c.is_primary_key)
+                        .cloned()
+                })
+                .collect()
+        };
 
         // Lets execute the remaining queries based on the fk`s that came from our "base" query
-        for rq in remaining_queries {
+        for (rq, pk) in remaining_queries.into_iter().zip(pks) {
             let fk_vals: Vec<String> = rows
                 .iter()
                 .filter_map(|row| row.get(&rq.fk))
@@ -526,14 +535,7 @@ impl Query {
             }
             let nested_restricted = !matches!(access, ReadAccess::Unrestricted);
 
-            let pk = match schema
-                .columns
-                .iter()
-                .find(|c| c.table == rq.table && c.is_primary_key)
-            {
-                Some(v) => v,
-                None => continue,
-            };
+            let Some(pk) = pk else { continue };
 
             // lets create a new Query object to fetch the relations
             // we do this by a simple where fk in (id1,id2 ect)
@@ -593,7 +595,6 @@ impl Query {
                 }
             }
         }
-        drop(schema);
         Ok(rows)
     }
 
@@ -894,8 +895,30 @@ impl Query {
         field: &str,
         rules: Option<&[ReadRule]>,
     ) -> Result<bool, AlcedoError> {
+        // NUMERIC columns cannot be decoded to JSON by the row decoder (sqlx
+        // has no NUMERIC -> String decode), which silently dropped whole
+        // rows. Select them as float8 — the field type is `float` anyway,
+        // matching the aggregate casts above. `money` has no direct cast to
+        // float8 in Postgres, so it must go through numeric first.
+        let numeric_cast = schema
+            .columns
+            .iter()
+            .find(|c| c.table == table && c.schema == context.schema_name() && c.name == field)
+            .map(|c| match c.data_type.as_str() {
+                "money" => "::numeric::float8",
+                "numeric" | "decimal" => "::float8",
+                _ => "",
+            })
+            .unwrap_or("");
+        let col_expr = || {
+            if !numeric_cast.is_empty() {
+                Expr::cust(format!("{}.{}{}", quote(table), quote(field), numeric_cast))
+            } else {
+                Expr::col((Alias::new(table), Alias::new(field))).into()
+            }
+        };
         let Some(rules) = rules else {
-            stmt.column((Alias::new(table), Alias::new(field)));
+            stmt.expr_as(col_expr(), Alias::new(field));
             return Ok(true);
         };
 
@@ -910,7 +933,7 @@ impl Query {
             || pk_name.as_deref() == Some(field);
 
         if always_plain || has_unrestricted_rule(rules) {
-            stmt.column((Alias::new(table), Alias::new(field)));
+            stmt.expr_as(col_expr(), Alias::new(field));
             return Ok(true);
         }
 
@@ -920,7 +943,7 @@ impl Query {
             return Ok(false);
         }
         if indices.len() == rules.len() {
-            stmt.column((Alias::new(table), Alias::new(field)));
+            stmt.expr_as(col_expr(), Alias::new(field));
             return Ok(true);
         }
 
@@ -948,10 +971,7 @@ impl Query {
             table,
             &vec![],
         )?;
-        stmt.expr_as(
-            Expr::case(condition, Expr::col((Alias::new(table), Alias::new(field)))),
-            Alias::new(field),
-        );
+        stmt.expr_as(Expr::case(condition, col_expr()), Alias::new(field));
         Ok(true)
     }
 
@@ -1524,10 +1544,7 @@ impl Query {
                 // against, but a string value must be numeric or it would
                 // fail as a Postgres type error instead of a clean 400.
                 let lit = numeric_literal(val, "count")?;
-                condition = condition.add(op(
-                    count_expr.clone(),
-                    SimpleExpr::Value(lit.into()),
-                ));
+                condition = condition.add(op(count_expr.clone(), SimpleExpr::Value(lit.into())));
             }
         }
         Ok(condition)
@@ -1593,7 +1610,7 @@ impl Query {
                     "{}({}{})",
                     op.fn_sql,
                     if op.distinct { "DISTINCT " } else { "" },
-                    quote_ident(child_field)
+                    quote(child_field)
                 )));
                 sub.from((Alias::new(&hop.child_schema), Alias::new(&hop.child_table)));
                 sub.and_where(
@@ -2381,11 +2398,11 @@ mod tests {
         );
         assert_eq!(
             parse_aggregate_expr("sum", "views").unwrap().1,
-            "SUM(\"views\")::float8".to_string()
+            "SUM(\"views\")::numeric::float8".to_string()
         );
         assert_eq!(
             parse_aggregate_expr("avgDistinct", "views").unwrap().1,
-            "AVG(DISTINCT \"views\")::float8".to_string()
+            "AVG(DISTINCT \"views\")::numeric::float8".to_string()
         );
         assert_eq!(
             parse_aggregate_expr("min", "title").unwrap().1,
@@ -2681,10 +2698,7 @@ mod tests {
             _ => panic!("bad op"),
         }
         let mut map: HashMap<String, FieldValue> = HashMap::new();
-        map.insert(
-            field.to_string(),
-            FieldValue::Comparison(comparison),
-        );
+        map.insert(field.to_string(), FieldValue::Comparison(comparison));
         LogicOp {
             _and: Some(vec![Filter::Field(FieldFilter { fields: map })]),
             _or: None,
@@ -2750,9 +2764,16 @@ mod tests {
     }
 
     fn customer_names_filter(ids: &[String]) -> LogicOp {
-        let names: Vec<String> = ids.iter().map(|id| {
-            if id == &ids[0] { "cnt-A".to_string() } else { "cnt-B".to_string() }
-        }).collect();
+        let names: Vec<String> = ids
+            .iter()
+            .map(|id| {
+                if id == &ids[0] {
+                    "cnt-A".to_string()
+                } else {
+                    "cnt-B".to_string()
+                }
+            })
+            .collect();
         let mut map: HashMap<String, FieldValue> = HashMap::new();
         map.insert(
             "name".to_string(),
@@ -2780,7 +2801,10 @@ mod tests {
         let count = count_filter("contacts", "_count_gt", 1);
         and.extend(count._and.clone().unwrap());
         let mut q = Query {
-            filter: LogicOp { _and: Some(and), _or: None },
+            filter: LogicOp {
+                _and: Some(and),
+                _or: None,
+            },
             ..Default::default()
         };
         let rows = q.execute_query(&ctx, &state, &table).await.unwrap();
@@ -2792,7 +2816,10 @@ mod tests {
         let count = count_filter("contacts", "_count_eq", 1);
         and.extend(count._and.clone().unwrap());
         let mut q = Query {
-            filter: LogicOp { _and: Some(and), _or: None },
+            filter: LogicOp {
+                _and: Some(and),
+                _or: None,
+            },
             ..Default::default()
         };
         let rows = q.execute_query(&ctx, &state, &table).await.unwrap();
@@ -2882,7 +2909,7 @@ mod tests {
         )
         .await
         .unwrap();
-        SchemaService::refresh_schema_and_meta(state).await;
+        SchemaService::refresh_schema_and_meta(state).await.unwrap();
     }
 
     async fn drop_score_field(state: &AppState) {
@@ -2902,7 +2929,7 @@ mod tests {
         )
         .await
         .unwrap();
-        SchemaService::refresh_schema_and_meta(state).await;
+        SchemaService::refresh_schema_and_meta(state).await.unwrap();
     }
 
     /// Seeds two customers — `sum-A` with contact scores 10/20/30 (sum 60,

@@ -577,6 +577,10 @@ async fn test_collections() {
     mock_jsend(&server, "POST", "/api/app/collections", collection.clone()).await;
     mock_jsend(&server, "PUT", "/api/app/collections/orders", json!({ "success": true })).await;
     mock_jsend(&server, "DELETE", "/api/app/collections/orders", json!({ "deleted": true })).await;
+    mock_jsend(&server, "GET", "/api/app/collections/unregistered", json!({ "tables": [{ "name": "legacy_orders", "columns": [{ "name": "title", "field_type": "string", "required": false }] }] })).await;
+    mock_jsend(&server, "POST", "/api/app/collections/import", collection.clone()).await;
+    mock_jsend(&server, "GET", "/api/app/collections/orders/unregistered-fields", json!({ "collection": "orders", "fields": [{ "name": "manual_col", "field_type": "text", "required": false }] })).await;
+    mock_jsend(&server, "POST", "/api/app/collections/orders/import-fields", collection.clone()).await;
     mock_jsend(&server, "GET", "/api/app/collections/orders/$create", json!({ "create": true })).await;
     mock_jsend(&server, "GET", "/api/app/collections/orders/layouts", json!([])).await;
     mock_jsend(&server, "POST", "/api/app/collections/orders/layouts", json!({ "id": "l1" })).await;
@@ -604,6 +608,28 @@ async fn test_collections() {
     client.collections.create(json!({ "name": "orders" })).await.unwrap();
     client.collections.update("orders", json!({})).await.unwrap();
     client.collections.delete("orders").await.unwrap();
+    let unregistered = client.collections.list_unregistered().await.unwrap();
+    assert_eq!(unregistered.tables[0].name, "legacy_orders");
+    assert_eq!(unregistered.tables[0].columns[0].field_type, "string");
+    let imported = client
+        .collections
+        .import_collection(json!({ "table": "legacy_orders", "fields": [{ "name": "title", "display_name": "Title" }] }))
+        .await
+        .unwrap();
+    assert_eq!(imported.name, "orders");
+    let unreg_fields = client
+        .collections
+        .list_unregistered_fields("orders")
+        .await
+        .unwrap();
+    assert_eq!(unreg_fields.collection, "orders");
+    assert_eq!(unreg_fields.fields[0].name, "manual_col");
+    let imported_fields = client
+        .collections
+        .import_fields("orders", json!({ "fields": [{ "name": "manual_col", "display_name": "Manual col" }] }))
+        .await
+        .unwrap();
+    assert_eq!(imported_fields.name, "orders");
     assert_eq!(client.collections.get_create_policy("orders").await.unwrap()["create"], json!(true));
     client.collections.list_layouts("orders").await.unwrap();
     client.collections.create_layout("orders", json!({})).await.unwrap();

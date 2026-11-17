@@ -982,44 +982,46 @@ impl ItemsService<'_> {
 
         let mut columns = vec![];
         let mut values = vec![];
-        let schema = self.app_state.database_schema.read().await;
-        for (field, value) in item.clone() {
-            let column = schema.columns.iter().find(|col| {
-                &col.table == self.collection
-                    && col.name == field
-                    && col.schema == self.app_context.schema_name()
-            });
+        {
+            let schema = self.app_state.database_schema.read().await;
+            for (field, value) in item.clone() {
+                let column = schema.columns.iter().find(|col| {
+                    &col.table == self.collection
+                        && col.name == field
+                        && col.schema == self.app_context.schema_name()
+                });
 
-            if let None = column {
-                return Err(AlcedoError::InvalidInput(
-                    format!("Unknown field {} provided", field),
-                    1,
-                ));
-            }
-            let value = match parse_value(
-                &schema,
-                &self.app_context.schema_name(),
-                &vec![],
-                &self.collection,
-                &field,
-                value,
-            ) {
-                None => {
-                    if let Some(column) = column {
-                        if column.is_nullable || column.has_auto_increment {
-                            continue;
-                        }
-                    }
+                if let None = column {
                     return Err(AlcedoError::InvalidInput(
-                        format!("Invalid type provided for field {}", field),
+                        format!("Unknown field {} provided", field),
                         1,
                     ));
                 }
-                Some(val) => val,
-            };
+                let value = match parse_value(
+                    &schema,
+                    &self.app_context.schema_name(),
+                    &vec![],
+                    &self.collection,
+                    &field,
+                    value,
+                ) {
+                    None => {
+                        if let Some(column) = column {
+                            if column.is_nullable || column.has_auto_increment {
+                                continue;
+                            }
+                        }
+                        return Err(AlcedoError::InvalidInput(
+                            format!("Invalid type provided for field {}", field),
+                            1,
+                        ));
+                    }
+                    Some(val) => val,
+                };
 
-            columns.push(field);
-            values.push(value);
+                columns.push(field);
+                values.push(value);
+            }
         }
         let pk = get_pk_key(
             &self.app_state.database_schema,
@@ -1048,46 +1050,53 @@ impl ItemsService<'_> {
 
         let mut values: Vec<(Alias, SimpleExpr)> = vec![];
 
-        let schema = self.app_state.database_schema.read().await;
-        for (field, value) in item.clone() {
-            let column = schema.columns.iter().find(|col| {
-                &col.table == self.collection
-                    && col.name == field
-                    && col.schema == self.app_context.schema_name()
-            });
-            if let None = column {
-                return Err(AlcedoError::InvalidInput(
-                    format!("Unknown field {} provided", field),
-                    1,
-                ));
-            }
+        {
+            // Scoped so the read guard is dropped before the `get_pk_key` /
+            // `parse_pk_value` awaits below: re-entering `read()` on the same
+            // RwLock while holding the guard deadlocks once a writer is queued.
             let schema = self.app_state.database_schema.read().await;
-            let value = match parse_value(
-                &schema,
-                &self.app_context.schema_name(),
-                &vec![],
-                &self.collection,
-                &field,
-                value,
-            ) {
-                None => {
-                    let is_nullable = column.map_or(false, |c| c.is_nullable);
-
-                    if is_nullable {
-                        let val: Option<i32> = None;
-                        let expr = Expr::value(val);
-                        expr
-                    } else {
-                        return Err(AlcedoError::InvalidInput(
-                            format!("Field {} is not nullable and received invalid input", field),
-                            1,
-                        ));
-                    }
+            for (field, value) in item.clone() {
+                let column = schema.columns.iter().find(|col| {
+                    &col.table == self.collection
+                        && col.name == field
+                        && col.schema == self.app_context.schema_name()
+                });
+                if let None = column {
+                    return Err(AlcedoError::InvalidInput(
+                        format!("Unknown field {} provided", field),
+                        1,
+                    ));
                 }
-                Some(val) => val,
-            };
+                let value = match parse_value(
+                    &schema,
+                    &self.app_context.schema_name(),
+                    &vec![],
+                    &self.collection,
+                    &field,
+                    value,
+                ) {
+                    None => {
+                        let is_nullable = column.map_or(false, |c| c.is_nullable);
 
-            values.push((Alias::new(field), value));
+                        if is_nullable {
+                            let val: Option<i32> = None;
+                            let expr = Expr::value(val);
+                            expr
+                        } else {
+                            return Err(AlcedoError::InvalidInput(
+                                format!(
+                                    "Field {} is not nullable and received invalid input",
+                                    field
+                                ),
+                                1,
+                            ));
+                        }
+                    }
+                    Some(val) => val,
+                };
+
+                values.push((Alias::new(field), value));
+            }
         }
         let pk = get_pk_key(
             &self.app_state.database_schema,

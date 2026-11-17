@@ -53,7 +53,7 @@ impl DatabaseSchema {
             .map(|t| t.name.clone())
     }
 
-    pub async fn refresh(&self, app_state: &AppState) -> Self {
+    pub async fn refresh(app_state: &AppState) -> Self {
         let mut schema = DatabaseSchema {
             app_versions: vec![],
             tables: vec![],

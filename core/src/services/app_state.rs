@@ -8,8 +8,8 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::services::{
     activity_logs::ActivityLogChannel, cache::SystemCache, config, errors::AlcedoError,
-    hooks::MultiEventBus, plugin_platform::PluginPlatform,
-    postgres::inspector::DatabaseSchema, route_mappings::matcher::RouteMap,
+    hooks::MultiEventBus, plugin_platform::PluginPlatform, postgres::inspector::DatabaseSchema,
+    route_mappings::matcher::RouteMap,
 };
 const SCHEMA_CACHE_KEY: &str = "system_schema_cache";
 const SCHEMA_CACHE_GEN_KEY: &str = "system_schema_cache_gen";
@@ -54,8 +54,13 @@ impl RouteMapState {
 }
 impl AppState {
     pub async fn refresh_schema(&self) {
+        // Serialize with the other schema publishers so an older snapshot
+        // cannot overwrite a newer one published concurrently.
+        let _refresh_guard = crate::services::collections::schema::refresh_lock()
+            .lock()
+            .await;
+        let refreshed = DatabaseSchema::refresh(self).await;
         let mut lock = self.database_schema.write().await;
-        let refreshed = lock.refresh(self).await;
         lock.tables = refreshed.tables;
         lock.columns = refreshed.columns;
         lock.app_versions = refreshed.app_versions;
@@ -175,7 +180,9 @@ impl AppState {
             _ => return false,
         };
 
-        match serde_json::from_str::<Vec<crate::services::route_mappings::matcher::RouteMapping>>(&raw) {
+        match serde_json::from_str::<Vec<crate::services::route_mappings::matcher::RouteMapping>>(
+            &raw,
+        ) {
             Ok(mappings) => {
                 state.map = RouteMap::from_mappings(mappings);
                 state.version = remote_version;
@@ -199,7 +206,7 @@ mod tests {
 
         let state = crate::utils::test_utils::get_app_state().await;
         // The cache is written by the meta pass, not by raw introspection.
-        SchemaService::refresh_all_meta(&state).await;
+        SchemaService::refresh_all_meta(&state).await.unwrap();
 
         let cached = state
             .load_cached_schema()

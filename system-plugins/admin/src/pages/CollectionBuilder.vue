@@ -53,6 +53,9 @@ async function loadCollection(name: string) {
     loadError.value = null;
     try {
         const c = await store.getCollection(name, true);
+        // The route may have changed while the request was in flight; a stale
+        // reload must not overwrite the newly opened collection's state.
+        if (name !== collectionName.value) return;
         collectionMeta.value = c;
         collectionDisplayName.value = c.display_name || "";
         fields.value = withSystemFields(c.fields || []).map(
@@ -62,10 +65,39 @@ async function loadCollection(name: string) {
             }),
         );
     } catch (e) {
+        if (name !== collectionName.value) return;
         loadError.value =
             e instanceof Error ? e.message : "Failed to load collection";
     } finally {
-        loading.value = false;
+        if (name === collectionName.value) loading.value = false;
+    }
+}
+
+// After a field import, keep the current draft untouched (unsaved adds,
+// renames and removals stay in place) and append only the fields the import
+// actually added — i.e. persisted now but not in the persisted set captured
+// before the reload.
+async function onFieldsImported() {
+    const name = collectionName.value;
+    const persistedBefore = new Set(
+        (collectionMeta.value?.fields || []).map((f) => f.name),
+    );
+    try {
+        const c = await store.getCollection(name, true);
+        // Discard the reload if the user navigated to another collection.
+        if (name !== collectionName.value) return;
+        collectionMeta.value = c;
+        const draftNames = new Set(fields.value.map((f) => f.name));
+        const imported = withSystemFields(c.fields || []).filter(
+            (f: FieldDefinition) =>
+                !persistedBefore.has(f.name) && !draftNames.has(f.name),
+        );
+        fields.value = [
+            ...fields.value,
+            ...imported.map((f: FieldDefinition) => ({ ...f, _key: nextKey() })),
+        ];
+    } catch (e) {
+        console.warn("[CollectionBuilder] Failed to reload after import", e);
     }
 }
 
@@ -182,6 +214,7 @@ watch(
             v-model:drag-field-key="dragFieldKey"
             v-model:drag-type="dragType"
             @onDragStart="onDragStart"
+            @imported="onFieldsImported"
             :collectionMeta="collectionMeta"
             :sections="sections"
             v-model:is-dragging="isDragging"

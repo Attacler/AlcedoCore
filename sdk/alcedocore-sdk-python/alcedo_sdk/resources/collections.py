@@ -48,6 +48,52 @@ class CollectionsResource(BaseResource):
     async def delete(self, name: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:
         return await self._request("DELETE", _coll(name), app=app, version=version)
 
+    async def list_unregistered(self, app: Optional[str] = None, version: Optional[str] = None) -> Any:
+        """Tables in the app schema without collection metadata: GET /api/app/collections/unregistered."""
+        return await self._request("GET", "/api/app/collections/unregistered", app=app, version=version)
+
+    async def import_collection(
+        self,
+        data: dict,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """Adopt an existing table as a collection: POST /api/app/collections/import.
+
+        ``data`` is ``{"table": ..., "display_name": ..., "fields": [...]}``;
+        field types are derived server-side from the physical columns.
+        """
+        return await self._request("POST", "/api/app/collections/import", json=data, app=app, version=version)
+
+    async def list_unregistered_fields(
+        self,
+        name: str,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """Columns of an existing collection without field metadata:
+        GET /api/app/collections/{name}/unregistered-fields."""
+        return await self._request(
+            "GET", _coll(name, "/unregistered-fields"), app=app, version=version
+        )
+
+    async def import_fields(
+        self,
+        name: str,
+        data: dict,
+        app: Optional[str] = None,
+        version: Optional[str] = None,
+    ) -> Any:
+        """Adopt existing columns of a collection as fields (no DDL, metadata only):
+        POST /api/app/collections/{name}/import-fields.
+
+        ``data`` is ``{"fields": [{"name": ..., "display_name": ..., ...}]}``;
+        field types are derived server-side from the physical columns.
+        """
+        return await self._request(
+            "POST", _coll(name, "/import-fields"), json=data, app=app, version=version
+        )
+
     # --- layouts ---
 
     async def list_layouts(self, name: str, app: Optional[str] = None, version: Optional[str] = None) -> Any:

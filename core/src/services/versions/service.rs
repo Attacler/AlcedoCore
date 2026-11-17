@@ -266,7 +266,7 @@ impl VersionsService<'_> {
             let res = handle.await;
         }
 
-        SchemaService::refresh_schema_and_meta(self.app_state).await;
+        SchemaService::refresh_schema_and_meta(self.app_state).await?;
         Ok(())
     }
 }

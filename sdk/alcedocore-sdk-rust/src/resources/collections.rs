@@ -1,8 +1,22 @@
 use crate::client::BaseClient;
 use crate::error::AlcedoError;
-use crate::models::{Collection, CollectionListResponse};
+use crate::models::{
+    Collection, CollectionListResponse, UnregisteredFieldsResponse, UnregisteredTablesResponse,
+};
 use reqwest::Method;
 use serde_json::Value;
+
+/// Percent-encodes a path segment (same unreserved set as JS encodeURIComponent).
+fn enc(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
 
 pub struct CollectionsResource {
     client: BaseClient,
@@ -60,6 +74,51 @@ impl CollectionsResource {
             .client
             .request(Method::DELETE, &format!("/api/app/collections/{name}"));
         self.client.execute(builder).await
+    }
+
+    /// List tables in the app schema without collection metadata:
+    /// `GET /api/app/collections/unregistered`.
+    pub async fn list_unregistered(&self) -> Result<UnregisteredTablesResponse, AlcedoError> {
+        let builder = self
+            .client
+            .request(Method::GET, "/api/app/collections/unregistered");
+        self.client.execute_json(builder).await
+    }
+
+    /// Adopt an existing table as a collection (no DDL, metadata only):
+    /// `POST /api/app/collections/import`.
+    pub async fn import_collection(&self, data: Value) -> Result<Collection, AlcedoError> {
+        let builder = self
+            .client
+            .request(Method::POST, "/api/app/collections/import")
+            .json(&data);
+        self.client.execute_json(builder).await
+    }
+
+    /// List columns of an existing collection without field metadata:
+    /// `GET /api/app/collections/{name}/unregistered-fields`.
+    pub async fn list_unregistered_fields(
+        &self,
+        name: &str,
+    ) -> Result<UnregisteredFieldsResponse, AlcedoError> {
+        let builder = self.client.request(
+            Method::GET,
+            &format!("/api/app/collections/{}/unregistered-fields", enc(name)),
+        );
+        self.client.execute_json(builder).await
+    }
+
+    /// Adopt existing columns of a collection as fields (no DDL, metadata only):
+    /// `POST /api/app/collections/{name}/import-fields`.
+    pub async fn import_fields(&self, name: &str, data: Value) -> Result<Collection, AlcedoError> {
+        let builder = self
+            .client
+            .request(
+                Method::POST,
+                &format!("/api/app/collections/{}/import-fields", enc(name)),
+            )
+            .json(&data);
+        self.client.execute_json(builder).await
     }
 
     /// Get the collection-level create policy: `GET /api/app/collections/{name}/$create`.

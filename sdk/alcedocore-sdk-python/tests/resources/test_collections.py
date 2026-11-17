@@ -55,6 +55,64 @@ async def test_crud(collections):
 
 
 @pytest.mark.asyncio
+async def test_list_unregistered(collections):
+    with respx.mock as mock:
+        route = mock.get(f"{COLLECTIONS}/unregistered").respond(
+            json=jsend({"tables": [{"name": "legacy_orders", "columns": []}]})
+        )
+        result = await collections.list_unregistered()
+        assert result == {"tables": [{"name": "legacy_orders", "columns": []}]}
+        assert route.called
+
+
+@pytest.mark.asyncio
+async def test_import_collection(collections):
+    with respx.mock as mock:
+        payload = {
+            "table": "legacy_orders",
+            "display_name": "Legacy Orders",
+            "fields": [{"name": "title", "display_name": "Title"}],
+        }
+        route = mock.post(f"{COLLECTIONS}/import", json=payload).respond(
+            json=jsend({"name": "legacy_orders", "fields": []})
+        )
+        result = await collections.import_collection(payload)
+        assert result == {"name": "legacy_orders", "fields": []}
+        assert route.called
+
+
+@pytest.mark.asyncio
+async def test_list_unregistered_fields(collections):
+    with respx.mock as mock:
+        route = mock.get(f"{COLLECTIONS}/cases/unregistered-fields").respond(
+            json=jsend(
+                {
+                    "collection": "cases",
+                    "fields": [{"name": "manual_col", "field_type": "text", "required": False}],
+                }
+            )
+        )
+        result = await collections.list_unregistered_fields("cases")
+        assert result == {
+            "collection": "cases",
+            "fields": [{"name": "manual_col", "field_type": "text", "required": False}],
+        }
+        assert route.called
+
+
+@pytest.mark.asyncio
+async def test_import_fields(collections):
+    with respx.mock as mock:
+        payload = {"fields": [{"name": "manual_col", "display_name": "Manual col"}]}
+        route = mock.post(f"{COLLECTIONS}/cases/import-fields", json=payload).respond(
+            json=jsend({"name": "cases", "fields": []})
+        )
+        result = await collections.import_fields("cases", payload)
+        assert result == {"name": "cases", "fields": []}
+        assert route.called
+
+
+@pytest.mark.asyncio
 async def test_layouts(collections):
     with respx.mock as mock:
         listing = mock.get(f"{COLLECTIONS}/posts/layouts").respond(json=jsend([]))

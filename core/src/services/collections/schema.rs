@@ -126,6 +126,15 @@ pub struct FieldMetaObject {
     pub options: Option<serde_json::Value>,
 }
 
+/// Serializes every publisher of the shared schema cache, so concurrent
+/// refreshes cannot interleave and an older snapshot cannot overwrite a
+/// newer one.
+pub(crate) fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
+    static REFRESH_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+    REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 pub struct SchemaService<'a> {
     app_state: &'a AppState,
     app_context: &'a AppContext,
@@ -139,39 +148,72 @@ impl SchemaService<'_> {
         };
     }
 
-    pub async fn refresh_schema(&self) {
-        self.app_state.refresh_schema().await;
+    pub async fn refresh_schema(&self) -> Result<(), AlcedoError> {
+        // Single-flight: a burst of concurrent DDL commits (e.g. many
+        // collection creates at once) would otherwise each run a full
+        // introspection + meta refresh. Serialize them; each caller still
+        // introspects after its own commit, so no refresh is skipped stale.
+        let _refresh_guard = refresh_lock().lock().await;
 
-        match self.app_context.request_source {
-            RequestSource::FirstMigration => (),
-            _ => SchemaService::refresh_all_meta(&self.app_state).await,
+        // Build the complete new schema (introspection + meta) without holding
+        // any lock, then swap the whole struct under a single write guard so
+        // readers never observe a torn mix of new tables with stale meta.
+        let mut new_schema = DatabaseSchema::refresh(self.app_state).await;
+        let save_cache = match self.app_context.request_source {
+            RequestSource::FirstMigration => false,
+            _ => {
+                // A failed meta read must not publish a schema without meta.
+                SchemaService::refresh_all_meta_into(self.app_state, &mut new_schema).await?;
+                true
+            }
         };
+        *self.app_state.database_schema.write().await = new_schema;
+        if save_cache {
+            self.app_state.save_schema_cache().await;
+        }
+        Ok(())
     }
 
-    pub async fn refresh_meta(&self) {
-        let collection = "alcedocore_collections".to_string();
-        let meta_collections_service =
-            ItemsService::new(self.app_state, self.app_context, &collection);
-        let collection = "alcedocore_fields".to_string();
-        let meta_fields_service = ItemsService::new(self.app_state, self.app_context, &collection);
+    /// Reads the collection/field meta rows for `ctx` and applies them onto
+    /// `schema` in memory. Holds no locks — callers swap the finished schema
+    /// into the cache atomically under a single write guard.
+    pub async fn refresh_meta_into(
+        state: &AppState,
+        ctx: &AppContext,
+        schema: &mut DatabaseSchema,
+    ) -> Result<(), AlcedoError> {
+        // Read the meta tables with raw SQL: going through ItemsService would
+        // resolve the tables against the live schema cache, which must not be
+        // required here — this function builds the schema that replaces it.
+        async fn read_meta_table(
+            state: &AppState,
+            ctx: &AppContext,
+            table: &str,
+        ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
+            // Propagate the error: the caller swaps the whole schema into the
+            // live cache, so silently defaulting here would wipe all
+            // collection/field meta from the cache without any trace.
+            let rows = postgres::pool::execute_query(
+                state,
+                format!("SELECT * FROM {}", super::ddl::qtable(ctx, table)),
+            )
+            .await?;
+            Ok(rows
+                .iter()
+                .filter_map(|row| match postgres::pool::pgrow_to_json(row) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::error!("Failed to decode meta row from {}: {}", table, e);
+                        None
+                    }
+                })
+                .collect())
+        }
 
-        let meta_collections = meta_collections_service
-            .read_items_by_query(Query {
-                ..Default::default()
-            })
-            .await
-            .unwrap_or_default();
+        let meta_collections = read_meta_table(state, ctx, "alcedocore_collections").await?;
+        let meta_fields = read_meta_table(state, ctx, "alcedocore_fields").await?;
 
-        let meta_fields = meta_fields_service
-            .read_items_by_query(Query {
-                ..Default::default()
-            })
-            .await
-            .unwrap_or_default();
-
-        let mut write_schema_lock = self.app_state.database_schema.write().await;
-
-        for table in write_schema_lock.tables.clone() {
+        for table in schema.tables.clone() {
             let find_meta = meta_collections.iter().find(|col| {
                 format!(
                     "{}010{}",
@@ -190,7 +232,7 @@ impl SchemaService<'_> {
                     serde_json::from_value(serde_json::Value::Object(meta.clone())).unwrap();
 
                 {
-                    let find_table = write_schema_lock
+                    let find_table = schema
                         .tables
                         .iter_mut()
                         .find(|t| t.schema == table.schema && meta.table == t.name);
@@ -214,7 +256,7 @@ impl SchemaService<'_> {
                         serde_json::from_value(serde_json::Value::Object((*field).clone()))
                             .unwrap();
 
-                    let find = write_schema_lock.columns.iter_mut().find(|col| {
+                    let find = schema.columns.iter_mut().find(|col| {
                         col.name == meta.api_name
                             && col.table == table.name
                             && col.schema == table.schema
@@ -227,21 +269,31 @@ impl SchemaService<'_> {
 
                 let field_defs: Vec<super::FieldDefinition> =
                     fields.iter().map(|f| super::field_from_row(f)).collect();
-                write_schema_lock
+                schema
                     .fields
                     .retain(|tf| !(tf.schema == table.schema && tf.table == table.name));
-                write_schema_lock.fields.push(TableFields {
+                schema.fields.push(TableFields {
                     schema: table.schema.clone(),
                     table: table.name.clone(),
                     fields: field_defs,
                 });
             }
         }
+        Ok(())
     }
 
-    pub async fn refresh_all_meta(state: &AppState) {
-        let app_versions = state.database_schema.read().await.app_versions.clone();
-        for version in app_versions {
+    /// Applies meta for every app version onto `schema` without holding locks.
+    pub async fn refresh_all_meta_into(
+        state: &AppState,
+        schema: &mut DatabaseSchema,
+    ) -> Result<(), AlcedoError> {
+        for version in schema.app_versions.clone() {
+            // Skip versions whose schema does not exist yet (e.g. linked in
+            // alcedocore_apps_versions before run_app_migrations created it):
+            // reading their meta tables would fail with 42P01.
+            if !schema.tables.iter().any(|t| t.schema == version.schema_name) {
+                continue;
+            }
             let ctx = AppContext {
                 app_name: version.app_name,
                 version: version.version_name,
@@ -249,15 +301,31 @@ impl SchemaService<'_> {
                 identity: None,
                 request_id: None,
             };
-            SchemaService::new(state, &ctx).refresh_meta().await;
+            SchemaService::refresh_meta_into(state, &ctx, schema).await?;
         }
-        state.save_schema_cache().await;
+        Ok(())
     }
 
-    /// Refreshes the in-memory schema and repopulates collection meta.
-    pub async fn refresh_schema_and_meta(state: &AppState) {
-        state.refresh_schema().await;
-        SchemaService::refresh_all_meta(state).await;
+    pub async fn refresh_all_meta(state: &AppState) -> Result<(), AlcedoError> {
+        let _refresh_guard = refresh_lock().lock().await;
+        let mut new_schema = state.database_schema.read().await.clone();
+        SchemaService::refresh_all_meta_into(state, &mut new_schema).await?;
+        *state.database_schema.write().await = new_schema;
+        state.save_schema_cache().await;
+        Ok(())
+    }
+
+    /// Refreshes the in-memory schema and repopulates collection meta, swapping
+    /// the whole struct atomically so readers never see a torn schema. Meta
+    /// reads use raw SQL (see `refresh_meta_into`), so this works even on a
+    /// fresh `AppState` whose live cache is still empty.
+    pub async fn refresh_schema_and_meta(state: &AppState) -> Result<(), AlcedoError> {
+        let _refresh_guard = refresh_lock().lock().await;
+        let mut new_schema = DatabaseSchema::refresh(state).await;
+        SchemaService::refresh_all_meta_into(state, &mut new_schema).await?;
+        *state.database_schema.write().await = new_schema;
+        state.save_schema_cache().await;
+        Ok(())
     }
 
     pub async fn create_table<F>(
@@ -313,7 +381,7 @@ impl SchemaService<'_> {
             tx.commit().await.unwrap();
         };
         if owns_tx {
-            self.refresh_schema().await;
+            self.refresh_schema().await?;
         }
 
         Ok(())
@@ -333,61 +401,63 @@ impl SchemaService<'_> {
                 owned_tx.as_mut().unwrap()
             }
         };
-        let read_guard = self.app_state.database_schema.read().await;
+        // Look up the table meta under the read guard, then drop the guard
+        // before the delete awaits: those re-enter `read()` on the same
+        // RwLock, which deadlocks while the guard is held and a writer is
+        // queued.
+        let meta_id = {
+            let read_guard = self.app_state.database_schema.read().await;
+            let find_table = read_guard
+                .tables
+                .iter()
+                .find(|table| table.schema == self.app_context.schema_name() && table.name == name);
 
-        let find_table = read_guard
-            .tables
-            .iter()
-            .find(|table| table.schema == self.app_context.schema_name() && table.name == name);
-
-        if let None = find_table {
-            return Err(AlcedoError::NotFound(
-                format!("The table {} could not be found.", name),
-                1,
-            ));
-        }
-
-        let find_table = find_table.unwrap();
-
-        if let Some(meta) = &find_table.meta {
-            if let Some(meta_id) = meta.id {
-                let collection = "alcedocore_fields".to_string();
-                let mut column_meta_service =
-                    ItemsService::new(&self.app_state, &self.app_context, &collection);
-
-                let mut query = Query {
-                    ..Default::default()
-                };
-
-                let mut hmap = FieldFilter {
-                    fields: HashMap::new(),
-                };
-
-                hmap.fields.insert(
-                    "collection_id".to_string(),
-                    FieldValue::Comparison(Comparison {
-                        _eq: Some(meta_id.into()),
-                        ..Default::default()
-                    }),
-                );
-                query.filter = LogicOp {
-                    _and: Some(vec![Filter::Field(hmap)]),
-                    _or: None,
-                };
-                column_meta_service
-                    .delete_items_by_query(query, &mut Some(tx_ref))
-                    .await?;
-
-                let collection = "alcedocore_collections".to_string();
-                let mut table_meta_service =
-                    ItemsService::new(&self.app_state, &self.app_context, &collection);
-
-                table_meta_service
-                    .delete_items_by_pks(vec![meta_id.into()], Some(tx_ref))
-                    .await?;
+            if let None = find_table {
+                return Err(AlcedoError::NotFound(
+                    format!("The table {} could not be found.", name),
+                    1,
+                ));
             }
+
+            find_table.unwrap().meta.as_ref().and_then(|meta| meta.id)
+        };
+
+        if let Some(meta_id) = meta_id {
+            let collection = "alcedocore_fields".to_string();
+            let mut column_meta_service =
+                ItemsService::new(&self.app_state, &self.app_context, &collection);
+
+            let mut query = Query {
+                ..Default::default()
+            };
+
+            let mut hmap = FieldFilter {
+                fields: HashMap::new(),
+            };
+
+            hmap.fields.insert(
+                "collection_id".to_string(),
+                FieldValue::Comparison(Comparison {
+                    _eq: Some(meta_id.into()),
+                    ..Default::default()
+                }),
+            );
+            query.filter = LogicOp {
+                _and: Some(vec![Filter::Field(hmap)]),
+                _or: None,
+            };
+            column_meta_service
+                .delete_items_by_query(query, &mut Some(tx_ref))
+                .await?;
+
+            let collection = "alcedocore_collections".to_string();
+            let mut table_meta_service =
+                ItemsService::new(&self.app_state, &self.app_context, &collection);
+
+            table_meta_service
+                .delete_items_by_pks(vec![meta_id.into()], Some(tx_ref))
+                .await?;
         }
-        drop(read_guard);
 
         let sql = drop_table_sql(&self.app_context, name, false);
         execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
@@ -396,7 +466,7 @@ impl SchemaService<'_> {
             tx.commit().await.unwrap();
         };
         if owns_tx {
-            self.refresh_schema().await;
+            self.refresh_schema().await?;
         }
         Ok(())
     }
@@ -507,7 +577,7 @@ impl SchemaService<'_> {
             tx.commit().await.unwrap();
         };
         if owns_tx {
-            self.refresh_schema().await;
+            self.refresh_schema().await?;
         }
         Ok(())
     }
@@ -528,24 +598,31 @@ impl SchemaService<'_> {
             }
         };
 
-        {
+        // Look up the field meta under the read guard, then drop the guard
+        // before the delete await: `delete_items_by_pks` re-enters `read()` on
+        // the same RwLock, which deadlocks while the guard is held and a
+        // writer is queued.
+        let field_meta_id = {
             let read_guard = self.app_state.database_schema.read().await;
-            let find_field = read_guard.columns.iter().find(|col| {
-                col.schema == self.app_context.schema_name()
-                    && col.table == table
-                    && col.name == field
-            });
+            read_guard
+                .columns
+                .iter()
+                .find(|col| {
+                    col.schema == self.app_context.schema_name()
+                        && col.table == table
+                        && col.name == field
+                })
+                .and_then(|col| col.meta.as_ref())
+                .map(|meta| meta.id)
+        };
 
-            if let Some(field) = &find_field {
-                if let Some(meta) = &field.meta {
-                    let collection = "alcedocore_fields".to_string();
-                    let mut collections_service =
-                        ItemsService::new(self.app_state, self.app_context, &collection);
-                    collections_service
-                        .delete_items_by_pks(vec![meta.id.into()], Some(tx_ref))
-                        .await?;
-                }
-            }
+        if let Some(meta_id) = field_meta_id {
+            let collection = "alcedocore_fields".to_string();
+            let mut collections_service =
+                ItemsService::new(self.app_state, self.app_context, &collection);
+            collections_service
+                .delete_items_by_pks(vec![meta_id.into()], Some(tx_ref))
+                .await?;
         }
 
         for sql in build_drop_columns_sqls(&self.app_context, table, &[field]) {
@@ -556,7 +633,7 @@ impl SchemaService<'_> {
             tx.commit().await.unwrap();
         };
         if owns_tx {
-            self.refresh_schema().await;
+            self.refresh_schema().await?;
         }
         Ok(())
     }

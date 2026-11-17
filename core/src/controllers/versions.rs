@@ -158,7 +158,7 @@ async fn delete_version(
         drop_schema(&state, &schema_name).await?;
     }
 
-    SchemaService::refresh_schema_and_meta(&state).await;
+    SchemaService::refresh_schema_and_meta(&state).await?;
 
     Ok(Json(success(serde_json::json!({ "success": true }))))
 }

@@ -4,6 +4,7 @@ use sea_query::{Alias, Condition, Expr, Order, PostgresQueryBuilder};
 use serde_json::{Value, json};
 use sqlx::{Pool, Postgres, Row};
 
+use crate::services::collections::ddl::quote;
 use crate::services::{app_state::AppState, errors::AlcedoError};
 use crate::utils::slugify;
 
@@ -32,11 +33,6 @@ fn system_section(settings: &Value) -> &Value {
         .get(crate::services::plugins::SYSTEM_SETTINGS_KEY)
         .filter(|s| s.is_object())
         .unwrap_or(&EMPTY)
-}
-
-/// Quote a schema name for safe interpolation into SQL.
-fn qschema(schema: &str) -> String {
-    format!("\"{}\"", schema.replace('"', "\"\""))
 }
 
 /// Deletes request-log and host-call rows older than each install's retention
@@ -87,7 +83,7 @@ pub async fn prune_plugin_logs(state: &AppState) {
         }
 
         let schema = format!("{}010{}", slugify(&app_api_name), slugify(&version_name));
-        let schema_q = qschema(&schema);
+        let schema_q = quote(&schema);
 
         let request_result = sqlx::query(&format!(
             "DELETE FROM {schema_q}.plugin_request_logs \
@@ -149,7 +145,7 @@ pub fn log_plugin_request(
     started: Instant,
 ) {
     let pool = state.database_pool.clone();
-    let schema_q = qschema(schema);
+    let schema_q = quote(schema);
     let (slug, request_id, method, path) = (
         slug.to_string(),
         request_id.to_string(),
@@ -189,7 +185,7 @@ pub fn log_host_call(
     started: Instant,
 ) {
     let pool = state.database_pool.clone();
-    let schema_q = qschema(schema);
+    let schema_q = quote(schema);
     let (parent_request_id, slug, action_type, args_summary, result_summary) = (
         parent_request_id.to_string(),
         slug.to_string(),
@@ -305,7 +301,7 @@ pub async fn request_log_detail(
     slug: &str,
     request_id: &str,
 ) -> Result<Option<Value>, AlcedoError> {
-    let schema_q = qschema(schema);
+    let schema_q = quote(schema);
 
     let row = sqlx::query(&format!(
         "SELECT id, request_id, plugin_slug, method, path, status_code, duration_ms, created_at \

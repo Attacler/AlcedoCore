@@ -412,6 +412,37 @@ pub struct CollectionListResponse {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct UnregisteredColumn {
+    pub name: String,
+    pub field_type: String,
+    #[serde(default)]
+    pub related_collection: Option<String>,
+    #[serde(default)]
+    pub related_app: Option<String>,
+    #[serde(default)]
+    pub required: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UnregisteredTable {
+    pub name: String,
+    #[serde(default)]
+    pub columns: Vec<UnregisteredColumn>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UnregisteredTablesResponse {
+    pub tables: Vec<UnregisteredTable>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UnregisteredFieldsResponse {
+    pub collection: String,
+    #[serde(default)]
+    pub fields: Vec<UnregisteredColumn>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct UserOption {
     pub id: String,
     #[serde(default)]

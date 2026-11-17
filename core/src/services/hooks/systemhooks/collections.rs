@@ -14,7 +14,9 @@ pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
         |_, context, state, _| {
             Box::pin(async move {
                 let table_service = SchemaService::new(&state, &context);
-                table_service.refresh_schema().await;
+                if let Err(e) = table_service.refresh_schema().await {
+                    tracing::error!("Failed to refresh schema after collection hook: {}", e);
+                }
             })
         },
     )
@@ -24,7 +26,9 @@ pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
         |_, context, state, _| {
             Box::pin(async move {
                 let table_service = SchemaService::new(&state, &context);
-                table_service.refresh_schema().await;
+                if let Err(e) = table_service.refresh_schema().await {
+                    tracing::error!("Failed to refresh schema after collection hook: {}", e);
+                }
             })
         },
     )
