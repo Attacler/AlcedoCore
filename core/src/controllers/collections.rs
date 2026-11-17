@@ -299,7 +299,7 @@ async fn update_collection(
         ("x-version" = String, Header, description = "Version name header"),
     ),
     responses(
-        (status = OK, body = UnregisteredTablesResponse)
+        (status = OK, body = JSendResponse<UnregisteredTablesResponse>)
     )
 )]
 async fn list_unregistered(
@@ -343,7 +343,7 @@ async fn import_collection(
         ("x-version" = String, Header, description = "Version name header"),
     ),
     responses(
-        (status = OK, body = UnregisteredFieldsResponse)
+        (status = OK, body = JSendResponse<UnregisteredFieldsResponse>)
     )
 )]
 async fn list_unregistered_fields(

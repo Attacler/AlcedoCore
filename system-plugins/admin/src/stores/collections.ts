@@ -198,7 +198,10 @@ export const useCollectionsStore = defineStore("collections", () => {
     }
 
     async function listUnregistered(): Promise<
-        { name: string; columns: { name: string; field_type: string; required: boolean }[] }[]
+        {
+            name: string;
+            columns: { name: string; field_type: string; required: boolean }[];
+        }[]
     > {
         const response = (await client.collections.listUnregistered()) as any;
         return response.tables || [];
@@ -214,14 +217,15 @@ export const useCollectionsStore = defineStore("collections", () => {
             display_component?: string;
         }[];
     }): Promise<Collection> {
-        const response = (await client.collections.importCollection(data)) as any;
+        const response = (await client.collections.importCollection(
+            data,
+        )) as any;
         await fetchCollections(true);
+        delete collectionCache[`${cacheScope()}:${data.table}`];
         return response.data || response;
     }
 
-    async function listUnregisteredFields(
-        name: string,
-    ): Promise<{
+    async function listUnregisteredFields(name: string): Promise<{
         collection: string;
         fields: {
             name: string;
@@ -248,8 +252,14 @@ export const useCollectionsStore = defineStore("collections", () => {
             }[];
         },
     ): Promise<Collection> {
-        const response = (await client.collections.importFields(name, data)) as any;
+        const response = (await client.collections.importFields(
+            name,
+            data,
+        )) as any;
         await fetchCollections(true);
+        // Drop the cached definition so later getCollection calls see the
+        // imported fields.
+        delete collectionCache[`${cacheScope()}:${name}`];
         return response.data || response;
     }
 

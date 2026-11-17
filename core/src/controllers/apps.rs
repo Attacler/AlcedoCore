@@ -242,7 +242,7 @@ async fn create_app(
         .link_apps_to_version(&[(app_id, version_id)])
         .await?;
     run_app_migrations(&state.database_pool).await;
-    SchemaService::refresh_schema_and_meta(&state).await;
+    SchemaService::refresh_schema_and_meta(&state).await?;
 
     let app = fetch_app(&state, app_id)
         .await?
@@ -343,7 +343,7 @@ async fn delete_app(
     if deleted == 0 {
         return Err(AlcedoError::NotFound(format!("App not found: {}", id), 0));
     }
-    SchemaService::refresh_schema_and_meta(&state).await;
+    SchemaService::refresh_schema_and_meta(&state).await?;
 
     Ok(Json(success(serde_json::json!({ "success": true }))))
 }

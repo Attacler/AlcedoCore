@@ -191,10 +191,12 @@ fn parse_aggregate_expr(
         "count" if field == "*" => "COUNT(*)".to_string(),
         "count" => format!("COUNT({})", quote(field)),
         "countDistinct" => format!("COUNT(DISTINCT {})", quote(field)),
-        "sum" => format!("SUM({})::float8", quote(field)),
-        "sumDistinct" => format!("SUM(DISTINCT {})::float8", quote(field)),
-        "avg" => format!("AVG({})::float8", quote(field)),
-        "avgDistinct" => format!("AVG(DISTINCT {})::float8", quote(field)),
+        // `::numeric::float8` also covers `money` aggregates (SUM/AVG over
+        // money return money, which has no direct float8 cast).
+        "sum" => format!("SUM({})::numeric::float8", quote(field)),
+        "sumDistinct" => format!("SUM(DISTINCT {})::numeric::float8", quote(field)),
+        "avg" => format!("AVG({})::numeric::float8", quote(field)),
+        "avgDistinct" => format!("AVG(DISTINCT {})::numeric::float8", quote(field)),
         "min" => format!("MIN({})", quote(field)),
         "max" => format!("MAX({})", quote(field)),
         _ => unreachable!("fn whitelist checked above"),
@@ -896,16 +898,21 @@ impl Query {
         // NUMERIC columns cannot be decoded to JSON by the row decoder (sqlx
         // has no NUMERIC -> String decode), which silently dropped whole
         // rows. Select them as float8 — the field type is `float` anyway,
-        // matching the aggregate casts above.
-        let numeric_col = schema
+        // matching the aggregate casts above. `money` has no direct cast to
+        // float8 in Postgres, so it must go through numeric first.
+        let numeric_cast = schema
             .columns
             .iter()
             .find(|c| c.table == table && c.schema == context.schema_name() && c.name == field)
-            .map(|c| matches!(c.data_type.as_str(), "numeric" | "decimal" | "money"))
-            .unwrap_or(false);
+            .map(|c| match c.data_type.as_str() {
+                "money" => "::numeric::float8",
+                "numeric" | "decimal" => "::float8",
+                _ => "",
+            })
+            .unwrap_or("");
         let col_expr = || {
-            if numeric_col {
-                Expr::cust(format!("{}.{}::float8", quote(table), quote(field)))
+            if !numeric_cast.is_empty() {
+                Expr::cust(format!("{}.{}{}", quote(table), quote(field), numeric_cast))
             } else {
                 Expr::col((Alias::new(table), Alias::new(field))).into()
             }
@@ -2391,11 +2398,11 @@ mod tests {
         );
         assert_eq!(
             parse_aggregate_expr("sum", "views").unwrap().1,
-            "SUM(\"views\")::float8".to_string()
+            "SUM(\"views\")::numeric::float8".to_string()
         );
         assert_eq!(
             parse_aggregate_expr("avgDistinct", "views").unwrap().1,
-            "AVG(DISTINCT \"views\")::float8".to_string()
+            "AVG(DISTINCT \"views\")::numeric::float8".to_string()
         );
         assert_eq!(
             parse_aggregate_expr("min", "title").unwrap().1,
@@ -2902,7 +2909,7 @@ mod tests {
         )
         .await
         .unwrap();
-        SchemaService::refresh_schema_and_meta(state).await;
+        SchemaService::refresh_schema_and_meta(state).await.unwrap();
     }
 
     async fn drop_score_field(state: &AppState) {
@@ -2922,7 +2929,7 @@ mod tests {
         )
         .await
         .unwrap();
-        SchemaService::refresh_schema_and_meta(state).await;
+        SchemaService::refresh_schema_and_meta(state).await.unwrap();
     }
 
     /// Seeds two customers — `sum-A` with contact scores 10/20/30 (sum 60,

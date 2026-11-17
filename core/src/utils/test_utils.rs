@@ -63,7 +63,9 @@ pub async fn get_app_state() -> AppState {
         .get_or_init(|| crate::utils::fixtures::ensure_test_env(&state))
         .await;
 
-    crate::services::collections::schema::SchemaService::refresh_schema_and_meta(&state).await;
+    crate::services::collections::schema::SchemaService::refresh_schema_and_meta(&state)
+        .await
+        .expect("refresh_schema_and_meta failed");
 
     state
 }

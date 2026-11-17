@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -483,7 +483,7 @@ pub async fn create_collection(
 
     // Commit, then flush the `after` hooks the transaction deferred.
     guard.commit(state).await?;
-    SchemaService::new(state, ctx).refresh_schema().await;
+    SchemaService::new(state, ctx).refresh_schema().await?;
 
     get_collection(state, ctx, &req.name).await
 }
@@ -583,11 +583,36 @@ pub async fn update_collection(
     .await?;
     // Columns added directly in the database already exist physically — skip
     // the ADD COLUMN DDL for them and only register their metadata below.
-    let physical_columns: HashSet<String> = introspect_columns(state, ctx, &[name.to_string()])
-        .await?
-        .into_iter()
-        .map(|(_, f)| f.name)
-        .collect();
+    let physical_fields: HashMap<String, FieldDefinition> =
+        introspect_columns(state, ctx, &[name.to_string()])
+            .await?
+            .into_iter()
+            .map(|(_, f)| (f.name.clone(), f))
+            .collect();
+    let physical_columns: HashSet<String> = physical_fields.keys().cloned().collect();
+    // A field whose column already exists physically is adopted without DDL.
+    // Reject it when the requested type is incompatible with the physical
+    // column — otherwise the metadata would claim a type the column doesn't
+    // have (e.g. a `text` column registered as `int`).
+    for f in added.iter() {
+        if f.is_virtual() || f.is_fk_field() || removed_names.contains(&f.name.as_str()) {
+            continue;
+        }
+        if let Some(physical) = physical_fields.get(&f.name) {
+            let compatible = physical.field_type == f.field_type
+                || (matches!(physical.field_type.as_str(), "string" | "text")
+                    && matches!(f.field_type.as_str(), "string" | "text"));
+            if !compatible {
+                return Err(AlcedoError::InvalidInput(
+                    format!(
+                        "Field '{}' already exists as a '{}' column but was registered as '{}'",
+                        f.name, physical.field_type, f.field_type
+                    ),
+                    1,
+                ));
+            }
+        }
+    }
     let added_new_columns: Vec<&FieldDefinition> = added
         .iter()
         .copied()
@@ -653,15 +678,28 @@ pub async fn update_collection(
         }
     }
 
-    // 5. Add M:1 FKs for newly added relationship fields. Fields whose column
-    // already existed physically (see step 3) keep their existing constraint.
+    // 5. Add M:1 FKs for newly added relationship fields. A field whose column
+    // already existed physically (see step 3) only keeps its existing
+    // constraint when that constraint actually points at the related table —
+    // otherwise the relationship metadata would be saved without any FK and
+    // the database would still accept orphan references.
+    let existing_fks = existing_foreign_keys(state, ctx, name).await?;
     let added_rel: Vec<&FieldDefinition> = added
         .iter()
         .copied()
         .filter(|f| {
-            f.is_fk_field()
-                && (removed_names.contains(&f.name.as_str())
-                    || !physical_columns.contains(&f.name))
+            if !f.is_fk_field() {
+                return false;
+            }
+            if removed_names.contains(&f.name.as_str()) || !physical_columns.contains(&f.name) {
+                return true;
+            }
+            let related = f.related_collection.clone().unwrap_or_default();
+            let (target_schema, _) = relation_target(ctx, &f.related_app, &related);
+            !matches!(
+                existing_fks.get(&f.name),
+                Some((schema, table)) if *schema == target_schema && *table == related
+            )
         })
         .collect();
     exec_all(state, guard.tx(), build_add_fk_sqls(ctx, name, &added_rel)?).await?;
@@ -704,7 +742,7 @@ pub async fn update_collection(
     // Commit, then flush the `after` hooks the transaction deferred.
     guard.append(fields_service.take_pending_after());
     guard.commit(state).await?;
-    SchemaService::new(state, ctx).refresh_schema().await;
+    SchemaService::new(state, ctx).refresh_schema().await?;
 
     get_collection(state, ctx, name).await
 }
@@ -740,7 +778,7 @@ pub async fn delete_collection(
         execute_query_transaction(state, guard.tx(), &sql).await?;
     }
     guard.commit(state).await?;
-    SchemaService::new(state, ctx).refresh_schema().await;
+    SchemaService::new(state, ctx).refresh_schema().await?;
     Ok(())
 }
 
@@ -939,6 +977,75 @@ async fn introspect_columns(
         .collect())
 }
 
+/// Live foreign-key constraints of one table: column name ->
+/// (referenced schema, referenced table).
+async fn existing_foreign_keys(
+    state: &AppState,
+    ctx: &AppContext,
+    table: &str,
+) -> Result<HashMap<String, (String, String)>, AlcedoError> {
+    let rows = sqlx::query(
+        "SELECT a.attname AS column_name,
+                rn.nspname AS referenced_schema,
+                rc.relname AS referenced_table
+         FROM pg_catalog.pg_constraint con
+         JOIN pg_catalog.pg_class cl ON cl.oid = con.conrelid
+         JOIN pg_catalog.pg_namespace n ON n.oid = cl.relnamespace
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = cl.oid AND a.attnum = con.conkey[1]
+         LEFT JOIN pg_catalog.pg_class rc ON rc.oid = con.confrelid
+         LEFT JOIN pg_catalog.pg_namespace rn ON rn.oid = rc.relnamespace
+         WHERE con.contype = 'f' AND n.nspname = $1 AND cl.relname = $2",
+    )
+    .bind(ctx.schema_name())
+    .bind(table)
+    .fetch_all(&*state.database_pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| {
+            let column: String = row.try_get("column_name").ok()?;
+            let schema: Option<String> = row.try_get("referenced_schema").ok()?;
+            let table: Option<String> = row.try_get("referenced_table").ok()?;
+            Some((column, (schema?, table?)))
+        })
+        .collect())
+}
+
+/// Rejects tables whose foreign keys reference a non-primary-key column of
+/// the target table: relationship reads resolve the stored value against the
+/// target's primary key, so such an import could never resolve.
+async fn reject_non_pk_foreign_keys(
+    state: &AppState,
+    schema_name: &str,
+    table: &str,
+) -> Result<(), AlcedoError> {
+    let schema = state.database_schema.read().await;
+    for col in schema
+        .columns
+        .iter()
+        .filter(|c| c.schema == schema_name && c.table == table)
+    {
+        if let Some(fk) = &col.foreign_key {
+            let target_is_pk = schema.columns.iter().any(|c| {
+                c.schema == fk.schema
+                    && c.table == fk.table
+                    && c.name == fk.column
+                    && c.is_primary_key
+            });
+            if !target_is_pk {
+                return Err(AlcedoError::InvalidInput(
+                    format!(
+                        "Column '{}' has a foreign key to {}.{} which is not a primary key; importing such relationships is not supported",
+                        col.name, fk.table, fk.column
+                    ),
+                    1,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Tables in this app schema that have no collection metadata yet, with their
 /// columns pre-mapped to field types.
 pub async fn list_unregistered(
@@ -946,7 +1053,7 @@ pub async fn list_unregistered(
     ctx: &AppContext,
 ) -> Result<UnregisteredTablesResponse, AlcedoError> {
     // Refresh first so tables created since the last cache refresh show up.
-    SchemaService::new(state, ctx).refresh_schema().await;
+    SchemaService::new(state, ctx).refresh_schema().await?;
     let schema_name = ctx.schema_name();
     let tables: Vec<String> = {
         let schema = state.database_schema.read().await;
@@ -986,7 +1093,7 @@ pub async fn import_collections(
     ctx: &AppContext,
     req: ImportCollectionRequest,
 ) -> Result<CollectionResponse, AlcedoError> {
-    SchemaService::new(state, ctx).refresh_schema().await;
+    SchemaService::new(state, ctx).refresh_schema().await?;
     let schema_name = ctx.schema_name();
     let (exists, has_meta) = {
         let schema = state.database_schema.read().await;
@@ -1018,6 +1125,26 @@ pub async fn import_collections(
         ));
     }
     validate_collection_name(&req.table)?;
+
+    // A collection without a primary key cannot serve item reads/creates/
+    // updates/deletes (`get_pk_key` fails), so reject the import up front.
+    let has_pk = {
+        let schema = state.database_schema.read().await;
+        schema
+            .columns
+            .iter()
+            .any(|c| c.schema == schema_name && c.table == req.table && c.is_primary_key)
+    };
+    if !has_pk {
+        return Err(AlcedoError::InvalidInput(
+            format!(
+                "Table '{}' has no primary key and cannot be imported as a collection",
+                req.table
+            ),
+            1,
+        ));
+    }
+    reject_non_pk_foreign_keys(state, &schema_name, &req.table).await?;
 
     let columns = introspect_columns(state, ctx, &[req.table.clone()]).await?;
     let mut fields: Vec<FieldDefinition> = columns.into_iter().map(|(_, f)| f).collect();
@@ -1077,7 +1204,7 @@ pub async fn import_collections(
     )
     .await?;
     guard.commit(state).await?;
-    SchemaService::new(state, ctx).refresh_schema().await;
+    SchemaService::new(state, ctx).refresh_schema().await?;
 
     get_collection(state, ctx, &req.table).await
 }
@@ -1091,7 +1218,7 @@ pub async fn list_unregistered_fields(
     name: &str,
 ) -> Result<UnregisteredFieldsResponse, AlcedoError> {
     // Refresh first so columns added since the last cache refresh show up.
-    SchemaService::new(state, ctx).refresh_schema().await;
+    SchemaService::new(state, ctx).refresh_schema().await?;
     let collection_id = collection_id_for(state, ctx, name).await?;
     let registered: HashSet<String> = read_field_rows(state, ctx, collection_id)
         .await?
@@ -1123,11 +1250,12 @@ pub async fn import_fields(
     name: &str,
     req: ImportFieldsRequest,
 ) -> Result<CollectionResponse, AlcedoError> {
-    SchemaService::new(state, ctx).refresh_schema().await;
+    SchemaService::new(state, ctx).refresh_schema().await?;
     let schema_name = ctx.schema_name();
     let collection_id = collection_id_for(state, ctx, name).await?;
 
     let physical = introspect_columns(state, ctx, &[name.to_string()]).await?;
+    reject_non_pk_foreign_keys(state, &schema_name, name).await?;
     let existing_rows = read_field_rows(state, ctx, collection_id).await?;
     let registered: HashSet<String> = existing_rows
         .iter()
@@ -1232,7 +1360,7 @@ pub async fn import_fields(
         .await?;
     guard.append(fields_service.take_pending_after());
     guard.commit(state).await?;
-    SchemaService::new(state, ctx).refresh_schema().await;
+    SchemaService::new(state, ctx).refresh_schema().await?;
 
     get_collection(state, ctx, name).await
 }
@@ -1937,6 +2065,263 @@ mod import_fields_tests {
         .unwrap();
         assert_eq!(count, 1);
 
+        cleanup(&state, &ctx, name).await;
+    }
+
+    #[tokio::test]
+    async fn update_collection_rejects_incompatible_existing_column_type() {
+        let state = utils::test_utils::get_app_state().await;
+        let ctx = test_ctx();
+        let name = "automated_type_mismatch_test";
+        cleanup(&state, &ctx, name).await;
+
+        create_collection(
+            &state,
+            &ctx,
+            CreateCollectionRequest {
+                name: name.to_string(),
+                display_name: None,
+                fields: vec![FieldDefinition {
+                    name: "title".to_string(),
+                    field_type: "string".to_string(),
+                    ..Default::default()
+                }],
+            },
+        )
+        .await
+        .expect("create collection");
+
+        execute_query(
+            &state,
+            format!(
+                "ALTER TABLE {}.{} ADD COLUMN manual_col text",
+                quote(&ctx.schema_name()),
+                quote(name)
+            ),
+        )
+        .await
+        .expect("add column");
+
+        // Registering the existing `text` column as `int` must be rejected:
+        // the metadata would claim a type the physical column doesn't have.
+        let res = update_collection(
+            &state,
+            &ctx,
+            name,
+            UpdateCollectionRequest {
+                fields: vec![
+                    FieldDefinition {
+                        name: "title".to_string(),
+                        field_type: "string".to_string(),
+                        ..Default::default()
+                    },
+                    FieldDefinition {
+                        name: "manual_col".to_string(),
+                        field_type: "int".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                removed_fields: vec![],
+                display_name: None,
+            },
+        )
+        .await;
+        assert!(res.is_err(), "incompatible adoption must be rejected");
+
+        // The matching type is still adopted without DDL.
+        let updated = update_collection(
+            &state,
+            &ctx,
+            name,
+            UpdateCollectionRequest {
+                fields: vec![
+                    FieldDefinition {
+                        name: "title".to_string(),
+                        field_type: "string".to_string(),
+                        ..Default::default()
+                    },
+                    FieldDefinition {
+                        name: "manual_col".to_string(),
+                        field_type: "text".to_string(),
+                        ..Default::default()
+                    },
+                ],
+                removed_fields: vec![],
+                display_name: None,
+            },
+        )
+        .await
+        .expect("compatible adoption must succeed");
+        assert!(updated
+            .fields
+            .iter()
+            .any(|f| f.name == "manual_col" && f.field_type == "text"));
+
+        cleanup(&state, &ctx, name).await;
+    }
+
+    #[tokio::test]
+    async fn update_collection_creates_fk_for_existing_column_without_constraint() {
+        let state = utils::test_utils::get_app_state().await;
+        let ctx = test_ctx();
+        let parent = "automated_fk_parent_test";
+        let name = "automated_fk_child_test";
+        cleanup(&state, &ctx, parent).await;
+        cleanup(&state, &ctx, name).await;
+
+        for n in [parent, name] {
+            create_collection(
+                &state,
+                &ctx,
+                CreateCollectionRequest {
+                    name: n.to_string(),
+                    display_name: None,
+                    fields: vec![FieldDefinition {
+                        name: "title".to_string(),
+                        field_type: "string".to_string(),
+                        ..Default::default()
+                    }],
+                },
+            )
+            .await
+            .expect("create collection");
+        }
+
+        // A UUID column added directly in the database has no FK constraint.
+        execute_query(
+            &state,
+            format!(
+                "ALTER TABLE {}.{} ADD COLUMN parent_ref uuid",
+                quote(&ctx.schema_name()),
+                quote(name)
+            ),
+        )
+        .await
+        .expect("add column");
+
+        update_collection(
+            &state,
+            &ctx,
+            name,
+            UpdateCollectionRequest {
+                fields: vec![
+                    FieldDefinition {
+                        name: "title".to_string(),
+                        field_type: "string".to_string(),
+                        ..Default::default()
+                    },
+                    FieldDefinition {
+                        name: "parent_ref".to_string(),
+                        field_type: "relationship".to_string(),
+                        relationship_type: Some("many_to_one".to_string()),
+                        related_collection: Some(parent.to_string()),
+                        ..Default::default()
+                    },
+                ],
+                removed_fields: vec![],
+                display_name: None,
+            },
+        )
+        .await
+        .expect("update collection with relationship on existing column");
+
+        // The FK constraint must have been created even though the column
+        // already existed physically.
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.table_constraints WHERE constraint_schema = $1 AND table_name = $2 AND constraint_type = 'FOREIGN KEY' AND constraint_name = 'fk_automated_fk_child_test_parent_ref'",
+        )
+        .bind(ctx.schema_name())
+        .bind(name)
+        .fetch_one(&*state.database_pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 1, "FK constraint must be created");
+
+        cleanup(&state, &ctx, parent).await;
+        cleanup(&state, &ctx, name).await;
+    }
+
+    #[tokio::test]
+    async fn import_rejects_table_without_primary_key() {
+        let state = utils::test_utils::get_app_state().await;
+        let ctx = test_ctx();
+        let name = "automated_no_pk_test";
+        cleanup(&state, &ctx, name).await;
+
+        execute_query(
+            &state,
+            format!(
+                "CREATE TABLE {}.{} (label text)",
+                quote(&ctx.schema_name()),
+                quote(name)
+            ),
+        )
+        .await
+        .expect("create table without pk");
+
+        let res = import_collections(
+            &state,
+            &ctx,
+            ImportCollectionRequest {
+                table: name.to_string(),
+                display_name: None,
+                fields: vec![],
+            },
+        )
+        .await;
+        assert!(res.is_err(), "table without a primary key must be rejected");
+
+        cleanup(&state, &ctx, name).await;
+    }
+
+    #[tokio::test]
+    async fn import_rejects_fk_to_non_primary_key_column() {
+        let state = utils::test_utils::get_app_state().await;
+        let ctx = test_ctx();
+        let target = "automated_fk_target_test";
+        let name = "automated_fk_source_test";
+        cleanup(&state, &ctx, target).await;
+        cleanup(&state, &ctx, name).await;
+
+        execute_query(
+            &state,
+            format!(
+                "CREATE TABLE {}.{} (id serial PRIMARY KEY, code text UNIQUE)",
+                quote(&ctx.schema_name()),
+                quote(target)
+            ),
+        )
+        .await
+        .expect("create target table");
+        execute_query(
+            &state,
+            format!(
+                "CREATE TABLE {}.{} (id serial PRIMARY KEY, target_code text REFERENCES {}.{}(code))",
+                quote(&ctx.schema_name()),
+                quote(name),
+                quote(&ctx.schema_name()),
+                quote(target)
+            ),
+        )
+        .await
+        .expect("create source table with FK to non-PK column");
+
+        let res = import_collections(
+            &state,
+            &ctx,
+            ImportCollectionRequest {
+                table: name.to_string(),
+                display_name: None,
+                fields: vec![],
+            },
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "FK to a non-primary-key column must be rejected"
+        );
+
+        cleanup(&state, &ctx, target).await;
         cleanup(&state, &ctx, name).await;
     }
 }

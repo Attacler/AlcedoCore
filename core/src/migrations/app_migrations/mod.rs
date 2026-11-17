@@ -105,7 +105,10 @@ pub async fn run_app_migrations(database_pool: &Pool<Postgres>) {
     let app_context = AppContext::system(RequestSource::Migration);
     let collection = "alcedocore_apps_versions".to_string();
     let table_service = SchemaService::new(&app_state, &app_context);
-    table_service.refresh_schema().await;
+    table_service
+        .refresh_schema()
+        .await
+        .expect("refresh_schema failed during app migrations");
 
     let service = ItemsService::new(&app_state, &app_context, &collection);
 

@@ -117,7 +117,9 @@ pub async fn ensure_test_env(state: &AppState) {
     // exists, so the `ensure_*` helpers below skip creation entirely — and
     // `update_collection` plus the field validator both resolve through this
     // cache, so it has to be populated before they run.
-    SchemaService::refresh_schema_and_meta(state).await;
+    SchemaService::refresh_schema_and_meta(state)
+        .await
+        .expect("refresh_schema_and_meta failed");
 
     ensure_crm_collections(state).await;
     ensure_helpdesk_collections(state).await;
@@ -127,7 +129,9 @@ pub async fn ensure_test_env(state: &AppState) {
     seed_helpdesk_rows(state).await;
     seed_customer_read_policy(state).await;
 
-    crate::services::collections::schema::SchemaService::refresh_schema_and_meta(state).await;
+    crate::services::collections::schema::SchemaService::refresh_schema_and_meta(state)
+        .await
+        .expect("refresh_schema_and_meta failed");
 }
 
 async fn ensure_app(state: &AppState, app: &str, version: &str) {
@@ -206,7 +210,9 @@ async fn ensure_collection(
 
     // A later collection may declare a FK to this one, and the validator
     // resolves related collections through the in-memory schema.
-    SchemaService::refresh_schema_and_meta(state).await;
+    SchemaService::refresh_schema_and_meta(state)
+        .await
+        .expect("refresh_schema_and_meta failed");
 }
 
 /// The subset of `declared` that `app.collection` does not already declare.
@@ -262,7 +268,9 @@ async fn add_fields(state: &AppState, app: &str, name: &str, fields: Vec<FieldDe
     // `update_collection` resolves the target through the collection *meta*
     // cache, not just the table list, so the new field needs a meta refresh to
     // be visible to what follows.
-    SchemaService::refresh_schema_and_meta(state).await;
+    SchemaService::refresh_schema_and_meta(state)
+        .await
+        .expect("refresh_schema_and_meta failed");
 }
 
 pub async fn collection_id(state: &AppState, app: &str, name: &str) -> Option<i64> {

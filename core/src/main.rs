@@ -139,7 +139,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    SchemaService::refresh_all_meta(&state).await;
+    SchemaService::refresh_all_meta(&state).await?;
     VersionsService::new(&state).ensure_default().await?;
     services::registries::RegistriesService::new(&state)
         .ensure_default()

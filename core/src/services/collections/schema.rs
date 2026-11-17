@@ -126,6 +126,15 @@ pub struct FieldMetaObject {
     pub options: Option<serde_json::Value>,
 }
 
+/// Serializes every publisher of the shared schema cache, so concurrent
+/// refreshes cannot interleave and an older snapshot cannot overwrite a
+/// newer one.
+pub(crate) fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
+    static REFRESH_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+    REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
 pub struct SchemaService<'a> {
     app_state: &'a AppState,
     app_context: &'a AppContext,
@@ -139,17 +148,12 @@ impl SchemaService<'_> {
         };
     }
 
-    pub async fn refresh_schema(&self) {
+    pub async fn refresh_schema(&self) -> Result<(), AlcedoError> {
         // Single-flight: a burst of concurrent DDL commits (e.g. many
         // collection creates at once) would otherwise each run a full
         // introspection + meta refresh. Serialize them; each caller still
         // introspects after its own commit, so no refresh is skipped stale.
-        static REFRESH_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
-            std::sync::OnceLock::new();
-        let _refresh_guard = REFRESH_LOCK
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await;
+        let _refresh_guard = refresh_lock().lock().await;
 
         // Build the complete new schema (introspection + meta) without holding
         // any lock, then swap the whole struct under a single write guard so
@@ -158,7 +162,8 @@ impl SchemaService<'_> {
         let save_cache = match self.app_context.request_source {
             RequestSource::FirstMigration => false,
             _ => {
-                SchemaService::refresh_all_meta_into(self.app_state, &mut new_schema).await;
+                // A failed meta read must not publish a schema without meta.
+                SchemaService::refresh_all_meta_into(self.app_state, &mut new_schema).await?;
                 true
             }
         };
@@ -166,6 +171,7 @@ impl SchemaService<'_> {
         if save_cache {
             self.app_state.save_schema_cache().await;
         }
+        Ok(())
     }
 
     /// Reads the collection/field meta rows for `ctx` and applies them onto
@@ -175,7 +181,7 @@ impl SchemaService<'_> {
         state: &AppState,
         ctx: &AppContext,
         schema: &mut DatabaseSchema,
-    ) {
+    ) -> Result<(), AlcedoError> {
         // Read the meta tables with raw SQL: going through ItemsService would
         // resolve the tables against the live schema cache, which must not be
         // required here — this function builds the schema that replaces it.
@@ -183,27 +189,17 @@ impl SchemaService<'_> {
             state: &AppState,
             ctx: &AppContext,
             table: &str,
-        ) -> Vec<Map<String, Value>> {
-            let rows = match postgres::pool::execute_query(
+        ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
+            // Propagate the error: the caller swaps the whole schema into the
+            // live cache, so silently defaulting here would wipe all
+            // collection/field meta from the cache without any trace.
+            let rows = postgres::pool::execute_query(
                 state,
                 format!("SELECT * FROM {}", super::ddl::qtable(ctx, table)),
             )
-            .await
-            {
-                Ok(rows) => rows,
-                Err(e) => {
-                    // The caller swaps the whole schema into the live cache, so
-                    // silently defaulting here would wipe all collection/field
-                    // meta from the cache without any trace.
-                    tracing::error!(
-                        "Failed to read meta table {}: {} — schema cache will lack its meta",
-                        table,
-                        e
-                    );
-                    return Vec::new();
-                }
-            };
-            rows.iter()
+            .await?;
+            Ok(rows
+                .iter()
                 .filter_map(|row| match postgres::pool::pgrow_to_json(row) {
                     Ok(v) => Some(v),
                     Err(e) => {
@@ -211,11 +207,11 @@ impl SchemaService<'_> {
                         None
                     }
                 })
-                .collect()
+                .collect())
         }
 
-        let meta_collections = read_meta_table(state, ctx, "alcedocore_collections").await;
-        let meta_fields = read_meta_table(state, ctx, "alcedocore_fields").await;
+        let meta_collections = read_meta_table(state, ctx, "alcedocore_collections").await?;
+        let meta_fields = read_meta_table(state, ctx, "alcedocore_fields").await?;
 
         for table in schema.tables.clone() {
             let find_meta = meta_collections.iter().find(|col| {
@@ -283,10 +279,14 @@ impl SchemaService<'_> {
                 });
             }
         }
+        Ok(())
     }
 
     /// Applies meta for every app version onto `schema` without holding locks.
-    pub async fn refresh_all_meta_into(state: &AppState, schema: &mut DatabaseSchema) {
+    pub async fn refresh_all_meta_into(
+        state: &AppState,
+        schema: &mut DatabaseSchema,
+    ) -> Result<(), AlcedoError> {
         for version in schema.app_versions.clone() {
             let ctx = AppContext {
                 app_name: version.app_name,
@@ -295,26 +295,31 @@ impl SchemaService<'_> {
                 identity: None,
                 request_id: None,
             };
-            SchemaService::refresh_meta_into(state, &ctx, schema).await;
+            SchemaService::refresh_meta_into(state, &ctx, schema).await?;
         }
+        Ok(())
     }
 
-    pub async fn refresh_all_meta(state: &AppState) {
+    pub async fn refresh_all_meta(state: &AppState) -> Result<(), AlcedoError> {
+        let _refresh_guard = refresh_lock().lock().await;
         let mut new_schema = state.database_schema.read().await.clone();
-        SchemaService::refresh_all_meta_into(state, &mut new_schema).await;
+        SchemaService::refresh_all_meta_into(state, &mut new_schema).await?;
         *state.database_schema.write().await = new_schema;
         state.save_schema_cache().await;
+        Ok(())
     }
 
     /// Refreshes the in-memory schema and repopulates collection meta, swapping
     /// the whole struct atomically so readers never see a torn schema. Meta
     /// reads use raw SQL (see `refresh_meta_into`), so this works even on a
     /// fresh `AppState` whose live cache is still empty.
-    pub async fn refresh_schema_and_meta(state: &AppState) {
+    pub async fn refresh_schema_and_meta(state: &AppState) -> Result<(), AlcedoError> {
+        let _refresh_guard = refresh_lock().lock().await;
         let mut new_schema = DatabaseSchema::refresh(state).await;
-        SchemaService::refresh_all_meta_into(state, &mut new_schema).await;
+        SchemaService::refresh_all_meta_into(state, &mut new_schema).await?;
         *state.database_schema.write().await = new_schema;
         state.save_schema_cache().await;
+        Ok(())
     }
 
     pub async fn create_table<F>(
@@ -370,7 +375,7 @@ impl SchemaService<'_> {
             tx.commit().await.unwrap();
         };
         if owns_tx {
-            self.refresh_schema().await;
+            self.refresh_schema().await?;
         }
 
         Ok(())
@@ -455,7 +460,7 @@ impl SchemaService<'_> {
             tx.commit().await.unwrap();
         };
         if owns_tx {
-            self.refresh_schema().await;
+            self.refresh_schema().await?;
         }
         Ok(())
     }
@@ -566,7 +571,7 @@ impl SchemaService<'_> {
             tx.commit().await.unwrap();
         };
         if owns_tx {
-            self.refresh_schema().await;
+            self.refresh_schema().await?;
         }
         Ok(())
     }
@@ -622,7 +627,7 @@ impl SchemaService<'_> {
             tx.commit().await.unwrap();
         };
         if owns_tx {
-            self.refresh_schema().await;
+            self.refresh_schema().await?;
         }
         Ok(())
     }

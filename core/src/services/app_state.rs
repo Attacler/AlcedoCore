@@ -54,6 +54,11 @@ impl RouteMapState {
 }
 impl AppState {
     pub async fn refresh_schema(&self) {
+        // Serialize with the other schema publishers so an older snapshot
+        // cannot overwrite a newer one published concurrently.
+        let _refresh_guard = crate::services::collections::schema::refresh_lock()
+            .lock()
+            .await;
         let refreshed = DatabaseSchema::refresh(self).await;
         let mut lock = self.database_schema.write().await;
         lock.tables = refreshed.tables;
@@ -201,7 +206,7 @@ mod tests {
 
         let state = crate::utils::test_utils::get_app_state().await;
         // The cache is written by the meta pass, not by raw introspection.
-        SchemaService::refresh_all_meta(&state).await;
+        SchemaService::refresh_all_meta(&state).await.unwrap();
 
         let cached = state
             .load_cached_schema()

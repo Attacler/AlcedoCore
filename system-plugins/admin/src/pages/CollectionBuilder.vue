@@ -69,6 +69,28 @@ async function loadCollection(name: string) {
     }
 }
 
+// After a field import, merge the persisted fields into the current draft
+// instead of replacing it: existing entries keep their `_key` (so child
+// components keep their identity) and any unsaved edits, while newly
+// imported fields are appended.
+async function onFieldsImported() {
+    try {
+        const c = await store.getCollection(collectionName.value, true);
+        collectionMeta.value = c;
+        const existing = new Map(fields.value.map((f) => [f.name, f]));
+        fields.value = withSystemFields(c.fields || []).map(
+            (f: FieldDefinition) => {
+                const prev = existing.get(f.name);
+                return prev
+                    ? { ...f, ...prev, _key: prev._key }
+                    : { ...f, _key: nextKey() };
+            },
+        );
+    } catch (e) {
+        console.warn("[CollectionBuilder] Failed to reload after import", e);
+    }
+}
+
 onMounted(async () => {
     try {
         await loadCollection(collectionName.value);
@@ -182,7 +204,7 @@ watch(
             v-model:drag-field-key="dragFieldKey"
             v-model:drag-type="dragType"
             @onDragStart="onDragStart"
-            @imported="loadCollection(collectionName)"
+            @imported="onFieldsImported"
             :collectionMeta="collectionMeta"
             :sections="sections"
             v-model:is-dragging="isDragging"
