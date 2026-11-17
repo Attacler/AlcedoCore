@@ -217,11 +217,15 @@ export const useCollectionsStore = defineStore("collections", () => {
             display_component?: string;
         }[];
     }): Promise<Collection> {
+        // Capture the cache key before any await: if the app context switches
+        // while the request is in flight, cacheScope() would resolve to the
+        // new scope and the stale entry would never be invalidated.
+        const key = `${cacheScope()}:${data.table}`;
         const response = (await client.collections.importCollection(
             data,
         )) as any;
+        delete collectionCache[key];
         await fetchCollections(true);
-        delete collectionCache[`${cacheScope()}:${data.table}`];
         return response.data || response;
     }
 
@@ -252,14 +256,17 @@ export const useCollectionsStore = defineStore("collections", () => {
             }[];
         },
     ): Promise<Collection> {
+        // Capture the cache key before any await so an app-context switch
+        // mid-request cannot invalidate the wrong scope's entry.
+        const key = `${cacheScope()}:${name}`;
         const response = (await client.collections.importFields(
             name,
             data,
         )) as any;
-        await fetchCollections(true);
         // Drop the cached definition so later getCollection calls see the
         // imported fields.
-        delete collectionCache[`${cacheScope()}:${name}`];
+        delete collectionCache[key];
+        await fetchCollections(true);
         return response.data || response;
     }
 

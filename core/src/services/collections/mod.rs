@@ -1013,17 +1013,21 @@ async fn existing_foreign_keys(
 
 /// Rejects tables whose foreign keys reference a non-primary-key column of
 /// the target table: relationship reads resolve the stored value against the
-/// target's primary key, so such an import could never resolve.
+/// target's primary key, so such an import could never resolve. When
+/// `selected` is given, only those columns are checked (used by import_fields,
+/// which adopts individual columns); `None` checks the whole table.
 async fn reject_non_pk_foreign_keys(
     state: &AppState,
     schema_name: &str,
     table: &str,
+    selected: Option<&[String]>,
 ) -> Result<(), AlcedoError> {
     let schema = state.database_schema.read().await;
     for col in schema
         .columns
         .iter()
         .filter(|c| c.schema == schema_name && c.table == table)
+        .filter(|c| selected.map_or(true, |names| names.contains(&c.name)))
     {
         if let Some(fk) = &col.foreign_key {
             let target_is_pk = schema.columns.iter().any(|c| {
@@ -1126,25 +1130,27 @@ pub async fn import_collections(
     }
     validate_collection_name(&req.table)?;
 
-    // A collection without a primary key cannot serve item reads/creates/
-    // updates/deletes (`get_pk_key` fails), so reject the import up front.
-    let has_pk = {
+    // A collection needs exactly one primary key column: without one, item
+    // reads/creates/updates/deletes cannot resolve (`get_pk_key` fails), and
+    // a composite key is not supported either — reject both up front.
+    let pk_count = {
         let schema = state.database_schema.read().await;
         schema
             .columns
             .iter()
-            .any(|c| c.schema == schema_name && c.table == req.table && c.is_primary_key)
+            .filter(|c| c.schema == schema_name && c.table == req.table && c.is_primary_key)
+            .count()
     };
-    if !has_pk {
+    if pk_count != 1 {
         return Err(AlcedoError::InvalidInput(
             format!(
-                "Table '{}' has no primary key and cannot be imported as a collection",
-                req.table
+                "Table '{}' must have exactly one primary key column to be imported as a collection (found {})",
+                req.table, pk_count
             ),
             1,
         ));
     }
-    reject_non_pk_foreign_keys(state, &schema_name, &req.table).await?;
+    reject_non_pk_foreign_keys(state, &schema_name, &req.table, None).await?;
 
     let columns = introspect_columns(state, ctx, &[req.table.clone()]).await?;
     let mut fields: Vec<FieldDefinition> = columns.into_iter().map(|(_, f)| f).collect();
@@ -1255,7 +1261,10 @@ pub async fn import_fields(
     let collection_id = collection_id_for(state, ctx, name).await?;
 
     let physical = introspect_columns(state, ctx, &[name.to_string()]).await?;
-    reject_non_pk_foreign_keys(state, &schema_name, name).await?;
+    // Only the columns being imported are checked: a pre-existing non-PK
+    // foreign key on another column must not block importing unrelated fields.
+    let selected: Vec<String> = req.fields.iter().map(|f| f.name.clone()).collect();
+    reject_non_pk_foreign_keys(state, &schema_name, name, Some(&selected)).await?;
     let existing_rows = read_field_rows(state, ctx, collection_id).await?;
     let registered: HashSet<String> = existing_rows
         .iter()
@@ -2320,6 +2329,128 @@ mod import_fields_tests {
             res.is_err(),
             "FK to a non-primary-key column must be rejected"
         );
+
+        cleanup(&state, &ctx, target).await;
+        cleanup(&state, &ctx, name).await;
+    }
+
+    #[tokio::test]
+    async fn import_rejects_composite_primary_key() {
+        let state = utils::test_utils::get_app_state().await;
+        let ctx = test_ctx();
+        let name = "automated_composite_pk_test";
+        cleanup(&state, &ctx, name).await;
+
+        execute_query(
+            &state,
+            format!(
+                "CREATE TABLE {}.{} (a int, b int, PRIMARY KEY (a, b))",
+                quote(&ctx.schema_name()),
+                quote(name)
+            ),
+        )
+        .await
+        .expect("create table with composite pk");
+
+        let res = import_collections(
+            &state,
+            &ctx,
+            ImportCollectionRequest {
+                table: name.to_string(),
+                display_name: None,
+                fields: vec![],
+            },
+        )
+        .await;
+        assert!(
+            res.is_err(),
+            "table with a composite primary key must be rejected"
+        );
+
+        cleanup(&state, &ctx, name).await;
+    }
+
+    #[tokio::test]
+    async fn import_fields_ignores_unrelated_non_pk_fk() {
+        let state = utils::test_utils::get_app_state().await;
+        let ctx = test_ctx();
+        let target = "automated_fk_target2_test";
+        let name = "automated_import_fields_fk_test";
+        cleanup(&state, &ctx, target).await;
+        cleanup(&state, &ctx, name).await;
+
+        execute_query(
+            &state,
+            format!(
+                "CREATE TABLE {}.{} (id serial PRIMARY KEY, code text UNIQUE)",
+                quote(&ctx.schema_name()),
+                quote(target)
+            ),
+        )
+        .await
+        .expect("create target table");
+        create_collection(
+            &state,
+            &ctx,
+            CreateCollectionRequest {
+                name: name.to_string(),
+                display_name: None,
+                fields: vec![FieldDefinition {
+                    name: "title".to_string(),
+                    field_type: "string".to_string(),
+                    ..Default::default()
+                }],
+            },
+        )
+        .await
+        .expect("create collection");
+        // A non-PK foreign key on one column must not block importing a
+        // different, unrelated column of the same table.
+        execute_query(
+            &state,
+            format!(
+                "ALTER TABLE {}.{} ADD COLUMN bad_fk text REFERENCES {}.{}(code), ADD COLUMN extra_col text",
+                quote(&ctx.schema_name()),
+                quote(name),
+                quote(&ctx.schema_name()),
+                quote(target)
+            ),
+        )
+        .await
+        .expect("add columns");
+
+        let updated = import_fields(
+            &state,
+            &ctx,
+            name,
+            ImportFieldsRequest {
+                fields: vec![ImportFieldOverride {
+                    name: "extra_col".to_string(),
+                    ..Default::default()
+                }],
+            },
+        )
+        .await
+        .expect("importing an unrelated column must succeed despite the non-PK FK");
+        assert!(updated
+            .fields
+            .iter()
+            .any(|f| f.name == "extra_col"));
+
+        // Importing the non-PK FK column itself must still be rejected.
+        let res = import_fields(
+            &state,
+            &ctx,
+            name,
+            ImportFieldsRequest {
+                fields: vec![ImportFieldOverride {
+                    name: "bad_fk".to_string(),
+                    ..Default::default()
+                }],
+            },
+        )
+        .await;
+        assert!(res.is_err(), "importing the non-PK FK column must be rejected");
 
         cleanup(&state, &ctx, target).await;
         cleanup(&state, &ctx, name).await;

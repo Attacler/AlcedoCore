@@ -288,6 +288,12 @@ impl SchemaService<'_> {
         schema: &mut DatabaseSchema,
     ) -> Result<(), AlcedoError> {
         for version in schema.app_versions.clone() {
+            // Skip versions whose schema does not exist yet (e.g. linked in
+            // alcedocore_apps_versions before run_app_migrations created it):
+            // reading their meta tables would fail with 42P01.
+            if !schema.tables.iter().any(|t| t.schema == version.schema_name) {
+                continue;
+            }
             let ctx = AppContext {
                 app_name: version.app_name,
                 version: version.version_name,

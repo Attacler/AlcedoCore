@@ -229,6 +229,20 @@ mod tests {
         );
         // truncated payload is an error, not garbage
         assert!(numeric_binary_to_string(&[0, 1, 0, 0]).is_err());
+        // Maximum weight (32767): `weight + 1` must not overflow — the value
+        // is 1 followed by 32767 zero groups, then a .5 fraction.
+        let mut max_digits = vec![0u16; 32769];
+        max_digits[0] = 1;
+        max_digits[32768] = 5000;
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(32767, 0x0000, 1, &max_digits)).unwrap(),
+            format!("1{}.5", "0000".repeat(32767))
+        );
+        // Minimum weight (-32768): leading zero groups must not overflow.
+        assert_eq!(
+            numeric_binary_to_string(&numeric_bytes(-32768, 0x0000, 4, &[5000])).unwrap(),
+            "0.0000"
+        );
     }
 
     #[tokio::test]
@@ -243,7 +257,9 @@ mod tests {
             .unwrap();
         execute_query(
             &state,
-            format!("CREATE TABLE {schema}.t (id NUMERIC PRIMARY KEY, val NUMERIC, big NUMERIC)"),
+            format!(
+                "CREATE TABLE {schema}.t (id NUMERIC PRIMARY KEY, val NUMERIC, big NUMERIC, bi BIGINT, small_bi BIGINT)"
+            ),
         )
         .await
         .unwrap();
@@ -253,7 +269,7 @@ mod tests {
         let rows = execute_query(
             &state,
             format!(
-                "INSERT INTO {schema}.t (id, val, big) VALUES (128, 1.50, 12345678901234567890) RETURNING id, val, big"
+                "INSERT INTO {schema}.t (id, val, big, bi, small_bi) VALUES (128, 1.50, 12345678901234567890, 9223372036854775807, 42) RETURNING id, val, big, bi, small_bi"
             ),
         )
         .await
@@ -261,7 +277,10 @@ mod tests {
         let map = pgrow_to_json(rows.get(0).unwrap()).unwrap();
         assert_eq!(map.get("id"), Some(&json!(128)));
         assert_eq!(map.get("val"), Some(&json!("1.50")));
-        assert_eq!(map.get("big"), Some(&json!(12345678901234567890u64)));
+        // Integers beyond 2^53-1 are strings so JS clients keep full precision.
+        assert_eq!(map.get("big"), Some(&json!("12345678901234567890")));
+        assert_eq!(map.get("bi"), Some(&json!("9223372036854775807")));
+        assert_eq!(map.get("small_bi"), Some(&json!(42)));
 
         execute_query(&state, format!("DROP SCHEMA {schema} CASCADE"))
             .await
@@ -329,11 +348,13 @@ pub fn pgrow_to_json(row: &PgRow) -> Result<Map<String, serde_json::Value>, sqlx
                         Decode::<'_, Postgres>::decode(raw_value).map_err(sqlx::Error::Decode)?;
                     json!(val.to_string())
                 }
-                // Common Integer Types
+                // Common Integer Types. Integers beyond JavaScript's safe
+                // range (2^53-1) are emitted as strings so clients parsing
+                // JSON numbers as f64 do not lose precision.
                 "INT2" | "INT4" | "INT8" => {
                     let val: i64 =
                         Decode::<'_, Postgres>::decode(raw_value).map_err(sqlx::Error::Decode)?;
-                    json!(val)
+                    json_integer(val)
                 }
 
                 // Common Floating Point Types (FLOAT4 is 4 bytes on the wire,
@@ -422,7 +443,8 @@ pub fn pgrow_to_json(row: &PgRow) -> Result<Map<String, serde_json::Value>, sqlx
                 // the String fallback below cannot decode it — e.g. an
                 // INSERT ... RETURNING on a numeric primary key. Decode the
                 // base-10000 digit encoding to the exact text form; emit a
-                // JSON number when the value is an exact integer.
+                // JSON number only for exact integers within JavaScript's
+                // safe range, everything else as a string.
                 "NUMERIC" => {
                     let bytes = raw_value.as_bytes().map_err(sqlx::Error::Decode)?;
                     let text = if raw_value.format() == sqlx::postgres::PgValueFormat::Text {
@@ -433,9 +455,10 @@ pub fn pgrow_to_json(row: &PgRow) -> Result<Map<String, serde_json::Value>, sqlx
                         numeric_binary_to_string(bytes).map_err(sqlx::Error::Decode)?
                     };
                     match text.parse::<i64>() {
-                        Ok(n) => json!(n),
+                        Ok(n) => json_integer(n),
                         Err(_) => match text.parse::<u64>() {
-                            Ok(n) => json!(n),
+                            Ok(n) if n <= MAX_SAFE_INTEGER => json!(n),
+                            Ok(n) => json!(n.to_string()),
                             Err(_) => json!(text),
                         },
                     }
@@ -458,6 +481,20 @@ pub fn pgrow_to_json(row: &PgRow) -> Result<Map<String, serde_json::Value>, sqlx
     Ok(map)
 }
 
+/// JavaScript's Number.MAX_SAFE_INTEGER: integers beyond this are not
+/// exactly representable as f64, so they are serialized as strings.
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+/// Serializes an integer as a JSON number when it is exactly representable
+/// in JavaScript (|n| <= 2^53-1), otherwise as a string.
+fn json_integer(n: i64) -> serde_json::Value {
+    if n.unsigned_abs() <= MAX_SAFE_INTEGER {
+        json!(n)
+    } else {
+        json!(n.to_string())
+    }
+}
+
 /// Decodes the binary wire format of a Postgres NUMERIC to its exact text
 /// form: u16 ndigits, i16 weight, u16 sign, u16 dscale, then `ndigits` u16
 /// digits in base 10000 (most significant first), where the value is
@@ -467,7 +504,9 @@ fn numeric_binary_to_string(bytes: &[u8]) -> Result<String, sqlx::error::BoxDynE
         return Err(format!("invalid NUMERIC payload: {} bytes", bytes.len()).into());
     }
     let ndigits = u16::from_be_bytes([bytes[0], bytes[1]]) as usize;
-    let weight = i16::from_be_bytes([bytes[2], bytes[3]]);
+    // Widen to i32 before any arithmetic: `weight + 1` overflows i16 at the
+    // maximum weight (32767).
+    let weight = i32::from(i16::from_be_bytes([bytes[2], bytes[3]]));
     let sign = u16::from_be_bytes([bytes[4], bytes[5]]);
     let dscale = u16::from_be_bytes([bytes[6], bytes[7]]) as usize;
     if bytes.len() < 8 + ndigits * 2 {
@@ -491,8 +530,10 @@ fn numeric_binary_to_string(bytes: &[u8]) -> Result<String, sqlx::error::BoxDynE
     }
 
     // Integer part: base-10000 groups 0..=weight (missing groups are zero).
+    // `int_groups` is the number of digit groups before the decimal point.
+    let int_groups = (weight + 1).max(0) as usize;
     if weight >= 0 {
-        for i in 0..=(weight as usize) {
+        for i in 0..int_groups {
             let d = digits.get(i).copied().unwrap_or(0);
             if i == 0 {
                 out.push_str(&d.to_string());
@@ -509,11 +550,11 @@ fn numeric_binary_to_string(bytes: &[u8]) -> Result<String, sqlx::error::BoxDynE
     if dscale > 0 {
         let mut frac = String::new();
         if weight < 0 {
-            for _ in 0..(-(weight + 1) as usize) {
+            for _ in 0..(-(weight + 1)).max(0) as usize {
                 frac.push_str("0000");
             }
         }
-        for d in digits.iter().skip((weight + 1).max(0) as usize) {
+        for d in digits.iter().skip(int_groups) {
             frac.push_str(&format!("{d:04}"));
         }
         if frac.len() < dscale {

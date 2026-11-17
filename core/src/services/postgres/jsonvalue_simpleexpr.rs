@@ -202,8 +202,14 @@ fn parse_decimal(v: &Value, data_type: &str) -> Option<SimpleExpr> {
         return None;
     }
     // The regex only admits digits/signs/dot/exponent, so the literal cannot
-    // contain a quote — inlining it is safe.
-    Some(Expr::cust(format!("('{}')::{}", lit, data_type)))
+    // contain a quote — inlining it is safe. money is cast via numeric:
+    // a direct ::money cast parses with lc_monetary and rejects exponents.
+    let cast = if data_type == "money" {
+        "numeric::money"
+    } else {
+        data_type
+    };
+    Some(Expr::cust(format!("('{}')::{}", lit, cast)))
 }
 
 #[cfg(test)]
@@ -369,5 +375,40 @@ mod tests {
             );
             assert!(expr.is_none(), "should reject {bad:?}");
         }
+    }
+
+    fn schema_with_money_column() -> DatabaseSchema {
+        let mut schema = schema_with_numeric_column();
+        schema.columns[0].data_type = "money".to_string();
+        schema.columns[0].udt_name = "money".to_string();
+        schema
+    }
+
+    #[test]
+    fn money_casts_via_numeric_so_exponents_and_locales_are_safe() {
+        let schema = schema_with_money_column();
+        // A direct ::money cast rejects exponents and parses with lc_monetary;
+        // the numeric::money chain accepts both decimal and exponent input.
+        let expr = parse_value(
+            &schema,
+            "shop010production",
+            &vec![],
+            "products",
+            "price",
+            json!("12.34"),
+        )
+        .expect("money decimal should parse");
+        assert_eq!(render(expr), "('12.34')::numeric::money");
+
+        let expr = parse_value(
+            &schema,
+            "shop010production",
+            &vec![],
+            "products",
+            "price",
+            json!("1e3"),
+        )
+        .expect("money exponent should parse");
+        assert_eq!(render(expr), "('1e3')::numeric::money");
     }
 }
