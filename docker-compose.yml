@@ -35,7 +35,7 @@ services:
     postgres:
         image: postgres:18
         ports:
-            - "5432:5432"
+            - "15432:5432"
         environment:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres
@@ -49,7 +49,7 @@ services:
     system-plugin-api:
         build: ./system-plugin-api
         ports:
-            - "9090:9090"
+            - "19090:9090"
         environment:
             PLUGINS_DIR: /app
             PORT: "9090"
@@ -70,7 +70,7 @@ services:
         container_name: redis
         restart: unless-stopped
         ports:
-            - "6379:6379"
+            - "16380:6379"
         volumes:
             - redis-data:/data
         healthcheck:

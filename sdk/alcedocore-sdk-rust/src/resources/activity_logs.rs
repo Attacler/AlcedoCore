@@ -23,13 +23,21 @@ impl ActivityLogsResource {
     }
 
     /// App-scoped, non-item activity: `GET /api/app/logs/system`.
+    ///
+    /// `exclude_deployed = Some(true)` hides rows already applied by a deploy
+    /// of the current version (recorded in the global `version_deployed`
+    /// markers).
     pub async fn list_app_system(
         &self,
         params: Option<&[(&str, &str)]>,
+        exclude_deployed: Option<bool>,
     ) -> Result<ActivityLogPage<TimelineEntrySystem>, AlcedoError> {
         let mut builder = self.client.request(Method::GET, "/api/app/logs/system");
         if let Some(p) = params {
             builder = builder.query(p);
+        }
+        if let Some(v) = exclude_deployed {
+            builder = builder.query(&[("exclude_deployed", if v { "true" } else { "false" })]);
         }
         self.client.execute_json(builder).await
     }

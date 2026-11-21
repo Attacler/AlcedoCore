@@ -84,8 +84,21 @@ class TestAlcedoApiError:
         assert err.http_status == 503
         assert err.status_code == 503
 
+    def test_data_payload_preserved(self):
+        """The JSend ``data`` payload (e.g. data.conflicts) is carried on the error."""
+        conflicts = [{"type": "changed_on_both_sides", "app": "crm"}]
+        err = AlcedoApiError(
+            "deploy conflicts",
+            status="fail",
+            http_status=409,
+            data={"deployed": False, "conflicts": conflicts},
+        )
+        assert err.data == {"deployed": False, "conflicts": conflicts}
+        assert err.data["conflicts"] == conflicts
+
     def test_defaults(self):
         err = AlcedoApiError("bad")
         assert err.code is None
         assert err.status is None
         assert err.http_status is None
+        assert err.data is None

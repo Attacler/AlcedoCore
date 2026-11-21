@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use file_storage::FileStorage;
@@ -27,6 +28,16 @@ pub struct AppState {
     pub kv_cache: SystemCache,
     pub file_storage: Arc<dyn FileStorage>,
     pub schema_cache_gen: Arc<Mutex<String>>,
+    /// Last time the schema cache blob was persisted; used to debounce the
+    /// (large) Redis write on the hot app-scoped refresh path.
+    pub schema_cache_last_save: Arc<std::sync::Mutex<Option<Instant>>>,
+    /// Commit generation: bumped after every DDL commit. A schema refresh
+    /// that already covered this generation can be skipped, so the after-hook
+    /// refresh and the explicit refresh of one save coalesce into one.
+    pub schema_dirty_gen: Arc<AtomicU64>,
+    /// Generation covered by the last completed app-scoped schema refresh.
+    pub schema_refreshed_gen: Arc<AtomicU64>,
+
     pub platform: Arc<dyn PluginPlatform>,
     /// Per-replica route map cache: the parsed mapping set plus the version
     /// it was loaded at and the instant of the last version check.
@@ -53,17 +64,32 @@ impl RouteMapState {
     }
 }
 impl AppState {
+    /// Marks the schema cache as potentially stale. Called after commits that
+    /// may have changed the schema (DDL or collection/field metadata); a
+    /// refresh that already covered the current generation skips.
+    pub fn mark_schema_dirty(&self) {
+        self.schema_dirty_gen.fetch_add(1, Ordering::SeqCst);
+    }
+
     pub async fn refresh_schema(&self) {
         // Serialize with the other schema publishers so an older snapshot
         // cannot overwrite a newer one published concurrently.
         let _refresh_guard = crate::services::collections::schema::refresh_lock()
             .lock()
             .await;
-        let refreshed = DatabaseSchema::refresh(self).await;
-        let mut lock = self.database_schema.write().await;
-        lock.tables = refreshed.tables;
-        lock.columns = refreshed.columns;
-        lock.app_versions = refreshed.app_versions;
+        match DatabaseSchema::refresh(self).await {
+            Ok(refreshed) => {
+                let mut lock = self.database_schema.write().await;
+                lock.tables = refreshed.tables;
+                lock.columns = refreshed.columns;
+                lock.app_versions = refreshed.app_versions;
+            }
+            Err(e) => {
+                // Keep the previous cache on a transient introspection error
+                // instead of wiping it to an empty schema.
+                tracing::error!("schema refresh failed, keeping previous schema cache: {e}");
+            }
+        }
     }
 
     pub async fn db_new_transaction<T, F>(&self, work: F) -> Result<T, AlcedoError>
@@ -102,6 +128,24 @@ impl AppState {
     }
 
     pub async fn save_schema_cache(&self) {
+        // Debounce: the blob is ~15MB with many versions, so serializing +
+        // writing it on every app-scoped refresh adds noticeable latency.
+        // The in-memory cache is authoritative; this blob is only a warm-start
+        // / replica-sync copy, so being a couple of seconds stale is fine.
+        {
+            let mut last = self.schema_cache_last_save.lock().unwrap();
+            if let Some(t) = *last {
+                if t.elapsed().as_secs() < 2 {
+                    return;
+                }
+            }
+        }
+        // Serialize saves: they are spawned detached (tokio::spawn), so two
+        // can interleave and persist an OLDER blob under a NEWER token.
+        // Holding the gen mutex for the whole save orders them strictly.
+        // Readers (load_cached_schema_if_stale) only lock it briefly without
+        // awaiting while held, so this cannot deadlock.
+        let mut gen_guard = self.schema_cache_gen.lock().await;
         let raw = {
             let schema = self.database_schema.read().await;
             serde_json::to_string(&*schema).ok()
@@ -123,7 +167,10 @@ impl AppState {
                 .await
                 .is_ok()
             {
-                *self.schema_cache_gen.lock().await = token;
+                *gen_guard = token;
+                // Only mark as saved after both writes succeeded, so a failed
+                // write is retried on the next call instead of being debounced.
+                *self.schema_cache_last_save.lock().unwrap() = Some(Instant::now());
             }
         }
     }

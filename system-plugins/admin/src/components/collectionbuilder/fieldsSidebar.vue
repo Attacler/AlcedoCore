@@ -287,7 +287,10 @@ async function saveCollectionDetails() {
 }
 
 const existingFields = computed(() => {
-    return props.fields.sort((a, b) =>
+    // Copy before sorting: sorting props.fields in place would reorder the
+    // array the save payload maps over, silently reassigning every field's
+    // ordinal_position (and logging an update per field) on each save.
+    return [...props.fields].sort((a, b) =>
         (a.display_name || a.name)?.localeCompare(b.display_name || b.name),
     );
 });

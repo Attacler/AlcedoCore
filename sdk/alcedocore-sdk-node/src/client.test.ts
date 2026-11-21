@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest";
 import http from "node:http";
 import { createClient, resolveAppHeaders } from "./client.js";
+import { AlcedoApiError } from "./types/jsend.js";
 
 describe("resolveAppHeaders", () => {
     it("falls back to client defaults", () => {
@@ -161,6 +162,150 @@ describe("createClient dev + db resources", () => {
             const client = createClient(`http://127.0.0.1:${port}`);
             await client.db.query("SELECT 1", [], 30, 100, { basePath: "/p/9" });
             expect(seen[0]).toBe("/p/9/db/query");
+        } finally {
+            await new Promise<void>((r) => server.close(() => r()));
+        }
+    });
+});
+
+describe("createClient versions.deploy", () => {
+    function startServer(handler: (req: http.IncomingMessage, res: http.ServerResponse) => void) {
+        const server = http.createServer(handler);
+        return new Promise<{ server: http.Server; port: number }>((resolve) =>
+            server.listen(0, "127.0.0.1", () =>
+                resolve({ server, port: (server.address() as any).port }),
+            ),
+        );
+    }
+
+    it("posts to /api/platform/versions/:id/deploy and unwraps the success data", async () => {
+        const seen: Array<{ url?: string; method?: string; body: string }> = [];
+        const deployResult = {
+            deployed: true,
+            apps: { crm: { tables_written: 3, rows_copied: 12 } },
+        };
+        const { server, port } = await startServer((req, res) => {
+            let body = "";
+            req.on("data", (c) => (body += c));
+            req.on("end", () => {
+                seen.push({ url: req.url, method: req.method, body });
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ status: "success", data: deployResult }));
+            });
+        });
+
+        try {
+            const client = createClient(`http://127.0.0.1:${port}`, { apiKey: "dev_test" });
+            const result = await client.versions.deploy(3, {
+                dry_run: false,
+                on_conflict: "fail",
+                edit_ids: null,
+            });
+            expect(seen[0].method).toBe("POST");
+            expect(seen[0].url).toBe("/api/platform/versions/3/deploy");
+            expect(JSON.parse(seen[0].body)).toEqual({
+                dry_run: false,
+                on_conflict: "fail",
+                edit_ids: null,
+            });
+            expect(result).toEqual(deployResult);
+        } finally {
+            await new Promise<void>((r) => server.close(() => r()));
+        }
+    });
+
+    it("sends numeric edit_ids only", async () => {
+        const seen: Array<{ body: string }> = [];
+        const { server, port } = await startServer((req, res) => {
+            let body = "";
+            req.on("data", (c) => (body += c));
+            req.on("end", () => {
+                seen.push({ body });
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ status: "success", data: { deployed: true } }));
+            });
+        });
+
+        try {
+            const client = createClient(`http://127.0.0.1:${port}`, { apiKey: "dev_test" });
+            await client.versions.deploy(3, { on_conflict: "skip", edit_ids: [11, 12] });
+            expect(JSON.parse(seen[0].body)).toEqual({
+                on_conflict: "skip",
+                edit_ids: [11, 12],
+            });
+        } finally {
+            await new Promise<void>((r) => server.close(() => r()));
+        }
+    });
+
+    it("raises AlcedoApiError on a JSend fail conflict response (HTTP 409)", async () => {
+        const conflicts = [
+            {
+                type: "changed_on_both_sides",
+                app: "crm",
+                collection: "contacts",
+                item_id: "1",
+                detail: "changed on both sides",
+            },
+        ];
+        const { server, port } = await startServer((req, res) => {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(
+                JSON.stringify({
+                    status: "fail",
+                    message: "deploy conflicts",
+                    data: {
+                        deployed: false,
+                        conflicts,
+                    },
+                }),
+            );
+        });
+
+        try {
+            const client = createClient(`http://127.0.0.1:${port}`, { apiKey: "dev_test" });
+            const err = await client.versions
+                .deploy(3, { on_conflict: "fail" })
+                .catch((e) => e);
+            expect(err).toBeInstanceOf(AlcedoApiError);
+            expect(err.message).toBe("deploy conflicts");
+            expect(err.status).toBe("fail");
+            expect(err.httpStatus).toBe(409);
+            // the JSend data payload is carried on the error (data.conflicts reachable)
+            expect(err.data).toEqual({ deployed: false, conflicts });
+            expect((err.data as any).conflicts).toEqual(conflicts);
+        } finally {
+            await new Promise<void>((r) => server.close(() => r()));
+        }
+    });
+});
+
+describe("createClient versions.revert", () => {
+    it("posts to /api/platform/versions/:id/revert and unwraps the success data", async () => {
+        const http = await import("http");
+        const server = http.createServer((req, res) => {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(
+                JSON.stringify({
+                    status: "success",
+                    data: {
+                        version_id: 3,
+                        version_name: "staging",
+                        reverted: [{ id: 11, action: "collection_created" }],
+                        skipped: [],
+                        warning: "No data backup is created before deploy/revert.",
+                    },
+                }),
+            );
+        });
+        await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+        const port = (server.address() as any).port;
+        try {
+            const client = createClient(`http://127.0.0.1:${port}`, { apiKey: "dev_test" });
+            const result = await client.versions.revert(3);
+            expect(result.version_id).toBe(3);
+            expect(result.reverted).toHaveLength(1);
+            expect(result.warning).toContain("No data backup");
         } finally {
             await new Promise<void>((r) => server.close(() => r()));
         }

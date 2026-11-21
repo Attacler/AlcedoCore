@@ -14,7 +14,10 @@ pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
         |_, context, state, _| {
             Box::pin(async move {
                 let table_service = SchemaService::new(&state, &context);
-                if let Err(e) = table_service.refresh_schema().await {
+                // Force: writes to the meta tables through the generic items
+                // API don't flag the TxGuard dirty, so the dirty-generation
+                // skip in `refresh_schema` would leave the meta cache stale.
+                if let Err(e) = table_service.refresh_schema_force().await {
                     tracing::error!("Failed to refresh schema after collection hook: {}", e);
                 }
             })
@@ -26,7 +29,8 @@ pub async fn setup_collection_hooks(bus: &Arc<MultiEventBus>) {
         |_, context, state, _| {
             Box::pin(async move {
                 let table_service = SchemaService::new(&state, &context);
-                if let Err(e) = table_service.refresh_schema().await {
+                // Force: see the update hook above.
+                if let Err(e) = table_service.refresh_schema_force().await {
                     tracing::error!("Failed to refresh schema after collection hook: {}", e);
                 }
             })

@@ -36,12 +36,15 @@ pub enum AlcedoError {
     },
 
     /// JSend `fail`/`error` envelope returned by the core API.
+    /// `data` carries the envelope's `data` payload (e.g. `data.conflicts`
+    /// on a deploy conflict, HTTP 409).
     #[error("API error ({status}): {message}")]
     Api {
         message: String,
         code: Option<String>,
         status: String,
         http_status: Option<u16>,
+        data: Option<serde_json::Value>,
     },
 }
 

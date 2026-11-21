@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
+    http::HeaderMap,
     routing::get,
 };
 use serde_json::Value;
@@ -8,7 +9,7 @@ use utoipa::ToSchema;
 
 use crate::{
     AppState,
-    controllers::require_admin,
+    controllers::{require_admin, require_production_version_header},
     middelware::auth::AuthLevel,
     services::{
         activity_logs,
@@ -66,9 +67,12 @@ async fn list_route_mappings(
 async fn create_route_mapping(
     State(state): State<AppState>,
     auth_level: AuthLevel,
+    headers: HeaderMap,
     Json(payload): Json<CreateRouteMappingRequest>,
 ) -> Result<Json<JSendResponse<RouteMappingResponse>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
+    // Route mappings are global and production-only (sandbox guard).
+    require_production_version_header(&headers)?;
 
     let service = RouteMappingsService::new(&state);
     let created = service.create(payload).await?;
@@ -109,10 +113,13 @@ async fn create_route_mapping(
 async fn update_route_mapping(
     State(state): State<AppState>,
     auth_level: AuthLevel,
+    headers: HeaderMap,
     Path(id): Path<i32>,
     Json(payload): Json<UpdateRouteMappingRequest>,
 ) -> Result<Json<JSendResponse<RouteMappingResponse>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
+    // Route mappings are global and production-only (sandbox guard).
+    require_production_version_header(&headers)?;
 
     let service = RouteMappingsService::new(&state);
     let updated = service.update(id, payload).await?;
@@ -152,9 +159,12 @@ async fn update_route_mapping(
 async fn delete_route_mapping(
     State(state): State<AppState>,
     auth_level: AuthLevel,
+    headers: HeaderMap,
     Path(id): Path<i32>,
 ) -> Result<Json<JSendResponse<DeleteRouteMappingResponse>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
+    // Route mappings are global and production-only (sandbox guard).
+    require_production_version_header(&headers)?;
 
     let service = RouteMappingsService::new(&state);
     service.delete(id).await?;
@@ -178,4 +188,73 @@ async fn delete_route_mapping(
         deleted: true,
         id,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::route_mappings::{CreateRouteMappingRequest, UpdateRouteMappingRequest};
+    use crate::utils::test_utils::get_app_state;
+    use axum::http::HeaderMap;
+
+    fn headers_with_version(version: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-version", version.parse().unwrap());
+        headers
+    }
+
+    #[tokio::test]
+    async fn route_mapping_mutations_forbidden_in_sandbox_version() {
+        let state = get_app_state().await;
+        let auth = AuthLevel::DeveloperKey { version_id: 1 };
+        let headers = headers_with_version("staging");
+
+        let create = create_route_mapping(
+            State(state.clone()),
+            auth.clone(),
+            headers.clone(),
+            Json(CreateRouteMappingRequest {
+                domain: None,
+                path_prefix: Some("/sandbox-guard-test".to_string()),
+                install_id: 1,
+                is_active: true,
+            }),
+        )
+        .await;
+        assert!(
+            matches!(create, Err(AlcedoError::Forbidden(_, _))),
+            "POST must be 403 in a sandbox version"
+        );
+
+        let update = update_route_mapping(
+            State(state.clone()),
+            auth.clone(),
+            headers.clone(),
+            Path(1),
+            Json(UpdateRouteMappingRequest {
+                domain: None,
+                path_prefix: None,
+                install_id: None,
+                is_active: Some(false),
+            }),
+        )
+        .await;
+        assert!(
+            matches!(update, Err(AlcedoError::Forbidden(_, _))),
+            "PUT must be 403 in a sandbox version"
+        );
+
+        let delete = delete_route_mapping(State(state), auth, headers, Path(1)).await;
+        assert!(
+            matches!(delete, Err(AlcedoError::Forbidden(_, _))),
+            "DELETE must be 403 in a sandbox version"
+        );
+    }
+
+    #[tokio::test]
+    async fn route_mapping_gets_stay_allowed() {
+        let state = get_app_state().await;
+        let result = list_route_mappings(State(state), AuthLevel::DeveloperKey { version_id: 1 }).await;
+        assert!(result.is_ok(), "GET route mappings must stay allowed");
+    }
 }

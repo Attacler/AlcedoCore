@@ -14,9 +14,10 @@ use crate::{
         encryption,
         errors::AlcedoError,
         items::{query::Query, service::ItemsService},
-        plugin_migrations::PluginMigrationEngine,
+        plugin_migrations::{PluginMigrationEngine, plugin_role_name, plugin_schema_name},
         plugin_platform::ResourceLimits,
         registry_client,
+        roles::in_filter,
     },
     utils::{image_reference, normalize_image_reference},
 };
@@ -62,9 +63,9 @@ pub const IMAGE_MIGRATIONS: &str = "migrations";
 pub const IMAGE_PUBLIC: &str = "public";
 pub const IMAGE_MANIFEST: &str = "manifest.json";
 
-const IMAGE_ROOTS: &[&str] = &["app"];
+pub const IMAGE_ROOTS: &[&str] = &["app"];
 
-fn image_candidate(root: &str, sub: &str) -> String {
+pub fn image_candidate(root: &str, sub: &str) -> String {
     format!("/{root}/{sub}")
 }
 pub fn plugin_dir(config: &Config, install_id: i64) -> std::path::PathBuf {
@@ -245,7 +246,7 @@ pub struct PluginRecord {
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Default, Serialize, Deserialize, ToSchema)]
 pub struct DeployInput {
     pub slug: String,
     pub plugin_version: String,
@@ -410,24 +411,21 @@ impl PluginsService<'_> {
             )
             .await?;
 
-        for install_id in installs {
-            self.app_state
-                .platform
-                .ensure_absent(install_id as i64)
-                .await?;
-            if let Err(e) = crate::services::plugin_db_access::drop_install_db_access(
-                &self.app_state.database_pool,
-                install_id as i64,
-            )
-            .await
-            {
-                tracing::warn!(
-                    "[PLUGINS] Could not drop DB access for install {}: {}",
-                    install_id,
-                    e
-                );
-            }
-            invalidate_install_cache(self.app_state, install_id as i64).await;
+        let install_ids: Vec<i64> = installs.iter().map(|id| i64::from(*id)).collect();
+        for install_id in &install_ids {
+            self.app_state.platform.ensure_absent(*install_id).await?;
+        }
+        // One batched statement drops every install's schema + role, instead of
+        // one transaction per install.
+        if let Err(e) = drop_installs_db_access(&self.app_state.database_pool, &install_ids).await {
+            tracing::warn!(
+                "[PLUGINS] Could not drop DB access for installs {:?}: {}",
+                install_ids,
+                e
+            );
+        }
+        for install_id in &install_ids {
+            invalidate_install_cache(self.app_state, *install_id).await;
         }
         crate::services::event_forwarder::invalidate_all(self.app_state).await;
 
@@ -449,6 +447,27 @@ impl PluginsService<'_> {
             },
         )
         .await
+    }
+
+    /// All installs for a set of plugins in a single query
+    /// (`plugin_id = ANY($1)`), sorted like `list_installs`. `assemble` uses
+    /// this so the plugin-list endpoint costs one installs query instead of
+    /// one per catalog row.
+    async fn list_installs_many(
+        &self,
+        plugin_ids: &[i32],
+    ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
+        if plugin_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = in_filter(
+            "plugin_id",
+            plugin_ids.iter().map(|id| Value::from(*id)).collect(),
+        );
+        query.fields = vec!["*".to_string()];
+        query.limit = 0;
+        query.sort = vec!["+app_version_id".to_string()];
+        self.read(INSTALLS, query).await
     }
 
     /// Enabled installs for one app × version plus all enabled global installs,
@@ -572,10 +591,17 @@ impl PluginsService<'_> {
         let registries = self.registry_names().await?;
         let infos = self.app_version_infos().await?;
 
-        let mut all_installs: Vec<Map<String, Value>> = Vec::new();
-        for row in &catalog_rows {
-            if let Some(id) = int_field(row, "id") {
-                all_installs.extend(self.list_installs(id).await?);
+        // One installs query for the whole catalog (`plugin_id = ANY($1)`),
+        // grouped in memory below — not one query per catalog row.
+        let plugin_ids: Vec<i32> = catalog_rows
+            .iter()
+            .filter_map(|row| int_field(row, "id"))
+            .collect();
+        let all_installs = self.list_installs_many(&plugin_ids).await?;
+        let mut installs_by_plugin: HashMap<i32, Vec<&Map<String, Value>>> = HashMap::new();
+        for install in &all_installs {
+            if let Some(plugin_id) = int_field(install, "plugin_id") {
+                installs_by_plugin.entry(plugin_id).or_default().push(install);
             }
         }
 
@@ -601,9 +627,10 @@ impl PluginsService<'_> {
             let Some(plugin_id) = int_field(row, "id") else {
                 continue;
             };
-            let mut installations: Vec<InstallRecord> = all_installs
-                .iter()
-                .filter(|i| int_field(i, "plugin_id") == Some(plugin_id))
+            let mut installations: Vec<InstallRecord> = installs_by_plugin
+                .get(&plugin_id)
+                .into_iter()
+                .flatten()
                 .map(|i| install_record(i, &infos))
                 .filter(matches)
                 .collect();
@@ -1973,6 +2000,36 @@ impl PluginsService<'_> {
             })
         }))
     }
+}
+
+/// Batched teardown of per-install DB access (schema + LOGIN role) for many
+/// installs in a single statement, instead of one transaction per install.
+/// DO blocks cannot take bound parameters, so the ids are inlined — they are
+/// i64s and the schema/role names derived from them contain no quote
+/// characters, the same safety argument `plugin_db_access` relies on.
+async fn drop_installs_db_access(
+    pool: &sqlx::Pool<sqlx::Postgres>,
+    install_ids: &[i64],
+) -> Result<(), AlcedoError> {
+    if install_ids.is_empty() {
+        return Ok(());
+    }
+    let mut body = String::new();
+    for install_id in install_ids {
+        let schema = plugin_schema_name(*install_id);
+        let role = plugin_role_name(*install_id);
+        body.push_str(&format!(
+            "EXECUTE format('DROP SCHEMA IF EXISTS %I CASCADE', '{schema}'); \
+             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN \
+                 EXECUTE format('DROP OWNED BY %I', '{role}'); \
+                 EXECUTE format('DROP ROLE %I', '{role}'); \
+             END IF; "
+        ));
+    }
+    sqlx::query(&format!("DO $$ BEGIN {body} END $$"))
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub fn parse_migration_filename(filename: &str) -> Option<(String, String, &'static str)> {

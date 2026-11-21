@@ -12,6 +12,12 @@ COPY system-plugins/admin/vite.config.ts ./system-plugins/admin/
 COPY system-plugins/admin/package-lock.json ./system-plugins/admin/
 COPY system-plugins/admin/src ./system-plugins/admin/src
 
+# The admin app depends on the SDK via `file:`, and npm runs the SDK's
+# `prepare` script (tsup) while packing it — so the SDK's own dev
+# dependencies must be installed first or `tsup` is not found.
+WORKDIR /build/sdk/alcedocore-sdk-node
+RUN npm install
+
 # Set the working directory to the admin folder
 WORKDIR /build/system-plugins/admin
 

@@ -375,6 +375,35 @@ pub async fn me_apps(
     };
     let rows = AppsService::new(&state).list_app_version_rows().await?;
 
+    // Batch the role lookups: one query per distinct app×version schema instead
+    // of one per row, then look each row's roles up in the in-memory map.
+    let mut roles_by_app_version: std::collections::HashMap<
+        (String, String),
+        std::collections::HashMap<uuid::Uuid, Vec<String>>,
+    > = std::collections::HashMap::new();
+    if user_id.is_some() {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for row in &rows {
+            let (Some(app_value), Some(version_value)) = (row.get("app_id"), row.get("version_id"))
+            else {
+                continue;
+            };
+            let (Some(api_name), Some(version_name)) = (
+                app_value.get("api_name").and_then(Value::as_str),
+                version_value.get("version_name").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            pairs.push((api_name.to_string(), version_name.to_string()));
+        }
+        pairs.sort();
+        pairs.dedup();
+        for (api_name, version_name) in pairs {
+            let by_user = role_names_by_user(&state, &api_name, &version_name).await?;
+            roles_by_app_version.insert((api_name, version_name), by_user);
+        }
+    }
+
     let mut result: Vec<UserAppAccess> = Vec::new();
     for row in &rows {
         let Some(app_value) = row.get("app_id") else {
@@ -400,7 +429,11 @@ pub async fn me_apps(
         }
 
         let roles = match user_id {
-            Some(user_id) => roles_for_user(&state, api_name, version_name, user_id).await?,
+            Some(user_id) => roles_by_app_version
+                .get(&(api_name.to_string(), version_name.to_string()))
+                .and_then(|by_user| by_user.get(&user_id))
+                .cloned()
+                .unwrap_or_default(),
             None => Vec::new(),
         };
         if !is_admin && roles.is_empty() {
@@ -729,12 +762,14 @@ pub async fn list_app_versions(
     Ok(Json(success(result)))
 }
 
-async fn roles_for_user(
+/// All user→role-name pairs in one app×version schema, fetched in a single
+/// query (`user_roles` joined to `roles`) and keyed by user id. Used to batch
+/// the per-row role lookups in `me_apps`.
+async fn role_names_by_user(
     state: &AppState,
     api_name: &str,
     version_name: &str,
-    user_id: uuid::Uuid,
-) -> Result<Vec<String>, AlcedoError> {
+) -> Result<std::collections::HashMap<uuid::Uuid, Vec<String>>, AlcedoError> {
     let context = AppContext {
         app_name: api_name.to_string(),
         version: version_name.to_string(),
@@ -746,13 +781,29 @@ async fn roles_for_user(
     let service = ItemsService::new(state, &context, &collection);
     let rows = service
         .read_items_by_query(Query {
-            fields: vec!["role_id.*".to_string()],
+            fields: vec!["user_id".to_string(), "role_id.*".to_string()],
             limit: 0,
-            ..Query::eq("user_id", Value::String(user_id.to_string()))
+            ..Query::default()
         })
         .await?;
-    Ok(rows
-        .iter()
-        .filter_map(|row| row.get("role_id")?.get("name")?.as_str().map(String::from))
-        .collect())
+    let mut map: std::collections::HashMap<uuid::Uuid, Vec<String>> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let Some(user_id) = row
+            .get("user_id")
+            .and_then(Value::as_str)
+            .and_then(|id| uuid::Uuid::parse_str(id).ok())
+        else {
+            continue;
+        };
+        let Some(role_name) = row
+            .get("role_id")
+            .and_then(|role| role.get("name"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        map.entry(user_id).or_default().push(role_name.to_string());
+    }
+    Ok(map)
 }

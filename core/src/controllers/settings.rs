@@ -44,8 +44,12 @@ pub struct SettingsResponse {
 )]
 async fn get_settings(
     State(state): State<AppState>,
+    auth_level: AuthLevel,
 ) -> Result<Json<JSendResponse<SettingsResponse>>, AlcedoError> {
     let app_context = AppContext::system(RequestSource::API);
+    // Platform settings are global: require the platform read scope against the
+    // system context (no app context), like the other platform handlers.
+    require_scope(&state, &auth_level, &app_context, "settings.read.all").await?;
 
     let collection = "alcedocore_settings".to_string();
     let service = ItemsService::new(&state, &app_context, &collection);
@@ -65,7 +69,9 @@ async fn get_settings(
             }
         }
     };
-    let response: SettingsResponse = serde_json::from_value(Value::Object(settings)).unwrap();
+    let response: SettingsResponse = serde_json::from_value(Value::Object(settings)).map_err(|e| {
+        AlcedoError::SystemError(format!("Failed to decode settings row: {}", e), 0)
+    })?;
     Ok(Json(success(response)))
 }
 
@@ -86,6 +92,9 @@ async fn update_settings(
 ) -> Result<Json<JSendResponse<SettingsResponse>>, AlcedoError> {
     // Platform settings are global, so this is admin-only (no app context).
     crate::controllers::require_admin(&state, auth_level).await?;
+    // Global settings are production-only: a sandbox version (X-Version header
+    // != production) may read them but not mutate them.
+    crate::controllers::require_production_version_header(&headers)?;
 
     let name = payload.platform_name.trim();
     if name.is_empty() {
@@ -180,4 +189,66 @@ async fn batch_update_app_settings(
         .set_many(&payload.settings)
         .await?;
     Ok(Json(success(json!({ "success": true, "count": count }))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::test_utils::get_app_state;
+
+    fn headers_with_version(version: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-version", version.parse().unwrap());
+        headers
+    }
+
+    #[tokio::test]
+    async fn update_platform_settings_forbidden_in_sandbox_version() {
+        let state = get_app_state().await;
+        let auth = AuthLevel::DeveloperKey { version_id: 1 };
+        let result = update_settings(
+            State(state),
+            auth,
+            headers_with_version("staging"),
+            Json(UpdatePlatformSettingsRequest {
+                platform_name: "Sandbox Name".to_string(),
+            }),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(AlcedoError::Forbidden(_, _))),
+            "expected 403 for a non-production X-Version header"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_platform_settings_allowed_in_production_or_without_header() {
+        let state = get_app_state().await;
+        // Read the current name and write it back so the test mutates nothing.
+        let current = get_settings(State(state.clone()), AuthLevel::DeveloperKey { version_id: 1 })
+            .await
+            .ok()
+            .expect("get_settings failed");
+        let name = current.0.data.unwrap().platform_name;
+
+        let result = update_settings(
+            State(state.clone()),
+            AuthLevel::DeveloperKey { version_id: 1 },
+            headers_with_version("production"),
+            Json(UpdatePlatformSettingsRequest {
+                platform_name: name.clone(),
+            }),
+        )
+        .await;
+        assert!(result.is_ok(), "production X-Version must be allowed");
+
+        let result = update_settings(
+            State(state),
+            AuthLevel::DeveloperKey { version_id: 1 },
+            HeaderMap::new(),
+            Json(UpdatePlatformSettingsRequest { platform_name: name }),
+        )
+        .await;
+        assert!(result.is_ok(), "no X-Version header must be allowed");
+    }
 }

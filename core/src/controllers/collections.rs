@@ -22,7 +22,7 @@ use crate::{
         },
         context::ExtractContext,
         errors::AlcedoError,
-        postgres::{columntypetots::column_type_to_ts, inspector::DatabaseSchema},
+        postgres::columntypetots::column_type_to_ts,
         respond::{JSendResponse, success},
         saved_views::{
             CreateSavedViewRequest, SavedViewResponse, SavedViewsService, UpdateSavedViewRequest,
@@ -93,16 +93,15 @@ pub fn tables_controller() -> Router<AppState> {
 async fn get_schema(
     State(state): State<AppState>,
     auth_level: AuthLevel,
-) -> Result<Json<JSendResponse<DatabaseSchema>>, AlcedoError> {
+) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
     require_admin(&state, auth_level).await?;
+    // Serialize while holding the read guard instead of cloning the whole
+    // (~15MB) DatabaseSchema per request; the JSON shape is unchanged.
     let schema = state.database_schema.read().await;
-
-    Ok(Json(success(DatabaseSchema {
-        tables: schema.tables.clone(),
-        columns: schema.columns.clone(),
-        app_versions: schema.app_versions.clone(),
-        fields: schema.fields.clone(),
-    })))
+    let data = serde_json::to_value(&*schema).map_err(|e| {
+        AlcedoError::SystemError(format!("Failed to serialize database schema: {}", e), 1)
+    })?;
+    Ok(Json(success(data)))
 }
 
 #[utoipa::path(get, path = "/api/app/collections/schema/ts",

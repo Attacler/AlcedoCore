@@ -71,6 +71,12 @@ const routes: RouteRecordRaw[] = [
         component: RouteMappings,
     },
     {
+        path: "/settings/:category",
+        name: "GlobalSettingsCategory",
+        component: SettingsCategory,
+        props: true,
+    },
+    {
         path: "/development",
         name: "Development",
         component: Development,

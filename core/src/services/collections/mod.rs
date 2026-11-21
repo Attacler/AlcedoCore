@@ -249,31 +249,96 @@ fn field_payload(collection_id: i64, field: &FieldDefinition, index: usize) -> M
     }
 }
 
-async fn build_collection_response(
-    state: &AppState,
-    ctx: &AppContext,
-    row: &Map<String, Value>,
-) -> Result<CollectionResponse, AlcedoError> {
-    let collection_id = ji64(row.get("id")).unwrap_or(0);
-    let fields = read_field_rows(state, ctx, collection_id)
-        .await?
+/// Max field rows per batched `UPDATE ... FROM (VALUES ...)` statement.
+const FIELD_UPDATE_CHUNK: usize = 500;
+
+/// One `UPDATE ... FROM (VALUES ...)` for a batch of field-metadata rows,
+/// replacing the per-field UPDATE loop. `updates` are `(row id, payload)`.
+fn build_fields_update_sql(ctx: &AppContext, updates: &[(i64, Map<String, Value>)]) -> String {
+    let values = updates
         .iter()
-        .map(field_from_row)
-        .collect();
+        .map(|(id, p)| {
+            let collection_id = p.get("collection_id").and_then(Value::as_i64).unwrap_or(0);
+            let api_name = jstr(p.get("api_name")).unwrap_or_default();
+            let display_name = jstr(p.get("display_name")).unwrap_or_else(|| api_name.clone());
+            let ordinal = p.get("ordinal_position").and_then(Value::as_i64).unwrap_or(0);
+            let options = p.get("options").cloned().unwrap_or(Value::Null);
+            format!(
+                "({}::int, {}::int, {}, {}, {}::int, {}::jsonb)",
+                id,
+                collection_id,
+                quote_str(&api_name),
+                quote_str(&display_name),
+                ordinal,
+                quote_str(&options.to_string())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "UPDATE {} AS f SET collection_id = v.collection_id, api_name = v.api_name, display_name = v.display_name, ordinal_position = v.ordinal_position, options = v.options FROM (VALUES {}) AS v(id, collection_id, api_name, display_name, ordinal_position, options) WHERE f.id = v.id",
+        qtable(ctx, "alcedocore_fields"),
+        values
+    )
+}
+
+/// Builds the response for one collection row from its pre-fetched field rows.
+fn collection_response_from_row(
+    row: &Map<String, Value>,
+    field_rows: &[Map<String, Value>],
+) -> CollectionResponse {
+    let fields = field_rows.iter().map(field_from_row).collect();
     let namespaced = jstr(row.get("table")).unwrap_or_default();
     // Framework (`alcedocore_*`) collections are not user-managed: the admin
     // dashboard filters them out and the collection list hides Delete. This
     // includes `alcedocore_users`, which is policy-able but still a system
     // collection (it must not collide with the built-in Users page).
     let is_system = namespaced.starts_with("alcedocore");
-    Ok(CollectionResponse {
+    CollectionResponse {
         name: namespaced,
         display_name: jstr(row.get("name")),
         fields,
         is_system,
         created_at: row.get("created_at").cloned(),
         updated_at: row.get("updated_at").cloned(),
-    })
+    }
+}
+
+async fn build_collection_response(
+    state: &AppState,
+    ctx: &AppContext,
+    row: &Map<String, Value>,
+) -> Result<CollectionResponse, AlcedoError> {
+    let collection_id = ji64(row.get("id")).unwrap_or(0);
+    let field_rows = read_field_rows(state, ctx, collection_id).await?;
+    Ok(collection_response_from_row(row, &field_rows))
+}
+
+/// Field rows for many collections in a single query, grouped by
+/// `collection_id` and ordered by `ordinal_position` within each group.
+async fn read_field_rows_for_collections(
+    state: &AppState,
+    ctx: &AppContext,
+    collection_ids: &[i64],
+) -> Result<HashMap<i64, Vec<Map<String, Value>>>, AlcedoError> {
+    let mut grouped: HashMap<i64, Vec<Map<String, Value>>> = HashMap::new();
+    if collection_ids.is_empty() {
+        return Ok(grouped);
+    }
+    let rows = sqlx::query(&format!(
+        "SELECT * FROM {} WHERE collection_id = ANY($1) ORDER BY ordinal_position",
+        qtable(ctx, "alcedocore_fields")
+    ))
+    .bind(collection_ids.to_vec())
+    .fetch_all(&*state.database_pool)
+    .await?;
+    for row in &rows {
+        let map = crate::services::postgres::pool::pgrow_to_json(row)?;
+        if let Some(collection_id) = map.get("collection_id").and_then(Value::as_i64) {
+            grouped.entry(collection_id).or_default().push(map);
+        }
+    }
+    Ok(grouped)
 }
 
 async fn exec_all(
@@ -327,9 +392,18 @@ pub async fn list_collections(
             })
             .collect(),
     };
+    // Fetch all field rows in one query instead of one query per collection.
+    let collection_ids: Vec<i64> = rows.iter().filter_map(|row| ji64(row.get("id"))).collect();
+    let fields_by_collection =
+        read_field_rows_for_collections(state, ctx, &collection_ids).await?;
     let mut result = Vec::new();
     for row in &rows {
-        result.push(build_collection_response(state, ctx, row).await?);
+        let collection_id = ji64(row.get("id")).unwrap_or(0);
+        let field_rows: &[Map<String, Value>] = fields_by_collection
+            .get(&collection_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        result.push(collection_response_from_row(row, field_rows));
     }
     result.sort_by(|a, b| {
         a.display_name
@@ -449,6 +523,9 @@ pub async fn create_collection(
     let create_sql = build_create_table_sql(ctx, &req.name, &req.fields)?;
 
     let mut guard = TxGuard::new(state.database_pool.begin().await?);
+    // Runs DDL + writes collection/field meta: the post-commit schema refresh
+    // must not be skipped by the generation check.
+    guard.mark_dirty();
     execute_query_transaction(state, guard.tx(), &create_sql).await?;
     register_collection_meta(
         state,
@@ -498,11 +575,10 @@ pub async fn update_collection(
 
     let collection_id = collection_id_for(state, ctx, name).await?;
 
-    let current_fields: Vec<FieldDefinition> = read_field_rows(state, ctx, collection_id)
-        .await?
-        .iter()
-        .map(field_from_row)
-        .collect();
+    // Read the field metadata once; step 7 below reuses these rows (the DDL
+    // steps in between never touch `alcedocore_fields`).
+    let field_rows = read_field_rows(state, ctx, collection_id).await?;
+    let current_fields: Vec<FieldDefinition> = field_rows.iter().map(field_from_row).collect();
 
     // Merge: keep fields omitted from the request unless explicitly removed.
     let mut desired = req.fields.clone();
@@ -551,6 +627,20 @@ pub async fn update_collection(
         .collect();
 
     let mut guard = TxGuard::new(state.database_pool.begin().await?);
+    // Runs DDL + writes collection/field meta: the post-commit schema refresh
+    // must not be skipped by the generation check.
+    guard.mark_dirty();
+    // Serialize with import_fields on the same collection's field metadata:
+    // both take this transaction-scoped advisory lock on `{schema}:{name}:fields`.
+    execute_query_transaction(
+        state,
+        guard.tx(),
+        &format!(
+            "SELECT pg_advisory_xact_lock(hashtext({}))",
+            quote_str(&format!("{}:{}:fields", ctx.schema_name(), name))
+        ),
+    )
+    .await?;
 
     // 1. Drop M:1 FK constraints (removed + renamed relationship fields).
     let mut fk_drop: Vec<&str> = removed_rel.clone();
@@ -715,27 +805,80 @@ pub async fn update_collection(
         execute_query_transaction(state, guard.tx(), &sql).await?;
     }
 
-    // 7. Replace field metadata rows.
-    let field_rows = read_field_rows(state, ctx, collection_id).await?;
-    let ids: Vec<Value> = field_rows
-        .iter()
-        .filter_map(|r| r.get("id").cloned())
-        .collect();
+    // 7. Sync field metadata rows in place (stable ids): update kept and
+    //    renamed rows, insert added fields, delete removed ones. A delete-all
+    //    + re-create would regenerate every field id and log a created +
+    //    deleted pair per field on every single-field change. Reuses the
+    //    `field_rows` read above — the DDL steps never touched this table.
+    let mut current_by_name: HashMap<String, i64> = HashMap::new();
+    for r in &field_rows {
+        if let (Some(name), Some(id)) = (
+            r.get("api_name").and_then(Value::as_str),
+            r.get("id").and_then(Value::as_i64),
+        ) {
+            current_by_name.insert(name.to_string(), id);
+        }
+    }
+    let rename_map: HashMap<&str, &str> = renamed.iter().copied().collect();
+    let desired_names: HashSet<&str> = desired.iter().map(|f| f.name.as_str()).collect();
+
     let fields_table = "alcedocore_fields".to_string();
     let mut fields_service = ItemsService::new(state, ctx, &fields_table);
-    if !ids.is_empty() {
+
+    // Delete only rows that are really gone (not kept, not a rename source).
+    let delete_ids: Vec<Value> = current_by_name
+        .iter()
+        .filter(|(name, _)| {
+            !desired_names.contains(name.as_str()) && !rename_map.contains_key(name.as_str())
+        })
+        .map(|(_, id)| json!(*id))
+        .collect();
+    if !delete_ids.is_empty() {
         fields_service
-            .delete_items_by_pks(ids, Some(guard.tx()))
+            .delete_items_by_pks(delete_ids, Some(guard.tx()))
             .await?;
     }
-    let payloads: Vec<Map<String, Value>> = desired
-        .iter()
-        .enumerate()
-        .map(|(i, f)| field_payload(collection_id, f, i))
-        .collect();
-    if !payloads.is_empty() {
+
+    // Update kept/renamed rows in place — but only when something actually
+    // changed. Insert genuinely new fields.
+    let mut insert_payloads: Vec<Map<String, Value>> = Vec::new();
+    let mut update_rows: Vec<(i64, Map<String, Value>)> = Vec::new();
+    for (i, f) in desired.iter().enumerate() {
+        let payload = field_payload(collection_id, f, i);
+        let existing = current_by_name
+            .get(f.name.as_str())
+            .copied()
+            .or_else(|| {
+                rename_map
+                    .iter()
+                    .find(|(_, new)| **new == f.name)
+                    .and_then(|(old, _)| current_by_name.get(*old).copied())
+            });
+        match existing {
+            Some(id) => {
+                let current_row = field_rows
+                    .iter()
+                    .find(|r| r.get("id").and_then(Value::as_i64) == Some(id));
+                let changed = current_row.map(|c| {
+                    ["collection_id", "api_name", "display_name", "ordinal_position", "options"]
+                        .iter()
+                        .any(|k| payload.get(*k) != c.get(*k))
+                });
+                if changed.unwrap_or(true) {
+                    update_rows.push((id, payload));
+                }
+            }
+            None => insert_payloads.push(payload),
+        }
+    }
+    // One batched UPDATE ... FROM (VALUES ...) instead of one UPDATE per
+    // changed field (chunked to keep the statements small).
+    for chunk in update_rows.chunks(FIELD_UPDATE_CHUNK) {
+        execute_query_transaction(state, guard.tx(), &build_fields_update_sql(ctx, chunk)).await?;
+    }
+    if !insert_payloads.is_empty() {
         fields_service
-            .create_many(payloads, &mut Some(guard.tx()))
+            .create_many(insert_payloads, &mut Some(guard.tx()))
             .await?;
     }
 
@@ -755,6 +898,9 @@ pub async fn delete_collection(
     let collection_id = collection_id_for(state, ctx, name).await?;
 
     let mut guard = TxGuard::new(state.database_pool.begin().await?);
+    // Drops the table + deletes collection/field/layout meta: the post-commit
+    // schema refresh must not be skipped by the generation check.
+    guard.mark_dirty();
     let drop_sql = drop_table_sql(ctx, name, true);
     execute_query_transaction(state, guard.tx(), &drop_sql).await?;
     let cleanup = [
@@ -844,10 +990,15 @@ pub struct ImportFieldsRequest {
     pub fields: Vec<ImportFieldOverride>,
 }
 
-/// Framework tables (`alcedocore*`) and migration bookkeeping tables are
-/// never importable.
+/// Framework tables (`alcedocore*`), migration bookkeeping tables, and
+/// core-owned plugin tables (`plugin_*`, e.g. `plugin_request_logs` and
+/// `plugin_host_calls`, which core creates in every app schema) are never
+/// importable.
 fn is_importable_table(name: &str) -> bool {
-    !name.starts_with("alcedocore") && name != "schema_migrations" && !name.ends_with("_migrations")
+    !name.starts_with("alcedocore")
+        && name != "schema_migrations"
+        && !name.ends_with("_migrations")
+        && !name.starts_with("plugin_")
 }
 
 const SYSTEM_COLUMNS: [&str; 3] = ["id", "created_at", "updated_at"];
@@ -991,7 +1142,7 @@ async fn existing_foreign_keys(
          FROM pg_catalog.pg_constraint con
          JOIN pg_catalog.pg_class cl ON cl.oid = con.conrelid
          JOIN pg_catalog.pg_namespace n ON n.oid = cl.relnamespace
-         JOIN pg_catalog.pg_attribute a ON a.attrelid = cl.oid AND a.attnum = con.conkey[1]
+         JOIN pg_catalog.pg_attribute a ON a.attrelid = cl.oid AND a.attnum = ANY(con.conkey)
          LEFT JOIN pg_catalog.pg_class rc ON rc.oid = con.confrelid
          LEFT JOIN pg_catalog.pg_namespace rn ON rn.oid = rc.relnamespace
          WHERE con.contype = 'f' AND n.nspname = $1 AND cl.relname = $2",
@@ -1170,6 +1321,9 @@ pub async fn import_collections(
     validate_fields(&fields)?;
 
     let mut guard = TxGuard::new(state.database_pool.begin().await?);
+    // Writes collection/field meta: the post-commit schema refresh must not be
+    // skipped by the generation check.
+    guard.mark_dirty();
     // The has_meta check above runs outside the transaction, so two racing
     // imports of the same table could both insert meta rows. Serialize them
     // with a transaction-scoped advisory lock and re-check inside the tx.
@@ -1306,6 +1460,9 @@ pub async fn import_fields(
     validate_fields(&fields)?;
 
     let mut guard = TxGuard::new(state.database_pool.begin().await?);
+    // Writes field meta: the post-commit schema refresh must not be skipped by
+    // the generation check.
+    guard.mark_dirty();
     // The duplicate check above runs outside the transaction, so two racing
     // imports could both insert field rows. Serialize them with a
     // transaction-scoped advisory lock and re-check inside the tx.
@@ -1347,7 +1504,7 @@ pub async fn import_fields(
         state,
         guard.tx(),
         &format!(
-            "SELECT COUNT(*)::bigint FROM {}.\"alcedocore_fields\" WHERE collection_id = {}",
+            "SELECT COALESCE(MAX(ordinal_position), 0)::bigint FROM {}.\"alcedocore_fields\" WHERE collection_id = {}",
             quote(&schema_name),
             collection_id
         ),
@@ -1701,23 +1858,27 @@ pub async fn reorder_sections(
     body: &Value,
 ) -> Result<Value, AlcedoError> {
     collection_id_for(state, ctx, name).await?;
-    let table = "alcedocore_collection_sections".to_string();
-    let mut service = ItemsService::new(state, ctx, &table);
     if let Some(sections) = body.get("sections").and_then(|v| v.as_array()) {
-        for section in sections {
-            let id = match section.get("id").and_then(|v| v.as_str()) {
-                Some(id) => id,
-                None => continue,
-            };
-            let pos = section
-                .get("ordinal_position")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let payload = item_map! { "ordinal_position" => pos };
-            let mut q = Query::eq("id", json!(id));
-            service
-                .update_items_by_query(&mut q, payload, &mut None)
-                .await?;
+        // One batched UPDATE ... FROM (VALUES ...) instead of one UPDATE per
+        // section.
+        let values: Vec<String> = sections
+            .iter()
+            .filter_map(|section| {
+                let id = section.get("id").and_then(|v| v.as_str())?;
+                let pos = section
+                    .get("ordinal_position")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                Some(format!("({}::uuid, {}::int)", quote_str(id), pos))
+            })
+            .collect();
+        if !values.is_empty() {
+            let sql = format!(
+                "UPDATE {} AS s SET ordinal_position = v.ordinal_position FROM (VALUES {}) AS v(id, ordinal_position) WHERE s.id = v.id",
+                qtable(ctx, "alcedocore_collection_sections"),
+                values.join(", ")
+            );
+            crate::services::postgres::pool::execute_query(state, sql).await?;
         }
     }
     let _ = layout_id;
@@ -1798,19 +1959,27 @@ pub async fn set_layout_roles(
     execute_query_transaction(state, guard.tx(), &delete_sql).await?;
 
     if let Some(ids) = body.get("role_ids").and_then(|v| v.as_array()) {
-        for role in ids {
-            if let Some(role_id) = role.as_str() {
-                if uuid::Uuid::parse_str(role_id).is_err() {
-                    continue;
-                }
-                let insert = format!(
-                    "INSERT INTO {} (layout_id, role_id) VALUES ('{}'::uuid, '{}'::uuid)",
-                    qtable(ctx, "alcedocore_collection_layout_roles"),
-                    escape_sql_string(layout_id),
-                    escape_sql_string(role_id)
-                );
-                execute_query_transaction(state, guard.tx(), &insert).await?;
-            }
+        // One multi-row INSERT instead of one INSERT per role (invalid uuids
+        // are still skipped per role).
+        let values: Vec<String> = ids
+            .iter()
+            .filter_map(|role| role.as_str())
+            .filter(|role_id| uuid::Uuid::parse_str(role_id).is_ok())
+            .map(|role_id| {
+                format!(
+                    "({}::uuid, {}::uuid)",
+                    quote_str(layout_id),
+                    quote_str(role_id)
+                )
+            })
+            .collect();
+        if !values.is_empty() {
+            let insert = format!(
+                "INSERT INTO {} (layout_id, role_id) VALUES {}",
+                qtable(ctx, "alcedocore_collection_layout_roles"),
+                values.join(", ")
+            );
+            execute_query_transaction(state, guard.tx(), &insert).await?;
         }
     }
     guard.commit(state).await?;

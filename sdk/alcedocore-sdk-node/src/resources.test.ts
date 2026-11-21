@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { createActivityLogsResource } from "./activityLogs";
 import { createKvResource } from "./kv.js";
 import { createDbResource } from "./db.js";
 import { createSchemaResource } from "./schema.js";
@@ -9,6 +10,7 @@ import { createMigrationsResource } from "./migrations.js";
 import { createDevResource } from "./dev.js";
 import { createCollectionsResource } from "./collections.js";
 import { createAppsResource } from "./apps.js";
+import { createVersionsResource } from "./versions.js";
 import { createClient } from "./client.js";
 
 // ---------------------------------------------------------------------------
@@ -573,6 +575,65 @@ describe("Apps Resource", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Versions Resource
+// ---------------------------------------------------------------------------
+
+describe("Versions Resource", () => {
+    it("list calls GET platform/versions", async () => {
+        const ky = mockKy([{ id: 1, version_name: "production" }]);
+        const versions = createVersionsResource(ky);
+        const result = await versions.list();
+        expect(getLastUrl(ky)).toBe("platform/versions");
+        expect(result).toEqual([{ id: 1, version_name: "production" }]);
+    });
+
+    it("deploy posts the full body to platform/versions/:id/deploy and returns the result", async () => {
+        const deployResult = {
+            deployed: true,
+            apps: { crm: { tables_written: 3, rows_copied: 12 } },
+        };
+        const ky = mockKy(deployResult);
+        const versions = createVersionsResource(ky);
+        const result = await versions.deploy(3, {
+            dry_run: false,
+            on_conflict: "fail",
+            edit_ids: null,
+        });
+        expect(getLastUrl(ky)).toBe("platform/versions/3/deploy");
+        expect(getLastBody(ky)).toEqual({
+            dry_run: false,
+            on_conflict: "fail",
+            edit_ids: null,
+        });
+        expect(result).toEqual(deployResult);
+    });
+
+    it("deploy sends dry_run without edit_ids", async () => {
+        const ky = mockKy({ deployed: false, dry_run: true, conflicts: [] });
+        const versions = createVersionsResource(ky);
+        const result = await versions.deploy(3, { dry_run: true });
+        expect(getLastUrl(ky)).toBe("platform/versions/3/deploy");
+        expect(getLastBody(ky)).toEqual({ dry_run: true });
+        expect(result.dry_run).toBe(true);
+    });
+
+    it("deploy sends the selected edit_ids with on_conflict", async () => {
+        const ky = mockKy({ deployed: true });
+        const versions = createVersionsResource(ky);
+        await versions.deploy(3, { on_conflict: "skip", edit_ids: [11, 12] });
+        expect(getLastBody(ky)).toEqual({ on_conflict: "skip", edit_ids: [11, 12] });
+    });
+
+    it("deploy defaults to an empty body", async () => {
+        const ky = mockKy({ deployed: true });
+        const versions = createVersionsResource(ky);
+        await versions.deploy(3);
+        expect(getLastUrl(ky)).toBe("platform/versions/3/deploy");
+        expect(getLastBody(ky)).toEqual({});
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Migrations Resource
 // ---------------------------------------------------------------------------
 
@@ -641,5 +702,32 @@ describe("createClient", () => {
             retry: { limit: 5 },
         });
         expect(client).toHaveProperty("kv");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Activity Logs Resource
+// ---------------------------------------------------------------------------
+
+describe("ActivityLogs Resource", () => {
+    afterEach(() => vi.clearAllMocks());
+
+    it("listAppSystem sends typed params as snake_case query keys", async () => {
+        const ky = mockKy({ data: [], total: 0, limit: 10, offset: 0 });
+        const logs = createActivityLogsResource(ky as any);
+        await logs.listAppSystem({ excludeDeployed: true, limit: 10, operationType: "item_created" });
+        const sp = getLastSearchParams(ky) as URLSearchParams;
+        expect(getLastUrl(ky)).toBe("app/logs/system");
+        expect(sp.get("exclude_deployed")).toBe("true");
+        expect(sp.get("limit")).toBe("10");
+        expect(sp.get("operation_type")).toBe("item_created");
+    });
+
+    it("listAppSystem still accepts raw URLSearchParams", async () => {
+        const ky = mockKy({ data: [], total: 0, limit: 100, offset: 0 });
+        const logs = createActivityLogsResource(ky as any);
+        const sp = new URLSearchParams({ exclude_deployed: "true" });
+        await logs.listAppSystem(sp);
+        expect((getLastSearchParams(ky) as URLSearchParams).get("exclude_deployed")).toBe("true");
     });
 });

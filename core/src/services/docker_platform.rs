@@ -555,10 +555,29 @@ impl DockerPlatform {
         };
 
         let mut stream = self.docker.create_image(Some(options), None, credentials);
+        let mut pull_error: Option<String> = None;
         while let Some(item) = stream.next().await {
-            item.map_err(|e| {
-                AlcedoError::SystemError(format!("Could not pull image {}: {}", image, e), 0)
-            })?;
+            if let Err(e) = item {
+                pull_error = Some(format!("Could not pull image {}: {}", image, e));
+                break;
+            }
+        }
+        if let Some(err) = pull_error {
+            // Air-gapped fallback: if the registry is unreachable but the image
+            // is already present locally, deploy from the local copy.
+            // NOTE: this triggers on ANY stream error, not just
+            // registry-unreachable — a corrupted/partial pull also lands here,
+            // so a stale local image can silently mask a bad pull (accepted
+            // air-gap trade-off).
+            if self.docker.inspect_image(&full_image_name).await.is_ok() {
+                tracing::warn!(
+                    "[DOCKER] {} — using locally cached image {}",
+                    err,
+                    full_image_name
+                );
+                return Ok(full_image_name);
+            }
+            return Err(AlcedoError::SystemError(err, 0));
         }
         tracing::info!("[DOCKER] Pulled {}", full_image_name);
         Ok(full_image_name)

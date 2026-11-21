@@ -36,6 +36,12 @@ export const CATEGORIES: CategoryDef[] = [
         description: "View system and collection activity",
     },
     {
+        id: "version-changes",
+        label: "Version changes",
+        icon: "rocket_launch",
+        description: "Review and deploy changes from a version to production",
+    },
+    {
         id: "session",
         label: "Session",
         icon: "lock",

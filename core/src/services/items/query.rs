@@ -26,6 +26,10 @@ use crate::{
 
 const LIMIT_DEFAULT: u64 = 200;
 
+/// Max fk values per nested relation query in `execute_query`, so the IN-list
+/// of each remaining query stays bounded for large base results.
+const FK_VALS_CHUNK: usize = 1000;
+
 fn limit_default() -> u64 {
     LIMIT_DEFAULT
 }
@@ -537,53 +541,68 @@ impl Query {
 
             let Some(pk) = pk else { continue };
 
-            // lets create a new Query object to fetch the relations
-            // we do this by a simple where fk in (id1,id2 ect)
-            let mut field_filter = HashMap::new();
+            // Fetch the related rows in bounded chunks, so no single nested
+            // query carries one giant IN-list.
+            let mut related_rows: Vec<Map<String, Value>> = Vec::new();
+            for fk_chunk in fk_vals.chunks(FK_VALS_CHUNK) {
+                // lets create a new Query object to fetch the relations
+                // we do this by a simple where fk in (id1,id2 ect)
+                let mut field_filter = HashMap::new();
 
-            field_filter.insert(
-                pk.name.clone(),
-                FieldValue::Comparison(Comparison {
-                    _in: Some(
-                        fk_vals
-                            .iter()
-                            .filter_map(|s| Value::from_str(s).ok())
-                            .collect(),
-                    ),
+                field_filter.insert(
+                    pk.name.clone(),
+                    FieldValue::Comparison(Comparison {
+                        _in: Some(
+                            fk_chunk
+                                .iter()
+                                .filter_map(|s| Value::from_str(s).ok())
+                                .collect(),
+                        ),
+                        ..Default::default()
+                    }),
+                );
+
+                let filter = LogicOp {
+                    _and: Some(vec![Filter::Field(FieldFilter {
+                        fields: field_filter,
+                    })]),
+                    _or: None,
+                };
+
+                let mut nested_fields = rq.fields.clone();
+                nested_fields.push(pk.name.clone());
+                let mut nested_query = Query {
+                    fields: nested_fields,
+                    filter,
+                    limit: 0,
                     ..Default::default()
-                }),
-            );
+                };
+                nested_query.access = access.clone();
 
-            let filter = LogicOp {
-                _and: Some(vec![Filter::Field(FieldFilter {
-                    fields: field_filter,
-                })]),
-                _or: None,
-            };
+                related_rows.extend(
+                    Box::pin(nested_query.execute_query(&rq.app_context, &state, &rq.table))
+                        .await?,
+                );
+            }
 
-            let mut nested_fields = rq.fields.clone();
-            nested_fields.push(pk.name.clone());
-            let mut nested_query = Query {
-                fields: nested_fields,
-                filter,
-                limit: 0,
-                ..Default::default()
-            };
-            nested_query.access = access.clone();
-
-            let related_rows =
-                Box::pin(nested_query.execute_query(&rq.app_context, &state, &rq.table)).await?;
+            // Index the related rows by their pk once, instead of scanning the
+            // whole list for every base row. The key is the exact JSON
+            // serialization of the value, so lookups match the previous
+            // `Value == Value` comparison.
+            let mut related_by_pk: HashMap<String, &Map<String, Value>> = HashMap::new();
+            let empty_pk = Value::String("".to_string());
+            for related in &related_rows {
+                let pk_val = related.get(&pk.name).unwrap_or(&empty_pk);
+                related_by_pk
+                    .entry(serde_json::to_string(pk_val).unwrap_or_default())
+                    .or_insert(related);
+            }
 
             // After we got the related rows, we will need to replace the "id" in the rows that we got from our first query
             for row in rows.iter_mut() {
-                let fk_val = row.get(&rq.fk);
-                if let Some(val) = fk_val {
-                    let related_value = related_rows
-                        .iter()
-                        .find(|row| {
-                            row.get(&pk.name).unwrap_or(&Value::String("".to_string())) == val
-                        })
-                        .map(|v| v.clone());
+                if let Some(val) = row.get(&rq.fk) {
+                    let key = serde_json::to_string(val).unwrap_or_default();
+                    let related_value = related_by_pk.get(&key).map(|v| (*v).clone());
 
                     if let Some(val) = related_value {
                         row.insert(rq.fk.clone(), val.into());
