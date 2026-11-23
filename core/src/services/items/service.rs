@@ -36,6 +36,13 @@ fn render_simple_expr(expr: &SimpleExpr) -> String {
     sql.strip_prefix("SELECT ").unwrap_or(&sql).to_string()
 }
 
+/// Scalar cast for a pk literal inside a `VALUES (...)` row (see
+/// `update_items_with_tx`): a bare literal there is typed text, and
+/// `uuid_col = text` fails with 42883.
+fn pk_scalar_cast(data_type: &str) -> String {
+    pk_array_cast(data_type).trim_end_matches("[]").to_string()
+}
+
 /// The array cast applied to the bound `Vec<String>` of pk values in
 /// `pk = ANY($1...)`, chosen from the pk column's type so Postgres coerces the
 /// text array to the pk's array type.
@@ -670,13 +677,16 @@ impl ItemsService<'_> {
         ),
         AlcedoError,
     > {
-        let pk_name = get_pk_key(
+        let pk_column = get_pk_key(
             &self.app_state.database_schema,
             &self.app_context.schema_name(),
             &self.collection,
         )
-        .await?
-        .name;
+        .await?;
+        let pk_name = pk_column.name.clone();
+        // Scalar cast for the pk inside the VALUES list: a bare string literal
+        // there is typed text, and `uuid_col = text` fails with 42883.
+        let pk_cast = pk_scalar_cast(&pk_column.data_type);
 
         // Read the affected rows in full (not just their pk) so the activity log
         // can diff old vs new. `ItemsBeforeUpdate.keys` filters on `pk_name`
@@ -773,7 +783,7 @@ impl ItemsService<'_> {
             for chunk in pk_exprs.chunks(UPDATE_CHUNK) {
                 let values_list = chunk
                     .iter()
-                    .map(|pk| format!("({})", pk))
+                    .map(|pk| format!("(({pk}){pk_cast})"))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let query_str = format!(
