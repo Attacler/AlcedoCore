@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 
 use super::{
-    AppLink, DeployEdit, applied_edits_for_version, qtable, schema_exists,
+    AppLink, DeployEdit, applied::applied_edits_full_for_version, qtable, schema_exists,
 };
 use crate::{
     services::{
@@ -86,8 +86,11 @@ pub(crate) async fn collect_edits(
     }
 
     // Edits already applied by a previous deploy of this version (recorded in
-    // the global `version_deployed` markers) are not pending anymore.
-    let applied = applied_edits_for_version(pool, version_name).await?;
+    // the global `version_deployed` markers) are not pending anymore. Use the
+    // full marker set so collection-log ids are filtered too — wholesale
+    // deploys record them as handled (item rows themselves are never copied,
+    // but the edit is no longer pending).
+    let applied = applied_edits_full_for_version(pool, version_name).await?;
     let mut edits: Vec<DeployEdit> = Vec::new();
     for link in version_links {
         let schema = format!("{}010{}", link.api_name, version_slug);
@@ -112,7 +115,7 @@ pub(crate) async fn collect_edits(
             if let Some(id) = id {
                 if applied
                     .get(&link.api_name)
-                    .map(|(ids, _)| ids.contains(&id))
+                    .map(|e| e.system_ids.contains(&id))
                     .unwrap_or(false)
                 {
                     continue;
@@ -148,6 +151,16 @@ pub(crate) async fn collect_edits(
         .fetch_all(pool)
         .await?;
         for row in &col_rows {
+            let id: Option<i64> = row.try_get("id").ok();
+            if let Some(id) = id {
+                if applied
+                    .get(&link.api_name)
+                    .map(|e| e.collection_ids.contains(&id))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+            }
             edits.push(DeployEdit {
                 id: row.try_get("id").ok(),
                 app: link.api_name.clone(),
@@ -167,7 +180,7 @@ pub(crate) async fn collect_edits(
         if !prod_by_app.contains_key(&link.app_id) {
             let already_deployed = applied
                 .get(&link.api_name)
-                .map(|(_, apps)| apps.contains(&link.api_name))
+                .map(|e| e.apps.contains(&link.api_name))
                 .unwrap_or(false);
             let selected = match selected_apps {
                 None => true,

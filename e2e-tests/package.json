@@ -11,7 +11,7 @@
     "test:api:core": "node --test ./api/collection-data.test.ts",
     "test:api:crossapp": "node --test ./api/cross-app-relations.test.ts",
     "test:api:relations": "node --test ./api/relations-advanced.test.ts",
-    "test:api:versions": "tsx --test ./api/version-branches.test.ts"
+    "test:api:versions": "tsx --test ./api/version-branches.test.ts ./api/version-branches-deploy.test.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.44.0",
