@@ -11,19 +11,42 @@
  *  - collection metadata update (display_name)
  *  - menu, saved view, app setting created in the version
  *  - a NEW APP created directly on the version (app_created edit, edit_ids=[api_name])
- *  - a plugin install in the version (copied to the production app-version)
+ *  - a plugin install in the version (copied to the production app-version);
+ *    re-deploys dedup the install; route mappings on the version's install are
+ *    remapped to the production install id
+ *  - a NEW COLLECTION created in the version lands in production (structure +
+ *    metadata); dry-run flags it as relation_missing_in_prod, fail -> 409
+ *  - roles created in the version are NEVER deployed (excluded copy set):
+ *    selected mode skips the edit ("target is not in the copy set"),
+ *    wholesale leaves production's roles untouched
  *  - user-item edits: enumerated + conflict-checked, but never row-copied
+ *    (same item changed on both sides -> changed_on_both_sides on the
+ *    collection log; production row keeps its own value)
  *  - collection deletion in a version writes no log row -> not a deployable
  *    edit (pinned); production keeps the collection
+ *  - edit_ids: [] or non-matching entries select nothing and write nothing;
+ *    mixed edit_ids (log-row id + app api_name in one call) and dry_run +
+ *    edit_ids combined
+ *  - wholesale deploy does NOT clobber an app with no pending edits
+ *    (production-side change on an untouched app survives)
+ *  - cross-app relation deploy: two apps with a cross-app FK deploy in one
+ *    wholesale run, dependency (related app) first; the prod FK is usable
+ *  - plugin version change on re-deploy re-provisions the production install
+ *    (runtime_provisioned: true), still deduplicated to one install
+ *  - revert applies user-item inverses to production rows (pinned quirk:
+ *    item_created inverse DELETES the prod row with that item id even though
+ *    the row was never copied); every deploy/revert response carries the
+ *    no-backup warning
  *
  * Conflict / refusal cases:
  *  - dry_run never writes and never 409s, even with conflicts
  *  - on_conflict=fail -> 409 changed_on_both_sides; skip -> edit skipped;
  *    overwrite -> version wins
- *  - field type change / field deletion -> 409 unsupported, nothing written
- *  - auth: unauthenticated -> 401; platform version guards (deploy/revert
- *    production, delete production) -> 400/403; unknown ids -> 404;
- *    non-numeric id -> 400
+ *  - field type change / field deletion / relation-target change -> 409
+ *    unsupported, nothing written
+ *  - auth: unauthenticated -> 401; non-admin user -> 403; platform version
+ *    guards (deploy/revert production, delete production) -> 400/403;
+ *    unknown ids -> 404; non-numeric id -> 400
  *  - create_version blank/duplicate name -> 400; create_app duplicate
  *    api_name -> 400 / unknown version -> 404; invalid collection names /
  *    duplicate fields / relation to missing collection -> 400
@@ -52,13 +75,29 @@ const NOTES = `dep_notes_${SUFFIX}`;
 const NOTESX = `dep_notex_${SUFFIX}`; // for the field-type-change refusal
 const NOTESY = `dep_notey_${SUFFIX}`; // for the field-deletion refusal
 const NOTESZ = `dep_notez_${SUFFIX}`; // for the collection-deletion probe
+const NEWCOL = `dep_newcol_${SUFFIX}`; // created in the version, deployed to production
+const ROLE_NAME = `e2e_role_${SUFFIX}`; // must never land in production
 const SETTING_KEY = `e2e_setting_${SUFFIX}`;
+const APP4 = `e2edep4_${SUFFIX}`; // created on the version for the mixed edit_ids test
+// apps created on production BEFORE the version clone (so the version inherits them)
+const UNTOUCHED_APP = `e2edepu_${SUFFIX}`; // edited only in production -> must survive deploys
+const UCOL = `dep_ucol_${SUFFIX}`;
+const XAPP = `e2edeqx_${SUFFIX}`; // cross-app pair: XAPP.yref -> YAPP
+const XCOL = `dep_xcol_${SUFFIX}`;
+const YAPP = `e2edeqy_${SUFFIX}`;
+const YCOL = `dep_ycol_${SUFFIX}`;
+const VERSION3 = `e2edepc_${SUFFIX}`; // isolated version for the revert item-inverse pin
 
 let cookie = "";
 let appId = 0;
 let app2Id = 0;
+let app4Id = 0;
+let untouchedAppId = 0;
+let xAppId = 0;
+let yAppId = 0;
 let versionId = 0;
 let version2Id = 0;
+let version3Id = 0;
 let productionVersionId = 0;
 let prodLinkId = 0; // app-version link id of (APP, production)
 let versionLinkId = 0; // app-version link id of (APP, VERSION)
@@ -76,11 +115,11 @@ function headers(c?: string, app?: string, version?: string): Record<string, str
     return h;
 }
 
-async function login(): Promise<string> {
+async function login(email = EMAIL, password = PASSWORD): Promise<string> {
     const res = await fetch(`${API}/api/platform/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
+        body: JSON.stringify({ email, password }),
         redirect: "manual",
     });
     const text = await res.text();
@@ -231,6 +270,29 @@ describe("version-branches deploy e2e", () => {
             { name: "temp", type: "string" },
         ]);
         await mk(NOTESZ, [{ name: "title", type: "string" }]);
+        // extra apps on production, cloned into the version below
+        const mkApp = async (api_name: string) =>
+            data(
+                await call("POST", "/api/platform/apps", {
+                    body: { name: `E2E dep ${api_name}`, api_name, version: "production" },
+                }),
+                `create app ${api_name}`,
+            ).id;
+        const mkIn = async (app: string, name: string) =>
+            data(
+                await call("POST", "/api/app/collections", {
+                    app,
+                    version: "production",
+                    body: { name, fields: [{ name: "title", type: "string" }] },
+                }),
+                `create ${name} in ${app}`,
+            );
+        untouchedAppId = await mkApp(UNTOUCHED_APP);
+        await mkIn(UNTOUCHED_APP, UCOL);
+        xAppId = await mkApp(XAPP);
+        await mkIn(XAPP, XCOL);
+        yAppId = await mkApp(YAPP);
+        await mkIn(YAPP, YCOL);
         // setting created in production BEFORE the version clone, so both
         // schemas carry the same row and edits conflict on the same target
         await call("POST", "/api/app/settings/batch", {
@@ -261,10 +323,10 @@ describe("version-branches deploy e2e", () => {
     });
 
     after(async () => {
-        for (const vid of [versionId, version2Id]) {
+        for (const vid of [versionId, version2Id, version3Id]) {
             if (vid) await call("DELETE", `/api/platform/versions/${vid}`);
         }
-        for (const aid of [appId, app2Id]) {
+        for (const aid of [appId, app2Id, app4Id, untouchedAppId, xAppId, yAppId]) {
             if (aid) await call("DELETE", `/api/platform/apps/${aid}`);
         }
     });
@@ -454,6 +516,68 @@ describe("version-branches deploy e2e", () => {
         assert.strictEqual(cols.json?.status, "success", JSON.stringify(cols.json).slice(0, 200));
     });
 
+    it("mixed edit_ids (log-row id + app api_name in one call) and dry_run + edit_ids combined", async () => {
+        // a new app on the version (app_created edit, selected by api_name)
+        const res = await call("POST", "/api/platform/apps", {
+            body: { name: `E2E dep4 ${SUFFIX}`, api_name: APP4, version: VERSION },
+        });
+        app4Id = data(res, "create app4 on version").id;
+        // plus one pending field edit on APP (selected by numeric log-row id)
+        await updateCollectionFields(APP, VERSION, NOTES, [{ name: "mixed_probe", type: "string" }]);
+
+        const dry = await pollDryRun(
+            versionId,
+            (d) => {
+                const appEdits = (d.edits ?? []).filter(
+                    (e: any) => e.source === "app" && e.action === "app_created" && e.target === APP4,
+                );
+                const fieldEdits = (d.edits ?? []).filter(
+                    (e: any) => e.app === APP && e.action === "item_created" && e.target === "alcedocore_fields",
+                );
+                return appEdits.length === 1 && fieldEdits.length === 1 && typeof fieldEdits[0].id === "number";
+            },
+            25000,
+            "app_created + one field edit pending",
+        );
+        const fieldEditId = dry.edits.find(
+            (e: any) => e.app === APP && e.target === "alcedocore_fields",
+        ).id;
+
+        // dry_run + edit_ids: reports only the selected edit, writes nothing, never 409s
+        const selDry = await deploy(versionId, { dry_run: true, edit_ids: [fieldEditId] });
+        assert.strictEqual(selDry.status, 200, JSON.stringify(selDry.json).slice(0, 300));
+        const selDryData = data(selDry, "selected dry-run");
+        assert.strictEqual(selDryData.deployed, false);
+        assert.strictEqual(selDryData.edits.length, 1);
+        assert.strictEqual(selDryData.edits[0].id, fieldEditId);
+        assert.ok(
+            !(await getCollection(APP, "production", NOTES)).fields.some((f: any) => f.name === "mixed_probe"),
+            "dry-run must not write",
+        );
+
+        // mixed edit_ids: numeric log-row id + app api_name in ONE call
+        const dep = await deploy(versionId, { edit_ids: [fieldEditId, APP4], on_conflict: "overwrite" });
+        assert.strictEqual(dep.status, 200, JSON.stringify(dep.json).slice(0, 300));
+        const d = data(dep, "mixed edit_ids deploy");
+        assert.strictEqual(d.deployed, true);
+        assert.ok(
+            (d.apps ?? []).some((a: any) => a.app === APP && a.status === "selected"),
+            `expected selected result for ${APP}: ${JSON.stringify(d.apps)}`,
+        );
+        assert.ok(
+            (d.apps ?? []).some((a: any) => a.app === APP4 && a.status === "created"),
+            `expected created result for ${APP4}: ${JSON.stringify(d.apps)}`,
+        );
+        assert.ok(
+            (await getCollection(APP, "production", NOTES)).fields.some((f: any) => f.name === "mixed_probe"),
+            "selected field edit must land in production",
+        );
+        assert.ok(
+            (await appVersionLinks()).some((l: any) => l.api_name === APP4 && l.version_id === productionVersionId),
+            `${APP4} must be linked to production after the mixed deploy`,
+        );
+    });
+
     it("copies a plugin install from the version to production on deploy", async () => {
         const res = await call("POST", "/api/platform/plugins/deploy", {
             body: {
@@ -542,6 +666,154 @@ describe("version-branches deploy e2e", () => {
         assert.strictEqual(data(dep, "deploy after delete").deployed, true);
         const prodCols = await collectionNames(APP, "production");
         assert.ok(prodCols.includes(NOTESZ), `production must still list ${NOTESZ}`);
+    });
+
+    it("deploys a new collection created in the version (dry-run flags relation_missing_in_prod, fail -> 409)", async () => {
+        const res = await call("POST", "/api/app/collections", {
+            app: APP,
+            version: VERSION,
+            body: { name: NEWCOL, fields: [{ name: "label", type: "string" }] },
+        });
+        data(res, "create new collection in version");
+
+        const dry = await pollDryRun(
+            versionId,
+            (d) => (d.edits ?? []).some((e: any) => e.action === "collection_created"),
+            25000,
+            "collection_created edit",
+        );
+        assert.ok(
+            (dry.conflicts ?? []).some(
+                (c: any) => c.type === "relation_missing_in_prod" && c.collection === NEWCOL,
+            ),
+            `dry-run must flag the new collection as missing in production: ${JSON.stringify(dry.conflicts)}`,
+        );
+
+        // fail mode refuses on that conflict, nothing written
+        const fail = await deploy(versionId, { on_conflict: "fail" });
+        assert.strictEqual(fail.status, 409, `expected 409, got ${fail.status}`);
+        assert.ok(
+            (fail.json.data?.conflicts ?? []).some((c: any) => c.type === "relation_missing_in_prod"),
+        );
+        assert.ok(!(await collectionNames(APP, "production")).includes(NEWCOL), "fail must not write");
+
+        const dep = await deploy(versionId, { on_conflict: "overwrite" });
+        assert.strictEqual(dep.status, 200, JSON.stringify(dep.json).slice(0, 300));
+        assert.strictEqual(data(dep, "deploy new collection").deployed, true);
+
+        assert.ok(
+            (await collectionNames(APP, "production")).includes(NEWCOL),
+            "production must list the new collection after deploy",
+        );
+        // the physical table exists too: an item can be written in production
+        const item = await call("POST", `/api/app/items/${NEWCOL}`, {
+            app: APP,
+            version: "production",
+            body: { label: "prod row" },
+        });
+        data(item, "create item in production new collection");
+        assert.strictEqual(await itemCount(APP, "production", NEWCOL), 1);
+    });
+
+    it("never deploys roles (excluded copy set): selected edit skipped, wholesale leaves production roles untouched", async () => {
+        const prodRolesBefore =
+            data(await call("GET", "/api/app/roles", { app: APP, version: "production" }), "prod roles").data ??
+            [];
+        const prodNames = prodRolesBefore.map((r: any) => r.name).sort();
+
+        const res = await call("POST", "/api/app/roles", {
+            app: APP,
+            version: VERSION,
+            body: { name: ROLE_NAME, description: "must not deploy" },
+        });
+        data(res, "create role in version");
+
+        const dry = await pollDryRun(
+            versionId,
+            (d) =>
+                (d.edits ?? []).some((e: any) => e.action === "role_created" && e.target === "alcedocore_roles"),
+            25000,
+            "role_created edit",
+        );
+        const roleEdit = dry.edits.find((e: any) => e.action === "role_created");
+        assert.ok(typeof roleEdit.id === "number", "role edit must carry a log-row id");
+
+        // selected mode: target is outside the copy set -> skipped, nothing written
+        const sel = await deploy(versionId, { edit_ids: [roleEdit.id], on_conflict: "overwrite" });
+        assert.strictEqual(sel.status, 200, JSON.stringify(sel.json).slice(0, 300));
+        const selData = data(sel, "selected role deploy");
+        assert.strictEqual(selData.deployed, true);
+        assert.ok(
+            (selData.skipped ?? []).some((s: any) => s.reason === "target is not in the copy set"),
+            `role edit must be skipped as outside the copy set: ${JSON.stringify(selData.skipped)}`,
+        );
+
+        // wholesale: the roles table is not in the copy set, production keeps its own rows
+        const dep = await deploy(versionId, { on_conflict: "overwrite" });
+        assert.strictEqual(data(dep, "wholesale after role").deployed, true);
+        const prodRolesAfter =
+            data(await call("GET", "/api/app/roles", { app: APP, version: "production" }), "prod roles after")
+                .data ?? [];
+        assert.ok(
+            !prodRolesAfter.some((r: any) => r.name === ROLE_NAME),
+            `role ${ROLE_NAME} must not land in production: ${JSON.stringify(prodRolesAfter)}`,
+        );
+        assert.deepStrictEqual(prodRolesAfter.map((r: any) => r.name).sort(), prodNames);
+    });
+
+    it("flags a collection-log conflict when the same item changed on both sides; fail -> 409; production row never overwritten", async () => {
+        // version schemas are cloned structure-only, so the same item id must
+        // be created explicitly on both sides (the create API accepts an `id`)
+        let res = await call("POST", `/api/app/items/${NOTES}`, {
+            app: APP,
+            version: VERSION,
+            body: { title: "ver-item" },
+        });
+        const id = String(data(res, "create item in version").created[0].id);
+        res = await call("POST", `/api/app/items/${NOTES}`, {
+            app: APP,
+            version: "production",
+            body: { id, title: "prod-item" },
+        });
+        data(res, "create same-id item in production");
+        res = await call("PATCH", `/api/app/items/${NOTES}/${id}`, {
+            app: APP,
+            version: VERSION,
+            body: { title: "ver-updated" },
+        });
+        data(res, "update item in version");
+
+        const dry = await pollDryRun(
+            versionId,
+            (d) =>
+                (d.conflicts ?? []).some(
+                    (c: any) => c.type === "changed_on_both_sides" && c.collection === NOTES,
+                ),
+            25000,
+            "item-level changed_on_both_sides conflict",
+        );
+        assert.ok(
+            dry.conflicts.find((c: any) => c.type === "changed_on_both_sides" && c.collection === NOTES),
+        );
+
+        const fail = await deploy(versionId, { on_conflict: "fail" });
+        assert.strictEqual(fail.status, 409, `expected 409, got ${fail.status}`);
+        assert.ok(
+            (fail.json.data?.conflicts ?? []).some(
+                (c: any) => c.type === "changed_on_both_sides" && c.collection === NOTES,
+            ),
+        );
+
+        const dep = await deploy(versionId, { on_conflict: "overwrite" });
+        assert.strictEqual(dep.status, 200, JSON.stringify(dep.json).slice(0, 300));
+        assert.strictEqual(data(dep, "overwrite with item conflict").deployed, true);
+
+        // user item rows are never copied: production keeps its own value
+        const prodItem = data(
+            await call("GET", `/api/app/items/${NOTES}/${id}`, { app: APP, version: "production" }),
+            "prod item",
+        );
+        assert.strictEqual(prodItem.title, "prod-item", "production item must keep its own value");
     });
 
     // -----------------------------------------------------------------------
@@ -672,6 +944,208 @@ describe("version-branches deploy e2e", () => {
         assert.ok(prodNotes2.fields.map((f: any) => f.name).includes("tag"), "tag must be back after redeploy");
     });
 
+    it("dedups plugin installs across re-deploys and remaps route mappings to the production install", async () => {
+        // several wholesale deploys have run by now (tests above); the
+        // production install of hello-world must still be exactly one row
+        const plugins = data(await call("GET", "/api/platform/plugins"), "plugins").plugins;
+        const hw = plugins.find((p: any) => p.slug === "hello-world");
+        assert.ok(hw, "hello-world must be in the catalog");
+        const installs = hw.installations ?? [];
+        const prodInstalls = installs.filter((i: any) => i.app_version_id === prodLinkId);
+        assert.strictEqual(
+            prodInstalls.length,
+            1,
+            `exactly one production install after several deploys: ${JSON.stringify(installs)}`,
+        );
+        const verInstalls = installs.filter((i: any) => i.app_version_id === versionLinkId);
+        assert.strictEqual(verInstalls.length, 1, "the version keeps its own install");
+        const prodInstallId = prodInstalls[0].id;
+        const verInstallId = verInstalls[0].id;
+
+        // a route mapping pointing at the VERSION's install (route mappings are
+        // global, so create it without an X-Version header = production context)
+        const prefix = `/e2e-rm-${SUFFIX}`;
+        const created = await call("POST", "/api/platform/settings/route-mappings", {
+            body: { domain: null, path_prefix: prefix, install_id: verInstallId, is_active: true },
+        });
+        const mapping = data(created, "create route mapping");
+        assert.strictEqual(mapping.install_id, verInstallId);
+
+        const dep = await deploy(versionId, { on_conflict: "overwrite" });
+        assert.strictEqual(data(dep, "deploy for route mapping").deployed, true);
+
+        const list = data(await call("GET", "/api/platform/settings/route-mappings"), "route mappings");
+        const after = (list.mappings ?? []).find((m: any) => m.path_prefix === prefix);
+        assert.ok(after, "mapping must still exist after deploy");
+        assert.strictEqual(
+            after.install_id,
+            prodInstallId,
+            `mapping must be remapped to the production install: ${JSON.stringify(after)}`,
+        );
+
+        await call("DELETE", `/api/platform/settings/route-mappings/${mapping.id}`);
+    });
+
+    it("empty or non-matching edit_ids select nothing and write nothing", async () => {
+        const pendingBefore = (data(await deploy(versionId, { dry_run: true }), "dry-run 0").edits ?? []).length;
+
+        let dep = await deploy(versionId, { edit_ids: [] });
+        assert.strictEqual(dep.status, 200, JSON.stringify(dep.json).slice(0, 300));
+        let d = data(dep, "empty edit_ids");
+        assert.strictEqual(d.deployed, true);
+        assert.deepStrictEqual(d.apps ?? [], [], "no app may be written for an empty selection");
+
+        dep = await deploy(versionId, { edit_ids: ["no_such_app_xyz", 424242] });
+        assert.strictEqual(dep.status, 200, JSON.stringify(dep.json).slice(0, 300));
+        d = data(dep, "non-matching edit_ids");
+        assert.strictEqual(d.deployed, true);
+        assert.deepStrictEqual(d.apps ?? [], [], "non-matching entries must be ignored");
+
+        const dry = data(await deploy(versionId, { dry_run: true }), "dry-run");
+        assert.strictEqual(
+            (dry.edits ?? []).length,
+            pendingBefore,
+            `nothing may become pending: before=${pendingBefore} after=${(dry.edits ?? []).length} edits=${JSON.stringify(
+                (dry.edits ?? []).map((e: any) => [e.app, e.source, e.action, e.target, e.collection, e.id]),
+            )}`,
+        );
+        assert.match(dry.warning ?? "", /No data backup/, "dry-run response must carry the no-backup warning");
+    });
+
+    it("wholesale deploy does not clobber an app with no pending edits (prod-side change survives)", async () => {
+        // production-side-only edit on the untouched app (after the clone)
+        const cur = await getCollection(UNTOUCHED_APP, "production", UCOL);
+        const renamed = `Prod-only ${SUFFIX}`;
+        let res = await call("PUT", `/api/app/collections/${UCOL}`, {
+            app: UNTOUCHED_APP,
+            version: "production",
+            body: { display_name: renamed, fields: cur.fields ?? [] },
+        });
+        data(res, "rename untouched collection in production");
+
+        // an edit in APP (so the wholesale deploy actually writes APP)
+        await updateCollectionFields(APP, VERSION, NOTES, [{ name: "untouched_probe", type: "string" }]);
+        await pollDryRun(
+            versionId,
+            (d) =>
+                (d.edits ?? []).some(
+                    (e: any) => e.app === APP && e.target === "alcedocore_fields" && e.action === "item_created",
+                ),
+            25000,
+            "untouched_probe field edit",
+        );
+
+        const dep = await deploy(versionId, { on_conflict: "overwrite" });
+        assert.strictEqual(dep.status, 200, JSON.stringify(dep.json).slice(0, 300));
+        assert.strictEqual(data(dep, "deploy for untouched-app pin").deployed, true);
+
+        // APP was written...
+        assert.ok(
+            (await getCollection(APP, "production", NOTES)).fields.some((f: any) => f.name === "untouched_probe"),
+            "APP must have been written",
+        );
+        // ...but the untouched app kept its production-side change
+        const prodU = await getCollection(UNTOUCHED_APP, "production", UCOL);
+        assert.strictEqual(prodU.display_name, renamed, "prod-side rename of an untouched app must survive");
+        // and the version side still has the pre-rename value
+        const verU = await getCollection(UNTOUCHED_APP, VERSION, UCOL);
+        assert.notStrictEqual(verU.display_name, renamed);
+    });
+
+    it("deploys a cross-app relation in one wholesale run, related app first (topo order)", async () => {
+        // XAPP gets a cross-app M:1 field pointing at YAPP's collection;
+        // YAPP gets its own edit, so both apps are written by the deploy and
+        // the deploy must order YAPP before XAPP (XAPP's version schema has
+        // an FK into YAPP's version schema)
+        await updateCollectionFields(XAPP, VERSION, XCOL, [
+            {
+                name: "yref",
+                type: "relationship",
+                relationship_type: "many_to_one",
+                related_collection: YCOL,
+                related_app: YAPP,
+            },
+        ]);
+        await updateCollectionFields(YAPP, VERSION, YCOL, [{ name: "ynote", type: "string" }]);
+
+        await pollDryRun(
+            versionId,
+            (d) =>
+                (d.edits ?? []).some((e: any) => e.app === XAPP && e.target === "alcedocore_fields") &&
+                (d.edits ?? []).some((e: any) => e.app === YAPP && e.target === "alcedocore_fields"),
+            25000,
+            "cross-app field edits in XAPP and YAPP",
+        );
+
+        const dep = await deploy(versionId, { on_conflict: "overwrite" });
+        assert.strictEqual(dep.status, 200, JSON.stringify(dep.json).slice(0, 400));
+        const d = data(dep, "cross-app deploy");
+        assert.strictEqual(d.deployed, true);
+        const written = (d.apps ?? []).map((a: any) => a.app);
+        assert.ok(written.includes(XAPP) && written.includes(YAPP), `both apps written: ${JSON.stringify(d.apps)}`);
+        // YAPP (the dependency) must be written before XAPP
+        assert.ok(
+            written.indexOf(YAPP) < written.indexOf(XAPP),
+            `dependency ${YAPP} must deploy before ${XAPP}: ${JSON.stringify(written)}`,
+        );
+
+        const prodX = await getCollection(XAPP, "production", XCOL);
+        const yref = prodX.fields.find((f: any) => f.name === "yref");
+        assert.ok(yref, `prod ${XCOL} must have yref: ${JSON.stringify(prodX.fields)}`);
+        assert.strictEqual(yref.related_app, YAPP);
+        assert.strictEqual(yref.related_collection, YCOL);
+        assert.ok(
+            (await getCollection(YAPP, "production", YCOL)).fields.some((f: any) => f.name === "ynote"),
+            "prod YCOL must have ynote",
+        );
+
+        // functional proof: the recreated FK points at the PRODUCTION schema of YAPP
+        const yItem = await call("POST", `/api/app/items/${YCOL}`, {
+            app: YAPP,
+            version: "production",
+            body: { title: "y1" },
+        });
+        const yId = data(yItem, "create prod YCOL item").created[0].id;
+        const xItem = await call("POST", `/api/app/items/${XCOL}`, {
+            app: XAPP,
+            version: "production",
+            body: { title: "x1", yref: yId },
+        });
+        assert.strictEqual(xItem.status, 200, `cross-app insert in production must work: ${JSON.stringify(xItem.json).slice(0, 300)}`);
+    });
+
+    it("re-deploy with a changed plugin version re-provisions the production install (still one install)", async () => {
+        // same slug on the version's app-version, bumped plugin_version
+        const res = await call("POST", "/api/platform/plugins/deploy", {
+            body: {
+                slug: "hello-world",
+                plugin_version: "1.0.1",
+                image: "localhost:5000/hello-world:1.0.0",
+                registry_id: 1,
+                app_version_id: versionLinkId,
+                scope: "app",
+                env: {},
+                granted_scopes: ["kv.all"],
+            },
+        });
+        assert.strictEqual(res.status, 200, `plugin re-deploy: ${JSON.stringify(res.json).slice(0, 300)}`);
+
+        const dep = await deploy(versionId, { on_conflict: "overwrite" });
+        assert.strictEqual(dep.status, 200, JSON.stringify(dep.json).slice(0, 300));
+        const d = data(dep, "plugin version-change deploy");
+        assert.strictEqual(d.deployed, true);
+        assert.ok(
+            (d.plugins ?? []).some((p: any) => p.runtime_provisioned === true),
+            `expected a re-provisioned install: ${JSON.stringify(d.plugins)}`,
+        );
+
+        const plugins = data(await call("GET", "/api/platform/plugins"), "plugins").plugins;
+        const hw = plugins.find((p: any) => p.slug === "hello-world");
+        const prodInstalls = (hw.installations ?? []).filter((i: any) => i.app_version_id === prodLinkId);
+        assert.strictEqual(prodInstalls.length, 1, "still exactly one production install");
+        assert.strictEqual(prodInstalls[0].plugin_version, "1.0.1", "prod install must carry the new version");
+    });
+
     // -----------------------------------------------------------------------
     // Refusals: unsupported field changes (LAST: they stay pending and would
     // make every later real deploy refuse with 409)
@@ -765,6 +1239,58 @@ describe("version-branches deploy e2e", () => {
         );
     });
 
+    it("refuses a relation-target change on an existing field (409 unsupported even with overwrite)", async () => {
+        // point the version's `parent` field (deployed to production in the
+        // first test) at NOTESX instead of NOTES — a deploy cannot retarget
+        // the physical FK in production
+        const list = await call(
+            "GET",
+            "/api/app/items/alcedocore_fields?filter%5Bapi_name%5D%5B_eq%5D=parent&limit=10",
+            { app: APP, version: VERSION },
+        );
+        const rows = data(list, "list parent field rows").data ?? [];
+        const parent = rows.find((r: any) => r.api_name === "parent");
+        assert.ok(parent, `parent field row must exist in the version: ${JSON.stringify(rows)}`);
+        const patch = await call(
+            "PATCH",
+            "/api/app/items/alcedocore_fields?filter%5Bapi_name%5D%5B_eq%5D=parent",
+            {
+                app: APP,
+                version: VERSION,
+                body: { options: { ...(parent.options ?? {}), related_collection: NOTESX } },
+            },
+        );
+        data(patch, "retarget parent field in version");
+
+        const dry = await pollDryRun(
+            versionId,
+            (d) =>
+                (d.unsupported ?? []).some(
+                    (u: any) => u.type === "field_type_change" && /relation target/.test(u.detail ?? ""),
+                ),
+            25000,
+            "relation-target unsupported",
+        );
+        assert.ok(dry.unsupported.some((u: any) => /relation target/.test(u.detail ?? "")));
+
+        const dep = await deploy(versionId, { on_conflict: "overwrite" });
+        assert.strictEqual(dep.status, 409, `expected 409, got ${dep.status}`);
+        assert.ok(
+            (dep.json.data?.unsupported ?? []).some(
+                (u: any) => u.type === "field_type_change" && /relation target/.test(u.detail ?? ""),
+            ),
+            JSON.stringify(dep.json.data?.unsupported),
+        );
+
+        const prod = await getCollection(APP, "production", NOTES);
+        const prodParent = prod.fields.find((f: any) => f.name === "parent");
+        assert.strictEqual(
+            prodParent?.related_collection,
+            NOTES,
+            "production relation target must be unchanged",
+        );
+    });
+
     // -----------------------------------------------------------------------
     // Error / refusal cases on the version & app API
     // -----------------------------------------------------------------------
@@ -784,6 +1310,34 @@ describe("version-branches deploy e2e", () => {
             assert.strictEqual(res.status, 401, `${method} ${path} must be 401, got ${res.status}`);
             assert.strictEqual(res.json?.status, "error");
         }
+    });
+
+    it("rejects non-admin authenticated users with 403", async () => {
+        const email = `e2e_user_${SUFFIX}@example.com`;
+        const password = "Passw0rd!123";
+        const created = await call("POST", "/api/platform/users", {
+            body: { email, password, display_name: "e2e non-admin", is_admin: false },
+        });
+        const userId = data(created, "create non-admin user").id;
+        assert.ok(userId, "user id expected");
+
+        const userCookie = await login(email, password);
+        const cases: [string, string, unknown][] = [
+            ["GET", "/api/platform/versions", undefined],
+            ["POST", `/api/platform/versions/${versionId}/deploy`, { dry_run: true }],
+            ["POST", `/api/platform/versions/${versionId}/revert`, {}],
+            ["DELETE", `/api/platform/versions/${versionId}`, undefined],
+        ];
+        for (const [method, path, body] of cases) {
+            const res = await call(method, path, { cookieOverride: userCookie, body });
+            assert.strictEqual(
+                res.status,
+                403,
+                `${method} ${path} must be 403 for a non-admin user, got ${res.status}: ${JSON.stringify(res.json).slice(0, 200)}`,
+            );
+        }
+
+        await call("DELETE", `/api/platform/users/${userId}`);
     });
 
     it("validates version creation and guards the production version", async () => {
@@ -893,5 +1447,69 @@ describe("version-branches deploy e2e", () => {
         // and a second revert is still a no-op
         const rev2 = await call("POST", `/api/platform/versions/${version2Id}/revert`);
         assert.strictEqual(data(rev2, "second revert").reverted.length, 0);
+    });
+
+    it("revert applies user-item inverses to production rows (pinned quirk) and carries the no-backup warning", async () => {
+        // isolated version so the refusal tests' pending unsupported edits
+        // (on versionId) cannot interfere
+        const ver = await call("POST", "/api/platform/versions", { body: { version_name: VERSION3 } });
+        version3Id = data(ver, "create third version").id;
+
+        // an applicable system edit, so the wholesale deploy writes APP and
+        // records the collection-log edit as "handled"
+        await updateCollectionFields(APP, VERSION3, NOTES, [{ name: "revert_probe", type: "string" }]);
+        const created = await call("POST", `/api/app/items/${NOTES}`, {
+            app: APP,
+            version: VERSION3,
+            body: { title: "v3 item" },
+        });
+        const id = String(data(created, "create item in v3").created[0].id);
+        // the same item id exists in production (created there directly)
+        const prodSame = await call("POST", `/api/app/items/${NOTES}`, {
+            app: APP,
+            version: "production",
+            body: { id, title: "prod-own-row" },
+        });
+        data(prodSame, "create same-id row in production");
+
+        await pollDryRun(
+            version3Id,
+            (d) =>
+                (d.edits ?? []).some(
+                    (e: any) => e.source === "collection" && e.action === "item_created" && e.collection === NOTES,
+                ),
+            25000,
+            "v3 item_created edit",
+        );
+
+        const dep = await deploy(version3Id, { on_conflict: "overwrite" });
+        assert.strictEqual(dep.status, 200, JSON.stringify(dep.json).slice(0, 300));
+        const depData = data(dep, "v3 deploy");
+        assert.strictEqual(depData.deployed, true);
+        assert.match(depData.warning ?? "", /No data backup/, "deploy response must carry the no-backup warning");
+
+        // user item rows are not copied: the prod row keeps its own value
+        const before = data(
+            await call("GET", `/api/app/items/${NOTES}/${id}`, { app: APP, version: "production" }),
+            "prod same-id row before revert",
+        );
+        assert.strictEqual(before.title, "prod-own-row");
+
+        const rev = await call("POST", `/api/platform/versions/${version3Id}/revert`);
+        assert.strictEqual(rev.status, 200, JSON.stringify(rev.json).slice(0, 300));
+        const revData = data(rev, "v3 revert");
+        assert.match(revData.warning ?? "", /No data backup/, "revert response must carry the no-backup warning");
+        assert.ok(
+            (revData.reverted ?? []).some(
+                (r: any) => r.source === "collection" && r.action === "item_created" && r.collection === NOTES,
+            ),
+            `item_created must be reverted: ${JSON.stringify(revData.reverted)}`,
+        );
+
+        // PINNED QUIRK: the inverse of item_created is DELETE ... WHERE pk = item_id
+        // in the PRODUCTION schema — the prod row with that id is deleted even
+        // though the deploy never copied it (wholesale only marks the edit handled)
+        const after = await call("GET", `/api/app/items/${NOTES}/${id}`, { app: APP, version: "production" });
+        assert.strictEqual(after.status, 404, `prod row must be gone after revert, got ${after.status}: ${JSON.stringify(after.json).slice(0, 150)}`);
     });
 });
