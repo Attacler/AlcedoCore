@@ -238,6 +238,28 @@ async fn field_rows(
     Ok(map)
 }
 
+/// All field rows of one schema, keyed by `"{collection_id}:{api_name}"` only
+/// (the wholesale comparison has no edit metadata to fall back to).
+async fn all_field_rows(
+    pool: &PgPool,
+    schema: &str,
+) -> Result<HashMap<String, (String, Option<String>, Value)>, AlcedoError> {
+    let rows: Vec<(String, String, Option<String>, Option<Value>)> = sqlx::query_as(&format!(
+        "SELECT f.collection_id::text || ':' || f.api_name AS key, f.api_name, \
+                c.\"table\", f.options \
+         FROM {} f \
+         LEFT JOIN {} c ON c.id = f.collection_id",
+        qtable(schema, "alcedocore_fields"),
+        qtable(schema, "alcedocore_collections"),
+    ))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(key, name, coll, opts)| (key, (name, coll, opts.unwrap_or(Value::Null))))
+        .collect())
+}
+
 /// Pre-write validation: field-level changes that a deploy cannot apply
 /// physically to an EXISTING production table are refused up front, before
 /// anything is written:
@@ -251,6 +273,12 @@ async fn field_rows(
 /// New fields (no row in production yet) are fine — the column/FK sync adds
 /// them. Apps not linked to production are skipped (everything is new there).
 /// Runs in TWO queries per app with field edits.
+///
+/// Wholesale deploys TRUNCATE + refill the whole copy set, so a field row
+/// changed WITHOUT a log row (e.g. a type change via the collections PUT,
+/// which writes raw SQL) would reach production as metadata only. When the
+/// app is actually written wholesale, EVERY version field row is compared
+/// against production, not just the logged edits.
 pub(crate) async fn check_unsupported_field_changes(
     pool: &PgPool,
     version_slug: &str,
@@ -259,6 +287,7 @@ pub(crate) async fn check_unsupported_field_changes(
     edits: &[DeployEdit],
     skipped: &HashSet<usize>,
     copy_tables_by_app: &HashMap<String, Vec<String>>,
+    selected_mode: bool,
 ) -> Result<Vec<DeployConflict>, AlcedoError> {
     let mut unsupported: Vec<DeployConflict> = Vec::new();
     for link in version_links {
@@ -267,6 +296,64 @@ pub(crate) async fn check_unsupported_field_changes(
         }
         let ver_schema = format!("{}010{}", link.api_name, version_slug);
         let prod_schema = format!("{}010production", link.api_name);
+
+        // Wholesale mode also only writes apps with at least one pending
+        // applicable edit (same predicate as the write path in run.rs).
+        let app_will_write = edits.iter().enumerate().any(|(i, e)| {
+            e.app == link.api_name
+                && !skipped.contains(&i)
+                && is_applicable(e, copy_tables_by_app.get(&link.api_name))
+        });
+        let wholesale = !selected_mode && app_will_write;
+        if wholesale {
+            let trigger_idx = edits
+                .iter()
+                .position(|e| {
+                    e.app == link.api_name
+                        && is_applicable(e, copy_tables_by_app.get(&link.api_name))
+                })
+                .unwrap_or(0);
+            let ver_rows = all_field_rows(pool, &ver_schema).await?;
+            let prod_rows = all_field_rows(pool, &prod_schema).await?;
+            for (key, (ver_name, ver_coll, ver_opts)) in &ver_rows {
+                let Some((_, prod_coll, prod_opts)) = prod_rows.get(key) else {
+                    continue; // new field in the version: the column/FK sync adds it
+                };
+                let coll = ver_coll
+                    .clone()
+                    .or_else(|| prod_coll.clone())
+                    .unwrap_or_default();
+                let prod_sig = field_signature(prod_opts);
+                let ver_sig = field_signature(ver_opts);
+                if prod_sig == ver_sig {
+                    continue;
+                }
+                let detail = if prod_sig.0 != ver_sig.0 {
+                    format!(
+                        "field '{}' of collection '{}' changed type '{}' → '{}' in the version; a deploy cannot alter the physical column in {}",
+                        ver_name, coll, prod_sig.0, ver_sig.0, prod_schema
+                    )
+                } else {
+                    format!(
+                        "field '{}' of collection '{}' changed its relation target in the version; a deploy cannot retarget the physical FK in {}",
+                        ver_name, coll, prod_schema
+                    )
+                };
+                unsupported.push(DeployConflict {
+                    conflict_type: "field_type_change".to_string(),
+                    app: link.api_name.clone(),
+                    collection: Some(coll),
+                    item_id: Some(json!(key)),
+                    detail,
+                    prod_action: None,
+                    version_action: None,
+                    edit_idx: trigger_idx,
+                });
+            }
+            // Wholesale: the all-rows pass above already flagged every
+            // type/relation change; the per-edit pass below still catches
+            // logged field DELETIONS.
+        }
 
         // The field edits of this app (applicable, not skipped by on_conflict),
         // keyed by the field's stable identity `{collection_id}:{api_name}`
@@ -332,6 +419,9 @@ pub(crate) async fn check_unsupported_field_changes(
                 });
                 continue;
             };
+            if wholesale {
+                continue; // sig diffs on rows present in both schemas are flagged by the all-rows pass
+            }
             let ver_coll = ver_coll.clone().unwrap_or(coll.clone());
             let prod_sig = field_signature(prod_opts);
             let ver_sig = field_signature(ver_opts);

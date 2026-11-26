@@ -255,6 +255,7 @@ impl VersionsService<'_> {
             &edits,
             &skipped_indices,
             &copy_tables_by_app,
+            selected_mode,
         )
         .await?;
 

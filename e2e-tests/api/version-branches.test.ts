@@ -24,6 +24,21 @@ const API = process.env.CORE_URL ?? "http://localhost:8080";
 const EMAIL = process.env.ADMIN_EMAIL ?? "admin@alcedo.dev";
 const PASSWORD = process.env.ADMIN_PASSWORD ?? "admin123!";
 
+// Never send the admin password or session cookie over cleartext HTTP to a
+// non-loopback host: allow http only for loopback test servers.
+function assertSafeApiBase(baseUrl: string): void {
+    const u = new URL(baseUrl);
+    const loopback =
+        u.hostname === "localhost" ||
+        u.hostname.endsWith(".localhost") ||
+        u.hostname === "::1" ||
+        u.hostname === "[::1]" ||
+        u.hostname.startsWith("127.");
+    if (u.protocol === "https:" || (u.protocol === "http:" && loopback)) return;
+    throw new Error(`CORE_URL must use https (http allowed only for loopback), got: ${baseUrl}`);
+}
+assertSafeApiBase(API);
+
 const SUFFIX = Math.random().toString(36).slice(2, 8);
 const APP = `e2eapp_${SUFFIX}`;
 const VERSION = `e2e_${SUFFIX}`;

@@ -66,6 +66,21 @@ const API = process.env.CORE_URL ?? "http://localhost:8080";
 const EMAIL = process.env.ADMIN_EMAIL ?? "admin@alcedo.dev";
 const PASSWORD = process.env.ADMIN_PASSWORD ?? "admin123!";
 
+// Never send the admin password or session cookie over cleartext HTTP to a
+// non-loopback host: allow http only for loopback test servers.
+function assertSafeApiBase(baseUrl: string): void {
+    const u = new URL(baseUrl);
+    const loopback =
+        u.hostname === "localhost" ||
+        u.hostname.endsWith(".localhost") ||
+        u.hostname === "::1" ||
+        u.hostname === "[::1]" ||
+        u.hostname.startsWith("127.");
+    if (u.protocol === "https:" || (u.protocol === "http:" && loopback)) return;
+    throw new Error(`CORE_URL must use https (http allowed only for loopback), got: ${baseUrl}`);
+}
+assertSafeApiBase(API);
+
 const SUFFIX = Math.random().toString(36).slice(2, 8);
 const APP = `e2edep_${SUFFIX}`;
 const APP2 = `e2edep2_${SUFFIX}`;
@@ -102,6 +117,10 @@ let productionVersionId = 0;
 let prodLinkId = 0; // app-version link id of (APP, production)
 let versionLinkId = 0; // app-version link id of (APP, VERSION)
 let itemId: unknown = null;
+
+// Fixtures registered for teardown the moment creation succeeds, so a failed
+// assertion cannot leak them; `after` attempts every deletion even if one fails.
+const teardownFns: Array<() => Promise<unknown>> = [];
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
@@ -323,6 +342,7 @@ describe("version-branches deploy e2e", () => {
     });
 
     after(async () => {
+        await Promise.allSettled(teardownFns.map((f) => f()));
         for (const vid of [versionId, version2Id, version3Id]) {
             if (vid) await call("DELETE", `/api/platform/versions/${vid}`);
         }
@@ -969,6 +989,7 @@ describe("version-branches deploy e2e", () => {
             body: { domain: null, path_prefix: prefix, install_id: verInstallId, is_active: true },
         });
         const mapping = data(created, "create route mapping");
+        teardownFns.push(() => call("DELETE", `/api/platform/settings/route-mappings/${mapping.id}`));
         assert.strictEqual(mapping.install_id, verInstallId);
 
         const dep = await deploy(versionId, { on_conflict: "overwrite" });
@@ -982,8 +1003,6 @@ describe("version-branches deploy e2e", () => {
             prodInstallId,
             `mapping must be remapped to the production install: ${JSON.stringify(after)}`,
         );
-
-        await call("DELETE", `/api/platform/settings/route-mappings/${mapping.id}`);
     });
 
     it("empty or non-matching edit_ids select nothing and write nothing", async () => {
@@ -1240,9 +1259,43 @@ describe("version-branches deploy e2e", () => {
     });
 
     it("refuses a relation-target change on an existing field (409 unsupported even with overwrite)", async () => {
-        // point the version's `parent` field (deployed to production in the
-        // first test) at NOTESX instead of NOTES — a deploy cannot retarget
-        // the physical FK in production
+        // Self-sufficient fixture: the `parent` relation must exist in the
+        // version AND in production. In a full run the first test already
+        // deployed it; in a focused run this test sets it up itself instead of
+        // relying on state left by another test.
+        const verCur = await getCollection(APP, VERSION, NOTES);
+        if (!(verCur.fields ?? []).some((f: any) => f.name === "parent")) {
+            await updateCollectionFields(APP, VERSION, NOTES, [
+                {
+                    name: "parent",
+                    type: "relationship",
+                    relationship_type: "many_to_one",
+                    related_collection: NOTES,
+                },
+            ]);
+        }
+        let prodCur = await getCollection(APP, "production", NOTES);
+        if (!(prodCur.fields ?? []).some((f: any) => f.name === "parent")) {
+            await pollDryRun(
+                versionId,
+                (d) =>
+                    (d.edits ?? []).some(
+                        (e: any) => e.action === "item_created" && e.target === "alcedocore_fields",
+                    ),
+                25000,
+                "parent field edit",
+            );
+            const setup = await deploy(versionId, { on_conflict: "overwrite" });
+            assert.strictEqual(setup.status, 200, JSON.stringify(setup.json).slice(0, 300));
+            prodCur = await getCollection(APP, "production", NOTES);
+        }
+        assert.ok(
+            (prodCur.fields ?? []).some((f: any) => f.name === "parent" && f.related_collection === NOTES),
+            "production must have the deployed parent relation",
+        );
+
+        // point the version's `parent` field at NOTESX instead of NOTES — a
+        // deploy cannot retarget the physical FK in production
         const list = await call(
             "GET",
             "/api/app/items/alcedocore_fields?filter%5Bapi_name%5D%5B_eq%5D=parent&limit=10",
@@ -1291,6 +1344,52 @@ describe("version-branches deploy e2e", () => {
         );
     });
 
+    it("refuses an UNLOGGED field type change (collections PUT, no log row) on a wholesale deploy", async () => {
+        // a type change via the collections PUT updates alcedocore_fields with
+        // raw SQL — no activity-log row — so only the whole-table comparison
+        // against production can see it
+        const cur = await getCollection(APP, VERSION, NOTESX);
+        const fields = (cur.fields ?? []).map((f: any) => (f.name === "title" ? { ...f, type: "int" } : f));
+        data(
+            await call("PUT", `/api/app/collections/${NOTESX}`, {
+                app: APP,
+                version: VERSION,
+                body: { fields },
+            }),
+            "PUT in-place type change in version",
+        );
+
+        // an unrelated logged edit makes the wholesale deploy write APP
+        await updateCollectionFields(APP, VERSION, NOTES, [{ name: "unlogged_probe", type: "string" }]);
+
+        const dry = await pollDryRun(
+            versionId,
+            (d) =>
+                (d.unsupported ?? []).some(
+                    (u: any) => u.type === "field_type_change" && /'title'/.test(u.detail ?? ""),
+                ),
+            25000,
+            "unlogged type change flagged as unsupported",
+        );
+        assert.ok(dry.unsupported.some((u: any) => u.type === "field_type_change" && /'title'/.test(u.detail ?? "")));
+
+        const dep = await deploy(versionId, { on_conflict: "overwrite" });
+        assert.strictEqual(dep.status, 409, `expected 409, got ${dep.status}`);
+        assert.ok(
+            (dep.json.data?.unsupported ?? []).some(
+                (u: any) => u.type === "field_type_change" && /'title'/.test(u.detail ?? ""),
+            ),
+            JSON.stringify(dep.json.data?.unsupported),
+        );
+
+        const prod = await getCollection(APP, "production", NOTESX);
+        assert.strictEqual(
+            prod.fields.find((f: any) => f.name === "title")?.type,
+            "string",
+            "production field type must be unchanged",
+        );
+    });
+
     // -----------------------------------------------------------------------
     // Error / refusal cases on the version & app API
     // -----------------------------------------------------------------------
@@ -1319,6 +1418,7 @@ describe("version-branches deploy e2e", () => {
             body: { email, password, display_name: "e2e non-admin", is_admin: false },
         });
         const userId = data(created, "create non-admin user").id;
+        teardownFns.push(() => call("DELETE", `/api/platform/users/${userId}`));
         assert.ok(userId, "user id expected");
 
         const userCookie = await login(email, password);
@@ -1336,8 +1436,6 @@ describe("version-branches deploy e2e", () => {
                 `${method} ${path} must be 403 for a non-admin user, got ${res.status}: ${JSON.stringify(res.json).slice(0, 200)}`,
             );
         }
-
-        await call("DELETE", `/api/platform/users/${userId}`);
     });
 
     it("validates version creation and guards the production version", async () => {
