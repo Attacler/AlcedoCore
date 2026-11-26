@@ -190,21 +190,52 @@ pub(crate) async fn check_conflicts(
 /// The physical signature of a field row: the `options` keys that map to
 /// physical column/constraint properties. A change to any of them cannot be
 /// applied to an existing production table by a deploy (columns are only ever
-/// added, never altered or dropped; FKs only added, never retargeted).
-fn field_signature(options: &Value) -> (String, String, String, String) {
+/// added, never altered or dropped; FKs only added, never retargeted; unique /
+/// required constraints are not recreated on existing columns).
+/// (type, relationship_type, related_collection, related_app, unique, required)
+fn field_signature(options: &Value) -> (String, String, String, String, String, String) {
     let get = |k: &str| {
         options
             .get(k)
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string()
+            .and_then(|v| {
+                v.as_bool()
+                    .map(|b| b.to_string())
+                    .or_else(|| v.as_str().map(String::from))
+            })
+            .unwrap_or_default()
     };
     (
         get("type"),
         get("relationship_type"),
         get("related_collection"),
         get("related_app"),
+        get("unique"),
+        get("required"),
     )
+}
+
+/// Human-readable reason for a signature difference.
+fn sig_detail(
+    field: &str,
+    coll: &str,
+    prod_sig: &(String, String, String, String, String, String),
+    ver_sig: &(String, String, String, String, String, String),
+    prod_schema: &str,
+) -> String {
+    if prod_sig.0 != ver_sig.0 {
+        format!(
+            "field '{field}' of collection '{coll}' changed type '{}' → '{}' in the version; a deploy cannot alter the physical column in {prod_schema}",
+            prod_sig.0, ver_sig.0
+        )
+    } else if prod_sig.1 != ver_sig.1 || prod_sig.2 != ver_sig.2 || prod_sig.3 != ver_sig.3 {
+        format!(
+            "field '{field}' of collection '{coll}' changed its relation target in the version; a deploy cannot retarget the physical FK in {prod_schema}"
+        )
+    } else {
+        format!(
+            "field '{field}' of collection '{coll}' changed its unique/required constraint in the version; a deploy cannot alter the physical constraint in {prod_schema}"
+        )
+    }
 }
 
 /// Field rows of one schema, keyed by `"{collection_id}:{api_name}"` (the
@@ -297,14 +328,11 @@ pub(crate) async fn check_unsupported_field_changes(
         let ver_schema = format!("{}010{}", link.api_name, version_slug);
         let prod_schema = format!("{}010production", link.api_name);
 
-        // Wholesale mode also only writes apps with at least one pending
-        // applicable edit (same predicate as the write path in run.rs).
-        let app_will_write = edits.iter().enumerate().any(|(i, e)| {
-            e.app == link.api_name
-                && !skipped.contains(&i)
-                && is_applicable(e, copy_tables_by_app.get(&link.api_name))
-        });
-        let wholesale = !selected_mode && app_will_write;
+        // Wholesale mode: the copy set is TRUNCATE + refilled and the repair
+        // path syncs missing user-table columns even for apps WITHOUT pending
+        // edits, so EVERY field row of every production-linked app is compared
+        // against production — not just logged edits.
+        let wholesale = !selected_mode;
         if wholesale {
             let trigger_idx = edits
                 .iter()
@@ -328,17 +356,7 @@ pub(crate) async fn check_unsupported_field_changes(
                 if prod_sig == ver_sig {
                     continue;
                 }
-                let detail = if prod_sig.0 != ver_sig.0 {
-                    format!(
-                        "field '{}' of collection '{}' changed type '{}' → '{}' in the version; a deploy cannot alter the physical column in {}",
-                        ver_name, coll, prod_sig.0, ver_sig.0, prod_schema
-                    )
-                } else {
-                    format!(
-                        "field '{}' of collection '{}' changed its relation target in the version; a deploy cannot retarget the physical FK in {}",
-                        ver_name, coll, prod_schema
-                    )
-                };
+                let detail = sig_detail(ver_name, &coll, &prod_sig, &ver_sig, &prod_schema);
                 unsupported.push(DeployConflict {
                     conflict_type: "field_type_change".to_string(),
                     app: link.api_name.clone(),
@@ -426,17 +444,7 @@ pub(crate) async fn check_unsupported_field_changes(
             let prod_sig = field_signature(prod_opts);
             let ver_sig = field_signature(ver_opts);
             if prod_sig != ver_sig {
-                let detail = if prod_sig.0 != ver_sig.0 {
-                    format!(
-                        "field '{}' of collection '{}' changed type '{}' → '{}' in the version; a deploy cannot alter the physical column in {}",
-                        ver_name, ver_coll, prod_sig.0, ver_sig.0, prod_schema
-                    )
-                } else {
-                    format!(
-                        "field '{}' of collection '{}' changed its relation target in the version; a deploy cannot retarget the physical FK in {}",
-                        ver_name, ver_coll, prod_schema
-                    )
-                };
+                let detail = sig_detail(ver_name, &ver_coll, &prod_sig, &ver_sig, &prod_schema);
                 unsupported.push(DeployConflict {
                     conflict_type: "field_type_change".to_string(),
                     app: link.api_name.clone(),

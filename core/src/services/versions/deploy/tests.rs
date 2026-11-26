@@ -2012,6 +2012,122 @@
         cleanup_app(&state, app).await;
     }
 
+    /// A `unique` constraint change on an existing field cannot be applied
+    /// physically by a deploy (the UNIQUE index on the production column is
+    /// not recreated) — the deploy must be refused before copying metadata.
+    #[tokio::test]
+    async fn deploy_refuses_unique_constraint_change_before_writing() {
+        let _guard = DEPLOY_TEST_LOCK.lock().await;
+        let state = get_app_state().await;
+        let app = "dtuniq";
+        let app_id = ensure_app(&state, app).await;
+        let pool = &*state.database_pool;
+        let prod_schema = format!("{}010production", app);
+
+        let (vid, vname) = create_isolated_version(&state, app_id).await;
+        update_collection(
+            &state,
+            &test_ctx(app, &vname),
+            "notes",
+            UpdateCollectionRequest {
+                fields: vec![FieldDefinition {
+                    name: "title".to_string(),
+                    field_type: "string".to_string(),
+                    unique: true,
+                    ..Default::default()
+                }],
+                removed_fields: vec![],
+                display_name: None,
+            },
+        )
+        .await
+        .unwrap();
+        SchemaService::refresh_schema_and_meta(&state).await.unwrap();
+
+        let resp = VersionsService::new(&state)
+            .deploy(vid, &deploy_req(false, OnConflict::Fail))
+            .await
+            .unwrap();
+        assert!(!resp.ok, "deploy with a unique change must be refused");
+        assert!(
+            resp.data["unsupported"].as_array().unwrap().iter().any(|u| {
+                u["type"] == "field_type_change"
+                    && u["detail"].as_str().map(|d| d.contains("unique")).unwrap_or(false)
+            }),
+            "unsupported must flag the unique change: {}",
+            resp.data
+        );
+        let prod_unique: String = sqlx::query_scalar(&format!(
+            "SELECT COALESCE(options->>'unique', 'false') FROM \"{prod_schema}\".alcedocore_fields WHERE api_name = 'title'"
+        ))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(prod_unique, "false", "production unique flag must be unchanged");
+
+        cleanup_version(&state, vid, &vname).await;
+        cleanup_app(&state, app).await;
+    }
+
+    /// An UNLOGGED field type change (no activity-log row) with NO pending
+    /// edits must still be refused: wholesale mode's column-repair path syncs
+    /// missing columns even for apps without pending edits, and would
+    /// otherwise add a column whose type contradicts production metadata.
+    #[tokio::test]
+    async fn deploy_refuses_unlogged_field_change_without_pending_edits() {
+        let _guard = DEPLOY_TEST_LOCK.lock().await;
+        let state = get_app_state().await;
+        let app = "dtunl";
+        let app_id = ensure_app(&state, app).await;
+        let pool = &*state.database_pool;
+        let prod_schema = format!("{}010production", app);
+
+        let (vid, vname) = create_isolated_version(&state, app_id).await;
+        // NOTE: no insert_sys_log — the change is unlogged and there are no
+        // other edits, so the app has nothing pending.
+        update_collection(
+            &state,
+            &test_ctx(app, &vname),
+            "notes",
+            UpdateCollectionRequest {
+                fields: vec![FieldDefinition {
+                    name: "title".to_string(),
+                    field_type: "int".to_string(),
+                    ..Default::default()
+                }],
+                removed_fields: vec![],
+                display_name: None,
+            },
+        )
+        .await
+        .unwrap();
+        SchemaService::refresh_schema_and_meta(&state).await.unwrap();
+
+        let resp = VersionsService::new(&state)
+            .deploy(vid, &deploy_req(false, OnConflict::Fail))
+            .await
+            .unwrap();
+        assert!(
+            !resp.ok,
+            "unlogged type change must be refused even with zero pending edits"
+        );
+        assert!(
+            resp.data["unsupported"].as_array().unwrap().iter().any(|u| u["type"] == "field_type_change"),
+            "unsupported must contain field_type_change: {}",
+            resp.data
+        );
+        let prod_type: String = sqlx::query_scalar(&format!(
+            "SELECT options->>'type' FROM \"{prod_schema}\".alcedocore_fields WHERE api_name = 'title'"
+        ))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(prod_type, "string", "production field type must be unchanged");
+
+        cleanup_version(&state, vid, &vname).await;
+        cleanup_app(&state, app).await;
+    }
+
     /// A field DELETION on an existing collection cannot be applied physically
     /// by a deploy (columns are never dropped) — the deploy must be refused
     /// up front and production must keep the field row and the column.

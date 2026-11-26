@@ -218,6 +218,27 @@ pub async fn copy_set_tables(
 }
 
 
+/// `(collection table, field api_name) -> options type` for one schema's field
+/// metadata, used to validate column repairs against the metadata.
+async fn field_type_map(
+    conn: &mut PgConnection,
+    schema: &str,
+) -> Result<std::collections::HashMap<(String, String), String>, Box<dyn StdError + Send + Sync>>
+{
+    let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(&format!(
+        "SELECT c.\"table\", f.api_name, f.options->>'type' \
+         FROM {} f JOIN {} c ON c.id = f.collection_id",
+        qtable(schema, "alcedocore_fields"),
+        qtable(schema, "alcedocore_collections"),
+    ))
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(t, c, ty)| ((t, c), ty.unwrap_or_default()))
+        .collect())
+}
+
 /// `ALTER TABLE ... ADD COLUMN` statements for every column that exists in a
 /// source user table but not in the same-named target table.
 ///
@@ -262,8 +283,27 @@ pub async fn missing_user_columns_sql(
     .bind(only_tables.map(|t| t.to_vec()))
     .fetch_all(&mut *conn)
     .await?;
+    // Validate repair candidates against the field metadata of BOTH schemas:
+    // an unlogged version-side type change must not create a physical column
+    // whose type contradicts production's own metadata. Repairs are kept when
+    // the definitions agree (or when either side has no metadata row).
+    let src_meta = field_type_map(&mut *conn, source_schema).await?;
+    let tgt_meta = field_type_map(&mut *conn, target_schema).await?;
     let mut sql = String::new();
     for (table, col, ty, not_null, default) in rows {
+        if let (Some(vt), Some(pt)) = (
+            src_meta.get(&(table.clone(), col.clone())),
+            tgt_meta.get(&(table.clone(), col.clone())),
+        ) {
+            if vt != pt {
+                tracing::warn!(
+                    "deploy: skipping column repair {}.{}: version field type '{vt}' contradicts production metadata '{pt}'",
+                    table,
+                    col
+                );
+                continue;
+            }
+        }
         sql.push_str(&format!(
             "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
             qtable(target_schema, &table),
