@@ -20,12 +20,22 @@ impl Operation<Postgres> for M0002Operation {
         {
             // Introspect without holding the lock, then swap under the write
             // guard — holding the guard across the inspector's awaits would
-            // deadlock against any concurrent reader/writer.
-            let refreshed = DatabaseSchema::refresh(&state).await;
-            let mut write_schema_lock = state.database_schema.write().await;
-            write_schema_lock.columns = refreshed.columns;
-            write_schema_lock.tables = refreshed.tables;
-            write_schema_lock.app_versions = refreshed.app_versions;
+            // deadlock against any concurrent reader/writer. On introspection
+            // error, keep the live cache untouched instead of wiping it to an
+            // empty schema.
+            match DatabaseSchema::refresh(&state).await {
+                Ok(refreshed) => {
+                    let mut write_schema_lock = state.database_schema.write().await;
+                    write_schema_lock.columns = refreshed.columns;
+                    write_schema_lock.tables = refreshed.tables;
+                    write_schema_lock.app_versions = refreshed.app_versions;
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "m0002: schema refresh failed, keeping previous schema cache: {e}"
+                    );
+                }
+            }
         }
         let app_context = self.app_context.clone();
 

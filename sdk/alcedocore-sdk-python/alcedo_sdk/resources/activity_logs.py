@@ -23,8 +23,17 @@ class ActivityLogsResource(BaseResource):
         params: Optional[dict[str, Any]] = None,
         app: Optional[str] = None,
         version: Optional[str] = None,
+        exclude_deployed: Optional[bool] = None,
     ) -> dict:
-        """App-scoped, non-item activity (GET /api/app/logs/system)."""
+        """App-scoped, non-item activity (GET /api/app/logs/system).
+
+        ``exclude_deployed=True`` hides rows already applied by a deploy of
+        the current version (recorded in the global ``version_deployed``
+        markers).
+        """
+        params = dict(params or {})
+        if exclude_deployed is not None:
+            params["exclude_deployed"] = "true" if exclude_deployed else "false"
         return await self._request(
             "GET", "/api/app/logs/system", params=params, app=app, version=version
         )

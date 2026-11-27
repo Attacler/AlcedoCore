@@ -29,7 +29,9 @@ pub async fn ui_controller_dev(mut req: Request) -> Result<Response, StatusCode>
         .map(|q| format!("?{}", q))
         .unwrap_or_default();
 
-    let port = std::env::var("CORE_PORT").unwrap_or_else(|_| "8080".to_string());
+    // Dev frontend (Vite) port — NOT CORE_PORT, which is the core's own
+    // listener; proxying to it would loop requests back into the core.
+    let port = std::env::var("DEV_UI_PORT").unwrap_or_else(|_| "3000".to_string());
     let uri = format!("http://localhost:{}{}{}", port, path, query)
         .parse()
         .map_err(|_| StatusCode::BAD_REQUEST)?;

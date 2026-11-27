@@ -31,7 +31,8 @@ class BaseResource:
     - ``{"status": "success", "data": ...}`` → the unwrapped ``data`` payload.
     - ``{"status": "fail" | "error", ...}`` → raises
       :class:`~alcedo_sdk.exceptions.AlcedoApiError` carrying the JSend
-      ``message``/``code`` (mirrors the node client's ``unwrapJSend`` hook).
+      ``message``/``code``/``data`` (mirrors the node client's ``unwrapJSend``
+      hook).
     - Non-JSend error responses keep the typed exception mapping
       (NotFoundError, ValidationError, ...).
 
@@ -164,6 +165,7 @@ class BaseResource:
                         code=body.get("code"),
                         status=body["status"],
                         http_status=response.status_code,
+                        data=body.get("data"),
                     )
                 return body.get("data")
             return body
@@ -179,6 +181,7 @@ class BaseResource:
                 code=body.get("code"),
                 status=body["status"],
                 http_status=response.status_code,
+                data=body.get("data"),
             )
 
         if body is not None and isinstance(body, dict):

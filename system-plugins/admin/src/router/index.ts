@@ -71,6 +71,12 @@ const routes: RouteRecordRaw[] = [
         component: RouteMappings,
     },
     {
+        path: "/settings/:category",
+        name: "GlobalSettingsCategory",
+        component: SettingsCategory,
+        props: true,
+    },
+    {
         path: "/development",
         name: "Development",
         component: Development,
@@ -87,7 +93,7 @@ const routes: RouteRecordRaw[] = [
         meta: { global: true },
     },
     {
-        path: "/versions/:id",
+        path: "/versions/:id/:tab?",
         name: "VersionDetail",
         component: VersionDetail,
         meta: { global: true },

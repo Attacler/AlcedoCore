@@ -46,7 +46,12 @@ const SYSTEM_ROLES: [(&str, &str); 2] = [
     ),
 ];
 
-async fn seed_roles(state: &AppState, app_context: &AppContext) -> Result<(), AlcedoError> {
+/// Idempotent: skips roles that already exist, only adds missing admin scopes,
+/// and re-assigns app-admin for global admins. Called by the migration itself
+/// and re-run after a schema clone (the clone copies `_sqlx_migrator_migrations`,
+/// so the migration does not re-run for the cloned schema and the copied copy
+/// set no longer carries roles/policies).
+pub(crate) async fn seed_roles(state: &AppState, app_context: &AppContext) -> Result<(), AlcedoError> {
     let roles = RolesService::new(state, app_context);
 
     // System roles are created directly: `RolesService::create_role` marks a

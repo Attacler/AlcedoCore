@@ -19,7 +19,8 @@ class AlcedoApiError(AlcedoError):
     """Error raised when the core responds with a JSend ``fail``/``error`` envelope.
 
     Mirrors ``AlcedoApiError`` from the node SDK: the JSend ``message``,
-    ``code`` and ``status`` ("fail" | "error") are preserved alongside the
+    ``code``, ``status`` ("fail" | "error") and ``data`` payload (e.g.
+    ``data.conflicts`` on a deploy conflict) are preserved alongside the
     HTTP status of the response.
     """
 
@@ -29,11 +30,13 @@ class AlcedoApiError(AlcedoError):
         code: Optional[int] = None,
         status: Optional[str] = None,
         http_status: Optional[int] = None,
+        data: Optional[Any] = None,
     ):
         super().__init__(message, status_code=http_status)
         self.code = code
         self.status = status
         self.http_status = http_status
+        self.data = data
 
 
 class ConnectionFailedError(AlcedoError):

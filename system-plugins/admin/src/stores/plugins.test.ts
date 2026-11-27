@@ -2,22 +2,32 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
 import { usePluginsStore } from './plugins';
 
-const mockPluginsData = [
-  { name: 'test-plugin', version: '1.0.0', enabled: true, type: 'user' },
-];
+// Backend shape: the store maps `slug` + `installations[].enabled`.
+const mockInstall = {
+  id: 7,
+  app_version_id: 5,
+  enabled: true,
+  plugin_version: '1.0.0',
+};
+const mockBackendPlugin = {
+  id: 1,
+  slug: 'test-plugin',
+  plugin_type: 'user',
+  installations: [mockInstall],
+};
 
 vi.mock('../composables/useAlcedoClient', () => ({
   useAlcedoClient: () => ({
     client: {
       plugins: {
-        list: vi.fn().mockImplementation(async () => mockPluginsData),
-        get: vi.fn().mockImplementation(async () => mockPluginsData[0]),
+        list: vi.fn().mockImplementation(async () => ({ plugins: [mockBackendPlugin] })),
+        get: vi.fn().mockImplementation(async () => mockBackendPlugin),
         enable: vi.fn().mockImplementation(async () => {
-          mockPluginsData[0] = { ...mockPluginsData[0], enabled: true };
+          mockInstall.enabled = true;
           return { success: true, message: 'Plugin enabled' };
         }),
         disable: vi.fn().mockImplementation(async () => {
-          mockPluginsData[0] = { ...mockPluginsData[0], enabled: false };
+          mockInstall.enabled = false;
           return { success: true, message: 'Plugin disabled' };
         }),
         uninstall: vi.fn().mockResolvedValue({ success: true, message: 'Plugin uninstalled' }),
@@ -40,7 +50,7 @@ vi.mock('../composables/useAlcedoClient', () => ({
 describe('usePluginsStore', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    mockPluginsData[0] = { name: 'test-plugin', version: '1.0.0', enabled: true, type: 'user' };
+    mockInstall.enabled = true;
   });
 
   it('fetchPlugins populates plugins array', async () => {
@@ -53,6 +63,7 @@ describe('usePluginsStore', () => {
   it('enablePlugin calls client.plugins.enable', async () => {
     const store = usePluginsStore();
     await store.fetchPlugins();
+    await store.fetchPluginDetail('test-plugin');
     await store.enablePlugin('test-plugin');
     expect(store.plugins[0].status).toBe('enabled');
   });
@@ -60,7 +71,9 @@ describe('usePluginsStore', () => {
   it('disablePlugin calls client.plugins.disable', async () => {
     const store = usePluginsStore();
     await store.fetchPlugins();
+    await store.fetchPluginDetail('test-plugin');
     await store.disablePlugin('test-plugin');
+    await store.fetchPlugins();
     expect(store.plugins[0].status).toBe('disabled');
   });
 

@@ -175,6 +175,20 @@ onMounted(() => {
                                 />
                             </div>
                             <div class="flex items-center gap-1 shrink-0">
+                                <RouterLink
+                                    v-if="version.version_name !== 'production'"
+                                    custom
+                                    v-slot="{ navigate }"
+                                    :to="`/versions/${version.id}/changes`"
+                                >
+                                    <Button
+                                        label="Changes"
+                                        icon="pi pi-history"
+                                        size="small"
+                                        outlined
+                                        @click="navigate"
+                                    />
+                                </RouterLink>
                                 <Button
                                     label="View apps"
                                     icon="pi pi-th-large"
@@ -185,7 +199,7 @@ onMounted(() => {
                                 <RouterLink
                                     custom
                                     v-slot="{ navigate }"
-                                    :to="`/versions/${version.id}`"
+                                    :to="`/versions/${version.id}/access`"
                                 >
                                     <Button
                                         label="Manage"

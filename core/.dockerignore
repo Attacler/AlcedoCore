@@ -9,7 +9,12 @@ docker/
 !.env.example
 plan.md
 # Local build/runtime artifacts — never bake these into the image.
-backend-dist/
+# Exception: Dockerfile.dev (the docker compose dev image) COPYs the locally
+# pre-built binary, so backend-dist/backend must stay in the build context.
+# The production Dockerfile builds from source and its runtime stage only
+# copies the compiled binary, so this never lands in the production image.
+backend-dist/*
+!backend-dist/backend
 files/
 .plugins/
 temp/

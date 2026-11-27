@@ -133,7 +133,8 @@ impl BaseClient {
         let body: Option<Value> = serde_json::from_str(&text).ok();
 
         // JSend envelope: {status:'success', data} unwraps to data;
-        // {status:'fail'|'error', message, code} raises an Api error.
+        // {status:'fail'|'error', message, code, data} raises an Api error
+        // carrying the data payload (e.g. data.conflicts on deploy conflicts).
         if let Some(obj) = body.as_ref().and_then(|b| b.as_object()) {
             if let Some(jsend_status) = obj.get("status").and_then(|s| s.as_str()) {
                 match jsend_status {
@@ -161,6 +162,7 @@ impl BaseClient {
                             code,
                             status: jsend_status.to_string(),
                             http_status: Some(status),
+                            data: obj.get("data").cloned(),
                         });
                     }
                     _ => {}

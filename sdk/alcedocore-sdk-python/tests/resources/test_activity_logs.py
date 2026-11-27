@@ -31,6 +31,21 @@ async def test_list_app_system(activity_logs):
 
 
 @pytest.mark.asyncio
+async def test_list_app_system_exclude_deployed(activity_logs):
+    expected = {"data": [], "total": 0, "limit": 50, "offset": 0}
+    with respx.mock as mock:
+        route = mock.get(f"{BASE_URL}/api/app/logs/system").respond(json=jsend(expected))
+        result = await activity_logs.list_app_system(
+            {"limit": 50}, app="crm", version="demo", exclude_deployed=True
+        )
+        assert result == expected
+        assert route.called
+        qs = route.calls.last.request.url.params
+        assert qs["exclude_deployed"] == "true"
+        assert qs["limit"] == "50"
+
+
+@pytest.mark.asyncio
 async def test_list_system_platform(activity_logs):
     expected = {"data": [{"id": 1, "target": "core"}], "total": 1, "limit": 50, "offset": 0}
     with respx.mock as mock:

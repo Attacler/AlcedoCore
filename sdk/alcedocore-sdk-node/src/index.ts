@@ -2,7 +2,7 @@ export type { ClientOptions, AppHeaderOptions } from "./client";
 export { AlcedoApiError } from "./types/jsend";
 export type { JSendResponse } from "./types/jsend";
 export type { PlatformSettings, AppSettings } from "./appSettings";
-export type { TimelineEntry } from "./activityLogs";
+export type { TimelineEntry, TimelineEntrySystem, AppSystemLogParams } from "./activityLogs";
 
 export { createHealthResource } from "./health";
 export { createPluginsResource } from "./plugins";
@@ -23,7 +23,14 @@ export type {
     UpdateAppInput,
 } from "./apps";
 export { createVersionsResource } from "./versions";
-export type { Version, CreateVersionInput } from "./versions";
+export type {
+    Version,
+    CreateVersionInput,
+    DeployOnConflict,
+    DeployVersionInput,
+    DeployConflict,
+    DeployVersionResult,
+} from "./versions";
 export { createUsersResource } from "./users";
 export { createRolesResource } from "./roles";
 export { createPoliciesResource } from "./policies";

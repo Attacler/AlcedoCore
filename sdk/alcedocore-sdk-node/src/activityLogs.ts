@@ -24,6 +24,33 @@ export interface TimelineEntrySystem {
     target: string;
 }
 
+/** Typed query params for `GET /api/app/logs/system` (camelCase; converted
+ * to the snake_case query keys the core expects). */
+export interface AppSystemLogParams {
+    target?: string;
+    operationType?: string;
+    startDate?: string;
+    endDate?: string;
+    /** Hide rows already applied by a deploy of the current version. */
+    excludeDeployed?: boolean;
+    limit?: number;
+    offset?: number;
+}
+
+function toSearchParams(p?: AppSystemLogParams): URLSearchParams | undefined {
+    if (!p) return undefined;
+    const sp = new URLSearchParams();
+    if (p.target !== undefined) sp.set("target", p.target);
+    if (p.operationType !== undefined) sp.set("operation_type", p.operationType);
+    if (p.startDate !== undefined) sp.set("start_date", p.startDate);
+    if (p.endDate !== undefined) sp.set("end_date", p.endDate);
+    if (p.excludeDeployed !== undefined)
+        sp.set("exclude_deployed", String(p.excludeDeployed));
+    if (p.limit !== undefined) sp.set("limit", String(p.limit));
+    if (p.offset !== undefined) sp.set("offset", String(p.offset));
+    return sp;
+}
+
 export function createActivityLogsResource(ky: KyInstance) {
     return {
         /** App-scoped item activity (`GET /api/app/logs/collections`). */
@@ -39,11 +66,17 @@ export function createActivityLogsResource(ky: KyInstance) {
                     limit: number;
                     offset: number;
                 }>(),
-        /** App-scoped, non-item activity (`GET /api/app/logs/system`). */
-        listAppSystem: (params?: URLSearchParams, options?: any) =>
+        /** App-scoped, non-item activity (`GET /api/app/logs/system`).
+         * Accepts raw `URLSearchParams` or a typed {@link AppSystemLogParams}. */
+        listAppSystem: (
+            params?: URLSearchParams | AppSystemLogParams,
+            options?: any,
+        ) =>
             ky
                 .get("app/logs/system", {
-                    searchParams: params as any,
+                    searchParams: (params instanceof URLSearchParams
+                        ? params
+                        : toSearchParams(params)) as any,
                     ...options,
                 })
                 .json<{

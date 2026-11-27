@@ -1,18 +1,24 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { createRouter, createMemoryHistory } from 'vue-router';
+import { createPinia } from 'pinia';
 import PluginDetail from './PluginDetail.vue';
+
+vi.mock('@/composables/useToast', () => ({
+  useToast: () => ({ show: vi.fn() }),
+}));
 const mockPluginData = {
   name: 'test-plugin',
   version: '1.0.0',
   status: 'enabled' as const,
   plugin_type: 'user' as const,
   description: 'A test plugin',
+  installations: [] as any[],
   created_at: '2024-01-01T00:00:00Z',
   updated_at: '2024-01-02T00:00:00Z',
 };
 
-vi.mock('../stores/plugins', () => ({
+vi.mock('@/stores/plugins', () => ({
   usePluginsStore: () => ({
     fetchPluginDetail: vi.fn().mockResolvedValue(mockPluginData),
     fetchPluginSchema: vi.fn().mockResolvedValue({ tables: [] }),
@@ -56,7 +62,7 @@ describe('PluginDetail.vue', () => {
   it('renders component without error', async () => {
     const wrapper = mount(PluginDetail, {
       global: {
-        plugins: [router],
+        plugins: [router, createPinia()],
       },
     });
     await wrapper.vm.$nextTick();

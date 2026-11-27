@@ -201,6 +201,63 @@ pub struct AppVersionRow {
 pub struct Version {
     pub id: i64,
     pub version_name: String,
+    /// App api_names already deployed from this version (from the core's
+    /// `version_deployed` markers).
+    #[serde(default)]
+    pub deployed_apps: Vec<String>,
+}
+
+/// Conflict resolution strategy for `POST /api/platform/versions/{id}/deploy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnConflict {
+    Fail,
+    Skip,
+    Overwrite,
+}
+
+impl Default for OnConflict {
+    fn default() -> Self {
+        Self::Fail
+    }
+}
+
+/// Request body for `POST /api/platform/versions/{id}/deploy`.
+/// `edit_ids: None` deploys all edits of the version; otherwise only the
+/// given entries are deployed — numbers select log-row ids, strings select
+/// `app_created` edits by app api_name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployVersionRequest {
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub on_conflict: OnConflict,
+    #[serde(default)]
+    pub edit_ids: Option<Vec<serde_json::Value>>,
+}
+
+impl Default for DeployVersionRequest {
+    fn default() -> Self {
+        Self {
+            dry_run: false,
+            on_conflict: OnConflict::Fail,
+            edit_ids: None,
+        }
+    }
+}
+
+/// One entry of `data.conflicts` in a `fail` deploy response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployConflict {
+    #[serde(rename = "type")]
+    pub conflict_type: String,
+    pub app: String,
+    #[serde(default)]
+    pub collection: Option<String>,
+    #[serde(default)]
+    pub item_id: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 // ─── Settings ───────────────────────────────────────────────────────────────

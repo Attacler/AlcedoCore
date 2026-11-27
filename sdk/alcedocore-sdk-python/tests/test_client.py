@@ -183,13 +183,19 @@ class TestJSendUnwrapping:
 
     @pytest.mark.asyncio
     async def test_error_envelope_raises_alcedo_api_error(self):
-        """JSend fail/error envelopes raise AlcedoApiError."""
+        """JSend fail/error envelopes raise AlcedoApiError carrying the data payload."""
         from alcedo_sdk import AlcedoApiError
 
         async with AlcedoClient(plugin_slug="test") as client:
             with respx.mock as mock:
                 mock.get(f"{BASE_URL}/api/health").respond(
-                    json={"status": "error", "message": "core down", "code": 500}, status_code=500
+                    json={
+                        "status": "error",
+                        "message": "core down",
+                        "code": 500,
+                        "data": {"detail": "db unreachable"},
+                    },
+                    status_code=500,
                 )
                 with pytest.raises(AlcedoApiError) as exc_info:
                     await client.health.check()
@@ -197,3 +203,25 @@ class TestJSendUnwrapping:
                 assert exc_info.value.code == 500
                 assert exc_info.value.status == "error"
                 assert exc_info.value.http_status == 500
+                assert exc_info.value.data == {"detail": "db unreachable"}
+
+    @pytest.mark.asyncio
+    async def test_fail_envelope_carries_data(self):
+        """A JSend fail envelope keeps its data payload on the raised error."""
+        from alcedo_sdk import AlcedoApiError
+
+        async with AlcedoClient(plugin_slug="test") as client:
+            with respx.mock as mock:
+                mock.get(f"{BASE_URL}/api/health").respond(
+                    json={
+                        "status": "fail",
+                        "message": "deploy conflicts",
+                        "data": {"deployed": False, "conflicts": [{"type": "changed_on_both_sides"}]},
+                    },
+                    status_code=409,
+                )
+                with pytest.raises(AlcedoApiError) as exc_info:
+                    await client.health.check()
+                assert exc_info.value.status == "fail"
+                assert exc_info.value.http_status == 409
+                assert exc_info.value.data["conflicts"] == [{"type": "changed_on_both_sides"}]

@@ -1,7 +1,7 @@
 use alcedo_sdk::*;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path, query_param, header, header_exists},
+    matchers::{method, path, query_param, header, header_exists, body_json},
 };
 use serde_json::{json, Value};
 
@@ -49,18 +49,21 @@ async fn test_jsend_fail_raises_api_error() {
     Mock::given(method("GET"))
         .and(path("/api/app/kv/bad"))
         .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-            "status": "fail", "message": "Invalid key", "code": 1001
+            "status": "fail", "message": "Invalid key", "code": 1001,
+            "data": { "key": "bad" }
         })))
         .mount(&server)
         .await;
 
     let client = test_client(&server).await;
     match client.kv.get("bad").await {
-        Err(AlcedoError::Api { message, code, status, http_status }) => {
+        Err(AlcedoError::Api { message, code, status, http_status, data }) => {
             assert_eq!(message, "Invalid key");
             assert_eq!(code.as_deref(), Some("1001"));
             assert_eq!(status, "fail");
             assert_eq!(http_status, Some(400));
+            // the JSend data payload is carried on the error
+            assert_eq!(data, Some(json!({ "key": "bad" })));
         }
         other => panic!("Expected Api error, got {:?}", other),
     }
@@ -341,8 +344,32 @@ async fn test_activity_logs() {
 
     let client = test_client(&server).await;
     assert_eq!(client.activity_logs.list_collections(None).await.unwrap().total, 0);
-    assert_eq!(client.activity_logs.list_app_system(None).await.unwrap().total, 0);
+    assert_eq!(client.activity_logs.list_app_system(None, None).await.unwrap().total, 0);
     assert_eq!(client.activity_logs.list_system(None).await.unwrap().total, 0);
+}
+
+#[tokio::test]
+async fn test_activity_logs_exclude_deployed_query_param() {
+    use wiremock::matchers::{method, path, query_param};
+    let server = MockServer::start().await;
+    let m = wiremock::Mock::given(method("GET"))
+        .and(path("/api/app/logs/system"))
+        .and(query_param("exclude_deployed", "true"))
+        .and(query_param("limit", "50"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+            "status": "success",
+            "data": { "data": [], "total": 0, "limit": 50, "offset": 0 }
+        })))
+        .expect(1);
+    server.register(m).await;
+
+    let client = test_client(&server).await;
+    let page = client
+        .activity_logs
+        .list_app_system(Some(&[("limit", "50")]), Some(true))
+        .await
+        .unwrap();
+    assert_eq!(page.total, 0);
 }
 
 // ─── migrations / schema ────────────────────────────────────────────────────
@@ -485,6 +512,133 @@ async fn test_versions() {
     assert_eq!(client.versions.list().await.unwrap()[0].version_name, "production");
     assert_eq!(client.versions.create(json!({ "version_name": "staging" })).await.unwrap().id, 3);
     client.versions.delete(3).await.unwrap();
+}
+
+#[tokio::test]
+async fn test_version_deploy() {
+    let server = MockServer::start().await;
+    // happy path: full body, per-app result
+    Mock::given(method("POST"))
+        .and(path("/api/platform/versions/3/deploy"))
+        .and(body_json(json!({ "dry_run": false, "on_conflict": "fail", "edit_ids": null })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jsend(json!({
+            "deployed": true,
+            "apps": { "crm": { "tables_written": 3, "rows_copied": 12 } }
+        }))))
+        .mount(&server)
+        .await;
+    // dry run
+    Mock::given(method("POST"))
+        .and(path("/api/platform/versions/3/deploy"))
+        .and(body_json(json!({ "dry_run": true, "on_conflict": "fail", "edit_ids": null })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jsend(json!({
+            "deployed": false, "dry_run": true, "edits": [{ "id": 11 }], "conflicts": []
+        }))))
+        .mount(&server)
+        .await;
+    // edit_ids selection
+    Mock::given(method("POST"))
+        .and(path("/api/platform/versions/3/deploy"))
+        .and(body_json(json!({ "dry_run": false, "on_conflict": "skip", "edit_ids": [11, 12] })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jsend(json!({ "deployed": true }))))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let result = client
+        .versions
+        .deploy_version(3, &DeployVersionRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(result["deployed"], json!(true));
+    assert_eq!(result["apps"]["crm"]["rows_copied"], json!(12));
+
+    let dry = client
+        .versions
+        .deploy_version(3, &DeployVersionRequest { dry_run: true, ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!(dry["dry_run"], json!(true));
+    assert_eq!(dry["conflicts"], json!([]));
+
+    let selected = client
+        .versions
+        .deploy_version(
+            3,
+            &DeployVersionRequest {
+                on_conflict: OnConflict::Skip,
+                edit_ids: Some(vec![json!(11), json!(12)]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(selected["deployed"], json!(true));
+}
+
+#[tokio::test]
+async fn test_version_revert() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/platform/versions/3/revert"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(jsend(json!({
+            "version_id": 3,
+            "version_name": "staging",
+            "reverted": [{ "id": 11, "action": "collection_created" }],
+            "skipped": [],
+            "warning": "No data backup is created before deploy/revert."
+        }))))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    let result = client.versions.revert_version(3).await.unwrap();
+    assert_eq!(result["version_id"], json!(3));
+    assert_eq!(result["reverted"].as_array().unwrap().len(), 1);
+    assert!(result["warning"].as_str().unwrap().contains("No data backup"));
+}
+
+#[tokio::test]
+async fn test_version_deploy_conflict_fail_raises() {
+    let server = MockServer::start().await;
+    let conflicts = json!([
+        {
+            "type": "changed_on_both_sides",
+            "app": "crm",
+            "collection": "contacts",
+            "item_id": "1",
+            "detail": "changed on both sides"
+        }
+    ]);
+    Mock::given(method("POST"))
+        .and(path("/api/platform/versions/3/deploy"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+            "status": "fail",
+            "message": "deploy conflicts",
+            "data": {
+                "deployed": false,
+                "conflicts": conflicts
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = test_client(&server).await;
+    match client
+        .versions
+        .deploy_version(3, &DeployVersionRequest::default())
+        .await
+    {
+        Err(AlcedoError::Api { message, status, http_status, data, .. }) => {
+            assert_eq!(message, "deploy conflicts");
+            assert_eq!(status, "fail");
+            assert_eq!(http_status, Some(409));
+            // the JSend data payload is carried on the error (data.conflicts reachable)
+            assert_eq!(data, Some(json!({ "deployed": false, "conflicts": conflicts })));
+            assert_eq!(data.unwrap()["conflicts"], conflicts);
+        }
+        other => panic!("Expected Api error, got {:?}", other),
+    }
 }
 
 // ─── roles / policies ───────────────────────────────────────────────────────

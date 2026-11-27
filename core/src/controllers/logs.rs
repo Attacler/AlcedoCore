@@ -2,8 +2,12 @@
 //!
 //! Three flat tables feed this module:
 //! - `alcedocore.alcedocore_system_logs` (global, admin-only) → `GET /api/platform/logs`
-//! - `{schema}.alcedocore_system_logs` (app-scoped) → `GET /api/app/logs/system`
-//! - `{schema}.alcedocore_collection_logs` (app-scoped) → `GET /api/app/logs/collections`
+//! - `{schema}.alcedocore_system_logs` (app-scoped, admin-only) → `GET /api/app/logs/system`
+//! - `{schema}.alcedocore_collection_logs` (app-scoped, admin-only) → `GET /api/app/logs/collections`
+//!
+//! The app-scoped tables carry item diffs/snapshots of every collection, so
+//! they are admin-only (the admin UI authenticates as an admin user), not merely
+//! gated on `settings.read.all`.
 //!
 //! All three share the same filters/pagination and return the same JSend shape.
 
@@ -30,7 +34,7 @@ use crate::{
         errors::AlcedoError,
         postgres::pool::{execute_query, pgrow_to_json},
         respond::{JSendResponse, success},
-        scopes::require_scope,
+        versions::deploy::applied_edits_for_version,
     },
 };
 
@@ -60,6 +64,10 @@ pub struct LogQueryParams {
     /// Only used by the collection-logs endpoint (jsonb containment on `item_id`).
     #[serde(default)]
     pub item_id: Option<String>,
+    /// App system-logs endpoint only: hide rows already applied by a deploy of
+    /// the current version (recorded in the global `version_deployed` markers).
+    #[serde(default)]
+    pub exclude_deployed: Option<bool>,
     #[serde(default)]
     pub limit: Option<i64>,
     #[serde(default)]
@@ -201,9 +209,19 @@ async fn get_app_system_logs(
     ExtractContext(context): ExtractContext,
     Query(params): Query<LogQueryParams>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_scope(&state, &auth_level, &context, "settings.read.all").await?;
+    // App system logs can contain sensitive metadata: admin-only, like the
+    // platform logs (the admin UI authenticates as an admin user).
+    crate::controllers::require_admin(&state, auth_level).await?;
 
-    let condition = log_condition(&params, "target");
+    let mut condition = log_condition(&params, "target");
+    if params.exclude_deployed.unwrap_or(false) {
+        let mut applied = applied_edits_for_version(&state.database_pool, &context.version).await?;
+        if let Some((ids, _)) = applied.remove(&context.app_name) {
+            if !ids.is_empty() {
+                condition = condition.add(Expr::col(Alias::new("id")).is_not_in(ids));
+            }
+        }
+    }
     let (limit, offset) = normalized_pagination(&params);
     let schema = context.schema_name();
     read_log_page(&state, &schema, "alcedocore_system_logs", &condition, limit, offset).await
@@ -219,7 +237,9 @@ async fn get_app_collection_logs(
     ExtractContext(context): ExtractContext,
     Query(params): Query<LogQueryParams>,
 ) -> Result<Json<JSendResponse<Value>>, AlcedoError> {
-    require_scope(&state, &auth_level, &context, "settings.read.all").await?;
+    // Collection logs expose item diffs/snapshots of every collection in the
+    // app: admin-only, like the platform logs.
+    crate::controllers::require_admin(&state, auth_level).await?;
 
     // `target` maps to `collection_name` for collection logs.
     let condition = collection_log_condition(&params);

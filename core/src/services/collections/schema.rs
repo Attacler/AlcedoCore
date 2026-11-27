@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 use sea_query::{
     Alias, ColumnDef, ForeignKey, ForeignKeyAction, PostgresQueryBuilder, Table,
@@ -7,7 +8,7 @@ use sea_query::{
 
 use super::ddl::{
     build_add_unique_sql, build_drop_columns_sqls, column_def, drop_table_sql, fk_constraint,
-    spec_from_field_creation,
+    quote, spec_from_field_creation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -86,9 +87,12 @@ impl TableBuilderExt for TableCreateStatement {
 /// Drops a schema and every object inside it. Callers are responsible for
 /// refreshing the schema cache afterwards.
 pub async fn drop_schema(state: &AppState, schema_name: &str) -> Result<(), AlcedoError> {
-    sqlx::query(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name))
-        .execute(&*state.database_pool)
-        .await?;
+    sqlx::query(&format!(
+        "DROP SCHEMA IF EXISTS {} CASCADE",
+        quote(schema_name)
+    ))
+    .execute(&*state.database_pool)
+    .await?;
     Ok(())
 }
 
@@ -130,9 +134,62 @@ pub struct FieldMetaObject {
 /// refreshes cannot interleave and an older snapshot cannot overwrite a
 /// newer one.
 pub(crate) fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
-    static REFRESH_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
-        std::sync::OnceLock::new();
+    static REFRESH_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// All DB reads for a scoped refresh of `target`, done before any lock is
+/// taken: the scoped introspection (target schema + `alcedocore`, which the
+/// synthetic users table is cloned from) plus the target's collection/field
+/// meta rows. `meta` is `None` when the meta tables do not exist (schema
+/// dropped concurrently).
+async fn introspect_scoped(
+    state: &AppState,
+    target: &str,
+) -> Result<
+    (
+        DatabaseSchema,
+        Option<(Vec<Map<String, Value>>, Vec<Map<String, Value>>)>,
+    ),
+    AlcedoError,
+> {
+    let scoped = DatabaseSchema::refresh_scoped(state, target).await?;
+    let meta_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL AND to_regclass($2) IS NOT NULL")
+            .bind(format!("{}.alcedocore_collections", target))
+            .bind(format!("{}.alcedocore_fields", target))
+            .fetch_one(&*state.database_pool)
+            .await?;
+    let meta = if meta_exists {
+        Some(SchemaService::read_meta_tables(state, target).await?)
+    } else {
+        None
+    };
+    Ok((scoped, meta))
+}
+
+/// Applies a scoped introspection onto the live schema in place: replaces
+/// `target`'s (and alcedocore's) tables/columns and re-attaches the target's
+/// collection/field meta. Pure in-memory — call under the write guard so
+/// readers never observe a torn mix, and so the ~15MB cache is never cloned.
+fn apply_scoped(
+    schema: &mut DatabaseSchema,
+    target: &str,
+    scoped: DatabaseSchema,
+    meta: Option<(Vec<Map<String, Value>>, Vec<Map<String, Value>>)>,
+) {
+    schema
+        .tables
+        .retain(|t| t.schema != target && t.schema != "alcedocore");
+    schema
+        .columns
+        .retain(|c| c.schema != target && c.schema != "alcedocore");
+    schema.fields.retain(|f| f.schema != target);
+    schema.tables.extend(scoped.tables);
+    schema.columns.extend(scoped.columns);
+    if let Some((meta_collections, meta_fields)) = meta {
+        SchemaService::apply_meta_tables(meta_collections, meta_fields, schema);
+    }
 }
 
 pub struct SchemaService<'a> {
@@ -149,28 +206,127 @@ impl SchemaService<'_> {
     }
 
     pub async fn refresh_schema(&self) -> Result<(), AlcedoError> {
+        self.refresh_schema_inner(false).await
+    }
+
+    /// Like [`refresh_schema`], but without the
+    /// `schema_refreshed_gen >= schema_dirty_gen` early-return skip: always
+    /// re-introspects, even when a refresh already covered the current commit
+    /// generation. Used by the collection system hooks, which must observe
+    /// their own DDL even when the generation counters say the cache is
+    /// current.
+    pub async fn refresh_schema_force(&self) -> Result<(), AlcedoError> {
+        self.refresh_schema_inner(true).await
+    }
+
+    async fn refresh_schema_inner(&self, force: bool) -> Result<(), AlcedoError> {
         // Single-flight: a burst of concurrent DDL commits (e.g. many
         // collection creates at once) would otherwise each run a full
         // introspection + meta refresh. Serialize them; each caller still
         // introspects after its own commit, so no refresh is skipped stale.
         let _refresh_guard = refresh_lock().lock().await;
 
+        let save_cache = !matches!(
+            self.app_context.request_source,
+            RequestSource::FirstMigration
+        );
+
+        // App-scoped DDL only ever touches the request's own schema, so
+        // introspect just that schema (plus alcedocore) and merge it into
+        // the live cache instead of rebuilding every app-version schema on
+        // every save. `save_cache` only gates the persisted blob, not the
+        // introspection scope — a FirstMigration refresh must stay scoped
+        // too, or every migration table-create rescans the whole catalog.
+        if !self.app_context.version.is_empty() {
+            // Coalesce refreshes of the same commit: the after-hook refresh
+            // and this explicit refresh would otherwise both introspect the
+            // same schema. Skip when a refresh already covered the current
+            // commit generation.
+            let dirty = self.app_state.schema_dirty_gen.load(Ordering::SeqCst);
+            if !force && self.app_state.schema_refreshed_gen.load(Ordering::SeqCst) >= dirty {
+                return Ok(());
+            }
+            let target = self.app_context.schema_name();
+            // Introspect + read meta before taking the write lock, then apply
+            // in place — cloning the whole cache (~15MB with many versions)
+            // on every save was a major cost of each DDL request.
+            let (scoped, meta) = introspect_scoped(self.app_state, &target).await?;
+            let app_versions = DatabaseSchema::fetch_app_versions(self.app_state).await;
+            {
+                let mut lock = self.app_state.database_schema.write().await;
+                // None means the fetch errored — keep the cached app_versions
+                // rather than wiping them on a transient error.
+                if let Some(v) = app_versions {
+                    lock.app_versions = v;
+                }
+                apply_scoped(&mut lock, &target, scoped, meta);
+            }
+            self.app_state
+                .schema_refreshed_gen
+                .store(dirty, Ordering::SeqCst);
+            // The persisted cache blob is ~15MB with many versions; don't make
+            // the request wait for serializing + writing it. The in-memory
+            // update above is what serves requests.
+            if save_cache {
+                let state = self.app_state.clone();
+                tokio::spawn(async move { state.save_schema_cache().await });
+            }
+            return Ok(());
+        }
+
         // Build the complete new schema (introspection + meta) without holding
         // any lock, then swap the whole struct under a single write guard so
         // readers never observe a torn mix of new tables with stale meta.
-        let mut new_schema = DatabaseSchema::refresh(self.app_state).await;
-        let save_cache = match self.app_context.request_source {
-            RequestSource::FirstMigration => false,
-            _ => {
-                // A failed meta read must not publish a schema without meta.
-                SchemaService::refresh_all_meta_into(self.app_state, &mut new_schema).await?;
-                true
-            }
-        };
+        let mut new_schema = DatabaseSchema::refresh(self.app_state).await?;
+        if save_cache {
+            // A failed meta read must not publish a schema without meta.
+            SchemaService::refresh_all_meta_into(self.app_state, &mut new_schema).await?;
+        }
         *self.app_state.database_schema.write().await = new_schema;
         if save_cache {
             self.app_state.save_schema_cache().await;
         }
+        Ok(())
+    }
+
+    /// Scoped refresh of several app schemas at once (used after a deploy,
+    /// which overwrites production schemas in place). Caller must hold
+    /// `refresh_lock`.
+    pub async fn refresh_schemas_scoped(
+        state: &AppState,
+        schemas: &[String],
+    ) -> Result<(), AlcedoError> {
+        let _refresh_guard = refresh_lock().lock().await;
+        // All DB reads happen before the write lock; the lock is held only
+        // for the in-memory merge, never for a full-cache clone.
+        // Introspect the schemas concurrently (independent pool reads) instead
+        // of one schema at a time — the sequential round trips dominated the
+        // post-deploy refresh.
+        let introspected = futures::future::join_all(schemas.iter().map(|target| {
+            let target = target.clone();
+            async move {
+                let res = introspect_scoped(state, &target).await;
+                (target, res)
+            }
+        }))
+        .await
+        .into_iter()
+        .map(|(target, res)| res.map(|scoped| (target, scoped)))
+        .collect::<Result<Vec<_>, _>>()?;
+        let app_versions = DatabaseSchema::fetch_app_versions(state).await;
+        {
+            let mut lock = state.database_schema.write().await;
+            // None means the fetch errored — keep the cached app_versions
+            // rather than wiping them on a transient error.
+            if let Some(v) = app_versions {
+                lock.app_versions = v;
+            }
+            for (target, (scoped, meta)) in introspected {
+                apply_scoped(&mut lock, &target, scoped, meta);
+            }
+        }
+        let state = state.clone();
+        tokio::spawn(async move { state.save_schema_cache().await });
         Ok(())
     }
 
@@ -179,15 +335,25 @@ impl SchemaService<'_> {
     /// into the cache atomically under a single write guard.
     pub async fn refresh_meta_into(
         state: &AppState,
-        ctx: &AppContext,
+        schema_name: &str,
         schema: &mut DatabaseSchema,
     ) -> Result<(), AlcedoError> {
-        // Read the meta tables with raw SQL: going through ItemsService would
-        // resolve the tables against the live schema cache, which must not be
-        // required here — this function builds the schema that replaces it.
+        let (meta_collections, meta_fields) = Self::read_meta_tables(state, schema_name).await?;
+        Self::apply_meta_tables(meta_collections, meta_fields, schema);
+        Ok(())
+    }
+
+    /// Reads the collection/field meta rows for `schema_name` with raw SQL:
+    /// going through ItemsService would resolve the tables against the live
+    /// schema cache, which must not be required here — this builds the schema
+    /// that replaces it.
+    async fn read_meta_tables(
+        state: &AppState,
+        schema_name: &str,
+    ) -> Result<(Vec<Map<String, Value>>, Vec<Map<String, Value>>), AlcedoError> {
         async fn read_meta_table(
             state: &AppState,
-            ctx: &AppContext,
+            schema_name: &str,
             table: &str,
         ) -> Result<Vec<Map<String, Value>>, AlcedoError> {
             // Propagate the error: the caller swaps the whole schema into the
@@ -195,7 +361,11 @@ impl SchemaService<'_> {
             // collection/field meta from the cache without any trace.
             let rows = postgres::pool::execute_query(
                 state,
-                format!("SELECT * FROM {}", super::ddl::qtable(ctx, table)),
+                format!(
+                    "SELECT * FROM {}.{}",
+                    super::ddl::quote(schema_name),
+                    super::ddl::quote(table)
+                ),
             )
             .await?;
             Ok(rows
@@ -210,76 +380,116 @@ impl SchemaService<'_> {
                 .collect())
         }
 
-        let meta_collections = read_meta_table(state, ctx, "alcedocore_collections").await?;
-        let meta_fields = read_meta_table(state, ctx, "alcedocore_fields").await?;
+        let meta_collections =
+            read_meta_table(state, schema_name, "alcedocore_collections").await?;
+        let meta_fields = read_meta_table(state, schema_name, "alcedocore_fields").await?;
+        Ok((meta_collections, meta_fields))
+    }
 
+    /// Attaches collection/field meta onto `schema` in memory. Pure — no DB
+    /// access, no locks.
+    fn apply_meta_tables(
+        meta_collections: Vec<Map<String, Value>>,
+        meta_fields: Vec<Map<String, Value>>,
+        schema: &mut DatabaseSchema,
+    ) {
         for table in schema.tables.clone() {
             let find_meta = meta_collections.iter().find(|col| {
-                format!(
-                    "{}010{}",
-                    col.get("app_name").unwrap().as_str().unwrap().to_string(),
-                    col.get("app_version")
-                        .unwrap()
-                        .as_str()
-                        .unwrap()
-                        .to_string()
-                ) == table.schema
-                    && col.get("table").unwrap().as_str().unwrap().to_string() == table.name
+                let Some(app_name) = col.get("app_name").and_then(Value::as_str) else {
+                    return false;
+                };
+                let Some(app_version) = col.get("app_version").and_then(Value::as_str) else {
+                    return false;
+                };
+                let Some(meta_table) = col.get("table").and_then(Value::as_str) else {
+                    return false;
+                };
+                format!("{}010{}", app_name, app_version) == table.schema
+                    && meta_table == table.name.as_str()
             });
 
-            if let Some(meta) = find_meta {
-                let meta: TableMeta =
-                    serde_json::from_value(serde_json::Value::Object(meta.clone())).unwrap();
-
-                {
-                    let find_table = schema
-                        .tables
-                        .iter_mut()
-                        .find(|t| t.schema == table.schema && meta.table == t.name);
-
-                    if let Some(find_table) = find_table {
-                        find_table.meta = Some(meta.clone());
+            let Some(meta) = find_meta else {
+                continue;
+            };
+            // A malformed meta row must not panic the request task — skip it.
+            let meta: TableMeta =
+                match serde_json::from_value(serde_json::Value::Object(meta.clone())) {
+                    Ok(meta) => meta,
+                    Err(e) => {
+                        tracing::warn!(
+                            "Skipping malformed collection meta row for {}.{}: {}",
+                            table.schema,
+                            table.name,
+                            e
+                        );
+                        continue;
                     }
+                };
+
+            {
+                let find_table = schema
+                    .tables
+                    .iter_mut()
+                    .find(|t| t.schema == table.schema && meta.table == t.name);
+
+                if let Some(find_table) = find_table {
+                    find_table.meta = Some(meta.clone());
                 }
-
-                let collection_id = meta.id.unwrap();
-
-                let fields: Vec<_> = meta_fields
-                    .iter()
-                    .filter(|field| {
-                        field.get("collection_id").and_then(|v| v.as_i64()) == Some(collection_id)
-                    })
-                    .collect();
-
-                for field in &fields {
-                    let meta: FieldSavedMetaObject =
-                        serde_json::from_value(serde_json::Value::Object((*field).clone()))
-                            .unwrap();
-
-                    let find = schema.columns.iter_mut().find(|col| {
-                        col.name == meta.api_name
-                            && col.table == table.name
-                            && col.schema == table.schema
-                    });
-
-                    if let Some(col) = find {
-                        col.meta = Some(meta);
-                    }
-                }
-
-                let field_defs: Vec<super::FieldDefinition> =
-                    fields.iter().map(|f| super::field_from_row(f)).collect();
-                schema
-                    .fields
-                    .retain(|tf| !(tf.schema == table.schema && tf.table == table.name));
-                schema.fields.push(TableFields {
-                    schema: table.schema.clone(),
-                    table: table.name.clone(),
-                    fields: field_defs,
-                });
             }
+
+            let Some(collection_id) = meta.id else {
+                tracing::warn!(
+                    "Skipping collection meta row without id for {}.{}",
+                    table.schema,
+                    table.name
+                );
+                continue;
+            };
+
+            let fields: Vec<_> = meta_fields
+                .iter()
+                .filter(|field| {
+                    field.get("collection_id").and_then(|v| v.as_i64()) == Some(collection_id)
+                })
+                .collect();
+
+            for field in &fields {
+                let meta: FieldSavedMetaObject =
+                    match serde_json::from_value(serde_json::Value::Object((*field).clone())) {
+                        Ok(meta) => meta,
+                        Err(e) => {
+                            tracing::warn!(
+                                "Skipping malformed field meta row in {}.{}: {}",
+                                table.schema,
+                                table.name,
+                                e
+                            );
+                            continue;
+                        }
+                    };
+
+                let find = schema.columns.iter_mut().find(|col| {
+                    col.name == meta.api_name
+                        && col.table == table.name
+                        && col.schema == table.schema
+                });
+
+                if let Some(col) = find {
+                    col.meta = Some(meta);
+                }
+            }
+
+            let field_defs: Vec<super::FieldDefinition> =
+                fields.iter().map(|f| super::field_from_row(f)).collect();
+            schema
+                .fields
+                .retain(|tf| !(tf.schema == table.schema && tf.table == table.name));
+            schema.fields.push(TableFields {
+                schema: table.schema.clone(),
+                table: table.name.clone(),
+                fields: field_defs,
+            });
         }
-        Ok(())
     }
 
     /// Applies meta for every app version onto `schema` without holding locks.
@@ -287,21 +497,33 @@ impl SchemaService<'_> {
         state: &AppState,
         schema: &mut DatabaseSchema,
     ) -> Result<(), AlcedoError> {
-        for version in schema.app_versions.clone() {
-            // Skip versions whose schema does not exist yet (e.g. linked in
-            // alcedocore_apps_versions before run_app_migrations created it):
-            // reading their meta tables would fail with 42P01.
-            if !schema.tables.iter().any(|t| t.schema == version.schema_name) {
+        // Skip versions whose meta tables do not exist (yet): linked in
+        // alcedocore_apps_versions before run_app_migrations created the
+        // schema, mid-migration, or dropped concurrently — reading them
+        // would fail with 42P01. Checked against the catalog rather than
+        // the introspected table list, so a DROP SCHEMA landing between
+        // introspection and this read is still caught. One catalog query for
+        // all versions (array bind) instead of a to_regclass round trip per
+        // version.
+        let schema_names: Vec<String> = schema
+            .app_versions
+            .iter()
+            .map(|version| version.schema_name.clone())
+            .collect();
+        let meta_exists: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT s AS schema_name, \
+             to_regclass(s || '.alcedocore_collections') IS NOT NULL \
+             AND to_regclass(s || '.alcedocore_fields') IS NOT NULL AS ok \
+             FROM unnest($1::text[]) AS s",
+        )
+        .bind(&schema_names)
+        .fetch_all(&*state.database_pool)
+        .await?;
+        for (schema_name, ok) in meta_exists {
+            if !ok {
                 continue;
             }
-            let ctx = AppContext {
-                app_name: version.app_name,
-                version: version.version_name,
-                request_source: RequestSource::Inspector,
-                identity: None,
-                request_id: None,
-            };
-            SchemaService::refresh_meta_into(state, &ctx, schema).await?;
+            SchemaService::refresh_meta_into(state, &schema_name, schema).await?;
         }
         Ok(())
     }
@@ -321,7 +543,7 @@ impl SchemaService<'_> {
     /// fresh `AppState` whose live cache is still empty.
     pub async fn refresh_schema_and_meta(state: &AppState) -> Result<(), AlcedoError> {
         let _refresh_guard = refresh_lock().lock().await;
-        let mut new_schema = DatabaseSchema::refresh(state).await;
+        let mut new_schema = DatabaseSchema::refresh(state).await?;
         SchemaService::refresh_all_meta_into(state, &mut new_schema).await?;
         *state.database_schema.write().await = new_schema;
         state.save_schema_cache().await;
@@ -378,7 +600,8 @@ impl SchemaService<'_> {
         execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
 
         if let Some(tx) = owned_tx {
-            tx.commit().await.unwrap();
+            tx.commit().await?;
+            self.app_state.mark_schema_dirty();
         };
         if owns_tx {
             self.refresh_schema().await?;
@@ -463,7 +686,8 @@ impl SchemaService<'_> {
         execute_query_transaction(&self.app_state, tx_ref, &sql).await?;
 
         if let Some(tx) = owned_tx {
-            tx.commit().await.unwrap();
+            tx.commit().await?;
+            self.app_state.mark_schema_dirty();
         };
         if owns_tx {
             self.refresh_schema().await?;
@@ -574,7 +798,8 @@ impl SchemaService<'_> {
         }
 
         if let Some(tx) = owned_tx {
-            tx.commit().await.unwrap();
+            tx.commit().await?;
+            self.app_state.mark_schema_dirty();
         };
         if owns_tx {
             self.refresh_schema().await?;
@@ -630,7 +855,8 @@ impl SchemaService<'_> {
         }
 
         if let Some(tx) = owned_tx {
-            tx.commit().await.unwrap();
+            tx.commit().await?;
+            self.app_state.mark_schema_dirty();
         };
         if owns_tx {
             self.refresh_schema().await?;

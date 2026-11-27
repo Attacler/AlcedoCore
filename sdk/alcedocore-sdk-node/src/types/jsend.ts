@@ -11,23 +11,27 @@ export interface JSendResponse<T> {
 
 /**
  * Error thrown by the SDK when the core responds with a JSend `fail`/`error`
- * envelope. The original status/message/code are preserved.
+ * envelope. The original status/message/code are preserved, plus the JSend
+ * `data` payload (e.g. `data.conflicts` on a deploy conflict).
  */
 export class AlcedoApiError extends Error {
     public readonly code?: number;
     public readonly status?: "fail" | "error";
     public readonly httpStatus?: number;
+    public readonly data?: unknown;
 
     constructor(
         message: string,
         code?: number,
         status?: "fail" | "error",
         httpStatus?: number,
+        data?: unknown,
     ) {
         super(message);
         this.name = "AlcedoApiError";
         this.code = code;
         this.status = status;
         this.httpStatus = httpStatus;
+        this.data = data;
     }
 }

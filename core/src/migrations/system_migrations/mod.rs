@@ -24,6 +24,8 @@ pub(crate) mod m00014_install_scope;
 pub(crate) mod m00015_plugin_versions;
 pub(crate) mod m00016_system_plugin_flag;
 pub(crate) mod m00017_plugin_db_access;
+pub(crate) mod m00018_versions_created_at;
+pub(crate) mod m00019_version_name_unique;
 
 pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postgres>>> {
     vec_box![
@@ -64,6 +66,8 @@ pub(crate) fn migrations(app_context: AppContext) -> Vec<Box<dyn Migration<Postg
         m00015_plugin_versions::M0015Migration,
         m00016_system_plugin_flag::M0016Migration,
         m00017_plugin_db_access::M0017Migration,
+        m00018_versions_created_at::M0018Migration,
+        m00019_version_name_unique::M0019Migration,
     ]
 }
 

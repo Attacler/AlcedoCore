@@ -43,7 +43,7 @@ function isJSendEnvelope(value: unknown): value is JSendResponse<unknown> {
  * - `status: "success"` → the response body is replaced with `data`, so every
  *   `.json()` call site receives the payload directly.
  * - `status: "fail" | "error"` → throws {@link AlcedoApiError} carrying the
- *   JSend `message`/`code`.
+ *   JSend `message`/`code`/`data` (e.g. `data.conflicts` on deploy conflicts).
  * - Non-JSON responses (file downloads, docs, empty bodies) pass through
  *   untouched.
  */
@@ -69,6 +69,7 @@ async function unwrapJSend(response: Response): Promise<Response> {
             parsed.code,
             parsed.status,
             response.status,
+            parsed.data,
         );
     }
 

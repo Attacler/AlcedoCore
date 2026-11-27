@@ -52,6 +52,9 @@ pub async fn get_app_state() -> AppState {
             .unwrap(),
         ),
         schema_cache_gen: Arc::new(Mutex::new(String::new())),
+        schema_cache_last_save: Arc::new(std::sync::Mutex::new(None)),
+        schema_dirty_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        schema_refreshed_gen: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         platform,
         route_map: Arc::new(RwLock::new(
             crate::services::app_state::RouteMapState::default(),

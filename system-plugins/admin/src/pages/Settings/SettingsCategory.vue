@@ -35,8 +35,8 @@ const categoryDef = computed(() =>
 
 const settingsKeys = computed(() => store.getCategorySettings(props.category));
 
-watch(categoryDef, (def) => {
-    if (!def && !store.loading) {
+watch([categoryDef, () => store.loading], ([def, loading]) => {
+    if (!def && !loading) {
         router.replace(appPath("/settings"));
     }
 });
