@@ -93,7 +93,7 @@ const routes: RouteRecordRaw[] = [
         meta: { global: true },
     },
     {
-        path: "/versions/:id",
+        path: "/versions/:id/:tab?",
         name: "VersionDetail",
         component: VersionDetail,
         meta: { global: true },

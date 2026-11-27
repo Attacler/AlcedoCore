@@ -13,7 +13,6 @@ import ToggleSwitch from "primevue/toggleswitch";
 import MenuBuilder from "./MenuBuilder.vue";
 import SettingsSession from "./SettingsSession.vue";
 import SettingsActivity from "./SettingsActivity.vue";
-import VersionChanges from "./VersionChanges.vue";
 import FileUpload from "@/components/inputs/FileUpload.vue";
 import { MediaFile } from "@alcedocore/sdk";
 import EnableDevelopmentMode from "./development/enableDevelopmentMode.vue";
@@ -36,8 +35,8 @@ const categoryDef = computed(() =>
 
 const settingsKeys = computed(() => store.getCategorySettings(props.category));
 
-watch(categoryDef, (def) => {
-    if (!def && !store.loading) {
+watch([categoryDef, () => store.loading], ([def, loading]) => {
+    if (!def && !loading) {
         router.replace(appPath("/settings"));
     }
 });
@@ -104,7 +103,6 @@ function fileUploaded(key: string, uploadResponse: MediaFile) {
     <MenuBuilder v-if="category === 'menu'" />
     <SettingsSession v-else-if="category === 'session'" />
     <SettingsActivity v-else-if="category === 'activity'" />
-    <VersionChanges v-else-if="category === 'version-changes'" />
     <div v-else class="space-y-6">
         <div class="flex items-center justify-between mb-6">
             <div class="flex items-center gap-3">

@@ -81,7 +81,10 @@ const LOG_PAGE_LIMIT = 1000;
 
 // ── Pure helpers (exported for tests) ──
 
-export function changeId(source: ChangeSource, editId: number | string): string {
+export function changeId(
+    source: ChangeSource,
+    editId: number | string,
+): string {
     return `${source}:${editId}`;
 }
 
@@ -165,10 +168,6 @@ export function findAppCreatedApps(
     );
 }
 
-/** Versions (excluding production) that have `app` linked — the versions a
- * user can pick as the deploy source when viewing the app in production
- * (`/app/{app}/production/settings/version-changes`). Production itself is
- * never a deploy source (the core refuses to deploy it onto itself). */
 export function deployableVersionsForApp(
     versions: VersionRow[],
     appVersions: AppVersionRow[],
@@ -176,9 +175,7 @@ export function deployableVersionsForApp(
     productionName: string = PRODUCTION_VERSION,
 ): VersionRow[] {
     const linkedIds = new Set(
-        appVersions
-            .filter((a) => a.api_name === app)
-            .map((a) => a.version_id),
+        appVersions.filter((a) => a.api_name === app).map((a) => a.version_id),
     );
     return versions.filter(
         (v) => v.version_name !== productionName && linkedIds.has(v.id),
@@ -500,7 +497,10 @@ export const useVersionChangesStore = defineStore("versionChanges", () => {
             const perApp = await Promise.all(
                 linked.map(async (a) => {
                     try {
-                        await fetchCollectionNames(a.api_name, version.version_name);
+                        await fetchCollectionNames(
+                            a.api_name,
+                            version.version_name,
+                        );
                         return await fetchChangesForApp(
                             a.api_name,
                             version.version_name,
@@ -599,9 +599,7 @@ export const useVersionChangesStore = defineStore("versionChanges", () => {
                 httpStatus: 200,
                 deployed: Boolean(data?.deployed),
                 dryRun: body.dry_run,
-                conflicts: Array.isArray(data?.conflicts)
-                    ? data.conflicts
-                    : [],
+                conflicts: Array.isArray(data?.conflicts) ? data.conflicts : [],
                 unsupported: Array.isArray(data?.unsupported)
                     ? data.unsupported
                     : [],
@@ -630,8 +628,7 @@ export const useVersionChangesStore = defineStore("versionChanges", () => {
                         ? data.unsupported
                         : [],
                     edits: Array.isArray(data?.edits) ? data.edits : [],
-                    message:
-                        e.message || "The changes could not be applied",
+                    message: e.message || "The changes could not be applied",
                 };
                 lastResult.value = result;
                 return result;

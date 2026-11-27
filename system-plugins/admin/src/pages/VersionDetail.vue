@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { RouterLink, useRoute } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import { useAlcedoClient } from "@/composables/useAlcedoClient";
 import { useAuthStore } from "@/stores/authStore";
 import Button from "primevue/button";
@@ -11,10 +11,12 @@ import TabPanels from "primevue/tabpanels";
 import TabPanel from "primevue/tabpanel";
 import Tag from "primevue/tag";
 import AccessTab from "@/components/version-detail/AccessTab.vue";
+import ChangesTab from "@/components/version-detail/ChangesTab.vue";
 import DeveloperKeysTab from "@/components/version-detail/DeveloperKeysTab.vue";
 import DangerZone from "@/components/version-detail/DangerZone.vue";
 
 const route = useRoute(),
+    router = useRouter(),
     authStore = useAuthStore(),
     { client } = useAlcedoClient();
 
@@ -22,11 +24,40 @@ const versionId = computed(() => Number(route.params.id)),
     versionName = ref<string | null>(null),
     loading = ref(true),
     error = ref(""),
-    notFound = ref(false),
-    activeTab = ref("access");
+    notFound = ref(false);
 
 // The production version cannot be deleted, so it has no danger zone tab.
 const isProduction = computed(() => versionName.value === "production");
+
+// ── Tabs as URLs: /versions/:id/:tab (access | changes | keys | danger) ──
+const TABS = ["access", "changes", "keys", "danger"] as const;
+type Tab = (typeof TABS)[number];
+
+const routeTab = computed(() => String(route.params.tab ?? ""));
+
+const activeTab = computed<Tab>(() => {
+    const t = routeTab.value;
+    if (t === "danger" && isProduction.value) return "access";
+    return (TABS as readonly string[]).includes(t) ? (t as Tab) : "access";
+});
+
+function goTab(tab: unknown) {
+    const t = String(tab ?? "");
+    if (!t || t === activeTab.value) return;
+    void router.push(`/versions/${versionId.value}/${t}`);
+}
+
+// Canonicalize the URL: bare /versions/:id and invalid tabs (e.g. /danger on
+// production) redirect to the access tab.
+watch(
+    [activeTab, routeTab],
+    ([active, raw]) => {
+        if (!raw || active !== raw) {
+            void router.replace(`/versions/${versionId.value}/${active}`);
+        }
+    },
+    { immediate: true },
+);
 
 async function load() {
     loading.value = true;
@@ -38,9 +69,6 @@ async function load() {
         const match = list.find((v) => v.id === versionId.value);
         if (match) {
             versionName.value = match.version_name;
-            if (isProduction.value) {
-                activeTab.value = "access";
-            }
         } else {
             notFound.value = true;
         }
@@ -139,9 +167,10 @@ watch(() => route.params.id, reloadIfAdmin);
                     </div>
                 </div>
 
-                <Tabs v-model:value="activeTab">
+                <Tabs :value="activeTab" @update:value="goTab">
                     <TabList>
                         <Tab value="access">Access</Tab>
+                        <Tab value="changes">Changes</Tab>
                         <Tab value="keys">Developer Keys</Tab>
                         <Tab v-if="!isProduction" value="danger"
                             >Danger zone</Tab
@@ -151,6 +180,13 @@ watch(() => route.params.id, reloadIfAdmin);
                         <TabPanel value="access">
                             <AccessTab
                                 v-if="versionName"
+                                :version-id="versionId"
+                                :version-name="versionName"
+                            />
+                        </TabPanel>
+                        <TabPanel value="changes">
+                            <ChangesTab
+                                v-if="activeTab === 'changes' && versionName"
                                 :version-id="versionId"
                                 :version-name="versionName"
                             />

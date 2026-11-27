@@ -134,8 +134,7 @@ pub struct FieldMetaObject {
 /// refreshes cannot interleave and an older snapshot cannot overwrite a
 /// newer one.
 pub(crate) fn refresh_lock() -> &'static tokio::sync::Mutex<()> {
-    static REFRESH_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
-        std::sync::OnceLock::new();
+    static REFRESH_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     REFRESH_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
@@ -155,10 +154,12 @@ async fn introspect_scoped(
     AlcedoError,
 > {
     let scoped = DatabaseSchema::refresh_scoped(state, target).await?;
-    let meta_exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
-        .bind(format!("{}.alcedocore_collections", target))
-        .fetch_one(&*state.database_pool)
-        .await?;
+    let meta_exists: bool =
+        sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL AND to_regclass($2) IS NOT NULL")
+            .bind(format!("{}.alcedocore_collections", target))
+            .bind(format!("{}.alcedocore_fields", target))
+            .fetch_one(&*state.database_pool)
+            .await?;
     let meta = if meta_exists {
         Some(SchemaService::read_meta_tables(state, target).await?)
     } else {
@@ -233,8 +234,10 @@ impl SchemaService<'_> {
         // App-scoped DDL only ever touches the request's own schema, so
         // introspect just that schema (plus alcedocore) and merge it into
         // the live cache instead of rebuilding every app-version schema on
-        // every save.
-        if save_cache && !self.app_context.version.is_empty() {
+        // every save. `save_cache` only gates the persisted blob, not the
+        // introspection scope — a FirstMigration refresh must stay scoped
+        // too, or every migration table-create rescans the whole catalog.
+        if !self.app_context.version.is_empty() {
             // Coalesce refreshes of the same commit: the after-hook refresh
             // and this explicit refresh would otherwise both introspect the
             // same schema. Skip when a refresh already covered the current
@@ -264,8 +267,10 @@ impl SchemaService<'_> {
             // The persisted cache blob is ~15MB with many versions; don't make
             // the request wait for serializing + writing it. The in-memory
             // update above is what serves requests.
-            let state = self.app_state.clone();
-            tokio::spawn(async move { state.save_schema_cache().await });
+            if save_cache {
+                let state = self.app_state.clone();
+                tokio::spawn(async move { state.save_schema_cache().await });
+            }
             return Ok(());
         }
 
@@ -375,7 +380,8 @@ impl SchemaService<'_> {
                 .collect())
         }
 
-        let meta_collections = read_meta_table(state, schema_name, "alcedocore_collections").await?;
+        let meta_collections =
+            read_meta_table(state, schema_name, "alcedocore_collections").await?;
         let meta_fields = read_meta_table(state, schema_name, "alcedocore_fields").await?;
         Ok((meta_collections, meta_fields))
     }
